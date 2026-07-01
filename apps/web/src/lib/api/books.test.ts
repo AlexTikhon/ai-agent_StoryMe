@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { booksApi } from './books';
 import { SupportedLanguage, BookStatus } from '@book/types';
-import type { BookDto } from '@book/types';
+import type { BookDto, BooksPageDto } from '@book/types';
 
 const MOCK_BOOK: BookDto = {
   id: 'book-1',
@@ -42,17 +42,28 @@ describe('booksApi', () => {
   });
 
   describe('list()', () => {
-    it('sends GET /books with dev auth headers', async () => {
-      vi.mocked(fetch).mockResolvedValueOnce(mockOk([MOCK_BOOK]));
+    it('sends GET /books with pagination params and dev auth headers', async () => {
+      const page: BooksPageDto = { items: [MOCK_BOOK], page: 1, limit: 20, total: 1 };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(page));
 
       const result = await booksApi.list();
 
       expect(fetch).toHaveBeenCalledOnce();
       const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
-      expect(url).toBe('http://localhost:4000/api/books');
+      expect(url).toBe('http://localhost:4000/api/books?page=1&limit=20');
       expect((init.headers as Record<string, string>)['x-user-email']).toBe('dev@storyme.local');
       expect((init.headers as Record<string, string>)['x-user-name']).toBe('Dev User');
-      expect(result).toEqual([MOCK_BOOK]);
+      expect(result).toEqual(page);
+    });
+
+    it('forwards custom page and limit params', async () => {
+      const page: BooksPageDto = { items: [], page: 2, limit: 5, total: 0 };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(page));
+
+      await booksApi.list(2, 5);
+
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books?page=2&limit=5');
     });
   });
 

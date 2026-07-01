@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DashboardPage from './page';
 import { SupportedLanguage, BookStatus } from '@book/types';
-import type { BookDto } from '@book/types';
+import type { BookDto, BooksPageDto } from '@book/types';
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -36,6 +36,10 @@ const MOCK_BOOK_2: BookDto = {
   childName: 'Oliver',
 };
 
+function mockPage(items: BookDto[], total?: number): BooksPageDto {
+  return { items, page: 1, limit: 20, total: total ?? items.length };
+}
+
 function mockOk(body: unknown, status = 200): Response {
   return { ok: true, status, json: async () => body } as unknown as Response;
 }
@@ -58,13 +62,13 @@ describe('DashboardPage', () => {
   // ── Loading / empty / list states ──────────────────────────────────────────
 
   it('renders a loading skeleton while books are being fetched', () => {
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([]));
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([])));
     render(<DashboardPage />);
     expect(screen.getByRole('list', { name: /loading book drafts/i })).toBeDefined();
   });
 
   it('renders empty state after API returns an empty list', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([]));
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([])));
     render(<DashboardPage />);
     await waitFor(() => {
       expect(screen.getByText(/no book drafts yet/i)).toBeDefined();
@@ -72,7 +76,7 @@ describe('DashboardPage', () => {
   });
 
   it('renders all books from the API', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([MOCK_BOOK, MOCK_BOOK_2]));
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([MOCK_BOOK, MOCK_BOOK_2])));
     render(<DashboardPage />);
     await waitFor(() => {
       expect(screen.getByText("Emma's Story")).toBeDefined();
@@ -89,17 +93,17 @@ describe('DashboardPage', () => {
     });
   });
 
-  // ── New Book button links to wizard ────────────────────────────────────────
+  // ── Navigation links ───────────────────────────────────────────────────────
 
   it('New Book header button links to the wizard', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([]));
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([])));
     render(<DashboardPage />);
     const link = screen.getByRole('link', { name: /new book/i });
     expect(link.getAttribute('href')).toBe('/dashboard/books/new');
   });
 
   it('book card title links to the book detail page', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([MOCK_BOOK]));
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([MOCK_BOOK])));
     render(<DashboardPage />);
     await waitFor(() => {
       const link = screen.getByRole('link', { name: "Emma's Story" });
@@ -107,8 +111,17 @@ describe('DashboardPage', () => {
     });
   });
 
+  it('book card Edit button links to the book detail page', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([MOCK_BOOK])));
+    render(<DashboardPage />);
+    await waitFor(() => {
+      const links = screen.getAllByRole('link', { name: /^edit$/i });
+      expect(links[0]?.getAttribute('href')).toBe('/dashboard/books/book-1');
+    });
+  });
+
   it('Create First Book link in empty state links to the wizard', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([]));
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([])));
     render(<DashboardPage />);
     await waitFor(() => {
       const link = screen.getByRole('link', { name: /create first book/i });
@@ -116,37 +129,12 @@ describe('DashboardPage', () => {
     });
   });
 
-  // ── Edit inline form ───────────────────────────────────────────────────────
-
-  it('shows inline edit form when Edit is clicked', async () => {
-    const user = userEvent.setup();
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([MOCK_BOOK]));
-    render(<DashboardPage />);
-
-    await waitFor(() => screen.getByText("Emma's Story"));
-    await user.click(screen.getByRole('button', { name: /^edit$/i }));
-
-    expect(screen.getByRole('heading', { name: /edit draft/i })).toBeDefined();
-  });
-
-  it('cancels the edit form and returns to card view', async () => {
-    const user = userEvent.setup();
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk([MOCK_BOOK]));
-    render(<DashboardPage />);
-
-    await waitFor(() => screen.getByText("Emma's Story"));
-    await user.click(screen.getByRole('button', { name: /^edit$/i }));
-    await user.click(screen.getByRole('button', { name: /cancel/i }));
-
-    expect(screen.getByText("Emma's Story")).toBeDefined();
-  });
-
   // ── Retry ──────────────────────────────────────────────────────────────────
 
   it('retries loading books when Retry is clicked after an error', async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(mockError(500, 'Server down'))
-      .mockResolvedValueOnce(mockOk([MOCK_BOOK]));
+      .mockResolvedValueOnce(mockOk(mockPage([MOCK_BOOK])));
 
     const user = userEvent.setup();
     render(<DashboardPage />);
@@ -156,6 +144,28 @@ describe('DashboardPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText("Emma's Story")).toBeDefined();
+    });
+  });
+
+  // ── Delete ─────────────────────────────────────────────────────────────────
+
+  it('removes a book card after successful delete', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(mockPage([MOCK_BOOK, MOCK_BOOK_2])))
+      .mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+
+    const user = userEvent.setup();
+    render(<DashboardPage />);
+
+    await waitFor(() => screen.getByText("Emma's Story"));
+
+    const deleteButtons = screen.getAllByRole('button', { name: /^delete$/i });
+    await user.click(deleteButtons[0]!);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Emma's Story")).toBeNull();
+      expect(screen.getByText("Oliver's Story")).toBeDefined();
     });
   });
 });

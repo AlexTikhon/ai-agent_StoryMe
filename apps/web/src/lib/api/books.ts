@@ -1,9 +1,9 @@
-import type { BookDto, CreateBookInput, UpdateBookInput } from '@book/types';
+import type { BookDto, BooksPageDto, CreateBookInput, UpdateBookInput } from '@book/types';
 import { apiFetch } from './client';
 
 export const booksApi = {
-  list: (): Promise<BookDto[]> =>
-    apiFetch('/books'),
+  list: (page = 1, limit = 20): Promise<BooksPageDto> =>
+    apiFetch(`/books?page=${page}&limit=${limit}`),
 
   get: (id: string): Promise<BookDto> =>
     apiFetch(`/books/${id}`),

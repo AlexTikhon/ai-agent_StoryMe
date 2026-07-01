@@ -1,50 +1,23 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState, useCallback, type FormEvent } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import type { BookDto } from '@book/types';
-import { SupportedLanguage, BookStatus } from '@book/types';
+import { BookStatus } from '@book/types';
 import { booksApi } from '@/lib/api/books';
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const LANGUAGES: { value: SupportedLanguage; label: string }[] = [
-  { value: SupportedLanguage.English, label: 'English' },
-  { value: SupportedLanguage.Russian, label: 'Russian' },
-  { value: SupportedLanguage.Polish, label: 'Polish' },
-];
-
-interface DraftFormValues {
-  childName: string;
-  childAge: number;
-  language: SupportedLanguage;
-  theme: string;
-}
-
-const DEFAULT_FORM: DraftFormValues = {
-  childName: '',
-  childAge: 4,
-  language: SupportedLanguage.English,
-  theme: '',
-};
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const [books, setBooks] = useState<BookDto[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<DraftFormValues>(DEFAULT_FORM);
-  const [editError, setEditError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const loadBooks = useCallback(async () => {
     setLoadError(null);
     try {
-      setBooks(await booksApi.list());
+      const data = await booksApi.list();
+      setBooks(data.items);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Failed to load books');
     }
@@ -53,35 +26,6 @@ export default function DashboardPage() {
   useEffect(() => {
     void loadBooks();
   }, [loadBooks]);
-
-  const startEdit = (book: BookDto) => {
-    setEditingId(book.id);
-    setEditError(null);
-    setEditForm({
-      childName: book.childName ?? '',
-      childAge: book.childAge ?? 4,
-      language: book.language ?? SupportedLanguage.English,
-      theme: book.theme ?? '',
-    });
-  };
-
-  const handleUpdate = async (e: FormEvent, id: string) => {
-    e.preventDefault();
-    setSaving(true);
-    setEditError(null);
-    try {
-      const updated = await booksApi.update(id, {
-        title: `${editForm.childName.trim()}'s Story`,
-        ...editForm,
-      });
-      setBooks((prev) => prev?.map((b) => (b.id === id ? updated : b)) ?? null);
-      setEditingId(null);
-    } catch (err) {
-      setEditError(err instanceof Error ? err.message : 'Failed to update book');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Delete this draft? This cannot be undone.')) return;
@@ -128,30 +72,11 @@ export default function DashboardPage() {
           <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Book drafts">
             {books.map((book) => (
               <li key={book.id}>
-                {editingId === book.id ? (
-                  <div className="rounded-2xl border border-violet-200 bg-bg-surface p-5 shadow-sm">
-                    <h3 className="mb-4 font-display text-lg font-semibold text-text-primary">
-                      Edit Draft
-                    </h3>
-                    <form onSubmit={(e) => { void handleUpdate(e, book.id); }}>
-                      <DraftFormFields
-                        values={editForm}
-                        onChange={setEditForm}
-                        error={editError}
-                        submitting={saving}
-                        submitLabel="Save"
-                        onCancel={() => setEditingId(null)}
-                      />
-                    </form>
-                  </div>
-                ) : (
-                  <BookCard
-                    book={book}
-                    onEdit={() => startEdit(book)}
-                    onDelete={() => { void handleDelete(book.id); }}
-                    deleting={deletingId === book.id}
-                  />
-                )}
+                <BookCard
+                  book={book}
+                  onDelete={() => { void handleDelete(book.id); }}
+                  deleting={deletingId === book.id}
+                />
               </li>
             ))}
           </ul>
@@ -161,126 +86,15 @@ export default function DashboardPage() {
   );
 }
 
-// ── DraftFormFields ───────────────────────────────────────────────────────────
-
-interface DraftFormFieldsProps {
-  values: DraftFormValues;
-  onChange: (v: DraftFormValues) => void;
-  error: string | null;
-  submitting: boolean;
-  submitLabel: string;
-  onCancel: () => void;
-}
-
-function DraftFormFields({
-  values,
-  onChange,
-  error,
-  submitting,
-  submitLabel,
-  onCancel,
-}: DraftFormFieldsProps) {
-  const set = (patch: Partial<DraftFormValues>) => onChange({ ...values, ...patch });
-
-  return (
-    <>
-      {error && (
-        <p role="alert" className="mb-4 rounded-lg bg-danger-light px-4 py-3 text-sm text-danger-base">
-          {error}
-        </p>
-      )}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-text-secondary">
-            Child&apos;s name <span className="text-danger-base" aria-hidden="true">*</span>
-          </span>
-          <input
-            required
-            value={values.childName}
-            onChange={(e) => set({ childName: e.target.value })}
-            placeholder="e.g. Emma"
-            maxLength={80}
-            className="rounded-lg border border-border-default bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600"
-          />
-        </label>
-
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-text-secondary">
-            Age <span className="text-danger-base" aria-hidden="true">*</span>
-          </span>
-          <input
-            required
-            type="number"
-            min={1}
-            max={12}
-            value={values.childAge}
-            onChange={(e) => set({ childAge: Number(e.target.value) })}
-            className="rounded-lg border border-border-default bg-white px-3 py-2 text-sm text-text-primary focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600"
-          />
-        </label>
-
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-text-secondary">
-            Language <span className="text-danger-base" aria-hidden="true">*</span>
-          </span>
-          <select
-            value={values.language}
-            onChange={(e) => set({ language: e.target.value as SupportedLanguage })}
-            className="rounded-lg border border-border-default bg-white px-3 py-2 text-sm text-text-primary focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600"
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l.value} value={l.value}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-text-secondary">
-            Theme <span className="text-danger-base" aria-hidden="true">*</span>
-          </span>
-          <input
-            required
-            value={values.theme}
-            onChange={(e) => set({ theme: e.target.value })}
-            placeholder="e.g. Friendship and courage"
-            maxLength={120}
-            className="rounded-lg border border-border-default bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600"
-          />
-        </label>
-      </div>
-
-      <div className="mt-5 flex gap-3">
-        <button
-          type="submit"
-          disabled={submitting}
-          className="inline-flex h-10 items-center gap-2 rounded-xl bg-violet-600 px-5 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500 disabled:opacity-60"
-        >
-          {submitting ? 'Saving…' : submitLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="inline-flex h-10 items-center rounded-xl border border-border-default px-5 text-sm font-semibold text-text-primary transition-all hover:bg-stone-100"
-        >
-          Cancel
-        </button>
-      </div>
-    </>
-  );
-}
-
 // ── BookCard ──────────────────────────────────────────────────────────────────
 
 interface BookCardProps {
   book: BookDto;
-  onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
 }
 
-function BookCard({ book, onEdit, onDelete, deleting }: BookCardProps) {
+function BookCard({ book, onDelete, deleting }: BookCardProps) {
   const isDraft = book.status === BookStatus.Created;
 
   return (
@@ -331,12 +145,12 @@ function BookCard({ book, onEdit, onDelete, deleting }: BookCardProps) {
       </p>
 
       <div className="flex gap-2">
-        <button
-          onClick={onEdit}
-          className="flex-1 rounded-lg border border-border-default py-1.5 text-sm font-medium text-text-secondary transition-all hover:bg-stone-100"
+        <Link
+          href={`/dashboard/books/${book.id}`}
+          className="flex-1 rounded-lg border border-border-default py-1.5 text-center text-sm font-medium text-text-secondary transition-all hover:bg-stone-100"
         >
           Edit
-        </button>
+        </Link>
         <button
           onClick={onDelete}
           disabled={deleting}

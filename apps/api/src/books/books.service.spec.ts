@@ -102,27 +102,58 @@ describe('BooksService', () => {
   // ─── findAllForUser ───────────────────────────────────────────────────────────
 
   describe('findAllForUser', () => {
-    it('returns a list of BookDtos for the given user', async () => {
+    it('returns paginated BookDtos for the given user', async () => {
       const books = [makeBook({ id: 'b-1' }), makeBook({ id: 'b-2' })];
+      prisma.book.count.mockResolvedValue(2);
       prisma.book.findMany.mockResolvedValue(books);
 
-      const result = await service.findAllForUser('u-1');
+      const result = await service.findAllForUser('u-1', 1, 20);
 
       expect(prisma.book.findMany).toHaveBeenCalledWith({
         where: { userId: 'u-1', deletedAt: null },
         orderBy: { createdAt: 'desc' },
+        skip: 0,
+        take: 20,
       });
-      expect(result).toHaveLength(2);
-      expect(result[0]?.id).toBe('b-1');
-      expect(result[1]?.id).toBe('b-2');
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0]?.id).toBe('b-1');
+      expect(result.items[1]?.id).toBe('b-2');
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.total).toBe(2);
     });
 
-    it('returns an empty array when the user has no books', async () => {
+    it('returns empty items array when the user has no books', async () => {
+      prisma.book.count.mockResolvedValue(0);
       prisma.book.findMany.mockResolvedValue([]);
 
-      const result = await service.findAllForUser('u-1');
+      const result = await service.findAllForUser('u-1', 1, 20);
 
-      expect(result).toEqual([]);
+      expect(result.items).toEqual([]);
+      expect(result.total).toBe(0);
+    });
+
+    it('applies page offset as skip', async () => {
+      prisma.book.count.mockResolvedValue(10);
+      prisma.book.findMany.mockResolvedValue([]);
+
+      await service.findAllForUser('u-1', 2, 5);
+
+      expect(prisma.book.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 5, take: 5 }),
+      );
+    });
+
+    it('clamps limit to 50', async () => {
+      prisma.book.count.mockResolvedValue(0);
+      prisma.book.findMany.mockResolvedValue([]);
+
+      const result = await service.findAllForUser('u-1', 1, 999);
+
+      expect(result.limit).toBe(50);
+      expect(prisma.book.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 50 }),
+      );
     });
   });
 

@@ -214,3 +214,11 @@ export interface CreateBookInput {
 }
 
 export type UpdateBookInput = Partial<CreateBookInput>;
+
+/** Paginated response for GET /books */
+export interface BooksPageDto {
+  items: BookDto[];
+  page: number;
+  limit: number;
+  total: number;
+}

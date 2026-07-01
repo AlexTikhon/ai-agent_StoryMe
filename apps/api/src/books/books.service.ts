@@ -1,6 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { BookStatus, type Book } from '@prisma/client';
-import type { BookDto } from '@book/types';
+import type { BookDto, BooksPageDto } from '@book/types';
 import { PrismaService } from '../database/prisma.service';
 import { toBookDto } from './books.mapper';
 import type { CreateBookDto } from './dto/create-book.dto';
@@ -24,12 +24,22 @@ export class BooksService {
     return toBookDto(book);
   }
 
-  async findAllForUser(userId: string): Promise<BookDto[]> {
-    const books = await this.prisma.book.findMany({
-      where: { userId, deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    return books.map(toBookDto);
+  async findAllForUser(userId: string, page: number, limit: number): Promise<BooksPageDto> {
+    const safeLimit = Math.min(Math.max(1, limit), 50);
+    const safePage = Math.max(1, page);
+    const skip = (safePage - 1) * safeLimit;
+
+    const [total, books] = await Promise.all([
+      this.prisma.book.count({ where: { userId, deletedAt: null } }),
+      this.prisma.book.findMany({
+        where: { userId, deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: safeLimit,
+      }),
+    ]);
+
+    return { items: books.map(toBookDto), page: safePage, limit: safeLimit, total };
   }
 
   async findOneForUser(id: string, userId: string): Promise<BookDto> {

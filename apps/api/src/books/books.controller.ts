@@ -1,16 +1,19 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Delete,
   Get,
   HttpCode,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import type { User } from '@prisma/client';
-import type { BookDto } from '@book/types';
+import type { BookDto, BooksPageDto } from '@book/types';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { DevAuthGuard } from '../auth/dev-auth.guard';
 import { BooksService } from './books.service';
@@ -23,8 +26,12 @@ export class BooksController {
   constructor(private readonly booksService: BooksService) {}
 
   @Get()
-  findAll(@CurrentUser() user: User): Promise<BookDto[]> {
-    return this.booksService.findAllForUser(user.id);
+  findAll(
+    @CurrentUser() user: User,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ): Promise<BooksPageDto> {
+    return this.booksService.findAllForUser(user.id, page, limit);
   }
 
   @Post()
