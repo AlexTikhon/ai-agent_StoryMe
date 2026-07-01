@@ -5,6 +5,7 @@
 export enum AgentStep {
   CharBuild = 'char_build',
   StoryPlan = 'story_plan',
+  PagePlan = 'page_plan',
   ChapterGen = 'chapter_gen',
   IllustPlan = 'illust_plan',
   CharConsistency = 'char_consistency',
@@ -21,6 +22,7 @@ export enum BookStatus {
   Created = 'created',
   CharBuild = 'char_build',
   StoryPlan = 'story_plan',
+  PagePlan = 'page_plan',
   ChapterGen = 'chapter_gen',
   IllustPlan = 'illust_plan',
   ImageGen = 'image_gen',

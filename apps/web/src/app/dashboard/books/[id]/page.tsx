@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { SupportedLanguage, BookStatus } from '@book/types';
-import type { BookDto } from '@book/types';
+import type { BookDto, PagePlan } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 import { ApiError } from '@/lib/api/client';
 
@@ -248,6 +248,8 @@ function BookDetailView({ book, onEdit, onDelete, deleting, onGenerate, generati
   const missingFields = getMissingDraftFields(book);
   const canGenerate = isDraft && missingFields.length === 0;
   const storyPlan = book.storyPlan ?? null;
+  const pages: PagePlan[] | undefined =
+    storyPlan?.pages && storyPlan.pages.length > 0 ? storyPlan.pages : undefined;
 
   return (
     <div>
@@ -308,6 +310,35 @@ function BookDetailView({ book, onEdit, onDelete, deleting, onGenerate, generati
               <li key={ch.chapterNumber} className="text-sm">
                 <span className="font-medium text-text-primary">{ch.title}</span>
                 <span className="text-text-muted"> — {ch.summary}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {pages && (
+        <div className="mb-6 rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+          <h2 className="mb-3 font-display text-base font-semibold text-indigo-800">
+            Page plan is ready
+          </h2>
+          <ul className="space-y-3">
+            {pages.map((page) => (
+              <li key={page.pageNumber} className="rounded-lg border border-indigo-100 bg-white p-3 text-sm">
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+                    Page {page.pageNumber}
+                  </span>
+                  <span className="text-xs text-text-muted">Chapter {page.chapterIndex + 1}</span>
+                </div>
+                <p className="mb-0.5 font-medium text-text-primary">{page.title}</p>
+                <p className="mb-0.5 text-text-secondary">{page.sceneDescription}</p>
+                <p className="mb-0.5 text-text-muted italic">{page.narration}</p>
+                <p className="mb-0.5 text-xs text-indigo-600">
+                  <span className="font-medium">Illustration:</span> {page.illustrationPrompt}
+                </p>
+                <p className="text-xs text-indigo-500">
+                  <span className="font-medium">Learning goal:</span> {page.learningGoal}
+                </p>
               </li>
             ))}
           </ul>

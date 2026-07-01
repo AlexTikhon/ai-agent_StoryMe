@@ -48,6 +48,16 @@ export interface ChapterOutline {
   illustrableScenes: string[];
 }
 
+export interface PagePlan {
+  pageNumber: number;
+  chapterIndex: number;
+  title: string;
+  sceneDescription: string;
+  narration: string;
+  illustrationPrompt: string;
+  learningGoal: string;
+}
+
 export interface StoryPlan {
   title: string;
   subtitle?: string;
@@ -57,6 +67,7 @@ export interface StoryPlan {
   openingHook: string;
   resolution: string;
   dedicationSuggestion?: string;
+  pages?: PagePlan[];
 }
 
 // ─── Book content (per page) ─────────────────────────────────────────────────

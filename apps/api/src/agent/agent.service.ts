@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
-import { Pronouns, type CharacterCard, type StoryPlan } from '@book/types';
+import { Pronouns, type CharacterCard, type PagePlan, type StoryPlan } from '@book/types';
 
 function buildCharacterCard(name: string, age: number): CharacterCard {
   return {
@@ -68,6 +68,34 @@ function buildStoryPlan(name: string, theme: string): StoryPlan {
   };
 }
 
+function buildPagePlan(storyPlan: StoryPlan): PagePlan[] {
+  const pages: PagePlan[] = [];
+  let pageNumber = 1;
+
+  for (let chapterIndex = 0; chapterIndex < storyPlan.chapters.length; chapterIndex++) {
+    const chapter = storyPlan.chapters[chapterIndex]!;
+    for (let pageInChapter = 1; pageInChapter <= 2; pageInChapter++) {
+      const scene =
+        chapter.illustrableScenes[pageInChapter - 1] ??
+        `Scene ${pageInChapter} of ${chapter.title}`;
+      pages.push({
+        pageNumber: pageNumber++,
+        chapterIndex,
+        title: `${chapter.title} — Part ${pageInChapter}`,
+        sceneDescription: scene,
+        narration:
+          pageInChapter === 1
+            ? `${chapter.summary} It all began with ${scene.charAt(0).toLowerCase() + scene.slice(1)}.`
+            : `The story continued as ${chapter.emotionalArc} filled the air.`,
+        illustrationPrompt: `Children's book illustration: ${scene}, ${chapter.setting}, bright and colorful, watercolor style`,
+        learningGoal: storyPlan.educationalMessage,
+      });
+    }
+  }
+
+  return pages;
+}
+
 @Injectable()
 export class AgentService {
   constructor(private readonly prisma: PrismaService) {}
@@ -80,14 +108,16 @@ export class AgentService {
 
     const characterCard = buildCharacterCard(childName, childAge);
     const storyPlan = buildStoryPlan(childName, theme);
+    const pages = buildPagePlan(storyPlan);
+    const storyPlanWithPages = { ...storyPlan, pages };
 
     const updated = await this.prisma.book.update({
       where: { id: book.id },
       data: {
-        status: BookStatus.story_plan,
+        status: BookStatus.page_plan,
         title: storyPlan.title,
         characterCard: characterCard as unknown as Prisma.InputJsonValue,
-        storyPlan: storyPlan as unknown as Prisma.InputJsonValue,
+        storyPlan: storyPlanWithPages as unknown as Prisma.InputJsonValue,
       },
     });
 
@@ -105,6 +135,14 @@ export class AgentService {
           bookId: book.id,
           agent: 'LocalPipelineAgent',
           step: AgentStep.story_plan,
+          status: AgentLogStatus.success,
+          attempt: 1,
+          traceId,
+        },
+        {
+          bookId: book.id,
+          agent: 'LocalPipelineAgent',
+          step: AgentStep.page_plan,
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,

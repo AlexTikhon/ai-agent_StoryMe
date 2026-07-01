@@ -47,6 +47,7 @@ enum BookStatus {
   created
   char_build
   story_plan
+  page_plan
   chapter_gen
   illust_plan
   image_gen
@@ -59,10 +60,11 @@ enum BookStatus {
   cancelled
 }
 
-// All 9 pipeline steps — used in AgentLog and failedStep on Book
+// All pipeline steps — used in AgentLog and failedStep on Book
 enum AgentStep {
   char_build
   story_plan
+  page_plan
   chapter_gen
   illust_plan
   char_consistency
