@@ -1,4 +1,4 @@
-import type { BookGenre, BookLength, IllustrationStyle, Pronouns } from './agent.types';
+import type { BookGenre, BookLength, IllustrationStyle, Pronouns, BookStatus } from './agent.types';
 
 // ─── Character ───────────────────────────────────────────────────────────────
 
@@ -181,3 +181,36 @@ export interface AiModelVersions {
   image: string;
   qa?: string;
 }
+
+// ─── Phase 1A: simple book-draft creation flow ────────────────────────────────
+
+/** Languages supported by the Phase 1A draft-creation form. Mirrors BookLanguage in schema.prisma. */
+export enum SupportedLanguage {
+  English = 'en',
+  Russian = 'ru',
+  Polish = 'pl',
+}
+
+/** API-facing shape of a Book in the Phase 1A simple draft flow. */
+export interface BookDto {
+  id: string;
+  userId: string;
+  title: string | null;
+  childName: string | null;
+  childAge: number | null;
+  language: SupportedLanguage | null;
+  theme: string | null;
+  status: BookStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateBookInput {
+  title: string;
+  childName: string;
+  childAge: number;
+  language: SupportedLanguage;
+  theme: string;
+}
+
+export type UpdateBookInput = Partial<CreateBookInput>;

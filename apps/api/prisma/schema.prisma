@@ -35,6 +35,13 @@ enum Pronouns {
   they_them @map("they/them")
 }
 
+// Phase 1A: languages supported by the simple book-draft creation flow.
+enum BookLanguage {
+  en
+  ru
+  pl
+}
+
 // Mirrors the pipeline state machine in BACKEND_DESIGN §3.12
 enum BookStatus {
   created
@@ -247,11 +254,22 @@ model Book {
   userId           String      @map("user_id") @db.Uuid
   childProfileId   String?     @map("child_profile_id") @db.Uuid
 
+  // BookStatus.created doubles as the Phase 1A "draft" state — editable/deletable
+  // until the generation pipeline (Phase 1B+) advances it to a later status.
   status           BookStatus  @default(created)
-  request          Json
+  // Optional in Phase 1A: the simple draft-creation form doesn't populate the
+  // full wizard payload yet. Required once the Phase 1B+ wizard lands.
+  request          Json?
   title            String?
   dedicationText   String?     @map("dedication_text")
   pageCount        Int?        @map("page_count")
+
+  // Phase 1A draft fields — minimal book-creation form, set directly on Book
+  // ahead of the full ChildProfile-driven wizard.
+  childName        String?     @map("child_name")
+  childAge         Int?        @map("child_age")
+  language         BookLanguage?
+  theme            String?
 
   characterCard    Json?       @map("character_card")
   storyPlan        Json?       @map("story_plan")
