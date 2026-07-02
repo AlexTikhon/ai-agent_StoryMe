@@ -285,6 +285,94 @@ and `OPENAI_API_KEY` in `apps/api/.env`, then run `pnpm --filter @book/api dev`
 and generate a book as usual. **CI and the test suite never do this** — they
 always run with the default mock provider.
 
+## Real provider hardening (Phase 3D)
+
+Applies only to `OpenAIStoryGenerationProvider` and
+`OpenAIImageGenerationProvider` — the mock providers (and every test/CI run,
+which always use them) are unaffected.
+
+### Timeout + retry
+
+`apps/api/src/common/openai-request.ts` exports `fetchWithRetry`, a small
+shared helper used by both real providers instead of calling `fetchImpl`
+directly:
+
+- Each attempt is wrapped in an `AbortController` with a per-attempt timeout
+  (`OPENAI_REQUEST_TIMEOUT_MS`, default `60000`ms if unset/malformed).
+- Up to `OPENAI_MAX_RETRIES` retries (default `2` if unset/malformed) with a
+  small fixed backoff (`250ms * 2^attempt`, capped at `2000ms`) on:
+  - network errors (fetch itself rejects),
+  - timeouts (the abort fires),
+  - HTTP `408`, `429`, `500`, `502`, `503`, `504`.
+- **Never** retried: HTTP `400`/`401`/`403` (and any other non-retryable
+  status), invalid/missing JSON, and zod schema-validation failures — these
+  responses/errors are returned or thrown as-is on the first attempt.
+- Every attempt that exhausts retries on a network error or timeout throws
+  `OpenAIRequestError` (`reason: 'network' | 'timeout'`), which each provider
+  catches and wraps in its own `StoryGenerationProviderError` /
+  `ImageGenerationProviderError` — `AgentService`'s existing `failedStep`
+  behavior (`story_plan` / `image_gen`) is unchanged, since it only ever sees
+  those provider-specific error types either way.
+- `readOpenAIRetryConfig(env)` (same file) parses `OPENAI_REQUEST_TIMEOUT_MS`
+  / `OPENAI_MAX_RETRIES` from env, used by both provider factories.
+
+### Logging
+
+Both real providers log via Nest's `Logger` (`OpenAIStoryGenerationProvider`
+/ `OpenAIImageGenerationProvider` contexts): provider type + model on
+selection (logged once by the factory), one line per request attempt
+(`attempt=X/Y`), one line on success, and one line on failure with a
+high-level reason. Never logged: `OPENAI_API_KEY`, the full prompt, generated
+image bytes/base64, or the full raw OpenAI response — failure logs only
+include the HTTP status or the `OpenAIRequestError` reason/message, not
+response bodies.
+
+### Cost guardrail — `REAL_GENERATION_MAX_PAGES`
+
+`OpenAIImageGenerationProvider.generateImage` rejects any `page`-kind entry
+whose `pageNumber` exceeds `REAL_GENERATION_MAX_PAGES` (default `12` if
+unset/malformed) with a clear `ImageGenerationProviderError`, before making
+any network call. `cover`/`back_cover` entries are never capped. This only
+applies to the real provider — `MockImageGenerationProvider` is unchanged.
+Since `AgentService.generateAndSaveImageAssets` fails the whole book
+(`failedStep: 'image_gen'`) if any single `generateImage` call throws, this
+effectively caps real (paid) generation to books with at most
+`REAL_GENERATION_MAX_PAGES` story pages.
+
+### Manual end-to-end smoke test
+
+`apps/api/scripts/smoke-real-generation.ts`
+(`pnpm --filter @book/api smoke:real-generation`) runs the full real pipeline
+once, end-to-end, against the real OpenAI API:
+
+- Fails fast with a clear message (no network calls, no Nest bootstrap) if
+  `OPENAI_API_KEY` is missing or if `STORY_GENERATION_PROVIDER` /
+  `IMAGE_GENERATION_PROVIDER_TOKEN` aren't both set to `openai` — the
+  precondition check lives in `smoke-real-generation-helpers.ts` and is unit
+  tested directly (`smoke-real-generation.spec.ts`) without ever importing
+  the main script, so normal test runs never invoke `main()` or touch the
+  network.
+- Otherwise boots the real Nest application context (`AppModule`) — requires
+  a running local Postgres + Redis, same as `pnpm --filter @book/api dev` —
+  finds-or-creates a fixed smoke-test user, creates one small 4-chapter/
+  6-page test book via `PrismaService`, and calls
+  `AgentService.startBookGeneration` directly (the same call
+  `BooksService.startGeneration` makes).
+- Verifies the book reaches `BookStatus.complete`, that every generated image
+  entry's bytes were actually saved to `ImageAssetStorage`, and that the
+  rendered PDF exists in `PdfStorage` — then prints the book id and PDF
+  preview URL.
+- Exits non-zero with a clear error on any failed check. Not part of
+  `pnpm --filter @book/api test` or CI — matches the existing
+  `smoke:pdf-storage` script's pattern (see
+  `apps/api/docs/pdf-storage-smoke-test.md`).
+
+**Known limitations**: this smoke test creates real rows against whatever
+database `DATABASE_URL` points at (nothing is cleaned up afterward — same as
+manually creating a book through the API) and makes real, billed OpenAI API
+calls (one story completion + one image generation per page/cover/back
+cover). Run it deliberately, not routinely.
+
 ## Status transitions
 
 ```
@@ -381,6 +469,27 @@ re-verified here — see "Test coverage" below.
   `apps/api/src/pdf/pdf-renderer.spec.ts` cover the storage and rendering
   boundaries directly, including the `/Subtype /Image` marker for a
   hand-supplied buffer.
+- `apps/api/src/common/openai-request.spec.ts` — `readOpenAIRetryConfig` env
+  parsing/fallbacks, and `fetchWithRetry`: first-attempt success, no retry on
+  non-retryable statuses (400/401), retry-then-succeed on 429/500, retry
+  exhaustion on a persistently failing status, and `OpenAIRequestError` with
+  the correct `reason` (`timeout` vs `network`) on abort/network failure —
+  all via fake timers and a mocked `fetchImpl`, no real network or real
+  delays.
+- `apps/api/src/agent/openai-story-generation-provider.spec.ts` and
+  `apps/api/src/images/openai-image-generation-provider.spec.ts` — extended
+  with timeout (`AbortController` fires → provider-specific error), retry
+  (429/500 succeed on the second attempt), non-retry (400/401 fail on the
+  first attempt), and API-key-not-leaked-in-error-message coverage; the image
+  provider spec also covers the `REAL_GENERATION_MAX_PAGES` guardrail
+  (rejects a `page` entry above the cap without calling `fetch`, allows one
+  at the cap, never caps `cover`/`back_cover`).
+- `apps/api/scripts/smoke-real-generation.spec.ts` — the smoke script's
+  precondition check (`checkPreconditions` in
+  `smoke-real-generation-helpers.ts`) in isolation: missing `OPENAI_API_KEY`,
+  either provider not `openai`, and the all-clear case — the main script
+  itself is never imported by a test, so `pnpm test` never boots Nest or
+  calls a real API.
 
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see
@@ -439,7 +548,11 @@ external AI or network calls happen at any point in this flow.
 Both generation boundaries already have a real implementation, gated
 entirely behind explicit env selection (`STORY_GENERATION_PROVIDER=openai`,
 `IMAGE_GENERATION_PROVIDER_TOKEN=openai`) — the default and every test/CI
-run still use the mock providers with zero network calls. What's left:
+run still use the mock providers with zero network calls. Both real
+providers also have timeout/retry hardening, request logging, and a real
+image-generation cost guardrail (see "Real provider hardening (Phase 3D)"
+above), plus a manual smoke test
+(`pnpm --filter @book/api smoke:real-generation`). What's left:
 
 - **Cloud storage**: `PdfStorage` already has a `CloudPdfStorage` (S3/R2)
   implementation behind `PDF_STORAGE_DRIVER`; `ImageAssetStorage` would need

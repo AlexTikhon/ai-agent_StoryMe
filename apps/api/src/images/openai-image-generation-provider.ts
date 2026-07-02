@@ -1,13 +1,21 @@
+import { Logger } from '@nestjs/common';
 import type { CharacterCard, GeneratedImageEntry } from '@book/types';
 import type {
   ImageGenerationInput,
   ImageGenerationOutput,
   ImageGenerationProvider,
 } from './image-generation-provider';
+import {
+  DEFAULT_OPENAI_MAX_RETRIES,
+  DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
+  fetchWithRetry,
+  OpenAIRequestError,
+} from '../common/openai-request';
 
 const DEFAULT_MODEL = 'gpt-image-1';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_SIZE = '1024x1024';
+const DEFAULT_MAX_PAGES = 12;
 
 export class ImageGenerationProviderError extends Error {
   constructor(
@@ -50,6 +58,10 @@ export interface OpenAIImageGenerationProviderOptions {
   model?: string;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  maxRetries?: number;
+  /** Caps real (paid) image generation to this many story pages. See REAL_GENERATION_MAX_PAGES. */
+  maxPages?: number;
 }
 
 /**
@@ -63,10 +75,14 @@ export interface OpenAIImageGenerationProviderOptions {
  * explicitly set.
  */
 export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
+  private readonly logger = new Logger(OpenAIImageGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
+  private readonly maxRetries: number;
+  private readonly maxPages: number;
 
   constructor(options: OpenAIImageGenerationProviderOptions) {
     if (!options.apiKey) {
@@ -76,35 +92,71 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
+    this.maxRetries = options.maxRetries ?? DEFAULT_OPENAI_MAX_RETRIES;
+    this.maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
   }
 
   async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {
+    if (
+      input.entry.kind === 'page' &&
+      typeof input.entry.pageNumber === 'number' &&
+      input.entry.pageNumber > this.maxPages
+    ) {
+      throw new ImageGenerationProviderError(
+        `Refusing to generate image for page ${input.entry.pageNumber}: exceeds REAL_GENERATION_MAX_PAGES limit of ${this.maxPages}`,
+      );
+    }
+
     const prompt = buildImagePrompt(input.characterCard, input.entry);
 
     let response: Response;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}/images/generations`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
+      response = await fetchWithRetry({
+        fetchImpl: this.fetchImpl,
+        url: `${this.baseUrl}/images/generations`,
+        init: {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            prompt,
+            n: 1,
+            size: sizeForEntry(input.entry),
+          }),
         },
-        body: JSON.stringify({
-          model: this.model,
-          prompt,
-          n: 1,
-          size: sizeForEntry(input.entry),
-        }),
+        timeoutMs: this.timeoutMs,
+        maxRetries: this.maxRetries,
+        onAttempt: (attempt, maxAttempts) => {
+          this.logger.log(
+            `Image generation request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
+          );
+        },
+        onRetry: (attempt, reason) => {
+          this.logger.warn(`Image generation attempt ${attempt} failed (${reason}); retrying`);
+        },
       });
     } catch (err) {
-      throw new ImageGenerationProviderError(
-        `OpenAI image request failed: ${err instanceof Error ? err.message : String(err)}`,
-        err,
+      const message =
+        err instanceof OpenAIRequestError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      this.logger.error(
+        `Image generation failed: provider=openai model=${this.model} reason=${message}`,
       );
+      throw new ImageGenerationProviderError(`OpenAI image request failed: ${message}`, err);
     }
 
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
+      this.logger.error(
+        `Image generation failed: provider=openai model=${this.model} status=${response.status}`,
+      );
       throw new ImageGenerationProviderError(
         `OpenAI image request failed with status ${response.status}: ${bodyText.slice(0, 500)}`,
       );
@@ -122,6 +174,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       throw new ImageGenerationProviderError('OpenAI image response did not include b64_json data');
     }
 
+    this.logger.log(`Image generation succeeded: provider=openai model=${this.model}`);
     return { buffer: Buffer.from(b64, 'base64'), contentType: 'image/png' };
   }
 }

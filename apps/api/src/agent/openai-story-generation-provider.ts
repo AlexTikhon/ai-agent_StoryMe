@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { z } from 'zod';
 import {
   Pronouns,
@@ -15,6 +16,12 @@ import {
   type StoryGenerationProvider,
   type StoryGenerationResult,
 } from './story-generation-provider';
+import {
+  DEFAULT_OPENAI_MAX_RETRIES,
+  DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
+  fetchWithRetry,
+  OpenAIRequestError,
+} from '../common/openai-request';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -199,6 +206,8 @@ export interface OpenAIStoryGenerationProviderOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   targetPageCount?: number;
+  timeoutMs?: number;
+  maxRetries?: number;
 }
 
 /**
@@ -211,11 +220,14 @@ export interface OpenAIStoryGenerationProviderOptions {
  * STORY_GENERATION_PROVIDER=openai is explicitly set.
  */
 export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
+  private readonly logger = new Logger(OpenAIStoryGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly targetPageCount: number;
+  private readonly timeoutMs: number;
+  private readonly maxRetries: number;
 
   constructor(options: OpenAIStoryGenerationProviderOptions) {
     if (!options.apiKey) {
@@ -226,6 +238,8 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.targetPageCount = options.targetPageCount ?? TARGET_PAGE_COUNT;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
+    this.maxRetries = options.maxRetries ?? DEFAULT_OPENAI_MAX_RETRIES;
   }
 
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
@@ -233,31 +247,54 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
+      response = await fetchWithRetry({
+        fetchImpl: this.fetchImpl,
+        url: `${this.baseUrl}/chat/completions`,
+        init: {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            response_format: { type: 'json_object' },
+            temperature: 0.7,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          }),
         },
-        body: JSON.stringify({
-          model: this.model,
-          response_format: { type: 'json_object' },
-          temperature: 0.7,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-        }),
+        timeoutMs: this.timeoutMs,
+        maxRetries: this.maxRetries,
+        onAttempt: (attempt, maxAttempts) => {
+          this.logger.log(
+            `Story generation request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
+          );
+        },
+        onRetry: (attempt, reason) => {
+          this.logger.warn(`Story generation attempt ${attempt} failed (${reason}); retrying`);
+        },
       });
     } catch (err) {
-      throw new StoryGenerationProviderError(
-        `OpenAI request failed: ${err instanceof Error ? err.message : String(err)}`,
-        err,
+      const message =
+        err instanceof OpenAIRequestError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      this.logger.error(
+        `Story generation failed: provider=openai model=${this.model} reason=${message}`,
       );
+      throw new StoryGenerationProviderError(`OpenAI request failed: ${message}`, err);
     }
 
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
+      this.logger.error(
+        `Story generation failed: provider=openai model=${this.model} status=${response.status}`,
+      );
       throw new StoryGenerationProviderError(
         `OpenAI request failed with status ${response.status}: ${bodyText.slice(0, 500)}`,
       );
@@ -290,6 +327,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
       );
     }
 
+    this.logger.log(`Story generation succeeded: provider=openai model=${this.model}`);
     return mapLlmResponseToResult(input, parsed.data);
   }
 }

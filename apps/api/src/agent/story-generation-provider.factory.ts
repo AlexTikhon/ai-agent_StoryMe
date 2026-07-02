@@ -1,7 +1,14 @@
-import { MockStoryGenerationProvider, type StoryGenerationProvider } from './story-generation-provider';
+import { Logger } from '@nestjs/common';
+import {
+  MockStoryGenerationProvider,
+  type StoryGenerationProvider,
+} from './story-generation-provider';
 import { OpenAIStoryGenerationProvider } from './openai-story-generation-provider';
+import { readOpenAIRetryConfig } from '../common/openai-request';
 
 export type StoryGenerationProviderName = 'mock' | 'openai';
+
+const logger = new Logger('StoryGenerationProviderFactory');
 
 /**
  * Selects the StoryGenerationProvider implementation from env. Defaults to
@@ -16,6 +23,7 @@ export function createStoryGenerationProvider(
   const raw = env['STORY_GENERATION_PROVIDER']?.trim().toLowerCase();
 
   if (!raw || raw === 'mock') {
+    logger.log('Story generation provider selected: mock');
     return new MockStoryGenerationProvider();
   }
 
@@ -28,8 +36,16 @@ export function createStoryGenerationProvider(
     throw new Error('STORY_GENERATION_PROVIDER=openai requires OPENAI_API_KEY to be set');
   }
 
+  const model = env['OPENAI_MODEL'];
+  const { timeoutMs, maxRetries } = readOpenAIRetryConfig(env);
+  logger.log(
+    `Story generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries}`,
+  );
+
   return new OpenAIStoryGenerationProvider({
     apiKey,
-    ...(env['OPENAI_MODEL'] && { model: env['OPENAI_MODEL'] }),
+    ...(model && { model }),
+    timeoutMs,
+    maxRetries,
   });
 }

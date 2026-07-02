@@ -150,7 +150,11 @@ describe('OpenAIImageGenerationProvider', () => {
 
   it('throws a clear error when fetch itself rejects', async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error('network down'));
-    const provider = new OpenAIImageGenerationProvider({ apiKey: 'sk-test', fetchImpl });
+    const provider = new OpenAIImageGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl,
+      maxRetries: 0,
+    });
 
     await expect(provider.generateImage(makeInput())).rejects.toThrow(/network down/);
   });
@@ -165,5 +169,200 @@ describe('OpenAIImageGenerationProvider', () => {
     const provider = new OpenAIImageGenerationProvider({ apiKey: 'sk-test', fetchImpl });
 
     await expect(provider.generateImage(makeInput())).rejects.toThrow(/b64_json/);
+  });
+
+  it('throws an ImageGenerationProviderError when the request times out', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn((_url: string, init: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        timeoutMs: 50,
+        maxRetries: 0,
+      });
+
+      const promise = provider.generateImage(makeInput());
+      const assertion = expect(promise).rejects.toThrow(ImageGenerationProviderError);
+      await vi.advanceTimersByTimeAsync(50);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries once on HTTP 429 and succeeds on the second attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          json: async () => ({}),
+          text: async () => 'rate limited',
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ b64_json: TINY_PNG_BASE64 }] }),
+          text: async () => '',
+        });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxRetries: 1,
+        timeoutMs: 5000,
+      });
+
+      const promise = provider.generateImage(makeInput());
+      await vi.advanceTimersByTimeAsync(5000);
+      const result = await promise;
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(result.contentType).toBe('image/png');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries on HTTP 500 and succeeds on the second attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: async () => ({}),
+          text: async () => 'server error',
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ b64_json: TINY_PNG_BASE64 }] }),
+          text: async () => '',
+        });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxRetries: 1,
+        timeoutMs: 5000,
+      });
+
+      const promise = provider.generateImage(makeInput());
+      await vi.advanceTimersByTimeAsync(5000);
+      const result = await promise;
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(result.buffer.length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry on HTTP 400', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({}),
+      text: async () => 'bad request',
+    });
+    const provider = new OpenAIImageGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl,
+      maxRetries: 2,
+    });
+
+    await expect(provider.generateImage(makeInput())).rejects.toThrow(/status 400/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry on HTTP 401', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+      text: async () => 'invalid api key',
+    });
+    const provider = new OpenAIImageGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl,
+      maxRetries: 2,
+    });
+
+    await expect(provider.generateImage(makeInput())).rejects.toThrow(/status 401/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not leak the API key in a thrown error message', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('network down'));
+    const provider = new OpenAIImageGenerationProvider({
+      apiKey: 'sk-super-secret-key',
+      fetchImpl,
+      maxRetries: 0,
+    });
+
+    try {
+      await provider.generateImage(makeInput());
+      throw new Error('expected generateImage to reject');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      expect(message).not.toContain('sk-super-secret-key');
+    }
+  });
+
+  describe('REAL_GENERATION_MAX_PAGES guardrail', () => {
+    it('rejects a page entry above the configured maxPages without calling fetch', async () => {
+      const fetchImpl = makeFetchOk();
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxPages: 12,
+      });
+
+      const input = makeInput({
+        entry: makeEntry({ kind: 'page', pageNumber: 13 }),
+      });
+
+      await expect(provider.generateImage(input)).rejects.toThrow(/REAL_GENERATION_MAX_PAGES/);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it('allows a page entry at or below the configured maxPages', async () => {
+      const fetchImpl = makeFetchOk();
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxPages: 12,
+      });
+
+      const input = makeInput({
+        entry: makeEntry({ kind: 'page', pageNumber: 12 }),
+      });
+
+      await expect(provider.generateImage(input)).resolves.toBeDefined();
+    });
+
+    it('does not apply the page cap to cover/back_cover entries', async () => {
+      const fetchImpl = makeFetchOk();
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxPages: 1,
+      });
+
+      const input = makeInput({ entry: makeEntry({ kind: 'cover', pageNumber: undefined }) });
+
+      await expect(provider.generateImage(input)).resolves.toBeDefined();
+    });
   });
 });
