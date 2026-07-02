@@ -419,4 +419,33 @@ describe('BooksService', () => {
       expect(String((err as NotFoundException).message)).not.toMatch(/[A-Za-z]:\\|\/tmp\//);
     });
   });
+
+  // ─── getGenerationDiagnostics ──────────────────────────────────────────────
+
+  describe('getGenerationDiagnostics', () => {
+    it('returns diagnostics composed from the owned book and its recent AgentLog rows', async () => {
+      const book = makeBook({ status: 'complete' as Book['status'] });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(prisma.agentLog.findMany).toHaveBeenCalledWith({
+        where: { bookId: 'b-1' },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      });
+      expect(result.bookId).toBe('b-1');
+      expect(result.status).toBe('complete');
+    });
+
+    it('throws NotFoundException when the book does not exist or belongs to another user', async () => {
+      prisma.book.findFirst.mockResolvedValue(null);
+
+      await expect(service.getGenerationDiagnostics('b-1', 'u-other')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(prisma.agentLog.findMany).not.toHaveBeenCalled();
+    });
+  });
 });

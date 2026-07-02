@@ -32,7 +32,8 @@ import {
   imageAssetKey,
   type ImageAssetStorage,
 } from '../src/images/image-asset-storage';
-import { checkPreconditions } from './smoke-real-generation-helpers';
+import { checkPreconditions, formatDiagnosticsSummary } from './smoke-real-generation-helpers';
+import { buildGenerationDiagnostics } from '../src/books/generation-diagnostics';
 
 const SMOKE_USER_EMAIL = 'smoke-real-generation@storyme.local';
 
@@ -117,9 +118,15 @@ async function main(): Promise<void> {
       'expected the rendered PDF to exist in storage',
     );
 
+    const agentLogs = await prisma.agentLog.findMany({
+      where: { bookId: book.id },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    const diagnostics = buildGenerationDiagnostics(result, agentLogs);
+
     console.log('\n✔ Real generation smoke test passed — all checks succeeded.');
-    console.log(`  Book id:         ${book.id}`);
-    console.log(`  PDF preview url: ${result.previewPdfUrl}`);
+    console.log(formatDiagnosticsSummary(diagnostics));
   } finally {
     await app.close();
   }

@@ -373,9 +373,140 @@ manually creating a book through the API) and makes real, billed OpenAI API
 calls (one story completion + one image generation per page/cover/back
 cover). Run it deliberately, not routinely.
 
+## Generation diagnostics (Phase 3E)
+
+Safe, non-secret inspection data for debugging a book's generation run —
+useful for both the mock pipeline and the real OpenAI-backed pipeline.
+**No new tables or columns were added.** Everything is derived at read time
+from data `AgentService.startBookGeneration` already writes:
+
+- `Book.generationTimeMs` — total wall-clock ms for the run (set on every
+  terminal outcome: story-plan failure, image-gen failure, and the final
+  `complete`/`failed` update).
+- `Book.aiModelVersions` (`{ story, image }`) — a safe label per provider
+  (`modelName ?? providerName ?? 'unknown'`, e.g. `"mock"` or
+  `"gpt-4o-mini"`), set on every terminal outcome regardless of which step
+  failed.
+- `Book.failedStep` / `Book.errorMessage` / `Book.previewPdfUrl` — already
+  existed, reused as-is.
+- `AgentLog` rows — every row `AgentService` writes now also carries
+  `provider` (`'mock' | 'openai'`, from the injected provider's
+  `providerName`), `model` (from `modelName`, only set for real providers),
+  and `durationMs` where a step's timing is actually measured
+  (`story_plan`, `image_gen`, `layout`, `pdf_render`; the other five
+  sub-steps of story generation share the story provider's `provider`/
+  `model` tag but not a separate duration, since they're all produced by one
+  `generateStory` call). `AgentLogStatus` has no `"started"` value, so this
+  phase does not add separate started/succeeded event pairs — each step
+  still gets exactly one row per run, as before.
+
+`apps/api/src/agent/story-generation-provider.ts` and
+`apps/api/src/images/image-generation-provider.ts` declare optional
+`providerName`/`modelName` on their respective provider interfaces.
+`MockStoryGenerationProvider`/`MockImageGenerationProvider` set
+`providerName = 'mock'` (no `modelName` — there's no underlying model).
+`OpenAIStoryGenerationProvider`/`OpenAIImageGenerationProvider` set
+`providerName = 'openai'` and expose `modelName` as a getter over their
+existing `model` field. **Never exposed**: `OPENAI_API_KEY`, prompts,
+generated image bytes/base64, or raw OpenAI response bodies — providers
+never had these fields, and `AgentService` never had a place to put them.
+
+### Composing the diagnostics view
+
+`apps/api/src/books/generation-diagnostics.ts` exports
+`buildGenerationDiagnostics(book, agentLogs)`, which composes:
+
+```ts
+interface GenerationDiagnosticsDto {
+  bookId: string;
+  status: BookStatus;
+  failedStep?: AgentStep | null;
+  errorMessage?: string | null;
+  generationMetadata: GenerationMetadata; // storyProvider, imageProvider, storyModel,
+                                           // imageModel, requestedPages, generatedPages,
+                                           // startedAt, completedAt, failedAt, durationMs,
+                                           // failedStep, errorMessage
+  recentLogs: AgentLogSummary[];          // up to 20 most recent AgentLog rows, newest first
+  previewPdfUrl?: string | null;
+}
+```
+
+- `storyProvider`/`imageProvider` come from the matching `story_plan`/
+  `image_gen` `AgentLog` row's `provider` column (`'unknown'` if no such row
+  exists yet, e.g. generation hasn't started).
+- `storyModel`/`imageModel` prefer `Book.aiModelVersions`, falling back to
+  the `AgentLog` row's `model` column.
+- `generatedPages` comes from `Book.bookPreview.pages.length`.
+  `requestedPages` comes from `Book.pageCount` (an existing, currently
+  unpopulated Phase 1A column — the draft-creation form doesn't collect a
+  page count today, so this is usually absent; see "Known limitations"
+  below).
+- `startedAt` is derived (`Book.updatedAt - Book.generationTimeMs`) since
+  there's no dedicated start-timestamp column; `completedAt`/`failedAt` use
+  `Book.updatedAt` when `status` is terminal.
+
+### Reading diagnostics for a book
+
+- **Service method**: `BooksService.getGenerationDiagnostics(bookId, userId)`
+  — looks up the book with the same ownership check as every other
+  `BooksService` method (404s rather than leaking existence of another
+  user's book), fetches its 20 most recent `AgentLog` rows, and calls
+  `buildGenerationDiagnostics`.
+- **Route**: `GET /api/books/:id/generation-diagnostics`
+  (`BooksController.getGenerationDiagnostics`, same `DevAuthGuard` as every
+  other books route).
+
+To inspect a failed generation: call the endpoint (or
+`BooksService.getGenerationDiagnostics` directly in a script/REPL) for the
+book's id. `failedStep` and `errorMessage` say what broke;
+`generationMetadata.storyProvider`/`imageProvider`/`storyModel`/`imageModel`
+say which provider/model was configured for the run; `recentLogs` gives the
+per-step timeline (status, provider, model, durationMs, error) to narrow
+down which step actually failed and how long prior steps took.
+
+### Smoke test output
+
+`pnpm --filter @book/api smoke:real-generation` (see "Manual end-to-end
+smoke test" above) now builds and prints a `GenerationDiagnosticsDto`
+summary after the pipeline finishes, via
+`formatDiagnosticsSummary` (`apps/api/scripts/smoke-real-generation-helpers.ts`):
+book id, status, story/image provider + model, generated page count,
+duration, PDF preview url, and (only on failure) `failedStep` and
+`errorMessage`. `formatDiagnosticsSummary` is a pure function — unit tested
+directly in `smoke-real-generation.spec.ts` without booting Nest or making
+a network call — and only ever prints fields already proven safe by
+`GenerationDiagnosticsDto`/`GenerationMetadata`.
+
+### What's intentionally not stored (safety)
+
+Never logged, stored, or returned by diagnostics:
+
+- `OPENAI_API_KEY` or any other secret.
+- Full prompts (story or image).
+- Generated image bytes or base64 (`b64_json`).
+- Full raw OpenAI response bodies (chat completion or image generation).
+
+### Known limitations
+
+- `requestedPages` is usually absent — the Phase 1A draft-creation flow
+  doesn't collect a target page count (`Book.pageCount` stays `null`), even
+  though `OpenAIStoryGenerationProvider` internally targets 6 pages
+  (`TARGET_PAGE_COUNT`). A future phase could thread that value onto `Book`
+  at generation-start time.
+- No "started" `AgentLog` events — `AgentLogStatus` only has
+  `success`/`error`/`retry`, no `pending`/`started` value, so diagnostics
+  can't show an in-progress step's live state, only completed/failed steps
+  after the fact. Adding one would need a schema migration, which this
+  phase deliberately avoided.
+- Retry/attempt counts aren't threaded through to `AgentLog.attempt` — real
+  providers already retry via `fetchWithRetry` (Phase 3D) and log each
+  attempt via `Logger`, but the final attempt count isn't returned to
+  `AgentService`, so every `AgentLog` row still records `attempt: 1`
+  regardless of how many HTTP attempts it took.
+
 ## Status transitions
 
-```
+```text
 created --(generate: validation + status check)--> [in-request pipeline] --> layout --> complete
                                                                                       \-> failed
 ```
@@ -487,9 +618,37 @@ re-verified here — see "Test coverage" below.
 - `apps/api/scripts/smoke-real-generation.spec.ts` — the smoke script's
   precondition check (`checkPreconditions` in
   `smoke-real-generation-helpers.ts`) in isolation: missing `OPENAI_API_KEY`,
-  either provider not `openai`, and the all-clear case — the main script
-  itself is never imported by a test, so `pnpm test` never boots Nest or
-  calls a real API.
+  either provider not `openai`, and the all-clear case; plus
+  `formatDiagnosticsSummary` (Phase 3E): renders provider/model/page-count/
+  duration/PDF-url, includes `failedStep`/`errorMessage` on failure, and
+  never contains an API key, `b64_json`, or the word "base64" — the main
+  script itself is never imported by a test, so `pnpm test` never boots Nest
+  or calls a real API.
+- `apps/api/src/books/generation-diagnostics.spec.ts` (Phase 3E) —
+  `buildGenerationMetadata`: provider/model resolution (`AgentLog` row vs.
+  `Book.aiModelVersions`, `'unknown'` fallback), `generatedPages` from
+  `bookPreview.pages.length`, `durationMs`/`startedAt`/`completedAt` derived
+  from `Book.generationTimeMs`/`updatedAt`, `failedAt`/`failedStep`/
+  `errorMessage` on a failed book, everything omitted while a book is still
+  in progress, and no secrets/prompts/base64 in the serialized output.
+  `buildGenerationDiagnostics`: composes `bookId`/`status`/`previewPdfUrl`/
+  `recentLogs` correctly and never leaks a key, `b64_json`, or raw
+  `choices` response shape through `recentLogs`.
+- `apps/api/src/books/books.service.spec.ts` (Phase 3E) —
+  `getGenerationDiagnostics`: fetches the owned book plus its 20 most recent
+  `AgentLog` rows and returns the composed diagnostics; 404s for a
+  missing/not-owned book without querying `AgentLog`.
+- `apps/api/src/books/books.controller.spec.ts` (Phase 3E) — thin
+  pass-through wiring for `GET /:id/generation-diagnostics` plus
+  `NotFoundException` propagation.
+- `apps/api/src/agent/agent.service.spec.ts` (Phase 3E) — the final book
+  update carries `generationTimeMs`/`aiModelVersions` on success; every
+  `AgentLog` row is tagged with the injected providers'
+  `providerName`/`modelName`; `story_plan`/`image_gen`/`layout`/`pdf_render`
+  entries carry a measured `durationMs`; an injected real-provider-shaped
+  story provider (`providerName: 'openai'`, `modelName: 'gpt-4o-mini'`)
+  produces the matching labels in both `aiModelVersions` and the
+  `story_plan` log row.
 
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see

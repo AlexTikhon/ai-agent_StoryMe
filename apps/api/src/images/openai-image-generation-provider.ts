@@ -75,6 +75,7 @@ export interface OpenAIImageGenerationProviderOptions {
  * explicitly set.
  */
 export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
+  readonly providerName = 'openai' as const;
   private readonly logger = new Logger(OpenAIImageGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;
@@ -95,6 +96,10 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
     this.maxRetries = options.maxRetries ?? DEFAULT_OPENAI_MAX_RETRIES;
     this.maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+  }
+
+  get modelName(): string {
+    return this.model;
   }
 
   async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {

@@ -17,7 +17,12 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import type { User } from '@prisma/client';
-import type { BookDto, BooksPageDto, GenerateBookResponse } from '@book/types';
+import type {
+  BookDto,
+  BooksPageDto,
+  GenerateBookResponse,
+  GenerationDiagnosticsDto,
+} from '@book/types';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { DevAuthGuard } from '../auth/dev-auth.guard';
 import { BooksService } from './books.service';
@@ -88,5 +93,13 @@ export class BooksController {
   @HttpCode(204)
   remove(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
     return this.booksService.remove(id, user.id);
+  }
+
+  @Get(':id/generation-diagnostics')
+  getGenerationDiagnostics(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<GenerationDiagnosticsDto> {
+    return this.booksService.getGenerationDiagnostics(id, user.id);
   }
 }

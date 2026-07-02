@@ -36,6 +36,10 @@ export interface StoryGenerationResult {
  * real provider should slot in.
  */
 export interface StoryGenerationProvider {
+  /** 'mock' | 'openai' — surfaced only for generation diagnostics, never used for control flow. */
+  readonly providerName?: string;
+  /** Underlying model identifier, if applicable (mock providers have none). */
+  readonly modelName?: string;
   generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult>;
 }
 
@@ -292,6 +296,8 @@ export function buildImageGenerationResult(
  * hashing the book's own fields.
  */
 export class MockStoryGenerationProvider implements StoryGenerationProvider {
+  readonly providerName = 'mock' as const;
+
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
     const { bookId, childName, childAge, theme, language } = input;
 

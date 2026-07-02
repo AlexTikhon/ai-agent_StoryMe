@@ -6,11 +6,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { BookStatus, type Book } from '@prisma/client';
-import type { BookDto, BooksPageDto, GenerateBookResponse } from '@book/types';
+import type {
+  BookDto,
+  BooksPageDto,
+  GenerateBookResponse,
+  GenerationDiagnosticsDto,
+} from '@book/types';
 import { PrismaService } from '../database/prisma.service';
 import { AgentService } from '../agent/agent.service';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { toBookDto } from './books.mapper';
+import { buildGenerationDiagnostics } from './generation-diagnostics';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
 
@@ -115,6 +121,20 @@ export class BooksService {
       throw new NotFoundException('PDF file not found in storage');
     }
     return result;
+  }
+
+  /** Safe, non-secret generation diagnostics for a book — see generation-diagnostics.ts. */
+  async getGenerationDiagnostics(
+    bookId: string,
+    userId: string,
+  ): Promise<GenerationDiagnosticsDto> {
+    const book = await this.findOwnedOrThrow(bookId, userId);
+    const logs = await this.prisma.agentLog.findMany({
+      where: { bookId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    return buildGenerationDiagnostics(book, logs);
   }
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */

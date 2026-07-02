@@ -709,6 +709,8 @@ describe('AgentService', () => {
             status: 'failed',
             errorMessage: 'OpenAI image request failed',
             failedStep: 'image_gen',
+            generationTimeMs: expect.any(Number),
+            aiModelVersions: { story: 'mock', image: 'unknown' },
           },
         });
       });
@@ -1196,6 +1198,8 @@ describe('AgentService', () => {
             status: 'failed',
             errorMessage: 'LLM provider unavailable',
             failedStep: 'story_plan',
+            generationTimeMs: expect.any(Number),
+            aiModelVersions: { story: 'unknown', image: 'mock' },
           },
         });
       });
@@ -1257,6 +1261,82 @@ describe('AgentService', () => {
           theme: 'friendship',
           language: 'en',
         });
+      });
+    });
+
+    // ── Phase 3E: generation diagnostics metadata ─────────────────────────────
+
+    describe('generation diagnostics metadata', () => {
+      it('records generationTimeMs and aiModelVersions on the final update when generation succeeds', async () => {
+        const book = makeBook();
+        setupMocks();
+
+        await service.startBookGeneration(book);
+
+        const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
+        expect(finalUpdateArg?.data?.generationTimeMs).toEqual(expect.any(Number));
+        expect(finalUpdateArg?.data?.aiModelVersions).toEqual({ story: 'mock', image: 'mock' });
+      });
+
+      it('tags every AgentLog entry with provider/model from the injected providers', async () => {
+        const book = makeBook();
+        setupMocks();
+
+        await service.startBookGeneration(book);
+
+        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+          Record<string, unknown>
+        >;
+        const storyEntry = entries.find((e) => e.step === 'story_plan');
+        const imageEntry = entries.find((e) => e.step === 'image_gen');
+        expect(storyEntry?.provider).toBe('mock');
+        expect(imageEntry?.provider).toBe('mock');
+      });
+
+      it('records durationMs on the story_plan, image_gen, layout, and pdf_render AgentLog entries', async () => {
+        const book = makeBook();
+        setupMocks();
+
+        await service.startBookGeneration(book);
+
+        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+          Record<string, unknown>
+        >;
+        for (const step of ['story_plan', 'image_gen', 'layout', 'pdf_render']) {
+          const entry = entries.find((e) => e.step === step);
+          expect(entry?.durationMs).toEqual(expect.any(Number));
+        }
+      });
+
+      it('uses the real openai provider/model labels when injected', async () => {
+        const book = makeBook();
+        setupMocks();
+        const openaiStoryProvider: StoryGenerationProvider = {
+          providerName: 'openai',
+          modelName: 'gpt-4o-mini',
+          generateStory: (input) => new MockStoryGenerationProvider().generateStory(input),
+        };
+        const openaiService = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          openaiStoryProvider,
+          new MockImageGenerationProvider(),
+        );
+
+        await openaiService.startBookGeneration(book);
+
+        const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
+        expect(finalUpdateArg?.data?.aiModelVersions).toEqual({
+          story: 'gpt-4o-mini',
+          image: 'mock',
+        });
+        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+          Record<string, unknown>
+        >;
+        const storyEntry = entries.find((e) => e.step === 'story_plan');
+        expect(storyEntry?.provider).toBe('openai');
+        expect(storyEntry?.model).toBe('gpt-4o-mini');
       });
     });
   });

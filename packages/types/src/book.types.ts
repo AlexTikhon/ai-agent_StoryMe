@@ -1,4 +1,13 @@
-import type { BookGenre, BookLength, IllustrationStyle, Pronouns, BookStatus } from './agent.types';
+import type {
+  AgentLogSummary,
+  AgentStep,
+  BookGenre,
+  BookLength,
+  GenerationMetadata,
+  IllustrationStyle,
+  Pronouns,
+  BookStatus,
+} from './agent.types';
 
 // ─── Character ───────────────────────────────────────────────────────────────
 
@@ -391,4 +400,20 @@ export interface BooksPageDto {
 /** Response from POST /books/:id/generate */
 export interface GenerateBookResponse {
   book: BookDto;
+}
+
+/**
+ * Response from GET /books/:id/generation-diagnostics — safe, non-secret
+ * inspection data for debugging a book's generation run. Never includes
+ * OPENAI_API_KEY, prompts, generated image bytes/base64, or raw provider
+ * responses.
+ */
+export interface GenerationDiagnosticsDto {
+  bookId: string;
+  status: BookStatus;
+  failedStep?: AgentStep | null;
+  errorMessage?: string | null;
+  generationMetadata: GenerationMetadata;
+  recentLogs: AgentLogSummary[];
+  previewPdfUrl?: string | null;
 }

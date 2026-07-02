@@ -101,6 +101,42 @@ export interface AgentLogEntry {
   traceId?: string;
 }
 
+/** Provider identifiers surfaced for generation diagnostics — never a secret, never a raw response. */
+export type GenerationProviderName = 'mock' | 'openai' | 'unknown';
+
+/**
+ * Safe, non-secret summary of one book generation run. Deliberately excludes
+ * prompts, generated image bytes/base64, and raw provider responses — see
+ * apps/api/docs/local-generation-pipeline.md ("Generation diagnostics").
+ */
+export interface GenerationMetadata {
+  storyProvider: GenerationProviderName;
+  imageProvider: GenerationProviderName;
+  storyModel?: string;
+  imageModel?: string;
+  requestedPages?: number;
+  generatedPages?: number;
+  startedAt?: string;
+  completedAt?: string;
+  failedAt?: string;
+  durationMs?: number;
+  failedStep?: AgentStep;
+  errorMessage?: string;
+}
+
+/** One AgentLog row as surfaced to the generation-diagnostics endpoint. */
+export interface AgentLogSummary {
+  step: AgentStep;
+  status: 'success' | 'error' | 'retry';
+  provider?: string | null;
+  model?: string | null;
+  durationMs?: number | null;
+  attempt: number;
+  error?: string | null;
+  traceId?: string | null;
+  createdAt: string;
+}
+
 /** WebSocket progress event shapes emitted during generation. */
 export type WsProgressEvent =
   | { type: 'book:progress'; step: AgentStep; percentComplete: number }

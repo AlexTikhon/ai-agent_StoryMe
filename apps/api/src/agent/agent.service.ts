@@ -195,6 +195,11 @@ export class AgentService {
     private readonly imageGenerationProvider: ImageGenerationProvider,
   ) {}
 
+  /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
+  private modelLabel(provider: { readonly providerName?: string; readonly modelName?: string }): string {
+    return provider.modelName ?? provider.providerName ?? 'unknown';
+  }
+
   /**
    * Generates real image bytes for every generated image entry via the
    * injected ImageGenerationProvider, then saves them via ImageAssetStorage,
@@ -240,10 +245,20 @@ export class AgentService {
 
   async startBookGeneration(book: Book): Promise<Book> {
     const traceId = randomUUID();
+    const startedAt = Date.now();
     const childName = book.childName ?? 'Alex';
     const childAge = book.childAge ?? 6;
     const theme = book.theme ?? 'adventure';
     const language = (book.language as string) ?? 'en';
+
+    const storyProviderName = this.storyGenerationProvider.providerName ?? null;
+    const storyModelName = this.storyGenerationProvider.modelName ?? null;
+    const imageProviderName = this.imageGenerationProvider.providerName ?? null;
+    const imageModelName = this.imageGenerationProvider.modelName ?? null;
+    const aiModelVersions = {
+      story: this.modelLabel(this.storyGenerationProvider),
+      image: this.modelLabel(this.imageGenerationProvider),
+    };
 
     let characterCard: StoryGenerationResult['characterCard'];
     let storyPlanFinal: StoryGenerationResult['storyPlan'];
@@ -271,6 +286,8 @@ export class AgentService {
           status: BookStatus.failed,
           errorMessage: message,
           failedStep: AgentStep.story_plan,
+          generationTimeMs: Date.now() - startedAt,
+          aiModelVersions,
         },
       });
       await this.prisma.agentLog.createMany({
@@ -283,11 +300,17 @@ export class AgentService {
             attempt: 1,
             traceId,
             error: message,
+            provider: storyProviderName,
+            model: storyModelName,
+            durationMs: Date.now() - startedAt,
           },
         ],
       });
       return failed;
     }
+
+    const storyDurationMs = Date.now() - startedAt;
+    const imageStartedAt = Date.now();
 
     try {
       await this.generateAndSaveImageAssets(book.id, characterCard, imageGenerationResult.images);
@@ -300,6 +323,8 @@ export class AgentService {
           status: BookStatus.failed,
           errorMessage: message,
           failedStep: AgentStep.image_gen,
+          generationTimeMs: Date.now() - startedAt,
+          aiModelVersions,
         },
       });
       await this.prisma.agentLog.createMany({
@@ -312,13 +337,19 @@ export class AgentService {
             attempt: 1,
             traceId,
             error: message,
+            provider: imageProviderName,
+            model: imageModelName,
+            durationMs: Date.now() - imageStartedAt,
           },
         ],
       });
       return failed;
     }
 
+    const imageDurationMs = Date.now() - imageStartedAt;
+    const layoutStartedAt = Date.now();
     const bookLayout = buildBookLayout(book.id, bookPreview, imageGenerationResult);
+    const layoutDurationMs = Date.now() - layoutStartedAt;
 
     // Phase 1: persist all layout data and advance status to 'layout'
     await this.prisma.book.update({
@@ -338,6 +369,7 @@ export class AgentService {
     let previewPdfUrl: string | null = null;
     let pdfRenderLogStatus: AgentLogStatus = AgentLogStatus.success;
     let pdfRenderError: string | undefined;
+    const pdfStartedAt = Date.now();
 
     try {
       const resolveImageBuffer = await buildImageBufferResolver(
@@ -353,10 +385,15 @@ export class AgentService {
       pdfRenderError = err instanceof Error ? err.message : String(err);
       this.logger.error(`PDF render failed for book ${book.id}: ${pdfRenderError}`);
     }
+    const pdfDurationMs = Date.now() - pdfStartedAt;
 
     // Phase 3: advance to 'complete' or 'failed' and persist PDF url/error
     const finalStatus = pdfRenderError ? BookStatus.failed : BookStatus.complete;
-    const finalData: Prisma.BookUpdateInput = { status: finalStatus };
+    const finalData: Prisma.BookUpdateInput = {
+      status: finalStatus,
+      generationTimeMs: Date.now() - startedAt,
+      aiModelVersions,
+    };
     if (previewPdfUrl !== null) {
       finalData.previewPdfUrl = previewPdfUrl;
     }
@@ -379,6 +416,8 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          provider: storyProviderName,
+          model: storyModelName,
         },
         {
           bookId: book.id,
@@ -387,6 +426,9 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          provider: storyProviderName,
+          model: storyModelName,
+          durationMs: storyDurationMs,
         },
         {
           bookId: book.id,
@@ -395,6 +437,8 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          provider: storyProviderName,
+          model: storyModelName,
         },
         {
           bookId: book.id,
@@ -403,6 +447,8 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          provider: storyProviderName,
+          model: storyModelName,
         },
         {
           bookId: book.id,
@@ -411,6 +457,8 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          provider: storyProviderName,
+          model: storyModelName,
         },
         {
           bookId: book.id,
@@ -419,6 +467,8 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          provider: storyProviderName,
+          model: storyModelName,
         },
         {
           bookId: book.id,
@@ -427,6 +477,9 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          provider: imageProviderName,
+          model: imageModelName,
+          durationMs: imageDurationMs,
         },
         {
           bookId: book.id,
@@ -435,6 +488,7 @@ export class AgentService {
           status: AgentLogStatus.success,
           attempt: 1,
           traceId,
+          durationMs: layoutDurationMs,
         },
         {
           bookId: book.id,
@@ -443,6 +497,7 @@ export class AgentService {
           status: pdfRenderLogStatus,
           attempt: 1,
           traceId,
+          durationMs: pdfDurationMs,
           ...(pdfRenderError && { error: pdfRenderError }),
         },
       ],

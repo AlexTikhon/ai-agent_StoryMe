@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import type { Response } from 'express';
-import type { BookDto, GenerateBookResponse } from '@book/types';
+import type { BookDto, GenerateBookResponse, GenerationDiagnosticsDto } from '@book/types';
 import type { User } from '@prisma/client';
 import { BooksController } from './books.controller';
 import type { BooksService } from './books.service';
@@ -24,6 +24,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     startGeneration: vi.fn(),
     remove: vi.fn(),
     getPreviewPdfBuffer: vi.fn(),
+    getGenerationDiagnostics: vi.fn(),
   } as unknown as jest.Mocked<BooksService>;
 }
 
@@ -207,5 +208,29 @@ describe('BooksController.getPreviewPdf', () => {
       ConflictException,
     );
     expect(res.set).not.toHaveBeenCalled();
+  });
+});
+
+describe('BooksController.getGenerationDiagnostics', () => {
+  it('delegates to booksService.getGenerationDiagnostics with the current user', async () => {
+    const booksService = createMockBooksService();
+    const diagnostics = { bookId: 'b-1', status: 'complete' } as unknown as GenerationDiagnosticsDto;
+    booksService.getGenerationDiagnostics.mockResolvedValue(diagnostics);
+    const controller = new BooksController(booksService);
+
+    const result = await controller.getGenerationDiagnostics(FAKE_USER, 'b-1');
+
+    expect(booksService.getGenerationDiagnostics).toHaveBeenCalledWith('b-1', 'u-1');
+    expect(result).toBe(diagnostics);
+  });
+
+  it('propagates NotFoundException for a missing book', async () => {
+    const booksService = createMockBooksService();
+    booksService.getGenerationDiagnostics.mockRejectedValue(new NotFoundException('Book not found'));
+    const controller = new BooksController(booksService);
+
+    await expect(controller.getGenerationDiagnostics(FAKE_USER, 'missing')).rejects.toThrow(
+      NotFoundException,
+    );
   });
 });

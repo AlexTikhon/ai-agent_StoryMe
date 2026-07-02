@@ -220,6 +220,7 @@ export interface OpenAIStoryGenerationProviderOptions {
  * STORY_GENERATION_PROVIDER=openai is explicitly set.
  */
 export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
+  readonly providerName = 'openai' as const;
   private readonly logger = new Logger(OpenAIStoryGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;
@@ -240,6 +241,10 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     this.targetPageCount = options.targetPageCount ?? TARGET_PAGE_COUNT;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
     this.maxRetries = options.maxRetries ?? DEFAULT_OPENAI_MAX_RETRIES;
+  }
+
+  get modelName(): string {
+    return this.model;
   }
 
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
