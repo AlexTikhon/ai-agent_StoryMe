@@ -81,17 +81,56 @@ renderer — this keeps rendering local, deterministic, and side-effect-free.
 (`apps/api/src/agent/agent.service.ts`, `buildImageGenerationResult`) are
 still placeholder path strings like `/mock-images/<bookId>/cover.svg` — no
 file is ever written to that path and nothing serves it; `imageUrl` is used
-only for display/metadata (see the local image asset boundary below for the
-real embedding path).
+only for display/metadata. Real embedded bytes come from a separate path,
+below.
 
-`AgentService.startBookGeneration` *does* now call `renderStorybookPdf` with
-a `resolveImageBuffer` option (via `buildImageBufferResolver`, see below).
-Because the local-mock pipeline never saves real image bytes anywhere, every
-lookup that resolver performs misses, so every image still renders as a
-placeholder rectangle in practice — identical output to before this phase.
-The wiring exists so a future phase that actually saves bytes needs no
-changes to `AgentService` or the renderer, only a real image-generation step
-that calls `ImageAssetStorage.saveImageAsset`.
+`AgentService.startBookGeneration` calls `renderStorybookPdf` with a
+`resolveImageBuffer` option (via `buildImageBufferResolver`, see below), and
+now *does* save real image bytes for every generated image entry before
+rendering — see "Local mock image producer" below — so images embed for
+real, end-to-end, during book generation. Only the standalone
+`scripts/render-pdf.ts` sample script (used by `pnpm render:pdf`) still
+renders placeholder-only, since it calls `renderStorybookPdf` directly with a
+hardcoded sample layout and never goes through `AgentService` or
+`ImageAssetStorage`.
+
+### Local mock image producer
+
+`apps/api/src/images/mock-image-producer.ts` defines
+`generateMockImagePng(seed: string): Buffer`, a deterministic, local,
+network-free stand-in for a real image-generation provider:
+
+- Produces a tiny (8×8 px) valid PNG — a solid color swatch, not artwork.
+- The fill color is derived from an FNV-1a hash of `seed`, so different seeds
+  produce different (but stable) colors, and the same seed always produces
+  byte-identical output.
+- Built entirely from Node's built-in `zlib` (`deflateSync`, required for
+  PNG's DEFLATE-compressed `IDAT` chunk) plus hand-rolled PNG chunk/CRC
+  framing — no new dependencies, no external assets, no network calls.
+- PNG was chosen over JPEG/SVG because it's simplest to construct correctly
+  by hand (an uncompressed-per-pixel raster plus one deflate call), and
+  PDFKit's `doc.image()` embeds it directly.
+
+`AgentService.startBookGeneration` calls a private `saveMockImageAssets`
+helper right after building `imageGenerationResult` and before building
+`bookLayout`: for every `GeneratedImageEntry`, it generates bytes from
+`generateMockImagePng(entry.seed)` and saves them via
+`ImageAssetStorage.saveImageAsset(imageAssetKey(bookId, entry.kind,
+entry.pageNumber), buffer, 'image/png')`. Saves run in parallel and each is
+wrapped in its own try/catch: a failure logs a warning
+(`Failed to save mock image asset for entry "<id>": <message>`) and is
+skipped — it never fails book generation. Because `buildImageBufferResolver`
+already treats a missing asset as "no bytes available", a skipped save
+degrades that one image to the existing placeholder rectangle, exactly like
+before this phase.
+
+This mock producer is explicitly **not** real AI image generation — it
+exists only so the pipeline has *some* real, embeddable image bytes to prove
+the storage → resolver → renderer path end-to-end. A future real
+image-generation phase should replace calls to `generateMockImagePng` with a
+real provider call (kept behind the same `ImageAssetStorage.saveImageAsset`
+boundary) — no changes to `buildImageBufferResolver` or the renderer are
+needed, matching the plan already laid out below.
 
 ### Local image asset storage boundary
 
@@ -131,12 +170,15 @@ Out of scope for this boundary, deliberately:
 
 ### Future real-image phase (not implemented)
 
-A future phase that wires up real image generation should call
-`ImageAssetStorage.saveImageAsset` with the key produced by `imageAssetKey`
-for each generated image, right after generating it. No changes to
-`AgentService`'s rendering call, `buildImageBufferResolver`, or the renderer
-itself are needed — the boundary is already in place end-to-end; saved bytes
-will be picked up and embedded automatically on the next render.
+`AgentService` currently saves deterministic mock bytes from
+`generateMockImagePng` (see "Local mock image producer" above) via
+`ImageAssetStorage.saveImageAsset`, keyed by `imageAssetKey`. A future phase
+that wires up a real image-generation provider should replace that call site
+(`saveMockImageAssets` in `apps/api/src/agent/agent.service.ts`) with a real
+provider call, saved through the same `ImageAssetStorage.saveImageAsset`
+boundary. No changes to `buildImageBufferResolver` or the renderer itself
+are needed — the boundary is already in place end-to-end; saved bytes are
+picked up and embedded automatically on the next render.
 
 ### Failure handling
 

@@ -1,4 +1,5 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { Logger } from '@nestjs/common';
 import type { Book } from '@prisma/client';
 import { AgentService } from './agent.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
@@ -599,6 +600,74 @@ describe('AgentService', () => {
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
       expect(preview).toBeDefined();
       expect(typeof preview?.title).toBe('string');
+    });
+
+    // ── Phase 2W: Mock local image producer wiring ────────────────────────────
+
+    it('saves a mock image asset for every generated image entry', async () => {
+      const book = makeBook({ childName: 'Mia', theme: 'friendship' });
+      setupMocks();
+
+      await service.startBookGeneration(book);
+
+      const updateArg = prisma.book.update.mock.calls[0]?.[0];
+      const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+      const images = result.images as Array<Record<string, unknown>>;
+      expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length);
+    });
+
+    it('saves each mock image asset with a non-empty PNG buffer under the matching key', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      await service.startBookGeneration(book);
+
+      const coverCall = mockImageAssetStorage.saveImageAsset.mock.calls.find(
+        (call) => call[0] === 'b-1/cover',
+      );
+      expect(coverCall).toBeDefined();
+      const [, buffer, contentType] = coverCall!;
+      expect(Buffer.isBuffer(buffer)).toBe(true);
+      expect((buffer as Buffer).length).toBeGreaterThan(0);
+      expect(contentType).toBe('image/png');
+    });
+
+    it('saves mock image assets before rendering the PDF so saved bytes can be resolved', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      await service.startBookGeneration(book);
+
+      const saveOrder = mockImageAssetStorage.saveImageAsset.mock.invocationCallOrder[0]!;
+      const renderOrder = vi.mocked(renderStorybookPdf).mock.invocationCallOrder[0]!;
+      expect(saveOrder).toBeLessThan(renderOrder);
+    });
+
+    it('still completes generation when a mock image save fails', async () => {
+      const book = makeBook();
+      setupMocks();
+      mockImageAssetStorage.saveImageAsset.mockRejectedValueOnce(new Error('disk full'));
+
+      const result = await service.startBookGeneration(book);
+
+      expect(result.status).toBe('complete');
+      expect(renderStorybookPdf).toHaveBeenCalledOnce();
+    });
+
+    it('logs a warning and continues saving other images when one mock image save fails', async () => {
+      const book = makeBook();
+      setupMocks();
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      mockImageAssetStorage.saveImageAsset.mockRejectedValueOnce(new Error('disk full'));
+
+      await service.startBookGeneration(book);
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to save mock image asset'));
+      const updateArg = prisma.book.update.mock.calls[0]?.[0];
+      const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+      const images = result.images as Array<Record<string, unknown>>;
+      expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length);
+      warnSpy.mockRestore();
     });
 
     // ── Phase 2H: Layout engine ───────────────────────────────────────────────

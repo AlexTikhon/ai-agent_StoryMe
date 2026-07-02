@@ -4,9 +4,11 @@ import { renderStorybookPdf } from '../pdf/pdf-renderer';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import {
   buildImageBufferResolver,
+  imageAssetKey,
   IMAGE_ASSET_STORAGE_TOKEN,
   type ImageAssetStorage,
 } from '../images/image-asset-storage';
+import { generateMockImagePng } from '../images/mock-image-producer';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import {
@@ -430,6 +432,32 @@ export class AgentService {
     @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageAssetStorage: ImageAssetStorage,
   ) {}
 
+  /**
+   * Produces deterministic local mock image bytes for each generated image
+   * entry and saves them via ImageAssetStorage, keyed to match
+   * buildImageBufferResolver's lookup (imageAssetKey). A failure saving any
+   * one image is logged and skipped — it must not fail book generation; the
+   * renderer already falls back to a placeholder for any entry whose bytes
+   * are missing (see docs/pdf-rendering.md).
+   */
+  private async saveMockImageAssets(
+    bookId: string,
+    images: GeneratedImageEntry[],
+  ): Promise<void> {
+    await Promise.all(
+      images.map(async (image) => {
+        try {
+          const key = imageAssetKey(bookId, image.kind, image.pageNumber);
+          const buffer = generateMockImagePng(image.seed);
+          await this.imageAssetStorage.saveImageAsset(key, buffer, 'image/png');
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Failed to save mock image asset for entry "${image.id}": ${message}`);
+        }
+      }),
+    );
+  }
+
   async startBookGeneration(book: Book): Promise<Book> {
     const traceId = randomUUID();
     const childName = book.childName ?? 'Alex';
@@ -443,6 +471,7 @@ export class AgentService {
     const storyPlanFinal = buildIllustrationPlan(characterCard, storyPlanWithDraft);
     const bookPreview = buildBookPreview(book, characterCard, storyPlanFinal);
     const imageGenerationResult = buildImageGenerationResult(book.id, bookPreview);
+    await this.saveMockImageAssets(book.id, imageGenerationResult.images);
     const bookLayout = buildBookLayout(book.id, bookPreview, imageGenerationResult);
 
     // Phase 1: persist all layout data and advance status to 'layout'
