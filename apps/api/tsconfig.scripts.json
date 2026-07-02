@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@book/types": ["../../packages/types/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*", "scripts/**/*"]
+}

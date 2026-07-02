@@ -63,3 +63,6 @@ desktop.ini
 
 # MinIO data (local dev)
 minio-data/
+
+# Local PDF render output
+tmp/
