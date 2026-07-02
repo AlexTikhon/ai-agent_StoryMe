@@ -690,11 +690,94 @@ is unchanged; only *when* the HTTP response is sent changed.
   so they now simply return to normal state much sooner, before polling picks
   up the rest of the run.
 
+## Generation jobs (Phase 3I)
+
+Alongside `Book.status` (still the source of truth for user-facing status),
+every `generate`/`retry-generation` call now also creates a `GenerationJob`
+row — a typed, persisted record of that one generation *attempt*. This is
+job-state hardening only: the runner is still `GenerationTaskRunner`
+in-process scheduling (unchanged from Phase 3H), not a durable queue. The
+model exists so generation attempts are individually inspectable today and so
+a future durable queue (BullMQ/Redis) has a typed shape to migrate onto,
+without redesigning the pipeline.
+
+- **Schema** — `apps/api/prisma/schema.prisma`'s `GenerationJob` model
+  (migration `20260702000000_phase3i_generation_jobs`):
+  `id`, `bookId`, `userId`, `type` (`generate` | `retry`), `status`
+  (`queued` | `running` | `completed` | `failed` | `cancelled` — `cancelled`
+  is reserved, nothing sets it yet), `attempt`, `maxAttempts` (unused today,
+  reserved for a future retry-cap policy), `failedStep`, `errorMessage`,
+  `runnerId` (unused today, reserved for multi-instance ownership), and
+  `createdAt`/`startedAt`/`completedAt`/`failedAt`/`updatedAt`.
+- **Service** — `apps/api/src/agent/generation-job.service.ts`
+  (`GenerationJobService`, registered in `books.module.ts`) is the only
+  thing that touches the `generation_jobs` table: `findActive` (queued/running
+  job for a book), `findLatest` (most recent job of any status), `createQueued`,
+  `markRunning`, `markCompleted`, `markFailed`. `BooksService` never queries
+  `prisma.generationJob` directly.
+- **Lifecycle** — `BooksService.startGeneration`/`retryGeneration` create a
+  `queued` job (`type: 'generate'`/`'retry'`, `attempt: 1` for a fresh
+  generate, `attempt: clearedBook.retryCount + 1` for a retry — `retryCount`
+  is already post-increment by the time the job is created, so this counts
+  the original generate as attempt 1 and each retry after it) in the same
+  call that flips `Book.status` to `char_build`, then schedule
+  `runGenerationPipeline(book, job.id)` via `GenerationTaskRunner` exactly as
+  before. Inside `runGenerationPipeline`: `markRunning` right away, then after
+  `AgentService.startBookGeneration` resolves, `markCompleted` if the
+  returned book's status isn't `failed`, or `markFailed` (with the book's
+  `failedStep`/`errorMessage`) if it is. If the pipeline throws unexpectedly
+  (the same defensive catch from Phase 3H), the job is also `markFailed` with
+  the caught error's message, after the book itself is marked `failed`. Every
+  `GenerationJobService` call in `runGenerationPipeline` is wrapped in a
+  `.catch()` that only logs — a job-write failure can never change the book's
+  own outcome or throw out of the background task, matching the existing
+  "this method must never throw" invariant from Phase 3H.
+- **Duplicate generation protection** — `startGeneration`/`retryGeneration`
+  now reject with the same `ConflictException` ("Generation is already in
+  progress for this book") when `generationJobService.findActive(bookId)`
+  returns a `queued`/`running` job, in addition to the existing
+  `GenerationTaskRunner.isRunning` check from Phase 3H and the `Book.status`
+  check. A book that has a `completed` or `failed` job on record is not
+  blocked — only an active (`queued`/`running`) job blocks a new attempt, so
+  a normal retry after a failure is unaffected. None of these three checks is
+  a distributed lock; see "Known limitations" below.
+- **Diagnostics** — `GET /:id/generation-diagnostics` now also returns
+  `latestJob` (`GenerationJobSummary | null`): `id`, `type`, `status`,
+  `attempt`, `createdAt`, and whichever of `startedAt`/`completedAt`/
+  `failedAt`/`failedStep`/`errorMessage` apply. `BooksService.getGenerationDiagnostics`
+  fetches it via `generationJobService.findLatest` in parallel with the
+  existing `AgentLog` query. `buildGenerationDiagnostics`
+  (`apps/api/src/books/generation-diagnostics.ts`) maps the `GenerationJob`
+  row to `GenerationJobSummary` and deliberately omits `runnerId` — never
+  exposed, same safety bar as the rest of this DTO (see "What's intentionally
+  not stored (safety)" above).
+- **Known limitations**:
+  - **No resume-on-restart.** A `GenerationJob` stuck in `running` because the
+    API process crashed or redeployed mid-generation is *not* automatically
+    detected or resumed — nothing sweeps stale `running` jobs on startup. The
+    book itself has the same pre-existing limitation (see "Async
+    queues/workers" under "What's intentionally not real yet" below); Phase
+    3I makes the stuck state visible via diagnostics (`latestJob.status:
+    'running'` with a stale `startedAt`) but does not fix it.
+  - **Still in-process, still no cross-instance coordination.** `maxAttempts`
+    and `runnerId` are schema-only today — nothing reads or writes them yet.
+    Running two API instances behind a load balancer still has no shared
+    concurrency limit; the `findActive` check only guards against races
+    within one process's view of the database, not a real distributed lock.
+  - A future durable-queue phase would replace `GenerationTaskRunner.run`
+    with enqueueing a real job (BullMQ/Redis — `@nestjs/bullmq`/`bullmq` are
+    already dependencies but unused for this) and add a worker that claims
+    `queued` jobs via `runnerId`, plus a startup sweep that requeues jobs
+    stuck in `running`. `GenerationJobService`'s typed create/markRunning/
+    markCompleted/markFailed methods are written so that swap wouldn't
+    require changing `BooksService`'s calling code, only what's behind
+    `GenerationTaskRunner.run`.
+
 ## Status transitions
 
 ```text
-created --(generate: validation + status/runner check)--> char_build --[background pipeline]--> layout --> complete
-                                                                                                          \-> failed
+created --(generate: validation + status/runner/job check)--> char_build --[background pipeline]--> layout --> complete
+                                                                                                              \-> failed
 ```
 
 The HTTP response for `generate`/`retry-generation` now observes `char_build`
@@ -735,6 +818,7 @@ re-verified here — see "Test coverage" below.
 | `ConflictException` (409) | `generate` called when `status !== created` | `POST /:id/generate` |
 | `ConflictException` (409) | `retry-generation` called when `status !== failed` | `POST /:id/retry-generation` |
 | `ConflictException` (409) | `generate`/`retry-generation` called while `GenerationTaskRunner.isRunning(bookId)` | `POST /:id/generate`, `POST /:id/retry-generation` |
+| `ConflictException` (409) | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I) | `POST /:id/generate`, `POST /:id/retry-generation` |
 | `ConflictException` (409) | preview requested before `previewPdfUrl` is set | `GET /:id/pdf/preview` |
 | `NotFoundException` (404) | book missing / not owned / soft-deleted | any `:id` route |
 | `NotFoundException` (404) | `previewPdfUrl` set but file missing from storage | `GET /:id/pdf/preview` |
@@ -887,6 +971,32 @@ re-verified here — see "Test coverage" below.
   `ConflictException` is thrown (before any DB write or scheduling) when
   `GenerationTaskRunner.isRunning` reports the book is already generating.
 
+- `apps/api/src/agent/generation-job.service.spec.ts` (Phase 3I) —
+  `GenerationJobService` in isolation: `findActive` queries `queued`/`running`
+  jobs newest-first, `findLatest` queries any status newest-first,
+  `createQueued` writes `status: 'queued'` with the given type/attempt,
+  `markRunning`/`markCompleted`/`markFailed` set the right status plus their
+  respective timestamp, and `markFailed` defaults `failedStep` to `null` when
+  omitted.
+- `apps/api/src/books/books.service.spec.ts` (Phase 3I) — `startGeneration`/
+  `retryGeneration` create a queued `GenerationJob` (`generate`/`attempt: 1`,
+  or `retry`/`attempt: clearedBook.retryCount + 1`); the scheduled task marks
+  the job `running` then `completed` on a successful pipeline run, `failed`
+  (with `failedStep`/`errorMessage`) when `AgentService.startBookGeneration`
+  returns a `failed` book, and `failed` when the pipeline throws
+  unexpectedly; both `startGeneration` and `retryGeneration` throw
+  `ConflictException` (without touching `prisma.book.update` or scheduling
+  anything) when `generationJobService.findActive` reports an active job; a
+  retry is still allowed when the book is `failed` and no active job exists,
+  regardless of any prior `completed`/`failed` job on record;
+  `getGenerationDiagnostics` includes `latestJob` from
+  `generationJobService.findLatest` (or `null` when none exists).
+- `apps/api/src/books/generation-diagnostics.spec.ts` (Phase 3I) —
+  `buildGenerationDiagnostics` maps a `GenerationJob` row into the safe
+  `latestJob` summary (id/type/status/attempt/timestamps/failedStep/
+  errorMessage), returns `latestJob: null` when no job is passed, and never
+  leaks `runnerId` through the serialized diagnostics.
+
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see
 `apps/api/src/books/books.controller.spec.ts` for controller-level
@@ -911,15 +1021,19 @@ alternatives instead).
   via in-process scheduling (`GenerationTaskRunner`, see "Background
   generation (Phase 3H)" above) — there's still no BullMQ job, Redis-backed
   queue, or separate worker process (despite `@nestjs/bullmq` being a
-  dependency). This means: no durability across a process restart (an
-  in-flight generation is simply lost if the API process crashes or
-  redeploys — the book stays stuck in a non-terminal status with nothing to
-  resume it), no cross-instance coordination (running two API instances
-  behind a load balancer could let both accept a `generate` call for
-  different books at the same time with no shared concurrency limit), and no
-  retry/backoff at the scheduling level (only `AgentService`'s own
-  provider-level retries, see Phase 3D). A real queue is the natural next
-  step if any of these limitations become a problem.
+  dependency). Phase 3I added a persisted `GenerationJob` record per attempt
+  (see "Generation jobs (Phase 3I)" above), but that's job-state tracking,
+  not a queue: the runner is still the same in-process scheduler. This means:
+  no durability across a process restart (an in-flight generation is simply
+  lost if the API process crashes or redeploys — the book stays stuck in a
+  non-terminal status and its `GenerationJob` stays stuck in `running`, with
+  nothing to resume either), no cross-instance coordination (running two API
+  instances behind a load balancer could let both accept a `generate` call
+  for different books at the same time with no shared concurrency limit,
+  since `GenerationJob.findActive`/`GenerationTaskRunner.isRunning` only see
+  one process's view), and no retry/backoff at the scheduling level (only
+  `AgentService`'s own provider-level retries, see Phase 3D). A real queue is
+  the natural next step if any of these limitations become a problem.
 - **Payments/auth** — `DevAuthGuard` stands in for real authentication;
   there's no payment gating on generation or preview access.
 

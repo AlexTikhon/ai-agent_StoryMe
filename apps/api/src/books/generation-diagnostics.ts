@@ -1,8 +1,9 @@
-import type { AgentLog, Book } from '@prisma/client';
+import type { AgentLog, Book, GenerationJob } from '@prisma/client';
 import type {
   AgentLogSummary,
   AgentStep,
   GenerationDiagnosticsDto,
+  GenerationJobSummary,
   GenerationMetadata,
   GenerationProviderName,
 } from '@book/types';
@@ -68,10 +69,32 @@ function toAgentLogSummary(log: AgentLog): AgentLogSummary {
   };
 }
 
-/** Composes the full GET /books/:id/generation-diagnostics response from a Book row and its AgentLog rows. */
+/** Maps a GenerationJob row (Phase 3I) to its safe diagnostics summary — never exposes runnerId. */
+function toGenerationJobSummary(job: GenerationJob): GenerationJobSummary {
+  return {
+    id: job.id,
+    type: job.type as unknown as GenerationJobSummary['type'],
+    status: job.status as unknown as GenerationJobSummary['status'],
+    attempt: job.attempt,
+    createdAt: job.createdAt.toISOString(),
+    ...(job.startedAt && { startedAt: job.startedAt.toISOString() }),
+    ...(job.completedAt && { completedAt: job.completedAt.toISOString() }),
+    ...(job.failedAt && { failedAt: job.failedAt.toISOString() }),
+    ...(job.failedStep && { failedStep: job.failedStep as unknown as AgentStep }),
+    ...(job.errorMessage && { errorMessage: job.errorMessage }),
+  };
+}
+
+/**
+ * Composes the full GET /books/:id/generation-diagnostics response from a
+ * Book row, its AgentLog rows, and (Phase 3I) its latest GenerationJob row.
+ * `latestJob` is optional/nullable since a book may predate job tracking or
+ * never have started generation.
+ */
 export function buildGenerationDiagnostics(
   book: Book,
   logs: AgentLog[],
+  latestJob?: GenerationJob | null,
 ): GenerationDiagnosticsDto {
   return {
     bookId: book.id,
@@ -81,5 +104,6 @@ export function buildGenerationDiagnostics(
     generationMetadata: buildGenerationMetadata(book, logs),
     recentLogs: logs.map(toAgentLogSummary),
     previewPdfUrl: book.previewPdfUrl,
+    latestJob: latestJob ? toGenerationJobSummary(latestJob) : null,
   };
 }

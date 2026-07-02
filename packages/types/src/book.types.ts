@@ -3,6 +3,7 @@ import type {
   AgentStep,
   BookGenre,
   BookLength,
+  GenerationJobSummary,
   GenerationMetadata,
   IllustrationStyle,
   Pronouns,
@@ -416,4 +417,6 @@ export interface GenerationDiagnosticsDto {
   generationMetadata: GenerationMetadata;
   recentLogs: AgentLogSummary[];
   previewPdfUrl?: string | null;
+  /** Latest GenerationJob for this book (Phase 3I), or null if none exists yet. */
+  latestJob?: GenerationJobSummary | null;
 }

@@ -1,6 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import type { AgentLog, Book } from '@prisma/client';
+import type { AgentLog, Book, GenerationJob } from '@prisma/client';
 import { buildGenerationDiagnostics, buildGenerationMetadata } from './generation-diagnostics';
+
+function makeGenerationJob(overrides: Partial<GenerationJob> = {}): GenerationJob {
+  return {
+    id: 'job-1',
+    bookId: 'b-1',
+    userId: 'u-1',
+    type: 'generate' as GenerationJob['type'],
+    status: 'queued' as GenerationJob['status'],
+    attempt: 1,
+    maxAttempts: null,
+    failedStep: null,
+    errorMessage: null,
+    runnerId: 'runner-secret-id',
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    startedAt: null,
+    completedAt: null,
+    failedAt: null,
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    ...overrides,
+  };
+}
 
 function makeBook(overrides: Partial<Book> = {}): Book {
   return {
@@ -197,5 +218,40 @@ describe('buildGenerationDiagnostics', () => {
     expect(serialized).not.toMatch(/sk-[A-Za-z0-9]/);
     expect(serialized.toLowerCase()).not.toContain('b64_json');
     expect(serialized.toLowerCase()).not.toContain('choices');
+  });
+
+  it('returns latestJob: null when no GenerationJob is passed', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook(), []);
+
+    expect(diagnostics.latestJob).toBeNull();
+  });
+
+  it('maps a GenerationJob into a safe latestJob summary, excluding runnerId', () => {
+    const job = makeGenerationJob({
+      id: 'job-9',
+      type: 'retry' as GenerationJob['type'],
+      status: 'failed' as GenerationJob['status'],
+      attempt: 2,
+      failedStep: 'image_gen' as GenerationJob['failedStep'],
+      errorMessage: 'OpenAI image request failed',
+      startedAt: new Date('2026-01-01T00:00:01.000Z'),
+      failedAt: new Date('2026-01-01T00:00:05.000Z'),
+    });
+
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [], job);
+
+    expect(diagnostics.latestJob).toEqual({
+      id: 'job-9',
+      type: 'retry',
+      status: 'failed',
+      attempt: 2,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      startedAt: '2026-01-01T00:00:01.000Z',
+      failedAt: '2026-01-01T00:00:05.000Z',
+      failedStep: 'image_gen',
+      errorMessage: 'OpenAI image request failed',
+    });
+    const serialized = JSON.stringify(diagnostics);
+    expect(serialized).not.toContain('runner-secret-id');
   });
 });

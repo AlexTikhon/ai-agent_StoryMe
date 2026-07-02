@@ -6,7 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { BookStatus, type Book } from '@prisma/client';
+import { BookStatus, GenerationJobType, type Book } from '@prisma/client';
 import type {
   BookDto,
   BooksPageDto,
@@ -16,6 +16,7 @@ import type {
 import { PrismaService } from '../database/prisma.service';
 import { AgentService } from '../agent/agent.service';
 import { GenerationTaskRunner } from '../agent/generation-task-runner';
+import { GenerationJobService } from '../agent/generation-job.service';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { toBookDto } from './books.mapper';
 import { buildGenerationDiagnostics } from './generation-diagnostics';
@@ -34,6 +35,7 @@ export class BooksService {
     private readonly agentService: AgentService,
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
     private readonly generationTaskRunner: GenerationTaskRunner,
+    private readonly generationJobService: GenerationJobService,
   ) {}
 
   async create(userId: string, dto: CreateBookDto): Promise<BookDto> {
@@ -111,6 +113,9 @@ export class BooksService {
     if (this.generationTaskRunner.isRunning(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
     }
+    if (await this.generationJobService.findActive(bookId)) {
+      throw new ConflictException('Generation is already in progress for this book');
+    }
 
     const cleared = await this.prisma.book.update({
       where: { id: bookId },
@@ -122,7 +127,16 @@ export class BooksService {
       },
     });
 
-    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(cleared));
+    const job = await this.generationJobService.createQueued({
+      bookId,
+      userId,
+      type: GenerationJobType.retry,
+      // cleared.retryCount is already post-increment — attempt counts the
+      // original generate (1) plus every retry so far.
+      attempt: cleared.retryCount + 1,
+    });
+
+    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(cleared, job.id));
 
     return { book: toBookDto(cleared) };
   }
@@ -151,13 +165,23 @@ export class BooksService {
     if (this.generationTaskRunner.isRunning(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
     }
+    if (await this.generationJobService.findActive(bookId)) {
+      throw new ConflictException('Generation is already in progress for this book');
+    }
 
     const started = await this.prisma.book.update({
       where: { id: bookId },
       data: { status: GENERATION_STARTED_STATUS },
     });
 
-    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(started));
+    const job = await this.generationJobService.createQueued({
+      bookId,
+      userId,
+      type: GenerationJobType.generate,
+      attempt: 1,
+    });
+
+    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(started, job.id));
 
     return { book: toBookDto(started) };
   }
@@ -168,11 +192,28 @@ export class BooksService {
    * already marks the book failed for every failure it anticipates (story
    * generation, image generation, PDF render); this catch only guards against
    * a truly unexpected error escaping that handling, so the book never gets
-   * stuck in a non-terminal status forever.
+   * stuck in a non-terminal status forever. `jobId` is the GenerationJob
+   * (Phase 3I) created by startGeneration/retryGeneration — its lifecycle
+   * mirrors the book's, but a failure updating it never blocks the pipeline
+   * or the book's own status, since Book.status is the source of truth.
    */
-  private async runGenerationPipeline(book: Book): Promise<void> {
+  private async runGenerationPipeline(book: Book, jobId: string): Promise<void> {
+    await this.markJob(this.generationJobService.markRunning(jobId), jobId, book.id, 'running');
     try {
-      await this.agentService.startBookGeneration(book);
+      const result = await this.agentService.startBookGeneration(book);
+      if (result.status === BookStatus.failed) {
+        await this.markJob(
+          this.generationJobService.markFailed(jobId, {
+            errorMessage: result.errorMessage ?? 'Generation failed',
+            failedStep: result.failedStep,
+          }),
+          jobId,
+          book.id,
+          'failed',
+        );
+      } else {
+        await this.markJob(this.generationJobService.markCompleted(jobId), jobId, book.id, 'completed');
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Background generation pipeline threw unexpectedly for book ${book.id}: ${message}`);
@@ -187,7 +228,26 @@ export class BooksService {
             `Failed to mark book ${book.id} failed after an unexpected pipeline error: ${updateMessage}`,
           );
         });
+      await this.markJob(
+        this.generationJobService.markFailed(jobId, { errorMessage: message }),
+        jobId,
+        book.id,
+        'failed',
+      );
     }
+  }
+
+  /** Swallows and logs a GenerationJob status-update failure — it must never affect the pipeline's own outcome. */
+  private async markJob(
+    update: Promise<unknown>,
+    jobId: string,
+    bookId: string,
+    action: string,
+  ): Promise<void> {
+    await update.catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to mark generation job ${jobId} ${action} for book ${bookId}: ${message}`);
+    });
   }
 
   async getPreviewPdfBuffer(
@@ -211,12 +271,15 @@ export class BooksService {
     userId: string,
   ): Promise<GenerationDiagnosticsDto> {
     const book = await this.findOwnedOrThrow(bookId, userId);
-    const logs = await this.prisma.agentLog.findMany({
-      where: { bookId },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-    });
-    return buildGenerationDiagnostics(book, logs);
+    const [logs, latestJob] = await Promise.all([
+      this.prisma.agentLog.findMany({
+        where: { bookId },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      }),
+      this.generationJobService.findLatest(bookId),
+    ]);
+    return buildGenerationDiagnostics(book, logs, latestJob);
   }
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */

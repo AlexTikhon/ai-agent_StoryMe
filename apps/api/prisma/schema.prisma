@@ -128,6 +128,20 @@ enum NotificationChannel {
   push
 }
 
+// Phase 3I: generation job tracking — see GenerationJob model below
+enum GenerationJobType {
+  generate
+  retry
+}
+
+enum GenerationJobStatus {
+  queued
+  running
+  completed
+  failed
+  cancelled
+}
+
 // ═══════════════════════════════════════════
 // USER & AUTH
 // ═══════════════════════════════════════════
@@ -322,6 +336,7 @@ model Book {
   creditTransactions CreditTransaction[]
   userBookStates   UserBookState[]
   agentLogs        AgentLog[]
+  generationJobs   GenerationJob[]
 
   @@index([userId])
   @@index([status])
@@ -527,6 +542,39 @@ model AgentLog {
   @@index([traceId])
   @@index([createdAt(sort: Desc)])
   @@map("agent_logs")
+}
+
+// ═══════════════════════════════════════════
+// GENERATION JOBS
+// ═══════════════════════════════════════════
+
+// Phase 3I: a typed, persisted record of one generation attempt (generate or
+// retry), tracked alongside — not instead of — Book.status, which remains the
+// source of truth for user-facing status. Runs in-process (GenerationTaskRunner),
+// not on a durable queue yet; see apps/api/docs/local-generation-pipeline.md.
+model GenerationJob {
+  id           String              @id @default(uuid()) @db.Uuid
+  bookId       String              @map("book_id") @db.Uuid
+  userId       String              @map("user_id") @db.Uuid
+  type         GenerationJobType
+  status       GenerationJobStatus @default(queued)
+  attempt      Int                 @default(1)
+  maxAttempts  Int?                @map("max_attempts")
+  failedStep   AgentStep?          @map("failed_step")
+  errorMessage String?             @map("error_message")
+  runnerId     String?             @map("runner_id")
+
+  createdAt    DateTime            @default(now()) @map("created_at")
+  startedAt    DateTime?           @map("started_at")
+  completedAt  DateTime?           @map("completed_at")
+  failedAt     DateTime?           @map("failed_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  book         Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@index([bookId, status])
+  @@map("generation_jobs")
 }
 
 // ═══════════════════════════════════════════
