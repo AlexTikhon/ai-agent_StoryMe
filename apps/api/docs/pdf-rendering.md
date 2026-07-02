@@ -77,14 +77,66 @@ renderer — this keeps rendering local, deterministic, and side-effect-free.
 
 ### Current pipeline state
 
-As of this phase, `imageUrl` values produced by the local-mock image
-generation step (`apps/api/src/agent/agent.service.ts`,
-`buildImageGenerationResult`) are placeholder path strings like
-`/mock-images/<bookId>/cover.svg` — no file is ever written to that path and
-nothing serves it. No real image bytes exist anywhere in the current local
-pipeline, so `renderStorybookPdf` is called without a `resolveImageBuffer`
-option (see `AgentService`) and every image still renders as a placeholder
-rectangle in practice, exactly as before this phase.
+`imageUrl` values produced by the local-mock image generation step
+(`apps/api/src/agent/agent.service.ts`, `buildImageGenerationResult`) are
+still placeholder path strings like `/mock-images/<bookId>/cover.svg` — no
+file is ever written to that path and nothing serves it; `imageUrl` is used
+only for display/metadata (see the local image asset boundary below for the
+real embedding path).
+
+`AgentService.startBookGeneration` *does* now call `renderStorybookPdf` with
+a `resolveImageBuffer` option (via `buildImageBufferResolver`, see below).
+Because the local-mock pipeline never saves real image bytes anywhere, every
+lookup that resolver performs misses, so every image still renders as a
+placeholder rectangle in practice — identical output to before this phase.
+The wiring exists so a future phase that actually saves bytes needs no
+changes to `AgentService` or the renderer, only a real image-generation step
+that calls `ImageAssetStorage.saveImageAsset`.
+
+### Local image asset storage boundary
+
+`apps/api/src/images/image-asset-storage.ts` defines `ImageAssetStorage`, a
+local-first key/value byte store for generated image assets, independent of
+the PDF renderer and of `PdfStorage`:
+
+- `saveImageAsset(key, buffer, contentType)` — writes bytes under
+  `<api-root>/tmp/images/<key>.<ext>` (ext derived from `contentType`:
+  `image/png` → `.png`, `image/jpeg` → `.jpg`, `image/svg+xml` → `.svg`).
+- `getImageAsset(key)` — reads bytes back by key, returning `undefined` if
+  nothing was saved for it.
+- Keys are `"/"`-separated segments (e.g. `"<bookId>/cover"`); every segment
+  must match `^[\w-]+$` or the call throws — this rejects path traversal
+  (`../`, absolute paths, backslashes) before touching the filesystem.
+- `LocalImageAssetStorage` is the only implementation today, registered via
+  `IMAGE_ASSET_STORAGE_TOKEN` in `books.module.ts`, mirroring the
+  `PdfStorage` / `PDF_STORAGE_TOKEN` pattern so a cloud-backed implementation
+  can be added later without changing callers.
+- `imageAssetKey(bookId, kind, pageNumber?)` builds the stable key for a
+  book's cover / page / back-cover slot, matching the same identity already
+  used for `GeneratedImageEntry.id` (`<bookId>-cover`, `<bookId>-page-<n>`,
+  `<bookId>-back-cover`).
+- `buildImageBufferResolver(storage, bookId, entries)` pre-resolves every
+  layout entry's bytes from storage (async, before rendering starts) into a
+  `Map`, then returns a synchronous `ImageBufferResolver` closure over that
+  map — bridging the necessarily-async storage read to the renderer's
+  necessarily-synchronous embedding seam.
+
+Out of scope for this boundary, deliberately:
+
+- AI/image generation of any kind.
+- Fetching remote URLs.
+- Cloud image storage (S3/R2) — `ImageAssetStorage` is local-only today; a
+  cloud implementation would follow the same pattern as `CloudPdfStorage`.
+- Publicly serving saved image assets over HTTP.
+
+### Future real-image phase (not implemented)
+
+A future phase that wires up real image generation should call
+`ImageAssetStorage.saveImageAsset` with the key produced by `imageAssetKey`
+for each generated image, right after generating it. No changes to
+`AgentService`'s rendering call, `buildImageBufferResolver`, or the renderer
+itself are needed — the boundary is already in place end-to-end; saved bytes
+will be picked up and embedded automatically on the next render.
 
 ### Failure handling
 
@@ -95,12 +147,3 @@ and falls back to the placeholder rectangle for that image only — it does not
 fail the whole page or PDF. A malformed layout box (a structural layout bug,
 not an image-bytes problem) still fails the whole page, as before, and is
 caught by the existing per-entry try/catch that renders a red error page.
-
-### Future real-image phase (not implemented)
-
-A future phase that wires up real image generation/storage should implement
-`resolveImageBuffer` (e.g. reading bytes already fetched into memory or from
-local disk under an existing storage convention) and pass it into the
-`AgentService` call to `renderStorybookPdf`. It should not change the
-renderer itself — the boundary above is intentionally already in place for
-that.

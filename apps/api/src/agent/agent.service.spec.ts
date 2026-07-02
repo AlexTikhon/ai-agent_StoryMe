@@ -3,6 +3,7 @@ import type { Book } from '@prisma/client';
 import { AgentService } from './agent.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { PdfStorage } from '../pdf/pdf-storage';
+import type { ImageAssetStorage } from '../images/image-asset-storage';
 
 vi.mock('../pdf/pdf-renderer', () => ({
   renderStorybookPdf: vi.fn(),
@@ -65,12 +66,24 @@ describe('AgentService', () => {
   let service: AgentService;
   let prisma: MockPrisma;
   let mockPdfStorage: { savePreviewPdf: ReturnType<typeof vi.fn> };
+  let mockImageAssetStorage: {
+    saveImageAsset: ReturnType<typeof vi.fn>;
+    getImageAsset: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
     prisma = createMockPrisma();
     mockPdfStorage = { savePreviewPdf: vi.fn() };
-    service = new AgentService(prisma as never, mockPdfStorage as unknown as PdfStorage);
+    mockImageAssetStorage = {
+      saveImageAsset: vi.fn(),
+      getImageAsset: vi.fn().mockResolvedValue(undefined),
+    };
+    service = new AgentService(
+      prisma as never,
+      mockPdfStorage as unknown as PdfStorage,
+      mockImageAssetStorage as unknown as ImageAssetStorage,
+    );
     vi.mocked(renderStorybookPdf).mockResolvedValue(Buffer.from('%PDF-1.4 mock'));
     mockPdfStorage.savePreviewPdf.mockResolvedValue({
       url: '/files/books/b-1/storybook.pdf',

@@ -2,6 +2,11 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
 import { renderStorybookPdf } from '../pdf/pdf-renderer';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
+import {
+  buildImageBufferResolver,
+  IMAGE_ASSET_STORAGE_TOKEN,
+  type ImageAssetStorage,
+} from '../images/image-asset-storage';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import {
@@ -422,6 +427,7 @@ export class AgentService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
+    @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageAssetStorage: ImageAssetStorage,
   ) {}
 
   async startBookGeneration(book: Book): Promise<Book> {
@@ -459,7 +465,12 @@ export class AgentService {
     let pdfRenderError: string | undefined;
 
     try {
-      const buffer = await renderStorybookPdf(bookLayout);
+      const resolveImageBuffer = await buildImageBufferResolver(
+        this.imageAssetStorage,
+        book.id,
+        bookLayout.entries,
+      );
+      const buffer = await renderStorybookPdf(bookLayout, { resolveImageBuffer });
       const saved = await this.pdfStorage.savePreviewPdf(book.id, buffer);
       previewPdfUrl = saved.url;
     } catch (err) {
