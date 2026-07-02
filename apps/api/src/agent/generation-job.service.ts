@@ -31,6 +31,23 @@ export class GenerationJobService {
     });
   }
 
+  /**
+   * Queued/running jobs last touched before `cutoff` — used by
+   * GenerationJobRecoveryService (Phase 3J) to find jobs abandoned by a
+   * process that died or restarted. `updatedAt` covers both cases: it equals
+   * `createdAt` for a job still `queued` (never updated since creation) and
+   * reflects `markRunning`'s `startedAt` write for a `running` job.
+   */
+  findStaleActiveJobs(cutoff: Date): Promise<GenerationJob[]> {
+    return this.prisma.generationJob.findMany({
+      where: {
+        status: { in: [GenerationJobStatus.queued, GenerationJobStatus.running] },
+        updatedAt: { lt: cutoff },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
   createQueued(params: {
     bookId: string;
     userId: string;

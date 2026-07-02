@@ -77,6 +77,23 @@ describe('GenerationJobService', () => {
     });
   });
 
+  describe('findStaleActiveJobs', () => {
+    it('queries for queued or running jobs updated before the cutoff, oldest first', async () => {
+      prisma.generationJob.findMany.mockResolvedValue([]);
+      const cutoff = new Date('2026-01-01T00:00:00.000Z');
+
+      await service.findStaleActiveJobs(cutoff);
+
+      expect(prisma.generationJob.findMany).toHaveBeenCalledWith({
+        where: {
+          status: { in: ['queued', 'running'] },
+          updatedAt: { lt: cutoff },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+    });
+  });
+
   describe('markFailed', () => {
     it('sets status failed, failedAt, errorMessage, and failedStep', async () => {
       prisma.generationJob.update.mockResolvedValue({ id: 'job-1' });

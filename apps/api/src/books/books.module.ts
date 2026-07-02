@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AgentService } from '../agent/agent.service';
 import { GenerationTaskRunner } from '../agent/generation-task-runner';
 import { GenerationJobService } from '../agent/generation-job.service';
+import { GenerationJobRecoveryService } from '../agent/generation-job-recovery.service';
 import { BooksController } from './books.controller';
 import { BooksService } from './books.service';
 import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
@@ -36,6 +37,7 @@ import { createStoryGenerationProvider } from '../agent/story-generation-provide
     AgentService,
     GenerationTaskRunner,
     GenerationJobService,
+    GenerationJobRecoveryService,
   ],
 })
 export class BooksModule {}

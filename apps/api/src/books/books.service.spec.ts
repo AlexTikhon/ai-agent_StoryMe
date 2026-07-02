@@ -6,6 +6,7 @@ import type { AgentService } from '../agent/agent.service';
 import type { GenerationTaskRunner } from '../agent/generation-task-runner';
 import type { GenerationJobService } from '../agent/generation-job.service';
 import type { PdfStorage } from '../pdf/pdf-storage';
+import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
@@ -564,6 +565,22 @@ describe('BooksService', () => {
       expect(result.book.status).toBe('char_build');
       // The pipeline itself is scheduled in the background, not awaited here.
       expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+    });
+
+    it('retries a book left failed by startup recovery (Phase 3J) same as any other failure', async () => {
+      const book = makeBook({
+        status: STATUS_FAILED,
+        failedStep: null,
+        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
+      });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, failedStep: null, errorMessage: null });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+
+      const result = await service.retryGeneration('u-1', 'b-1');
+
+      expect(result.book.status).toBe('char_build');
+      expect(generationTaskRunner.run).toHaveBeenCalledOnce();
     });
 
     it('schedules the background pipeline via GenerationTaskRunner', async () => {

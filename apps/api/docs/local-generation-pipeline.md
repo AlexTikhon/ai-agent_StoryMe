@@ -753,12 +753,9 @@ without redesigning the pipeline.
   not stored (safety)" above).
 - **Known limitations**:
   - **No resume-on-restart.** A `GenerationJob` stuck in `running` because the
-    API process crashed or redeployed mid-generation is *not* automatically
-    detected or resumed — nothing sweeps stale `running` jobs on startup. The
-    book itself has the same pre-existing limitation (see "Async
-    queues/workers" under "What's intentionally not real yet" below); Phase
-    3I makes the stuck state visible via diagnostics (`latestJob.status:
-    'running'` with a stale `startedAt`) but does not fix it.
+    API process crashed or redeployed mid-generation is not automatically
+    retried — see "Startup recovery (Phase 3J)" below for what *does* happen
+    to it on the next boot (a fail-safe, not a resume).
   - **Still in-process, still no cross-instance coordination.** `maxAttempts`
     and `runnerId` are schema-only today — nothing reads or writes them yet.
     Running two API instances behind a load balancer still has no shared
@@ -772,6 +769,94 @@ without redesigning the pipeline.
     markCompleted/markFailed methods are written so that swap wouldn't
     require changing `BooksService`'s calling code, only what's behind
     `GenerationTaskRunner.run`.
+
+## Startup recovery (Phase 3J)
+
+Phase 3I made a `GenerationJob` stuck in `queued`/`running` after an API
+crash or redeploy *visible* via diagnostics but didn't fix it — the book
+stayed in a non-terminal "generating" status forever, since nothing else
+would ever move it. Phase 3J closes that gap with a **fail-safe, not a
+resume**: on every app boot, any job left active by a previous process is
+marked `failed` with a safe, generic message, and the retry-generation flow
+(Phase 3G) is how the user gets unstuck — generation itself is never
+automatically re-run.
+
+- **`apps/api/src/agent/generation-job.service.ts`** — new
+  `findStaleActiveJobs(cutoff)`: queued/running jobs whose `updatedAt` is
+  older than `cutoff`. `updatedAt` alone covers both staleness rules from the
+  spec — for a job still `queued` it equals `createdAt` (nothing has updated
+  it since creation), and for a `running` job it reflects `markRunning`'s
+  write — so no separate "queued age" vs. "running age" query is needed.
+- **`apps/api/src/agent/generation-job-recovery.service.ts`** —
+  `GenerationJobRecoveryService`, registered in `books.module.ts` alongside
+  `GenerationJobService`:
+  - Implements Nest's `OnApplicationBootstrap`, so it runs once after the
+    module graph (including `PrismaService`) is fully wired, not mid-startup.
+  - `readGenerationJobStaleAfterMs(env)` reads
+    `GENERATION_JOB_STALE_AFTER_MS` (default `1800000`ms / 30 minutes),
+    falling back to the default for a missing or malformed value — same
+    parsing pattern as `readOpenAIRetryConfig` in `openai-request.ts`.
+  - `recover(staleAfterMs, now?)` computes `cutoff = now - staleAfterMs`,
+    calls `findStaleActiveJobs(cutoff)`, and for each stale job:
+    1. `generationJobService.markFailed(job.id, { errorMessage:
+       GENERATION_INTERRUPTED_MESSAGE })` — `"Generation was interrupted
+       before completion. Please retry."`. `failedStep` is left `null`
+       rather than set to a specific `AgentStep`: recovery has no record of
+       which pipeline step the process actually died on (`GenerationJob`
+       doesn't track a "current step"), and `AgentStep` is a strict Prisma
+       enum with no generic "unknown"/"recovery" value — guessing a specific
+       step would be more misleading in diagnostics than leaving it unset.
+    2. Looks up the job's `Book`; if its `status` isn't one of the terminal
+       values (`complete`, `failed`, `partial`, `cancelled`), updates it to
+       `status: 'failed'`, `failedStep: null`, `errorMessage:
+       GENERATION_INTERRUPTED_MESSAGE`. A book already `complete` or `failed`
+       is left completely untouched — recovery never overwrites an existing
+       outcome or a prior failure's own `errorMessage`/`failedStep`.
+    - Each job is recovered independently (`try/catch` per job) — one job
+      failing to update (e.g. a transient DB error) doesn't stop the rest
+      from being recovered, and is counted in the returned summary instead.
+    - Returns `{ staleJobsFound, jobsRecovered, errors }`.
+  - `onApplicationBootstrap()` calls `recover()` and logs the summary as a
+    single line (counts only — no job/book ids, no error details beyond a
+    caught error's `message`). Wrapped in its own `try/catch`: if recovery
+    itself throws (e.g. the database isn't reachable yet), the error is
+    logged and swallowed — a recovery failure can never prevent the API from
+    starting.
+- **`AgentLog` history is untouched** — recovery never reads or writes the
+  `agent_logs` table, so every prior attempt's log rows (including the
+  interrupted one, whatever it managed to write before dying) remain exactly
+  as they were.
+- **Diagnostics** — no changes needed. `GET /:id/generation-diagnostics`
+  already derives `latestJob` from `GenerationJobService.findLatest`, which
+  reads the same (now-updated) `GenerationJob` row; a recovered job shows up
+  as `latestJob.status: 'failed'` with `errorMessage:
+  "Generation was interrupted before completion. Please retry."` the next
+  time diagnostics are fetched, with no extra plumbing.
+- **Retry after recovery** — unaffected. A book recovery marks `failed` is,
+  from `BooksService.retryGeneration`'s point of view, indistinguishable from
+  any other failed book (same `status === 'failed'` check); the existing
+  Phase 3G retry flow clears `failedStep`/`errorMessage` and re-runs
+  generation exactly as it would after a real story/image/PDF failure.
+- **Known limitations**:
+  - **Not a resume.** Recovery never re-runs generation or restores
+    in-flight state — a recovered book always needs an explicit user retry,
+    even if the interrupted run was seconds away from finishing.
+  - **No distributed lock.** Recovery runs independently in every API
+    process on its own boot, reading/writing through the same
+    single-Postgres-instance view as the rest of this document — running two
+    API instances still has no shared coordination (same limitation noted
+    under "Generation jobs (Phase 3I)" above). Two instances booting at
+    once could both attempt to recover the same stale job; each write is a
+    plain `update` (last write wins), not a `SELECT ... FOR UPDATE` or
+    optimistic-lock pattern, so this is safe but not strictly exactly-once.
+  - **No durable external queue.** Recovery is a Nest lifecycle hook reading
+    Postgres directly, not a BullMQ/Redis worker — see "Known limitations"
+    under "Generation jobs (Phase 3I)" for what a future durable-queue phase
+    would replace this with.
+  - A job that goes stale *between* recovery runs (i.e., the API stays up
+    but the in-process `GenerationTaskRunner` task silently stops
+    progressing without throwing) is not detected until the next process
+    restart — recovery only runs on boot, not on an interval.
 
 ## Status transitions
 
@@ -910,7 +995,23 @@ re-verified here — see "Test coverage" below.
 - `apps/api/src/books/books.service.spec.ts` (Phase 3E) —
   `getGenerationDiagnostics`: fetches the owned book plus its 20 most recent
   `AgentLog` rows and returns the composed diagnostics; 404s for a
-  missing/not-owned book without querying `AgentLog`.
+  missing/not-owned book without querying `AgentLog`. Also (Phase 3J)
+  `retryGeneration` succeeds for a book left `failed` by startup recovery
+  with `GENERATION_INTERRUPTED_MESSAGE` as its `errorMessage` — proving retry
+  treats a recovered book exactly like any other failure.
+- `apps/api/src/agent/generation-job.service.spec.ts` (Phase 3J) —
+  `findStaleActiveJobs` queries queued/running jobs with `updatedAt` before
+  the given cutoff, oldest first.
+- `apps/api/src/agent/generation-job-recovery.service.spec.ts` (Phase 3J) —
+  `readGenerationJobStaleAfterMs` env parsing/fallbacks (default 30 minutes,
+  malformed/non-positive values fall back); `recover`: a stale `queued` job
+  is marked `failed`, a stale `running` job is marked `failed`, a related
+  book still in a non-terminal generating status is marked `failed`, a
+  `complete` book is left untouched, an already-`failed` book is left
+  untouched, fresh (non-stale) jobs are excluded via the `findStaleActiveJobs`
+  cutoff query, one job failing to recover doesn't stop the rest and is
+  counted in the summary; `onApplicationBootstrap` runs `recover` with the
+  configured threshold and never throws even if recovery itself rejects.
 - `apps/api/src/books/books.controller.spec.ts` (Phase 3E) — thin
   pass-through wiring for `GET /:id/generation-diagnostics` plus
   `NotFoundException` propagation.
