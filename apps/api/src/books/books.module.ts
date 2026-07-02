@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { AgentService } from '../agent/agent.service';
+import { GenerationTaskRunner } from '../agent/generation-task-runner';
 import { BooksController } from './books.controller';
 import { BooksService } from './books.service';
 import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
@@ -32,6 +33,7 @@ import { createStoryGenerationProvider } from '../agent/story-generation-provide
     },
     BooksService,
     AgentService,
+    GenerationTaskRunner,
   ],
 })
 export class BooksModule {}

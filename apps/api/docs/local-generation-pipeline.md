@@ -19,17 +19,26 @@ calls, no external AI providers, no cloud dependency.
      every missing field.
    - Requires `status === created` — otherwise `ConflictException` (409)
      ("Generation already started or completed for this book").
-   - Delegates to `AgentService.startBookGeneration(book)`.
-4. **Generation** — `AgentService.startBookGeneration` (see below) runs
-   synchronously within the request and returns the final `Book` row
-   (`complete` or `failed`).
+   - Requires the book not already be running in the in-process
+     `GenerationTaskRunner` — otherwise `ConflictException` (409,
+     "Generation is already in progress for this book").
+   - Transitions `status` to `char_build` (the first pipeline step) and
+     returns immediately — it does **not** wait for generation to finish.
+     See "Background generation (Phase 3H)" below.
+4. **Generation** — `AgentService.startBookGeneration` (see below) runs in
+   the background, scheduled by `GenerationTaskRunner`, and eventually
+   updates the book to a terminal `complete` or `failed` status. The
+   frontend's existing status/diagnostics poll (see "Status transitions"
+   below) is how the caller observes that outcome — not the `generate`
+   response.
 5. **Preview** — `GET /api/books/:id/pdf/preview`
    (`BooksService.getPreviewPdfBuffer` → `PdfStorage.getPreviewPdf`) streams
    the rendered PDF back as `application/pdf`.
 
-There is no queue/worker: generation runs inline inside the `generate`
-request handler and the HTTP response only returns once the whole pipeline
-(including PDF render) has finished or failed.
+There is still no external queue/worker (no Redis, no BullMQ, despite
+`@nestjs/bullmq` being a dependency) — generation is scheduled in-process via
+`GenerationTaskRunner` (Phase 3H) and runs on the Node event loop after the
+HTTP response for `generate`/`retry-generation` has already been sent.
 
 ## What `AgentService.startBookGeneration` does, in order
 
@@ -356,8 +365,17 @@ once, end-to-end, against the real OpenAI API:
   a running local Postgres + Redis, same as `pnpm --filter @book/api dev` —
   finds-or-creates a fixed smoke-test user, creates one small 4-chapter/
   6-page test book via `PrismaService`, and calls
-  `AgentService.startBookGeneration` directly (the same call
-  `BooksService.startGeneration` makes).
+  `AgentService.startBookGeneration` directly.
+  **Deliberately unchanged by Phase 3H**: this script still calls
+  `AgentService.startBookGeneration` directly rather than going through
+  `POST /:id/generate` + polling. It doesn't go through `BooksService` or
+  `GenerationTaskRunner` at all, so the async/background change is invisible
+  to it — the script blocks on the `await` exactly as before and asserts on
+  the final `Book` row synchronously, which is the simplest, most
+  deterministic way to smoke-test the real pipeline end-to-end. Exercising
+  the actual async HTTP endpoints (with polling) is left to the mocked
+  frontend/backend test suites, which already cover that path without a real
+  network call.
 - Verifies the book reaches `BookStatus.complete`, that every generated image
   entry's bytes were actually saved to `ImageAssetStorage`, and that the
   rendered PDF exists in `PdfStorage` — then prints the book id and PDF
@@ -602,27 +620,87 @@ generation logic.
   - Like `startGeneration`, this is a check-then-act read/update with no
     row-level lock or transaction — two concurrent retry requests for the
     same book both racing past the `status === 'failed'` check is a
-    theoretical (pre-existing) race, not something Phase 3G introduces or
-    fixes.
-  - Because the pipeline runs synchronously inside the request (see "There is
-    no queue/worker" above), the retry endpoint's HTTP response only returns
-    once the whole re-run (including PDF render) has finished or failed
-    again — the same characteristic `POST /:id/generate` already has.
+    theoretical (pre-existing) race, narrowed but not eliminated by the
+    `GenerationTaskRunner.isRunning` check added in Phase 3H (see "Background
+    generation (Phase 3H)" below).
+  - Since Phase 3H, the pipeline runs in the background (see "Background
+    generation (Phase 3H)" below) — the retry endpoint's HTTP response
+    returns as soon as the book is flipped back to `char_build`, not once the
+    re-run finishes. The book detail page's existing poll loop is what
+    eventually shows the retry's outcome.
   - Retrying does not reset or refund anything cost-related
     (`Book.totalCostUsd`, credits) — Phase 3G only clears the failure markers
     and re-runs generation.
 
+## Background generation (Phase 3H)
+
+`POST /api/books/:id/generate` and `POST /api/books/:id/retry-generation`
+return as soon as the status transition is persisted — they no longer wait
+for the whole pipeline (including PDF render) to finish. The pipeline itself
+is unchanged; only *when* the HTTP response is sent changed.
+
+- **`apps/api/src/agent/generation-task-runner.ts`** — `GenerationTaskRunner`,
+  an injectable, in-process scheduler:
+  - `run(bookId, task)` schedules `task` (an `() => Promise<void>`) on the
+    microtask queue via `Promise.resolve().then(...)` — no `setTimeout`, no
+    external queue. Returns `false` without scheduling anything if `bookId`
+    is already in its in-memory `running` `Set`, so the same book can't have
+    two pipeline runs in flight at once within this process.
+  - Any error the task throws is caught, logged (`Unhandled generation task
+    error for book <id>: <message>`), and swallowed — a background failure
+    can never crash the process via an unhandled rejection.
+  - `bookId` is removed from the running set in a `finally`, whether the task
+    resolved or rejected, so the same book can be regenerated later.
+  - `isRunning(bookId)` lets `BooksService` reject a second `generate`/
+    `retry-generation` call for a book that's already scheduled, before even
+    touching the database.
+- **`BooksService.startGeneration`/`retryGeneration`** now do only the
+  "start" half of what they used to do synchronously:
+  1. Same validation/ownership/state checks as before, plus a
+     `generationTaskRunner.isRunning(bookId)` check.
+  2. One `prisma.book.update` that flips `status` to `char_build` (and, for
+     retry, also clears `failedStep`/`errorMessage` and increments
+     `retryCount` — unchanged from Phase 3G).
+  3. `generationTaskRunner.run(bookId, () => this.runGenerationPipeline(book))`
+     — schedules the pipeline and returns immediately; the returned
+     `GenerateBookResponse` carries the `char_build` book, not a terminal one.
+- **`BooksService.runGenerationPipeline`** (private) is the task body: it
+  calls `AgentService.startBookGeneration(book)` — the exact same call
+  `startGeneration`/`retryGeneration` used to make directly, so none of
+  `AgentService`'s own failure handling (story-plan/image-gen/pdf-render →
+  `failed`) changed. This method's own `try/catch` only guards against an
+  error escaping *all* of `AgentService`'s handling (a truly unexpected bug);
+  if that happens, it marks the book `failed` with the caught error's message
+  so the book never gets stuck in a non-terminal status forever, and logs
+  (`Background generation pipeline threw unexpectedly for book <id>:
+  <message>`). Even the fallback `prisma.book.update` is wrapped in a
+  `.catch()` — this method must never throw, since nothing awaits it.
+- **Duplicate generation** — guarded at two levels: the DB `status` check
+  (a book already past `created`/not `failed` is rejected with 409 before any
+  scheduling happens) and `GenerationTaskRunner.isRunning` (an in-memory,
+  same-process guard for the narrow window between two requests racing past
+  that DB check). Neither is a distributed lock — this remains in-process
+  only, same as every other limitation in this document.
+- **Frontend** — no changes were needed. The book detail page's polling
+  (`isGeneratingBookStatus`, the 2.5s interval effect) already treated every
+  non-`created`, non-terminal status generically, and `char_build` already
+  had a status message ("Building character profile…") from Phase 3F. The
+  Generate/Retry buttons already only stayed in their loading state for the
+  fetch call itself (`setGenerating(true)` around `await booksApi.generate(id)`),
+  so they now simply return to normal state much sooner, before polling picks
+  up the rest of the run.
+
 ## Status transitions
 
 ```text
-created --(generate: validation + status check)--> [in-request pipeline] --> layout --> complete
-                                                                                      \-> failed
+created --(generate: validation + status/runner check)--> char_build --[background pipeline]--> layout --> complete
+                                                                                                          \-> failed
 ```
 
-`created` and `layout` are both transient from the caller's perspective —
-`layout` only exists as the Phase-1 intermediate value inside the same
-request; the HTTP response always observes the final `complete` or `failed`
-status, never `layout`.
+The HTTP response for `generate`/`retry-generation` now observes `char_build`
+(the just-scheduled state), not the final outcome. `layout` remains a
+transient intermediate value written mid-pipeline; the poll loop (or a
+manual refresh) is what eventually observes `complete` or `failed`.
 
 ## Preview endpoint behavior
 
@@ -656,12 +734,14 @@ re-verified here — see "Test coverage" below.
 | `ConflictException` (409) | `update`/`remove` after `status !== created` | `PATCH /:id`, `DELETE /:id` |
 | `ConflictException` (409) | `generate` called when `status !== created` | `POST /:id/generate` |
 | `ConflictException` (409) | `retry-generation` called when `status !== failed` | `POST /:id/retry-generation` |
+| `ConflictException` (409) | `generate`/`retry-generation` called while `GenerationTaskRunner.isRunning(bookId)` | `POST /:id/generate`, `POST /:id/retry-generation` |
 | `ConflictException` (409) | preview requested before `previewPdfUrl` is set | `GET /:id/pdf/preview` |
 | `NotFoundException` (404) | book missing / not owned / soft-deleted | any `:id` route |
 | `NotFoundException` (404) | `previewPdfUrl` set but file missing from storage | `GET /:id/pdf/preview` |
-| `BookStatus.failed` | PDF render or `pdfStorage.savePreviewPdf` throws | `POST /:id/generate` response body |
-| `BookStatus.failed` | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`) | `POST /:id/generate` response body |
-| `BookStatus.failed` | `imageGenerationProvider.generateImage` throws for any entry (`failedStep: 'image_gen'`) | `POST /:id/generate` response body |
+| `BookStatus.failed` | PDF render or `pdfStorage.savePreviewPdf` throws | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H |
+| `BookStatus.failed` | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`) | observed via polling — see above |
+| `BookStatus.failed` | `imageGenerationProvider.generateImage` throws for any entry (`failedStep: 'image_gen'`) | observed via polling — see above |
+| `BookStatus.failed` | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`) | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H) |
 | per-image save failure (non-fatal) | one `ImageAssetStorage.saveImageAsset` call throws | logged only; that image renders as a placeholder |
 
 ## Test coverage
@@ -788,6 +868,25 @@ re-verified here — see "Test coverage" below.
   concurrent `/generation-diagnostics` call alongside every `/books/:id`
   call/poll; existing tests were otherwise left as-is.)
 
+- `apps/api/src/agent/generation-task-runner.spec.ts` (Phase 3H) —
+  `GenerationTaskRunner` in isolation: `isRunning` reflects in-flight state
+  as soon as `run()` is called (before the task settles) through to after it
+  resolves or rejects; a second `run()` call for the same still-running id
+  returns `false` and never invokes the second task; the same id can be
+  scheduled again once the previous run finished; different ids are tracked
+  independently; a rejecting task is caught and logged without throwing out
+  of `run()`.
+- `apps/api/src/books/books.service.spec.ts` (Phase 3H) — `startGeneration`/
+  `retryGeneration`: the returned response carries `char_build` (not a
+  terminal status) and `AgentService.startBookGeneration` is not called
+  synchronously; `GenerationTaskRunner.run` is called with the book id and a
+  function; invoking that captured function calls
+  `AgentService.startBookGeneration` with the transitioned/cleared book;
+  invoking it when `AgentService.startBookGeneration` rejects marks the book
+  `failed` with the caught error's message instead of throwing; a
+  `ConflictException` is thrown (before any DB write or scheduling) when
+  `GenerationTaskRunner.isRunning` reports the book is already generating.
+
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see
 `apps/api/src/books/books.controller.spec.ts` for controller-level
@@ -808,9 +907,19 @@ alternatives instead).
   `ImageAssetStorage` (local disk under `tmp/images/`) to be embedded into
   the PDF; nothing serves them over HTTP, and the `/mock-images/...` URLs
   recorded on `GeneratedImageEntry.imageUrl` resolve to nothing.
-- **Async queues/workers** — generation runs inline in the `generate`
-  request handler; there's no BullMQ job or background worker wired up yet
-  (despite `@nestjs/bullmq` being a dependency).
+- **Async queues/workers** — Phase 3H made generation non-blocking, but only
+  via in-process scheduling (`GenerationTaskRunner`, see "Background
+  generation (Phase 3H)" above) — there's still no BullMQ job, Redis-backed
+  queue, or separate worker process (despite `@nestjs/bullmq` being a
+  dependency). This means: no durability across a process restart (an
+  in-flight generation is simply lost if the API process crashes or
+  redeploys — the book stays stuck in a non-terminal status with nothing to
+  resume it), no cross-instance coordination (running two API instances
+  behind a load balancer could let both accept a `generate` call for
+  different books at the same time with no shared concurrency limit), and no
+  retry/backoff at the scheduling level (only `AgentService`'s own
+  provider-level retries, see Phase 3D). A real queue is the natural next
+  step if any of these limitations become a problem.
 - **Payments/auth** — `DevAuthGuard` stands in for real authentication;
   there's no payment gating on generation or preview access.
 
@@ -826,12 +935,14 @@ lifecycle — no extra wiring needed.
    elsewhere).
 3. Open `http://localhost:3000/dashboard` — click **+ New Book**, fill in
    the child/story wizard, and submit to create a `created` book.
-4. Open the new book's detail page and click **Generate Story**. The whole
-   pipeline (story/layout/mock images/PDF render) runs synchronously inside
-   that one request, so the button shows "Generating…" until the response
-   comes back with a final `complete` or `failed` status. If a page reload
-   ever catches the book mid-pipeline, the detail page auto-polls every
-   2.5s until it reaches a terminal status.
+4. Open the new book's detail page and click **Generate Story**. Since Phase
+   3H, the button only shows "Generating…" for the brief `POST
+   /:id/generate` request itself (which returns as soon as the book is
+   flipped to `char_build`) — the whole pipeline (story/layout/mock
+   images/PDF render) then runs in the background, and the detail page
+   auto-polls every 2.5s until it reaches a terminal `complete`/`failed`
+   status, showing a step-specific message (e.g. "Writing your story…",
+   "Rendering PDF…") on each tick.
 5. Once `status` is `complete`, an "Your PDF is ready" panel appears with
    **Open PDF** (new tab) and **Download PDF** links, both pointing at
    `GET /api/books/:id/pdf/preview`.

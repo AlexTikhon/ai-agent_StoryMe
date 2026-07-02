@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, NotFoundException } from '@nest
 import type { Book } from '@prisma/client';
 import { BooksService } from './books.service';
 import type { AgentService } from '../agent/agent.service';
+import type { GenerationTaskRunner } from '../agent/generation-task-runner';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { CreateBookDto } from './dto/create-book.dto';
@@ -22,9 +23,17 @@ function createMockPdfStorage(): jest.Mocked<PdfStorage> {
   } as unknown as jest.Mocked<PdfStorage>;
 }
 
+function createMockGenerationTaskRunner(): jest.Mocked<GenerationTaskRunner> {
+  return {
+    isRunning: vi.fn().mockReturnValue(false),
+    run: vi.fn().mockReturnValue(true),
+  } as unknown as jest.Mocked<GenerationTaskRunner>;
+}
+
 // Prisma emits string enum values that match the schema — 'created', 'preview_ready', etc.
 const STATUS_CREATED = 'created' as Book['status'];
 const STATUS_IN_PROGRESS = 'preview_ready' as Book['status'];
+const STATUS_CHAR_BUILD = 'char_build' as Book['status'];
 const STATUS_FAILED = 'failed' as Book['status'];
 const STATUS_COMPLETE = 'complete' as Book['status'];
 
@@ -82,12 +91,19 @@ describe('BooksService', () => {
   let prisma: MockPrisma;
   let agentService: ReturnType<typeof createMockAgentService>;
   let pdfStorage: ReturnType<typeof createMockPdfStorage>;
+  let generationTaskRunner: ReturnType<typeof createMockGenerationTaskRunner>;
 
   beforeEach(() => {
     prisma = createMockPrisma();
     agentService = createMockAgentService();
     pdfStorage = createMockPdfStorage();
-    service = new BooksService(prisma as never, agentService as never, pdfStorage as never);
+    generationTaskRunner = createMockGenerationTaskRunner();
+    service = new BooksService(
+      prisma as never,
+      agentService as never,
+      pdfStorage as never,
+      generationTaskRunner as never,
+    );
   });
 
   // ─── create ──────────────────────────────────────────────────────────────────
@@ -271,24 +287,74 @@ describe('BooksService', () => {
   // ─── startGeneration ─────────────────────────────────────────────────────────
 
   describe('startGeneration', () => {
-    it('starts generation and returns GenerateBookResponse on success', async () => {
+    it('transitions status to char_build and returns quickly, without waiting for the pipeline', async () => {
       const book = makeBook({ status: STATUS_CREATED });
-      const updatedBook = makeBook({ status: STATUS_IN_PROGRESS });
+      const started = makeBook({ status: STATUS_CHAR_BUILD });
       prisma.book.findFirst.mockResolvedValue(book);
-      agentService.startBookGeneration.mockResolvedValue(updatedBook);
+      prisma.book.update.mockResolvedValue(started);
 
       const result = await service.startGeneration('u-1', 'b-1');
 
-      expect(agentService.startBookGeneration).toHaveBeenCalledWith(book);
-      expect(result.book.status).toBe('preview_ready');
+      expect(prisma.book.update).toHaveBeenCalledWith({
+        where: { id: 'b-1' },
+        data: { status: 'char_build' },
+      });
+      expect(result.book.status).toBe('char_build');
       expect(result.book.id).toBe('b-1');
+      // The pipeline itself is scheduled in the background, not awaited here.
+      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+    });
+
+    it('schedules the background pipeline via GenerationTaskRunner', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      const started = makeBook({ status: STATUS_CHAR_BUILD });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(started);
+
+      await service.startGeneration('u-1', 'b-1');
+
+      expect(generationTaskRunner.run).toHaveBeenCalledOnce();
+      expect(generationTaskRunner.run).toHaveBeenCalledWith('b-1', expect.any(Function));
+    });
+
+    it('the scheduled background task invokes AgentService.startBookGeneration with the updated book', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      const started = makeBook({ status: STATUS_CHAR_BUILD });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(started);
+      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
+
+      await service.startGeneration('u-1', 'b-1');
+      const task = generationTaskRunner.run.mock.calls[0]?.[1] as () => Promise<void>;
+      await task();
+
+      expect(agentService.startBookGeneration).toHaveBeenCalledOnce();
+      expect(agentService.startBookGeneration).toHaveBeenCalledWith(started);
+    });
+
+    it('marks the book failed if the background pipeline throws unexpectedly', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      const started = makeBook({ status: STATUS_CHAR_BUILD });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValueOnce(started);
+      agentService.startBookGeneration.mockRejectedValue(new Error('unexpected pipeline crash'));
+      prisma.book.update.mockResolvedValueOnce(makeBook({ status: STATUS_FAILED }));
+
+      await service.startGeneration('u-1', 'b-1');
+      const task = generationTaskRunner.run.mock.calls[0]?.[1] as () => Promise<void>;
+      await expect(task()).resolves.toBeUndefined();
+
+      expect(prisma.book.update).toHaveBeenLastCalledWith({
+        where: { id: 'b-1' },
+        data: { status: 'failed', errorMessage: 'unexpected pipeline crash' },
+      });
     });
 
     it('throws NotFoundException when book does not exist', async () => {
       prisma.book.findFirst.mockResolvedValue(null);
 
       await expect(service.startGeneration('u-1', 'no-such')).rejects.toThrow(NotFoundException);
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when book belongs to a different user', async () => {
@@ -296,7 +362,7 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(null);
 
       await expect(service.startGeneration('u-other', 'b-1')).rejects.toThrow(NotFoundException);
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException for a soft-deleted book', async () => {
@@ -304,7 +370,7 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(null);
 
       await expect(service.startGeneration('u-1', 'b-deleted')).rejects.toThrow(NotFoundException);
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
     it('throws BadRequestException when childName is missing', async () => {
@@ -312,7 +378,7 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.startGeneration('u-1', 'b-1')).rejects.toThrow(BadRequestException);
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
     it('throws BadRequestException when childAge is missing', async () => {
@@ -350,45 +416,72 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.startGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
-    it('calls agentService.startBookGeneration with the owned book', async () => {
+    it('throws ConflictException when the runner reports the book is already generating', async () => {
       const book = makeBook({ status: STATUS_CREATED });
-      const updatedBook = makeBook({ status: STATUS_IN_PROGRESS });
       prisma.book.findFirst.mockResolvedValue(book);
-      agentService.startBookGeneration.mockResolvedValue(updatedBook);
+      generationTaskRunner.isRunning.mockReturnValue(true);
 
-      await service.startGeneration('u-1', 'b-1');
-
-      expect(agentService.startBookGeneration).toHaveBeenCalledOnce();
-      expect(agentService.startBookGeneration).toHaveBeenCalledWith(book);
+      await expect(service.startGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
   });
 
   // ─── retryGeneration ─────────────────────────────────────────────────────────
 
   describe('retryGeneration', () => {
-    it('clears failedStep/errorMessage and re-runs the generation pipeline', async () => {
+    it('clears failedStep/errorMessage, transitions to char_build, and returns quickly', async () => {
       const book = makeBook({
         status: STATUS_FAILED,
         failedStep: 'pdf_render' as Book['failedStep'],
         errorMessage: 'PDF render failed',
       });
-      const cleared = makeBook({ status: STATUS_FAILED, failedStep: null, errorMessage: null });
-      const updatedBook = makeBook({ status: STATUS_COMPLETE });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, failedStep: null, errorMessage: null });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.book.update.mockResolvedValue(cleared);
-      agentService.startBookGeneration.mockResolvedValue(updatedBook);
 
       const result = await service.retryGeneration('u-1', 'b-1');
 
       expect(prisma.book.update).toHaveBeenCalledWith({
         where: { id: 'b-1' },
-        data: expect.objectContaining({ failedStep: null, errorMessage: null }),
+        data: expect.objectContaining({
+          status: 'char_build',
+          failedStep: null,
+          errorMessage: null,
+        }),
       });
+      expect(result.book.status).toBe('char_build');
+      // The pipeline itself is scheduled in the background, not awaited here.
+      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+    });
+
+    it('schedules the background pipeline via GenerationTaskRunner', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, failedStep: null, errorMessage: null });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+
+      await service.retryGeneration('u-1', 'b-1');
+
+      expect(generationTaskRunner.run).toHaveBeenCalledOnce();
+      expect(generationTaskRunner.run).toHaveBeenCalledWith('b-1', expect.any(Function));
+    });
+
+    it('the scheduled background task invokes AgentService.startBookGeneration with the cleared book', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, failedStep: null, errorMessage: null });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
+
+      await service.retryGeneration('u-1', 'b-1');
+      const task = generationTaskRunner.run.mock.calls[0]?.[1] as () => Promise<void>;
+      await task();
+
       expect(agentService.startBookGeneration).toHaveBeenCalledWith(cleared);
-      expect(result.book.status).toBe('complete');
     });
 
     it('throws ConflictException when the book is not failed (e.g. still generating)', async () => {
@@ -397,7 +490,7 @@ describe('BooksService', () => {
 
       await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
       expect(prisma.book.update).not.toHaveBeenCalled();
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
     it('throws ConflictException when the book is already complete', async () => {
@@ -405,7 +498,17 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
+    });
+
+    it('throws ConflictException when the runner reports the book is already generating', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      generationTaskRunner.isRunning.mockReturnValue(true);
+
+      await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when the book belongs to a different user', async () => {
@@ -413,7 +516,7 @@ describe('BooksService', () => {
 
       await expect(service.retryGeneration('u-other', 'b-1')).rejects.toThrow(NotFoundException);
       expect(prisma.book.update).not.toHaveBeenCalled();
-      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+      expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when the book does not exist', async () => {
@@ -426,7 +529,6 @@ describe('BooksService', () => {
       const book = makeBook({ status: STATUS_FAILED });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.book.update.mockResolvedValue(book);
-      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
 
       await service.retryGeneration('u-1', 'b-1');
 
@@ -436,12 +538,14 @@ describe('BooksService', () => {
 
     it('reuses AgentService.startBookGeneration rather than duplicating pipeline logic', async () => {
       const book = makeBook({ status: STATUS_FAILED });
-      const cleared = makeBook({ status: STATUS_FAILED, failedStep: null, errorMessage: null });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, failedStep: null, errorMessage: null });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.book.update.mockResolvedValue(cleared);
       agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
 
       await service.retryGeneration('u-1', 'b-1');
+      const task = generationTaskRunner.run.mock.calls[0]?.[1] as () => Promise<void>;
+      await task();
 
       expect(agentService.startBookGeneration).toHaveBeenCalledOnce();
     });

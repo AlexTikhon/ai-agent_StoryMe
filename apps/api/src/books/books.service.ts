@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { BookStatus, type Book } from '@prisma/client';
@@ -14,18 +15,25 @@ import type {
 } from '@book/types';
 import { PrismaService } from '../database/prisma.service';
 import { AgentService } from '../agent/agent.service';
+import { GenerationTaskRunner } from '../agent/generation-task-runner';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { toBookDto } from './books.mapper';
 import { buildGenerationDiagnostics } from './generation-diagnostics';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
 
+/** Book.status value written the moment generation is scheduled — the first pipeline step, non-terminal. */
+const GENERATION_STARTED_STATUS = BookStatus.char_build;
+
 @Injectable()
 export class BooksService {
+  private readonly logger = new Logger(BooksService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly agentService: AgentService,
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
+    private readonly generationTaskRunner: GenerationTaskRunner,
   ) {}
 
   async create(userId: string, dto: CreateBookDto): Promise<BookDto> {
@@ -90,25 +98,41 @@ export class BooksService {
 
   /**
    * Retries a failed book generation in place: clears the failure markers,
-   * then re-runs the same pipeline used by startGeneration. AgentService
-   * appends new AgentLog rows rather than deleting prior ones, so retry
-   * history stays visible in generation diagnostics.
+   * flips status back to a non-terminal generating state, and schedules the
+   * same pipeline used by startGeneration to run in the background.
+   * AgentService appends new AgentLog rows rather than deleting prior ones,
+   * so retry history stays visible in generation diagnostics.
    */
   async retryGeneration(userId: string, bookId: string): Promise<GenerateBookResponse> {
     const book = await this.findOwnedOrThrow(bookId, userId);
     if (book.status !== BookStatus.failed) {
       throw new ConflictException('Only failed books can be retried');
     }
+    if (this.generationTaskRunner.isRunning(bookId)) {
+      throw new ConflictException('Generation is already in progress for this book');
+    }
 
     const cleared = await this.prisma.book.update({
       where: { id: bookId },
-      data: { failedStep: null, errorMessage: null, retryCount: { increment: 1 } },
+      data: {
+        status: GENERATION_STARTED_STATUS,
+        failedStep: null,
+        errorMessage: null,
+        retryCount: { increment: 1 },
+      },
     });
 
-    const updated = await this.agentService.startBookGeneration(cleared);
-    return { book: toBookDto(updated) };
+    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(cleared));
+
+    return { book: toBookDto(cleared) };
   }
 
+  /**
+   * Validates and transitions a draft to a non-terminal generating state,
+   * then schedules AgentService's pipeline to run in the background — the
+   * HTTP response returns as soon as the status transition is persisted,
+   * not once generation finishes. See GenerationTaskRunner.
+   */
   async startGeneration(userId: string, bookId: string): Promise<GenerateBookResponse> {
     const book = await this.findOwnedOrThrow(bookId, userId);
 
@@ -124,9 +148,46 @@ export class BooksService {
     if (book.status !== BookStatus.created) {
       throw new ConflictException('Generation already started or completed for this book');
     }
+    if (this.generationTaskRunner.isRunning(bookId)) {
+      throw new ConflictException('Generation is already in progress for this book');
+    }
 
-    const updated = await this.agentService.startBookGeneration(book);
-    return { book: toBookDto(updated) };
+    const started = await this.prisma.book.update({
+      where: { id: bookId },
+      data: { status: GENERATION_STARTED_STATUS },
+    });
+
+    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(started));
+
+    return { book: toBookDto(started) };
+  }
+
+  /**
+   * Runs AgentService's pipeline in the background and never throws — it's
+   * invoked from GenerationTaskRunner, outside any HTTP request. AgentService
+   * already marks the book failed for every failure it anticipates (story
+   * generation, image generation, PDF render); this catch only guards against
+   * a truly unexpected error escaping that handling, so the book never gets
+   * stuck in a non-terminal status forever.
+   */
+  private async runGenerationPipeline(book: Book): Promise<void> {
+    try {
+      await this.agentService.startBookGeneration(book);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Background generation pipeline threw unexpectedly for book ${book.id}: ${message}`);
+      await this.prisma.book
+        .update({
+          where: { id: book.id },
+          data: { status: BookStatus.failed, errorMessage: message },
+        })
+        .catch((updateErr: unknown) => {
+          const updateMessage = updateErr instanceof Error ? updateErr.message : String(updateErr);
+          this.logger.error(
+            `Failed to mark book ${book.id} failed after an unexpected pipeline error: ${updateMessage}`,
+          );
+        });
+    }
   }
 
   async getPreviewPdfBuffer(
