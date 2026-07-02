@@ -11,6 +11,7 @@ import type {
   BookPreview,
   BookPreviewPage,
   GeneratedImageEntry,
+  GenerationDiagnosticsDto,
   IllustrationPlan,
   ImageGenerationResult,
   PagePlan,
@@ -42,6 +43,15 @@ function isTerminalBookStatus(status: BookStatus): boolean {
 
 function isGeneratingBookStatus(status: BookStatus): boolean {
   return status !== BookStatus.Created && !isTerminalBookStatus(status);
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainingSeconds}s`;
 }
 
 function generationStatusMessage(status: BookStatus): string {
@@ -134,6 +144,9 @@ export default function BookDetailPage() {
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
+  const [diagnostics, setDiagnostics] = useState<GenerationDiagnosticsDto | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -176,10 +189,45 @@ export default function BookDetailPage() {
           if (!cancelled) setBook(data);
         })
         .catch(() => {});
+      void booksApi
+        .getGenerationDiagnostics(id)
+        .then((data) => {
+          if (!cancelled) {
+            setDiagnostics(data);
+            setDiagnosticsError(null);
+          }
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
+          }
+        });
     }, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
+    };
+  }, [id, book?.status]);
+
+  // Fetch diagnostics once generation has started (not for untouched drafts)
+  useEffect(() => {
+    if (!book || book.status === BookStatus.Created) return;
+    let cancelled = false;
+    booksApi
+      .getGenerationDiagnostics(id)
+      .then((data) => {
+        if (!cancelled) {
+          setDiagnostics(data);
+          setDiagnosticsError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
+        }
+      });
+    return () => {
+      cancelled = true;
     };
   }, [id, book?.status]);
 
@@ -188,6 +236,13 @@ export default function BookDetailPage() {
     try {
       const data = await booksApi.get(id);
       setBook(data);
+      try {
+        const diagnosticsData = await booksApi.getGenerationDiagnostics(id);
+        setDiagnostics(diagnosticsData);
+        setDiagnosticsError(null);
+      } catch (err) {
+        setDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
+      }
     } catch {
       // silent — manual retry; load errors handled by main effect
     } finally {
@@ -326,6 +381,8 @@ export default function BookDetailPage() {
                     void handleRefresh();
                   }}
                   refreshing={refreshing}
+                  diagnostics={diagnostics}
+                  diagnosticsError={diagnosticsError}
                 />
               )}
             </div>
@@ -348,6 +405,8 @@ interface BookDetailViewProps {
   generateError: string | null;
   onRefresh: () => void;
   refreshing: boolean;
+  diagnostics: GenerationDiagnosticsDto | null;
+  diagnosticsError: string | null;
 }
 
 function BookDetailView({
@@ -360,6 +419,8 @@ function BookDetailView({
   generateError,
   onRefresh,
   refreshing,
+  diagnostics,
+  diagnosticsError,
 }: BookDetailViewProps) {
   const isDraft = book.status === BookStatus.Created;
   const missingFields = getMissingDraftFields(book);
@@ -424,6 +485,10 @@ function BookDetailView({
           <dd className="text-text-primary">{new Date(book.updatedAt).toLocaleDateString()}</dd>
         </div>
       </dl>
+
+      {!isDraft && (
+        <GenerationDiagnosticsPanel diagnostics={diagnostics} diagnosticsError={diagnosticsError} />
+      )}
 
       {storyPlan && (
         <div className="mb-6 rounded-xl border border-violet-100 bg-violet-50 p-4">
@@ -579,6 +644,97 @@ function BookDetailView({
             </button>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ── GenerationDiagnosticsPanel ────────────────────────────────────────────────
+
+function GenerationDiagnosticsPanel({
+  diagnostics,
+  diagnosticsError,
+}: {
+  diagnostics: GenerationDiagnosticsDto | null;
+  diagnosticsError: string | null;
+}) {
+  if (!diagnostics && !diagnosticsError) return null;
+
+  if (!diagnostics) {
+    return (
+      <div className="mb-6 rounded-xl border border-border-default bg-stone-50 p-4 text-xs text-text-muted">
+        Diagnostics unavailable{diagnosticsError ? `: ${diagnosticsError}` : '.'}
+      </div>
+    );
+  }
+
+  // generationMetadata is always present per the DTO contract, but panel stays
+  // resilient to a malformed/partial payload rather than throwing during render.
+  const meta = diagnostics.generationMetadata ?? ({} as Partial<GenerationDiagnosticsDto['generationMetadata']>);
+  const hasFailure = Boolean(diagnostics.failedStep ?? diagnostics.errorMessage);
+
+  return (
+    <div
+      data-testid="generation-diagnostics"
+      className="mb-6 rounded-xl border border-border-default bg-stone-50 p-4"
+    >
+      <h2 className="mb-3 font-display text-sm font-semibold text-text-secondary">
+        Generation diagnostics
+      </h2>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-text-muted">
+        {meta.storyProvider && (
+          <div>
+            <dt className="inline font-medium">Story: </dt>
+            <dd className="inline text-text-secondary">
+              {meta.storyProvider}
+              {meta.storyModel ? ` (${meta.storyModel})` : ''}
+            </dd>
+          </div>
+        )}
+        {meta.imageProvider && (
+          <div>
+            <dt className="inline font-medium">Images: </dt>
+            <dd className="inline text-text-secondary">
+              {meta.imageProvider}
+              {meta.imageModel ? ` (${meta.imageModel})` : ''}
+            </dd>
+          </div>
+        )}
+        {meta.generatedPages !== undefined && (
+          <div>
+            <dt className="inline font-medium">Generated pages: </dt>
+            <dd className="inline text-text-secondary">
+              {meta.generatedPages}
+              {meta.requestedPages != null ? ` / ${meta.requestedPages}` : ''}
+            </dd>
+          </div>
+        )}
+        {meta.durationMs !== undefined && (
+          <div>
+            <dt className="inline font-medium">Duration: </dt>
+            <dd className="inline text-text-secondary">{formatDurationMs(meta.durationMs)}</dd>
+          </div>
+        )}
+        {diagnostics.previewPdfUrl && (
+          <div>
+            <dt className="inline font-medium">PDF: </dt>
+            <dd className="inline text-text-secondary">ready</dd>
+          </div>
+        )}
+      </dl>
+
+      {hasFailure && (
+        <div className="mt-3 rounded-lg bg-danger-light px-3 py-2 text-xs text-danger-base">
+          {diagnostics.failedStep && (
+            <p>
+              <span className="font-medium">Failed step:</span> {diagnostics.failedStep}
+            </p>
+          )}
+          {diagnostics.errorMessage && <p>{diagnostics.errorMessage}</p>}
+          <p className="mt-1 text-text-muted">
+            Try again later, or check diagnostics for more detail.
+          </p>
+        </div>
       )}
     </div>
   );

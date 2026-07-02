@@ -3,6 +3,7 @@ import type {
   BooksPageDto,
   CreateBookInput,
   GenerateBookResponse,
+  GenerationDiagnosticsDto,
   UpdateBookInput,
 } from '@book/types';
 import { apiFetch } from './client';
@@ -30,4 +31,7 @@ export const booksApi = {
     apiFetch(`/books/${id}/generate`, { method: 'POST' }),
 
   remove: (id: string): Promise<void> => apiFetch(`/books/${id}`, { method: 'DELETE' }),
+
+  getGenerationDiagnostics: (id: string): Promise<GenerationDiagnosticsDto> =>
+    apiFetch(`/books/${id}/generation-diagnostics`),
 };

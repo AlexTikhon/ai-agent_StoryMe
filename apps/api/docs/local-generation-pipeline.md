@@ -504,6 +504,46 @@ Never logged, stored, or returned by diagnostics:
   `AgentService`, so every `AgentLog` row still records `attempt: 1`
   regardless of how many HTTP attempts it took.
 
+### Frontend integration (Phase 3F)
+
+The book detail page (`apps/web/src/app/dashboard/books/[id]/page.tsx`)
+surfaces `GET /api/books/:id/generation-diagnostics` through a compact
+"Generation diagnostics" panel (`GenerationDiagnosticsPanel`), shown for any
+book past the `created` draft status:
+
+- `apps/web/src/lib/api/books.ts` — `booksApi.getGenerationDiagnostics(id)`,
+  typed against the same `GenerationDiagnosticsDto` exported from
+  `@book/types` that the backend DTO already uses (no new frontend types —
+  `GenerationDiagnosticsDto`/`GenerationMetadata`/`AgentLogSummary` are
+  defined once, in `packages/types`, and shared by both sides).
+- **Panel contents**: story/image provider + model, generated (of requested)
+  page count, duration (formatted as `1m 5s` / `650ms` rather than raw
+  milliseconds), and a "PDF: ready" row once `previewPdfUrl` is set. Only
+  fields already proven safe by `GenerationDiagnosticsDto` are rendered — see
+  "What's intentionally not stored" above; the panel has no path to prompts,
+  image bytes, or raw provider responses because the DTO never carries them.
+- **Failure display**: when `failedStep`/`errorMessage` are present, the
+  panel adds a small danger-styled block with the failed step, the safe
+  `errorMessage` string, and a static "Try again later, or check diagnostics
+  for more detail" hint. No stack traces or raw provider payloads are ever
+  rendered — again, because the DTO doesn't carry them.
+- **Polling**: the existing book-status poll (every 2.5s, only while status
+  is non-terminal — see "Status transitions" below) now also re-fetches
+  diagnostics on each tick, so the panel's provider/page/duration fields
+  update live during generation. Diagnostics are also fetched once
+  immediately whenever a book's status leaves `created`, so the panel has
+  data even before the first poll tick. Both stop the moment status becomes
+  `complete`/`failed`/`cancelled`/`partial`, same as the book poll.
+- **Failure isolation**: a failed diagnostics fetch only sets a local
+  "Diagnostics unavailable" message inside the panel — it never blocks
+  rendering the rest of the book detail page (story plan, preview, PDF
+  section, etc.), which is unaffected by diagnostics being unavailable.
+
+To inspect a failed generation from the UI: open the book's detail page:
+the status badge and the `PdfSection`'s failure banner show it failed, and
+the diagnostics panel underneath shows the failed step and safe error
+message directly — no separate tool or API call needed.
+
 ## Status transitions
 
 ```text
@@ -649,6 +689,17 @@ re-verified here — see "Test coverage" below.
   story provider (`providerName: 'openai'`, `modelName: 'gpt-4o-mini'`)
   produces the matching labels in both `aiModelVersions` and the
   `story_plan` log row.
+- `apps/web/src/app/dashboard/books/[id]/page.test.tsx` (Phase 3F) —
+  `GenerationDiagnosticsPanel` renders provider/model/generated-page-count/
+  formatted-duration; shows `failedStep` and the safe `errorMessage` plus the
+  "try again later" hint on a failed book; shows a "PDF: ready" row once
+  `previewPdfUrl` is set; diagnostics refresh on each poll tick while
+  generating and stop once status is terminal; a failed diagnostics fetch
+  degrades to a "Diagnostics unavailable" message without breaking the rest
+  of the page. (The suite's `fetch` mock was changed from a plain call-order
+  queue to one routed by request URL, since the page now issues a second,
+  concurrent `/generation-diagnostics` call alongside every `/books/:id`
+  call/poll; existing tests were otherwise left as-is.)
 
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see

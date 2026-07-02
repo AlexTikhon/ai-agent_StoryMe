@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter, useParams } from 'next/navigation';
 import BookDetailPage from './page';
-import { SupportedLanguage, BookStatus } from '@book/types';
+import { SupportedLanguage, BookStatus, AgentStep } from '@book/types';
 import type {
   BookDto,
   BookPreview,
   GeneratedImageEntry,
+  GenerationDiagnosticsDto,
   IllustrationPlan,
   ImageGenerationResult,
   PagePlan,
@@ -154,17 +155,92 @@ function mockError(status: number, message: string): Response {
   return { ok: false, status, json: async () => ({ message }) } as unknown as Response;
 }
 
+function makeDiagnostics(overrides: Partial<GenerationDiagnosticsDto> = {}): GenerationDiagnosticsDto {
+  return {
+    bookId: 'book-1',
+    status: BookStatus.StoryDraft,
+    failedStep: null,
+    errorMessage: null,
+    generationMetadata: {
+      storyProvider: 'mock',
+      imageProvider: 'mock',
+    },
+    recentLogs: [],
+    previewPdfUrl: null,
+    ...overrides,
+  };
+}
+
+const DEFAULT_DIAGNOSTICS = makeDiagnostics();
+
+// The book detail page now issues an automatic GET .../generation-diagnostics
+// call alongside every book fetch/poll. Routing fetch responses by URL (instead
+// of vitest's plain call-order `mockResolvedValueOnce` queue) keeps that call
+// from silently stealing a response meant for a `/books/:id` request, without
+// requiring every existing test below to be rewritten: those tests keep calling
+// `vi.mocked(fetch).mockResolvedValueOnce(...)`, which this routes into the
+// book-only queue. Tests that care about diagnostics content use
+// `queueDiagnostics(...)` explicitly; otherwise a safe default is served.
+interface RoutedFetchMock {
+  (input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+  mock: { calls: unknown[][] };
+  mockResolvedValueOnce: (value: Response) => RoutedFetchMock;
+  mockResolvedValue: (value: Response) => RoutedFetchMock;
+}
+
+function createRoutedFetchMock(): {
+  fetchFn: RoutedFetchMock;
+  queueDiagnostics: (response: Response) => void;
+} {
+  const bookQueue: Response[] = [];
+  let bookDefault: Response | undefined;
+  const diagnosticsQueue: Response[] = [];
+  const calls: unknown[][] = [];
+
+  const fetchFn = ((input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push([input, init]);
+    const url = String(input);
+    if (url.includes('/generation-diagnostics')) {
+      const next = diagnosticsQueue.shift();
+      return Promise.resolve(next ?? mockOk(DEFAULT_DIAGNOSTICS));
+    }
+    const next = bookQueue.shift() ?? bookDefault;
+    if (!next) {
+      return Promise.reject(new Error(`Unexpected fetch call with no queued response: ${url}`));
+    }
+    return Promise.resolve(next);
+  }) as RoutedFetchMock;
+
+  fetchFn.mock = { calls };
+  fetchFn.mockResolvedValueOnce = (value: Response) => {
+    bookQueue.push(value);
+    return fetchFn;
+  };
+  fetchFn.mockResolvedValue = (value: Response) => {
+    bookDefault = value;
+    return fetchFn;
+  };
+
+  return { fetchFn, queueDiagnostics: (response: Response) => diagnosticsQueue.push(response) };
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('BookDetailPage', () => {
   const pushMock = vi.fn();
+  let fetchMock: ReturnType<typeof createRoutedFetchMock>;
+
+  function queueDiagnostics(response: Response) {
+    fetchMock.queueDiagnostics(response);
+  }
 
   beforeEach(() => {
     vi.mocked(useParams).mockReturnValue({ id: 'book-1' });
     vi.mocked(useRouter).mockReturnValue({ push: pushMock } as unknown as ReturnType<
       typeof useRouter
     >);
-    vi.stubGlobal('fetch', vi.fn());
+    fetchMock = createRoutedFetchMock();
+    vi.stubGlobal('fetch', fetchMock.fetchFn);
     pushMock.mockReset();
   });
 
@@ -1469,5 +1545,188 @@ describe('BookDetailPage', () => {
     );
 
     expect(screen.queryByText(/generation in progress/i)).toBeNull();
+  });
+
+  // ── Generation diagnostics panel ──────────────────────────────────────────
+
+  describe('Generation diagnostics panel', () => {
+    it('renders provider, model, generated pages, and duration info', async () => {
+      const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.ImageGen };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(generatingBook));
+      queueDiagnostics(
+        mockOk(
+          makeDiagnostics({
+            status: BookStatus.ImageGen,
+            generationMetadata: {
+              storyProvider: 'openai',
+              storyModel: 'gpt-4o-mini',
+              imageProvider: 'openai',
+              imageModel: 'dall-e-3',
+              generatedPages: 2,
+              requestedPages: 4,
+              durationMs: 65_000,
+            },
+          }),
+        ),
+      );
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        const panel = within(screen.getByTestId('generation-diagnostics'));
+        expect(panel.getByText(/openai \(gpt-4o-mini\)/)).toBeDefined();
+        expect(panel.getByText(/openai \(dall-e-3\)/)).toBeDefined();
+        expect(panel.getByText('2 / 4')).toBeDefined();
+        expect(panel.getByText('1m 5s')).toBeDefined();
+      });
+    });
+
+    it('shows failedStep and a safe errorMessage when generation fails', async () => {
+      const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(failedBook));
+      queueDiagnostics(
+        mockOk(
+          makeDiagnostics({
+            status: BookStatus.Failed,
+            failedStep: AgentStep.ImageGen,
+            errorMessage: 'Image provider returned an error after 3 attempts.',
+          }),
+        ),
+      );
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        const panel = within(screen.getByTestId('generation-diagnostics'));
+        expect(
+          panel.getByText(
+            (_, element) =>
+              element?.tagName.toLowerCase() === 'p' &&
+              element.textContent === 'Failed step: image_gen',
+          ),
+        ).toBeDefined();
+        expect(
+          panel.getByText('Image provider returned an error after 3 attempts.'),
+        ).toBeDefined();
+        expect(panel.getByText(/try again later, or check diagnostics/i)).toBeDefined();
+      });
+    });
+
+    it('shows a PDF-ready indicator when previewPdfUrl is present in diagnostics', async () => {
+      const completeBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+      queueDiagnostics(
+        mockOk(
+          makeDiagnostics({
+            status: BookStatus.Complete,
+            previewPdfUrl: '/files/books/book-1/storybook.pdf',
+          }),
+        ),
+      );
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        const panel = within(screen.getByTestId('generation-diagnostics'));
+        expect(panel.getByText('PDF:')).toBeDefined();
+        expect(panel.getByText('ready')).toBeDefined();
+      });
+    });
+
+    it('does not crash and shows the book normally when the diagnostics request fails', async () => {
+      const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryPlan };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(generatingBook));
+      queueDiagnostics(mockError(500, 'Internal server error'));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { level: 1, name: "Emma's Story" })).toBeDefined();
+        expect(screen.getByText('story_plan')).toBeDefined();
+      });
+      expect(screen.queryByTestId('generation-diagnostics')).toBeNull();
+    });
+
+    describe('polling', () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('refreshes diagnostics on each poll tick while generating', async () => {
+        const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.ImageGen };
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(mockOk(generatingBook))
+          .mockResolvedValue(mockOk(generatingBook));
+        queueDiagnostics(
+          mockOk(
+            makeDiagnostics({
+              status: BookStatus.ImageGen,
+              generationMetadata: { storyProvider: 'mock', imageProvider: 'mock', generatedPages: 1 },
+            }),
+          ),
+        );
+        queueDiagnostics(
+          mockOk(
+            makeDiagnostics({
+              status: BookStatus.ImageGen,
+              generationMetadata: { storyProvider: 'mock', imageProvider: 'mock', generatedPages: 3 },
+            }),
+          ),
+        );
+
+        render(<BookDetailPage />);
+
+        await waitFor(() => {
+          const panel = within(screen.getByTestId('generation-diagnostics'));
+          expect(panel.getByText('1')).toBeDefined();
+        });
+
+        await vi.advanceTimersByTimeAsync(2500);
+
+        await waitFor(() => {
+          const panel = within(screen.getByTestId('generation-diagnostics'));
+          expect(panel.getByText('3')).toBeDefined();
+        });
+      });
+
+      it('stops fetching diagnostics once status becomes terminal', async () => {
+        const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+        const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(mockOk(generatingBook))
+          .mockResolvedValueOnce(mockOk(failedBook));
+        queueDiagnostics(
+          mockOk(makeDiagnostics({ status: BookStatus.StoryDraft })),
+        );
+        queueDiagnostics(
+          mockOk(
+            makeDiagnostics({
+              status: BookStatus.Failed,
+              failedStep: AgentStep.StoryDraft,
+              errorMessage: 'Story provider timed out.',
+            }),
+          ),
+        );
+
+        render(<BookDetailPage />);
+        await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
+
+        await vi.advanceTimersByTimeAsync(2500);
+        await waitFor(() => expect(screen.getByText(/generation failed/i)).toBeDefined());
+
+        // let any fetch triggered by the status transition itself settle before snapshotting
+        await vi.advanceTimersByTimeAsync(0);
+        const callCountAfterFailed = fetchMock.fetchFn.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(2500);
+        expect(fetchMock.fetchFn.mock.calls.length).toBe(callCountAfterFailed);
+      });
+    });
   });
 });
