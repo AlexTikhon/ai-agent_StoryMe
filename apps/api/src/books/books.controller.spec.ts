@@ -22,6 +22,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     findOneForUser: vi.fn(),
     update: vi.fn(),
     startGeneration: vi.fn(),
+    retryGeneration: vi.fn(),
     remove: vi.fn(),
     getPreviewPdfBuffer: vi.fn(),
     getGenerationDiagnostics: vi.fn(),
@@ -144,6 +145,40 @@ describe('BooksController.generate', () => {
     const controller = new BooksController(booksService);
 
     await expect(controller.generate(FAKE_USER, 'b-1')).rejects.toThrow(ConflictException);
+  });
+});
+
+describe('BooksController.retryGeneration', () => {
+  it('delegates to booksService.retryGeneration and returns its response', async () => {
+    const booksService = createMockBooksService();
+    const response: GenerateBookResponse = { book: { ...BOOK_DTO, status: 'story_plan' } as BookDto };
+    booksService.retryGeneration.mockResolvedValue(response);
+    const controller = new BooksController(booksService);
+
+    const result = await controller.retryGeneration(FAKE_USER, 'b-1');
+
+    expect(booksService.retryGeneration).toHaveBeenCalledWith('u-1', 'b-1');
+    expect(result).toBe(response);
+  });
+
+  it('propagates ConflictException when the book is not in a failed state', async () => {
+    const booksService = createMockBooksService();
+    booksService.retryGeneration.mockRejectedValue(
+      new ConflictException('Only failed books can be retried'),
+    );
+    const controller = new BooksController(booksService);
+
+    await expect(controller.retryGeneration(FAKE_USER, 'b-1')).rejects.toThrow(ConflictException);
+  });
+
+  it('propagates NotFoundException for a missing or unauthorized book', async () => {
+    const booksService = createMockBooksService();
+    booksService.retryGeneration.mockRejectedValue(new NotFoundException('Book not found'));
+    const controller = new BooksController(booksService);
+
+    await expect(controller.retryGeneration(FAKE_USER, 'missing')).rejects.toThrow(
+      NotFoundException,
+    );
   });
 });
 

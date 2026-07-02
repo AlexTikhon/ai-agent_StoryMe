@@ -88,6 +88,27 @@ export class BooksService {
     });
   }
 
+  /**
+   * Retries a failed book generation in place: clears the failure markers,
+   * then re-runs the same pipeline used by startGeneration. AgentService
+   * appends new AgentLog rows rather than deleting prior ones, so retry
+   * history stays visible in generation diagnostics.
+   */
+  async retryGeneration(userId: string, bookId: string): Promise<GenerateBookResponse> {
+    const book = await this.findOwnedOrThrow(bookId, userId);
+    if (book.status !== BookStatus.failed) {
+      throw new ConflictException('Only failed books can be retried');
+    }
+
+    const cleared = await this.prisma.book.update({
+      where: { id: bookId },
+      data: { failedStep: null, errorMessage: null, retryCount: { increment: 1 } },
+    });
+
+    const updated = await this.agentService.startBookGeneration(cleared);
+    return { book: toBookDto(updated) };
+  }
+
   async startGeneration(userId: string, bookId: string): Promise<GenerateBookResponse> {
     const book = await this.findOwnedOrThrow(bookId, userId);
 

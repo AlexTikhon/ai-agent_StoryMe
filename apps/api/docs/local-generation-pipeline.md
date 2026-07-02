@@ -544,6 +544,74 @@ the status badge and the `PdfSection`'s failure banner show it failed, and
 the diagnostics panel underneath shows the failed step and safe error
 message directly — no separate tool or API call needed.
 
+## Retrying failed generation (Phase 3G)
+
+A book that lands in `BookStatus.failed` (story-plan failure, image-gen
+failure, or PDF-render failure — see "Failure states summary" below) isn't a
+dead end: `POST /api/books/:id/retry-generation` re-runs the same pipeline in
+place, reusing `AgentService.startBookGeneration` rather than duplicating any
+generation logic.
+
+- **How a failed generation is represented** — nothing new. `Book.status ===
+  'failed'`, `Book.failedStep` (which pipeline step failed), and
+  `Book.errorMessage` (the caught error's message) are the same fields set by
+  the original run (see "What `AgentService.startBookGeneration` does, in
+  order" above). The `AgentLog` rows from the failed attempt are never
+  deleted.
+- **How to inspect diagnostics** — unchanged from Phase 3E: `GET
+  /api/books/:id/generation-diagnostics` (or the book detail page's
+  diagnostics panel) shows `failedStep`, `errorMessage`, and `recentLogs` for
+  the failed run. See "Generation diagnostics (Phase 3E)" above.
+- **How to retry** — `BooksService.retryGeneration(userId, bookId)`:
+  1. `findOwnedOrThrow` — 404 if the book doesn't exist, belongs to another
+     user, or is soft-deleted (same ownership check as every other
+     `BooksService` method).
+  2. Requires `status === 'failed'` — otherwise `ConflictException` (409,
+     "Only failed books can be retried"). Since intermediate pipeline steps
+     never set `status` back to `failed` until a terminal outcome, this same
+     check also rejects retrying a book that's already `complete` or
+     currently mid-generation — there's no separate "is generating" flag to
+     maintain.
+  3. `prisma.book.update`: clears `failedStep`/`errorMessage` to `null` and
+     increments `Book.retryCount`, before generation runs again — so if the
+     retry fails too, the new failure's `failedStep`/`errorMessage` aren't
+     mixed up with the old ones.
+  4. Delegates to `AgentService.startBookGeneration(clearedBook)` — the exact
+     same call `BooksService.startGeneration` makes. This appends a fresh set
+     of `AgentLog` rows (new `traceId`) on top of the failed attempt's rows;
+     nothing is deleted, so the full retry history stays visible via
+     `recentLogs`/`GET /:id/generation-diagnostics`.
+  5. Returns `GenerateBookResponse` (`{ book }`) — the same response shape
+     `POST /:id/generate` returns, with the book's final `complete`/`failed`
+     status.
+- **Route**: `POST /api/books/:id/retry-generation`
+  (`BooksController.retryGeneration`, same `DevAuthGuard` as every other
+  books route, `@HttpCode(200)` like `generate`).
+- **Frontend**: the book detail page shows a "Retry generation" button next
+  to the diagnostics panel only when `status === BookStatus.Failed`. Clicking
+  it calls `booksApi.retryGeneration(id)` (`POST
+  /books/:id/retry-generation`), disables the button until the response
+  comes back, and on success replaces the page's `book` state with the
+  response — which re-triggers the existing status/diagnostics poll effect
+  exactly as a fresh `Generate Story` click does, since that effect is keyed
+  off `book.status` rather than any retry-specific flag. On failure, the
+  caught error's message is shown in a `role="alert"` banner (same pattern as
+  the `Generate Story` and edit-form error banners) — never a raw
+  stack trace or provider response.
+- **Known limitations**:
+  - Like `startGeneration`, this is a check-then-act read/update with no
+    row-level lock or transaction — two concurrent retry requests for the
+    same book both racing past the `status === 'failed'` check is a
+    theoretical (pre-existing) race, not something Phase 3G introduces or
+    fixes.
+  - Because the pipeline runs synchronously inside the request (see "There is
+    no queue/worker" above), the retry endpoint's HTTP response only returns
+    once the whole re-run (including PDF render) has finished or failed
+    again — the same characteristic `POST /:id/generate` already has.
+  - Retrying does not reset or refund anything cost-related
+    (`Book.totalCostUsd`, credits) — Phase 3G only clears the failure markers
+    and re-runs generation.
+
 ## Status transitions
 
 ```text
@@ -587,6 +655,7 @@ re-verified here — see "Test coverage" below.
 | `BadRequestException` (400) | `generate` called with missing draft fields | `POST /:id/generate` |
 | `ConflictException` (409) | `update`/`remove` after `status !== created` | `PATCH /:id`, `DELETE /:id` |
 | `ConflictException` (409) | `generate` called when `status !== created` | `POST /:id/generate` |
+| `ConflictException` (409) | `retry-generation` called when `status !== failed` | `POST /:id/retry-generation` |
 | `ConflictException` (409) | preview requested before `previewPdfUrl` is set | `GET /:id/pdf/preview` |
 | `NotFoundException` (404) | book missing / not owned / soft-deleted | any `:id` route |
 | `NotFoundException` (404) | `previewPdfUrl` set but file missing from storage | `GET /:id/pdf/preview` |
@@ -681,6 +750,24 @@ re-verified here — see "Test coverage" below.
 - `apps/api/src/books/books.controller.spec.ts` (Phase 3E) — thin
   pass-through wiring for `GET /:id/generation-diagnostics` plus
   `NotFoundException` propagation.
+- `apps/api/src/books/books.service.spec.ts` (Phase 3G) — `retryGeneration`:
+  clears `failedStep`/`errorMessage` and delegates to
+  `AgentService.startBookGeneration` with the cleared book; rejects with
+  `ConflictException` when status is not `failed` (covers both an
+  in-progress and an already-`complete` book); 404s for a missing/not-owned
+  book without touching `prisma.book.update` or
+  `AgentService.startBookGeneration`; never calls `agentLog.deleteMany`/
+  `agentLog.delete`.
+- `apps/api/src/books/books.controller.spec.ts` (Phase 3G) — thin
+  pass-through wiring for `POST /:id/retry-generation` plus
+  `ConflictException`/`NotFoundException` propagation.
+- `apps/web/src/app/dashboard/books/[id]/page.test.tsx` (Phase 3G) — the
+  "Retry generation" button renders only when `status === Failed`; clicking
+  it POSTs to `/books/:id/retry-generation`; the button is disabled and reads
+  "Retrying…" while the request is in flight; a failed retry request shows
+  its message in a `role="alert"` banner; a successful retry that returns a
+  non-terminal status resumes the existing poll effect through to a terminal
+  status.
 - `apps/api/src/agent/agent.service.spec.ts` (Phase 3E) — the final book
   update carries `generationTimeMs`/`aiModelVersions` on success; every
   `AgentLog` row is tagged with the injected providers'

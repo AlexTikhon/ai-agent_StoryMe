@@ -30,6 +30,9 @@ export const booksApi = {
   generate: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/generate`, { method: 'POST' }),
 
+  retryGeneration: (id: string): Promise<GenerateBookResponse> =>
+    apiFetch(`/books/${id}/retry-generation`, { method: 'POST' }),
+
   remove: (id: string): Promise<void> => apiFetch(`/books/${id}`, { method: 'DELETE' }),
 
   getGenerationDiagnostics: (id: string): Promise<GenerationDiagnosticsDto> =>

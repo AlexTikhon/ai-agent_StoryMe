@@ -89,6 +89,15 @@ export class BooksController {
     return this.booksService.startGeneration(user.id, id);
   }
 
+  @Post(':id/retry-generation')
+  @HttpCode(200)
+  retryGeneration(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<GenerateBookResponse> {
+    return this.booksService.retryGeneration(user.id, id);
+  }
+
   @Delete(':id')
   @HttpCode(204)
   remove(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string): Promise<void> {

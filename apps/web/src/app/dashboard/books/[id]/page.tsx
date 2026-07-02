@@ -143,6 +143,8 @@ export default function BookDetailPage() {
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
 
   const [diagnostics, setDiagnostics] = useState<GenerationDiagnosticsDto | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
@@ -310,6 +312,19 @@ export default function BookDetailPage() {
     }
   };
 
+  const handleRetry = async () => {
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const response = await booksApi.retryGeneration(id);
+      setBook(response.book);
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : 'Failed to retry generation');
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   return (
     <main className="min-h-dvh bg-bg-base px-4 py-10">
       <div className="mx-auto max-w-lg">
@@ -383,6 +398,11 @@ export default function BookDetailPage() {
                   refreshing={refreshing}
                   diagnostics={diagnostics}
                   diagnosticsError={diagnosticsError}
+                  onRetry={() => {
+                    void handleRetry();
+                  }}
+                  retrying={retrying}
+                  retryError={retryError}
                 />
               )}
             </div>
@@ -407,6 +427,9 @@ interface BookDetailViewProps {
   refreshing: boolean;
   diagnostics: GenerationDiagnosticsDto | null;
   diagnosticsError: string | null;
+  onRetry: () => void;
+  retrying: boolean;
+  retryError: string | null;
 }
 
 function BookDetailView({
@@ -421,6 +444,9 @@ function BookDetailView({
   refreshing,
   diagnostics,
   diagnosticsError,
+  onRetry,
+  retrying,
+  retryError,
 }: BookDetailViewProps) {
   const isDraft = book.status === BookStatus.Created;
   const missingFields = getMissingDraftFields(book);
@@ -488,6 +514,26 @@ function BookDetailView({
 
       {!isDraft && (
         <GenerationDiagnosticsPanel diagnostics={diagnostics} diagnosticsError={diagnosticsError} />
+      )}
+
+      {book.status === BookStatus.Failed && (
+        <div className="mb-6">
+          <button
+            onClick={onRetry}
+            disabled={retrying}
+            className="w-full rounded-xl bg-violet-600 py-2 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500 disabled:opacity-60"
+          >
+            {retrying ? 'Retrying…' : 'Retry generation'}
+          </button>
+          {retryError && (
+            <p
+              role="alert"
+              className="mt-2 rounded-lg bg-danger-light px-4 py-3 text-sm text-danger-base"
+            >
+              {retryError}
+            </p>
+          )}
+        </div>
       )}
 
       {storyPlan && (

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter, useParams } from 'next/navigation';
 import BookDetailPage from './page';
@@ -1503,6 +1503,139 @@ describe('BookDetailPage', () => {
     );
     expect(screen.getByRole('link', { name: /open pdf/i })).toBeDefined();
     expect(screen.getByRole('link', { name: /download pdf/i })).toBeDefined();
+  });
+
+  // ── Retry generation ──────────────────────────────────────────────────────
+
+  describe('Retry generation', () => {
+    it('shows the Retry generation button only for failed books', async () => {
+      const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(failedBook));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /retry generation/i })).toBeDefined();
+      });
+    });
+
+    it('does not show the Retry generation button for non-failed books', async () => {
+      const inProgress = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(inProgress));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => expect(screen.getByText('story_draft')).toBeDefined());
+
+      expect(screen.queryByRole('button', { name: /retry generation/i })).toBeNull();
+    });
+
+    it('calls the retry-generation API when clicked', async () => {
+      const user = userEvent.setup();
+      const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      const retried: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(failedBook))
+        .mockResolvedValueOnce(mockOk({ book: retried }));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /retry generation/i }));
+
+      await user.click(screen.getByRole('button', { name: /retry generation/i }));
+
+      await waitFor(() => {
+        const retryCall = fetchMock.fetchFn.mock.calls.find(([input]) =>
+          String(input).includes('/retry-generation'),
+        );
+        expect(retryCall).toBeDefined();
+        const [, init] = retryCall as [unknown, RequestInit | undefined];
+        expect(init?.method).toBe('POST');
+      });
+    });
+
+    it('disables the button while the retry request is in progress', async () => {
+      const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      let resolveRetry: (value: Response) => void = () => {};
+      const pending = new Promise<Response>((resolve) => {
+        resolveRetry = resolve;
+      });
+      const fetchFn = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/retry-generation')) return pending;
+        if (url.includes('/generation-diagnostics')) {
+          return Promise.resolve(mockOk(DEFAULT_DIAGNOSTICS));
+        }
+        return Promise.resolve(mockOk(failedBook));
+      });
+      vi.stubGlobal('fetch', fetchFn);
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /retry generation/i }));
+
+      fireEvent.click(screen.getByRole('button', { name: /retry generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /retrying/i })).toBeDisabled();
+      });
+
+      resolveRetry(mockOk({ book: { ...failedBook, status: BookStatus.StoryDraft } }));
+
+      await waitFor(() => expect(screen.getByText('story_draft')).toBeDefined());
+    });
+
+    it('shows a safe error message when the retry request fails', async () => {
+      const user = userEvent.setup();
+      const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(failedBook))
+        .mockResolvedValueOnce(mockError(500, 'Internal server error'));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /retry generation/i }));
+
+      await user.click(screen.getByRole('button', { name: /retry generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toContain('Internal server error');
+      });
+    });
+
+    describe('polling resumption', () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('resumes status/diagnostics polling after a successful retry', async () => {
+        const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+        const retriedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+        const completeBook: BookDto = {
+          ...MOCK_BOOK,
+          status: BookStatus.Complete,
+          previewPdfUrl: '/files/books/book-1/storybook.pdf',
+        };
+
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(mockOk(failedBook))
+          .mockResolvedValueOnce(mockOk({ book: retriedBook }))
+          .mockResolvedValue(mockOk(completeBook));
+
+        render(<BookDetailPage />);
+        await waitFor(() => screen.getByRole('button', { name: /retry generation/i }));
+
+        fireEvent.click(screen.getByRole('button', { name: /retry generation/i }));
+
+        await waitFor(() => expect(screen.getByText('story_draft')).toBeDefined());
+
+        await vi.advanceTimersByTimeAsync(2500);
+
+        await waitFor(() =>
+          expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
+        );
+      });
+    });
   });
 
   // ── Status messages ───────────────────────────────────────────────────────

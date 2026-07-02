@@ -25,6 +25,8 @@ function createMockPdfStorage(): jest.Mocked<PdfStorage> {
 // Prisma emits string enum values that match the schema — 'created', 'preview_ready', etc.
 const STATUS_CREATED = 'created' as Book['status'];
 const STATUS_IN_PROGRESS = 'preview_ready' as Book['status'];
+const STATUS_FAILED = 'failed' as Book['status'];
+const STATUS_COMPLETE = 'complete' as Book['status'];
 
 function makeBook(overrides: Partial<Book> = {}): Book {
   return {
@@ -361,6 +363,87 @@ describe('BooksService', () => {
 
       expect(agentService.startBookGeneration).toHaveBeenCalledOnce();
       expect(agentService.startBookGeneration).toHaveBeenCalledWith(book);
+    });
+  });
+
+  // ─── retryGeneration ─────────────────────────────────────────────────────────
+
+  describe('retryGeneration', () => {
+    it('clears failedStep/errorMessage and re-runs the generation pipeline', async () => {
+      const book = makeBook({
+        status: STATUS_FAILED,
+        failedStep: 'pdf_render' as Book['failedStep'],
+        errorMessage: 'PDF render failed',
+      });
+      const cleared = makeBook({ status: STATUS_FAILED, failedStep: null, errorMessage: null });
+      const updatedBook = makeBook({ status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+      agentService.startBookGeneration.mockResolvedValue(updatedBook);
+
+      const result = await service.retryGeneration('u-1', 'b-1');
+
+      expect(prisma.book.update).toHaveBeenCalledWith({
+        where: { id: 'b-1' },
+        data: expect.objectContaining({ failedStep: null, errorMessage: null }),
+      });
+      expect(agentService.startBookGeneration).toHaveBeenCalledWith(cleared);
+      expect(result.book.status).toBe('complete');
+    });
+
+    it('throws ConflictException when the book is not failed (e.g. still generating)', async () => {
+      const book = makeBook({ status: STATUS_IN_PROGRESS });
+      prisma.book.findFirst.mockResolvedValue(book);
+
+      await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+    });
+
+    it('throws ConflictException when the book is already complete', async () => {
+      const book = makeBook({ status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+
+      await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the book belongs to a different user', async () => {
+      prisma.book.findFirst.mockResolvedValue(null);
+
+      await expect(service.retryGeneration('u-other', 'b-1')).rejects.toThrow(NotFoundException);
+      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(agentService.startBookGeneration).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the book does not exist', async () => {
+      prisma.book.findFirst.mockResolvedValue(null);
+
+      await expect(service.retryGeneration('u-1', 'no-such')).rejects.toThrow(NotFoundException);
+    });
+
+    it('never deletes AgentLog history — retry relies on AgentService appending new rows', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(book);
+      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
+
+      await service.retryGeneration('u-1', 'b-1');
+
+      expect(prisma.agentLog.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.agentLog.delete).not.toHaveBeenCalled();
+    });
+
+    it('reuses AgentService.startBookGeneration rather than duplicating pipeline logic', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      const cleared = makeBook({ status: STATUS_FAILED, failedStep: null, errorMessage: null });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
+
+      await service.retryGeneration('u-1', 'b-1');
+
+      expect(agentService.startBookGeneration).toHaveBeenCalledOnce();
     });
   });
 
