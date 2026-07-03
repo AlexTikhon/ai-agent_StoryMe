@@ -116,4 +116,60 @@ describe('envSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('applies IMAGE_STORAGE_DRIVER default of local', () => {
+    const result = envSchema.safeParse({
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+      OPENAI_API_KEY: 'sk-test',
+      FAL_API_KEY: 'fal-test',
+      R2_ACCOUNT_ID: 'test-account',
+      R2_ACCESS_KEY_ID: 'test-key',
+      R2_SECRET_ACCESS_KEY: 'test-secret',
+      R2_BUCKET_NAME: 'test-bucket',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.IMAGE_STORAGE_DRIVER).toBe('local');
+    }
+  });
+
+  it('accepts IMAGE_STORAGE_DRIVER s3 and r2', () => {
+    const base = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+      OPENAI_API_KEY: 'sk-test',
+      FAL_API_KEY: 'fal-test',
+      R2_ACCOUNT_ID: 'test-account',
+      R2_ACCESS_KEY_ID: 'test-key',
+      R2_SECRET_ACCESS_KEY: 'test-secret',
+      R2_BUCKET_NAME: 'test-bucket',
+    };
+    expect(envSchema.safeParse({ ...base, IMAGE_STORAGE_DRIVER: 's3' }).success).toBe(true);
+    expect(envSchema.safeParse({ ...base, IMAGE_STORAGE_DRIVER: 'r2' }).success).toBe(true);
+  });
+
+  it('rejects an unknown IMAGE_STORAGE_DRIVER value', () => {
+    const result = envSchema.safeParse({
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+      OPENAI_API_KEY: 'sk-test',
+      FAL_API_KEY: 'fal-test',
+      R2_ACCOUNT_ID: 'test-account',
+      R2_ACCESS_KEY_ID: 'test-key',
+      R2_SECRET_ACCESS_KEY: 'test-secret',
+      R2_BUCKET_NAME: 'test-bucket',
+      IMAGE_STORAGE_DRIVER: 'gcs',
+    });
+    expect(result.success).toBe(false);
+  });
 });

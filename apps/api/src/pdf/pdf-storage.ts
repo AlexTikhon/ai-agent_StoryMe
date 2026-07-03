@@ -183,15 +183,25 @@ const CLOUD_REQUIRED_VARS = [
   'PDF_STORAGE_SECRET_ACCESS_KEY',
 ] as const;
 
-/** Reads and validates the PDF_STORAGE_* env vars required for the s3/r2 drivers. */
-export function readCloudConfig(driver: 's3' | 'r2', env: NodeJS.ProcessEnv): CloudPdfStorageConfig {
+/**
+ * Reads and validates the PDF_STORAGE_* env vars required for the s3/r2
+ * drivers. `driverEnvVarName` only affects error-message wording — pass
+ * "IMAGE_STORAGE_DRIVER" when a caller reuses these same PDF_STORAGE_*
+ * credentials for image asset storage (see ../images/image-asset-storage.ts)
+ * so the error names the var the caller actually set.
+ */
+export function readCloudConfig(
+  driver: 's3' | 'r2',
+  env: NodeJS.ProcessEnv,
+  driverEnvVarName = 'PDF_STORAGE_DRIVER',
+): CloudPdfStorageConfig {
   const missing: string[] = CLOUD_REQUIRED_VARS.filter((key) => !env[key]);
   const endpoint = env['PDF_STORAGE_ENDPOINT'];
   // R2 has no default endpoint the SDK can infer, unlike S3.
   if (driver === 'r2' && !endpoint) missing.push('PDF_STORAGE_ENDPOINT');
   if (missing.length > 0) {
     throw new Error(
-      `PDF_STORAGE_DRIVER "${driver}" requires the following environment variable(s): ${missing.join(', ')}`,
+      `${driverEnvVarName} "${driver}" requires the following environment variable(s): ${missing.join(', ')}`,
     );
   }
   const forcePathStyleRaw = env['PDF_STORAGE_FORCE_PATH_STYLE'];

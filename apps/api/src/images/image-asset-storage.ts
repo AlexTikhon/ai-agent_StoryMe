@@ -1,8 +1,10 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import type { BookLayoutEntry } from '@book/types';
 import type { ImageBufferResolver } from '../pdf/pdf-renderer';
+import { readCloudConfig, type CloudPdfStorageConfig } from '../pdf/pdf-storage';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
@@ -92,6 +94,123 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
     }
     return undefined;
   }
+}
+
+/** True for the S3-shaped "object not found" errors returned by GetObject. */
+function isNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const name = (err as { name?: unknown }).name;
+  if (name === 'NoSuchKey' || name === 'NotFound') return true;
+  const statusCode = (err as { $metadata?: { httpStatusCode?: number } }).$metadata
+    ?.httpStatusCode;
+  return statusCode === 404;
+}
+
+/** GetObject's Body is a Node.js Readable augmented with SDK helpers; normalize to a Buffer. */
+async function bodyToBuffer(body: unknown): Promise<Buffer> {
+  const withByteArray = body as { transformToByteArray?: () => Promise<Uint8Array> };
+  if (typeof withByteArray.transformToByteArray === 'function') {
+    return Buffer.from(await withByteArray.transformToByteArray());
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of body as AsyncIterable<Buffer | Uint8Array>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Cloud object key for a saved image asset: images/<key>.<ext for contentType>,
+ * e.g. "images/book-1/cover.png". Mirrors PdfStorage's objectKey naming style
+ * (see ../pdf/pdf-storage.ts).
+ */
+export function imageObjectKey(key: string, contentType: ImageAssetContentType): string {
+  const segments = validateImageAssetKey(key);
+  return `images/${segments.join('/')}.${extensionFor(contentType)}`;
+}
+
+/**
+ * S3-compatible object storage driver (AWS S3 or Cloudflare R2), mirroring
+ * CloudPdfStorage (see ../pdf/pdf-storage.ts). Reuses the same PDF_STORAGE_*
+ * credentials/bucket as CloudPdfStorage — image assets live alongside PDF
+ * previews in the same bucket under an "images/" prefix instead of a
+ * dedicated bucket, so no new credential env vars are needed.
+ *
+ * getImageAsset only has a key, not the contentType it was saved with, so it
+ * probes the same fixed set of supported extensions LocalImageAssetStorage
+ * does, issuing one GetObject per candidate until one succeeds.
+ */
+export class CloudImageAssetStorage implements ImageAssetStorage {
+  private readonly client: S3Client;
+  private readonly bucket: string;
+
+  constructor(config: CloudPdfStorageConfig) {
+    this.bucket = config.bucket;
+    this.client = new S3Client({
+      region: config.region,
+      ...(config.endpoint ? { endpoint: config.endpoint } : {}),
+      forcePathStyle: config.forcePathStyle ?? Boolean(config.endpoint),
+      credentials: {
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+      },
+    });
+  }
+
+  async saveImageAsset(
+    key: string,
+    buffer: Buffer,
+    contentType: ImageAssetContentType,
+  ): Promise<ImageAssetRef> {
+    const cloudKey = imageObjectKey(key, contentType);
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: cloudKey,
+        Body: buffer,
+        ContentType: contentType,
+      }),
+    );
+    return { key, path: cloudKey, contentType };
+  }
+
+  async getImageAsset(key: string): Promise<Buffer | undefined> {
+    const segments = validateImageAssetKey(key);
+    for (const ext of Object.values(CONTENT_TYPE_EXTENSIONS)) {
+      const cloudKey = `images/${segments.join('/')}.${ext}`;
+      try {
+        const result = await this.client.send(
+          new GetObjectCommand({ Bucket: this.bucket, Key: cloudKey }),
+        );
+        return await bodyToBuffer(result.Body);
+      } catch (err) {
+        if (isNotFoundError(err)) continue;
+        throw err;
+      }
+    }
+    return undefined;
+  }
+}
+
+/**
+ * Returns the configured ImageAssetStorage implementation.
+ * Supported drivers: local (default), s3, r2.
+ * s3/r2 reuse the PDF_STORAGE_* credential env vars (see readCloudConfig in
+ * ../pdf/pdf-storage.ts) — only the driver selection is separate
+ * (IMAGE_STORAGE_DRIVER), so PDF previews and image assets can independently
+ * opt into cloud storage without duplicating bucket/credential config.
+ */
+export function createImageAssetStorage(
+  driver = 'local',
+  env: NodeJS.ProcessEnv = process.env,
+): ImageAssetStorage {
+  if (driver === 'local') return new LocalImageAssetStorage();
+  if (driver === 's3' || driver === 'r2') {
+    return new CloudImageAssetStorage(readCloudConfig(driver, env, 'IMAGE_STORAGE_DRIVER'));
+  }
+  throw new Error(
+    `IMAGE_STORAGE_DRIVER "${driver}" is not implemented yet. Supported drivers: local, s3, r2`,
+  );
 }
 
 /**

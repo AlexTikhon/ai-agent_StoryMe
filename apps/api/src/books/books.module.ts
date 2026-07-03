@@ -7,7 +7,7 @@ import { GenerationJobRecoveryService } from '../agent/generation-job-recovery.s
 import { BooksController } from './books.controller';
 import { BooksService } from './books.service';
 import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
-import { IMAGE_ASSET_STORAGE_TOKEN, LocalImageAssetStorage } from '../images/image-asset-storage';
+import { IMAGE_ASSET_STORAGE_TOKEN, createImageAssetStorage } from '../images/image-asset-storage';
 import { IMAGE_GENERATION_PROVIDER_TOKEN } from '../images/image-generation-provider';
 import { createImageGenerationProvider } from '../images/image-generation-provider.factory';
 import { STORY_GENERATION_PROVIDER_TOKEN } from '../agent/story-generation-provider';
@@ -23,7 +23,7 @@ import { createStoryGenerationProvider } from '../agent/story-generation-provide
     },
     {
       provide: IMAGE_ASSET_STORAGE_TOKEN,
-      useFactory: () => new LocalImageAssetStorage(),
+      useFactory: () => createImageAssetStorage(process.env['IMAGE_STORAGE_DRIVER']),
     },
     {
       provide: STORY_GENERATION_PROVIDER_TOKEN,

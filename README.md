@@ -67,12 +67,30 @@ OpenAI API (real image generation costs money per call — see the
 The PDF preview endpoint is always `GET /api/books/:id/pdf/preview`, regardless
 of driver.
 
+## Image asset storage
+
+`IMAGE_STORAGE_DRIVER` selects the backing store for generated cover/page
+images, independently of `PDF_STORAGE_DRIVER`:
+
+- `local` (default) — written to `apps/api/tmp/`, no external service needed.
+- `s3` / `r2` — reuses the **same** `PDF_STORAGE_*` credentials as PDF storage
+  above (bucket, region, endpoint, access key, secret); images are stored
+  under an `images/` prefix in that same bucket, so no separate credentials
+  are needed. Not exercised by the normal test suite (mocked there, same as
+  PDF storage).
+
 ## Environment
 
 Copy `.env.example` to `apps/api/.env` and adjust as needed — see
 [docs/local-demo.md](docs/local-demo.md#3-configure-environment) for the
 minimal setup. The web app needs no `.env` for local use; set
 `NEXT_PUBLIC_API_URL` in `apps/web/.env.local` only if the API runs elsewhere.
+
+## Deployment readiness
+
+See **[docs/deployment-readiness.md](docs/deployment-readiness.md)** for a
+deployment-blockers audit, storage/auth limitation notes, and a recommended
+architecture — this has not been deployed anywhere yet.
 
 ## Known post-MVP TODOs
 

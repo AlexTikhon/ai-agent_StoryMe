@@ -1,14 +1,42 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { BookLayout, BookLayoutEntry } from '@book/types';
 import { renderStorybookPdf } from '../pdf/pdf-renderer';
+
+const sendMock = vi.fn();
+
+vi.mock('@aws-sdk/client-s3', () => ({
+  S3Client: vi.fn().mockImplementation(() => ({ send: sendMock })),
+  PutObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  GetObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+}));
+
+import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import {
   LocalImageAssetStorage,
+  CloudImageAssetStorage,
+  createImageAssetStorage,
   imageAssetKey,
+  imageObjectKey,
   buildImageBufferResolver,
 } from './image-asset-storage';
+
+const validCloudEnv = {
+  PDF_STORAGE_BUCKET: 'test-bucket',
+  PDF_STORAGE_REGION: 'us-east-1',
+  PDF_STORAGE_ACCESS_KEY_ID: 'AKIATEST',
+  PDF_STORAGE_SECRET_ACCESS_KEY: 'secret-test',
+};
+
+const validCloudConfig = {
+  driver: 's3' as const,
+  bucket: 'test-bucket',
+  region: 'us-east-1',
+  accessKeyId: 'AKIATEST',
+  secretAccessKey: 'secret-test',
+};
 
 // Minimal valid 1x1 PNG (same fixture used in pdf-renderer.spec.ts).
 const VALID_PNG = Buffer.from(
@@ -123,6 +151,164 @@ describe('imageAssetKey', () => {
 
   it('throws when pageNumber is missing for kind "page"', () => {
     expect(() => imageAssetKey('book-1', 'page')).toThrow(/pageNumber is required/);
+  });
+});
+
+describe('imageObjectKey', () => {
+  it('builds a namespaced key with the extension for the content type', () => {
+    expect(imageObjectKey('book-1/cover', 'image/png')).toBe('images/book-1/cover.png');
+    expect(imageObjectKey('book-1/page-1', 'image/jpeg')).toBe('images/book-1/page-1.jpg');
+    expect(imageObjectKey('book-1/back-cover', 'image/svg+xml')).toBe(
+      'images/book-1/back-cover.svg',
+    );
+  });
+
+  it('rejects path-traversal keys', () => {
+    expect(() => imageObjectKey('../evil', 'image/png')).toThrow(/Invalid image asset key/);
+  });
+});
+
+describe('CloudImageAssetStorage', () => {
+  beforeEach(() => {
+    sendMock.mockReset();
+    vi.mocked(PutObjectCommand).mockClear();
+    vi.mocked(GetObjectCommand).mockClear();
+  });
+
+  it('constructs without making any network calls', () => {
+    expect(() => new CloudImageAssetStorage(validCloudConfig)).not.toThrow();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('saveImageAsset sends PutObjectCommand with correct bucket, key, contentType, and body', async () => {
+    sendMock.mockResolvedValueOnce({});
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    const buffer = Buffer.from('fake-png-bytes');
+    const result = await storage.saveImageAsset('book-1/cover', buffer, 'image/png');
+
+    expect(PutObjectCommand).toHaveBeenCalledWith({
+      Bucket: 'test-bucket',
+      Key: 'images/book-1/cover.png',
+      Body: buffer,
+      ContentType: 'image/png',
+    });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      key: 'book-1/cover',
+      path: 'images/book-1/cover.png',
+      contentType: 'image/png',
+    });
+  });
+
+  it('saveImageAsset rejects unsupported content types before sending', async () => {
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    await expect(
+      storage.saveImageAsset('book-1/cover', Buffer.from('x'), 'image/gif' as never),
+    ).rejects.toThrow(/Unsupported image content type/);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('getImageAsset sends GetObjectCommand for the png key and returns the buffer on the first match', async () => {
+    const pngBytes = Buffer.from('fake-png-bytes');
+    sendMock.mockResolvedValueOnce({
+      Body: { transformToByteArray: async () => new Uint8Array(pngBytes) },
+    });
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    const result = await storage.getImageAsset('book-1/cover');
+
+    expect(GetObjectCommand).toHaveBeenCalledWith({
+      Bucket: 'test-bucket',
+      Key: 'images/book-1/cover.png',
+    });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(result!.equals(pngBytes)).toBe(true);
+  });
+
+  it('getImageAsset probes subsequent extensions when earlier ones 404', async () => {
+    const jpegBytes = Buffer.from('fake-jpeg-bytes');
+    sendMock
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { name: 'NoSuchKey' }))
+      .mockResolvedValueOnce({
+        Body: { transformToByteArray: async () => new Uint8Array(jpegBytes) },
+      });
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    const result = await storage.getImageAsset('book-1/page-1');
+
+    expect(GetObjectCommand).toHaveBeenNthCalledWith(1, {
+      Bucket: 'test-bucket',
+      Key: 'images/book-1/page-1.png',
+    });
+    expect(GetObjectCommand).toHaveBeenNthCalledWith(2, {
+      Bucket: 'test-bucket',
+      Key: 'images/book-1/page-1.jpg',
+    });
+    expect(result!.equals(jpegBytes)).toBe(true);
+  });
+
+  it('getImageAsset returns undefined when every extension 404s', async () => {
+    sendMock.mockRejectedValue(Object.assign(new Error('missing'), { name: 'NoSuchKey' }));
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    await expect(storage.getImageAsset('book-1/never-saved')).resolves.toBeUndefined();
+    expect(sendMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('getImageAsset rethrows non-404 errors immediately without probing further extensions', async () => {
+    sendMock.mockRejectedValueOnce(new Error('access denied'));
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    await expect(storage.getImageAsset('book-1/cover')).rejects.toThrow(/access denied/);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects for keys containing path-traversal characters', async () => {
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    await expect(
+      storage.saveImageAsset('../evil', Buffer.from('x'), 'image/png'),
+    ).rejects.toThrow(/Invalid image asset key/);
+    await expect(storage.getImageAsset('../evil')).rejects.toThrow(/Invalid image asset key/);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('createImageAssetStorage', () => {
+  beforeEach(() => {
+    sendMock.mockReset();
+  });
+
+  it('defaults to local driver when no argument is passed', () => {
+    const storage = createImageAssetStorage();
+    expect(storage).toBeInstanceOf(LocalImageAssetStorage);
+  });
+
+  it('returns LocalImageAssetStorage when driver is "local"', () => {
+    const storage = createImageAssetStorage('local');
+    expect(storage).toBeInstanceOf(LocalImageAssetStorage);
+  });
+
+  it('returns CloudImageAssetStorage for "s3" when config is present', () => {
+    const storage = createImageAssetStorage('s3', validCloudEnv);
+    expect(storage).toBeInstanceOf(CloudImageAssetStorage);
+  });
+
+  it('returns CloudImageAssetStorage for "r2" when config including endpoint is present', () => {
+    const storage = createImageAssetStorage('r2', {
+      ...validCloudEnv,
+      PDF_STORAGE_ENDPOINT: 'https://abc123.r2.cloudflarestorage.com',
+    });
+    expect(storage).toBeInstanceOf(CloudImageAssetStorage);
+  });
+
+  it('throws a clear error naming IMAGE_STORAGE_DRIVER when required config is missing', () => {
+    expect(() => createImageAssetStorage('s3', {})).toThrow(
+      /IMAGE_STORAGE_DRIVER.*PDF_STORAGE_BUCKET.*PDF_STORAGE_REGION.*PDF_STORAGE_ACCESS_KEY_ID.*PDF_STORAGE_SECRET_ACCESS_KEY/,
+    );
+  });
+
+  it('throws a clear error for "r2" when the endpoint is missing', () => {
+    expect(() => createImageAssetStorage('r2', validCloudEnv)).toThrow(/PDF_STORAGE_ENDPOINT/);
+  });
+
+  it('throws a clear error for unsupported drivers', () => {
+    expect(() => createImageAssetStorage('gcs')).toThrow(/gcs/);
   });
 });
 
