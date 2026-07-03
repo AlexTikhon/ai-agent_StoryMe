@@ -36,6 +36,83 @@ Everything else — env validation, CORS, health checks, migrations, build/start
 scripts — is already deploy-ready or only needs configuration, not code
 changes.
 
+## Phase 6I: final production readiness audit {#phase-6i}
+
+A full pass over env config, the auth flows end-to-end, security-sensitive
+behavior, and these deployment docs, after Phase 6D–6H closed out the
+real-auth/rate-limiting/verification/reset/email work. Scope was audit +
+small concrete fixes only — no new features, no OAuth, no refactors.
+
+**One real bug found and fixed**: `apps/api/src/main.ts` never configured
+Express's `trust proxy` setting. Every recommended deploy target in this doc
+(Render/Fly/Railway behind their edge, or Vercel) puts exactly one reverse
+proxy in front of the API, so `req.ip` — the key `AuthRateLimitGuard` uses to
+bucket rate-limit attempts by client — resolved to the *proxy's* address on
+every request, not the real client's. For `login`/`register` this was masked
+by the request's `email` also being part of the key, but `refresh`/`logout`
+have no email to key on, so this collapsed to **one shared rate-limit bucket
+for every client in production**, i.e. a handful of concurrent legitimate
+users could 429-lock everyone out of session refresh. Fixed with
+`app.set('trust proxy', 1)` (trusts exactly the one reverse-proxy hop these
+deploys use). No test previously existed that exercised `req.ip` in a real
+HTTP context (no e2e/supertest harness in this repo — see
+[§12.4](auth-architecture.md#124-manual-verification-checklist)), so this
+had no automated coverage to catch it; `AuthRateLimitGuard`'s existing unit
+tests construct `request.ip` directly and were unaffected by this fix.
+
+Everything else audited (env var documentation, register/login/logout/
+refresh/getMe/verify/resend/forgot-password/reset-password flows, token
+hashing, no-enumeration responses, cookie/CORS config, error-response
+shape) matched what's already documented below and in
+[`docs/auth-architecture.md`](auth-architecture.md) — no other code changes
+were needed. See [Production readiness summary](#production-readiness-summary)
+below for the current three-tier blocker/recommendation/enhancement
+breakdown.
+
+## Production readiness summary {#production-readiness-summary}
+
+### MVP blockers (must fix before any deploy)
+
+None remaining. Real auth, rate limiting (now IP-correct behind a proxy —
+see [Phase 6I](#phase-6i) above), email verification, password reset, and a
+real transactional email provider are all done end-to-end.
+
+### Production recommendations (should do before real/public traffic)
+
+- **Set `PDF_STORAGE_DRIVER` / `IMAGE_STORAGE_DRIVER` to `s3` or `r2`** —
+  the default `local` driver writes to the container's filesystem, which is
+  ephemeral on every host recommended here. See
+  [Storage decision note](#storage-decision).
+- **Explicitly set `EMAIL_PROVIDER=resend` plus `RESEND_API_KEY` and
+  `EMAIL_FROM`** for a deployment that needs real users to receive
+  verification/reset email — the default (`console`/unset) only logs the
+  link server-side, which is fine for a private/trusted demo but not for
+  real signups. Boot fails fast if `resend` is set without both required
+  vars (`env.schema.ts`).
+- **Wire `prisma migrate deploy` into an actual release pipeline** (CI job
+  or platform release-phase hook) instead of running it by hand per this
+  doc's [Migration command](#migration-command).
+- **Move generation to a real queue + worker** before running more than one
+  API instance — `GenerationTaskRunner` currently runs in-process; see
+  [Known blockers](#known-blockers) item 5.
+- **Consider a Redis-backed rate limiter** before running more than one API
+  instance — `RateLimiterService` is in-memory/per-process today, correct
+  only for a single-instance deploy (see
+  [§13.2](auth-architecture.md#132-why-in-memory-not-redis)).
+- **Embed real fonts before shipping `ru`/`pl` output** — see
+  [Known blockers](#known-blockers) item 6.
+
+### Future enhancements (not required for MVP)
+
+- **OAuth** (Google/Apple) — schema already reserves `oauthProvider`/
+  `oauthId`; documented as a follow-up auth method, not a blocker for the
+  current email/password + JWT flow.
+- **Payments/credits enforcement** — `User.credits` and Stripe fields exist
+  in the schema but nothing charges credits or calls Stripe yet.
+- **Cancellation / partial-completion flow** — `BookStatus.Cancelled` and
+  `BookStatus.Partial` are reserved schema states with no code path that
+  produces them yet.
+
 ## Phase 5C: Docker build verification {#phase-5c-docker}
 
 Previous phases only read the Dockerfile; nobody had actually run
