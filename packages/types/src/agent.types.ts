@@ -19,6 +19,12 @@ export enum AgentStep {
 
 /**
  * Book lifecycle statuses — mirror the BookStatus enum in schema.prisma.
+ *
+ * `Partial` and `Cancelled` are reserved for future generation-workflow
+ * features and are not reachable in the current MVP pipeline — no API code
+ * path sets a book to either status. They're kept in this enum (and treated
+ * as terminal in isTerminalBookStatus below) so the frontend doesn't need
+ * updating when those features land.
  */
 export enum BookStatus {
   Created = 'created',
