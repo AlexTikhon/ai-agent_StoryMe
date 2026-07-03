@@ -71,7 +71,7 @@ export default function NewBookPage() {
       const childName = values.childName.trim();
       const theme = values.theme.trim();
       const educationalMessage = values.educationalMessage.trim();
-      await booksApi.create({
+      const created = await booksApi.create({
         title: `${childName}'s Story`,
         childName,
         childAge: values.childAge,
@@ -80,7 +80,7 @@ export default function NewBookPage() {
         ...(educationalMessage && { educationalMessage }),
         pageCount: values.pageCount,
       });
-      router.push('/dashboard');
+      router.push(`/dashboard/books/${created.id}`);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create book');
       setSubmitting(false);

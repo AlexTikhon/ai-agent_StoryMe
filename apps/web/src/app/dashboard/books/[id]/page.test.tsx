@@ -157,6 +157,14 @@ function mockError(status: number, message: string): Response {
   return { ok: false, status, json: async () => ({ message }) } as unknown as Response;
 }
 
+function mockPdfBlob(content = 'pdf-bytes', status = 200): Response {
+  return {
+    ok: true,
+    status,
+    blob: async () => new Blob([content], { type: 'application/pdf' }),
+  } as unknown as Response;
+}
+
 function makeDiagnostics(overrides: Partial<GenerationDiagnosticsDto> = {}): GenerationDiagnosticsDto {
   return {
     bookId: 'book-1',
@@ -244,6 +252,8 @@ describe('BookDetailPage', () => {
     fetchMock = createRoutedFetchMock();
     vi.stubGlobal('fetch', fetchMock.fetchFn);
     pushMock.mockReset();
+    global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+    global.URL.revokeObjectURL = vi.fn();
   });
 
   afterEach(() => {
@@ -321,6 +331,24 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /book not found/i })).toBeDefined();
+    });
+  });
+
+  it('retries the fetch when Retry is clicked after a load error', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockError(500, 'Internal server error'))
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK));
+
+    render(<BookDetailPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('Internal server error');
+    });
+
+    await user.click(screen.getByRole('button', { name: /retry/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1, name: "Emma's Story" })).toBeDefined();
     });
   });
 
@@ -1267,11 +1295,12 @@ describe('BookDetailPage', () => {
 
   // ── PDF section ───────────────────────────────────────────────────────────
 
-  it('shows "Your PDF is ready" heading and Open/Download links when status is complete with previewPdfUrl', async () => {
+  it('shows "Your PDF is ready" heading, Open PDF link, and Download PDF button for a completed book with generated pages', async () => {
     const completeBook: BookDto = {
       ...MOCK_BOOK,
       status: BookStatus.Complete,
       previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
     };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
 
@@ -1280,7 +1309,7 @@ describe('BookDetailPage', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined();
       expect(screen.getByRole('link', { name: /open pdf/i })).toBeDefined();
-      expect(screen.getByRole('link', { name: /download pdf/i })).toBeDefined();
+      expect(screen.getByRole('button', { name: /download pdf/i })).toBeDefined();
     });
   });
 
@@ -1289,6 +1318,7 @@ describe('BookDetailPage', () => {
       ...MOCK_BOOK,
       status: BookStatus.Complete,
       previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
     };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
 
@@ -1302,23 +1332,158 @@ describe('BookDetailPage', () => {
     });
   });
 
-  it('Download PDF link uses API endpoint and sets storyme-preview-<id>.pdf as download filename', async () => {
+  it('clicking Download PDF fetches the PDF endpoint and triggers a blob download with a safe filename', async () => {
+    const user = userEvent.setup();
     const completeBook: BookDto = {
       ...MOCK_BOOK,
       status: BookStatus.Complete,
       previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
     };
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(completeBook))
+      .mockResolvedValueOnce(mockPdfBlob());
+
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    render(<BookDetailPage />);
+    const downloadButton = await screen.findByRole('button', { name: /download pdf/i });
+    await user.click(downloadButton);
+
+    await waitFor(() => {
+      expect(global.URL.createObjectURL).toHaveBeenCalled();
+    });
+
+    const calls = vi.mocked(fetch).mock.calls as [string, RequestInit][];
+    const [downloadUrl] = calls[calls.length - 1];
+    expect(downloadUrl).toBe('http://localhost:4000/api/books/book-1/pdf/preview');
+    expect(clickSpy).toHaveBeenCalled();
+    expect(global.URL.revokeObjectURL).toHaveBeenCalled();
+
+    clickSpy.mockRestore();
+  });
+
+  it('disables the Download PDF button and shows "Preparing PDF…" while the download is in progress', async () => {
+    const user = userEvent.setup();
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
+    };
+
+    let resolveDownload: (value: Response) => void = () => {};
+    const pendingDownload = new Promise<Response>((resolve) => {
+      resolveDownload = resolve;
+    });
+
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(completeBook))
+      .mockResolvedValueOnce(pendingDownload as unknown as Response);
+
+    render(<BookDetailPage />);
+    const downloadButton = await screen.findByRole('button', { name: /download pdf/i });
+    await user.click(downloadButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /preparing pdf/i })).toBeDisabled();
+    });
+
+    resolveDownload(mockPdfBlob());
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^download pdf$/i })).not.toBeDisabled();
+    });
+  });
+
+  it('does not trigger a second download while one is already in progress', async () => {
+    const user = userEvent.setup();
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
+    };
+
+    let resolveDownload: (value: Response) => void = () => {};
+    const pendingDownload = new Promise<Response>((resolve) => {
+      resolveDownload = resolve;
+    });
+
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(completeBook))
+      .mockResolvedValueOnce(pendingDownload as unknown as Response);
+
+    render(<BookDetailPage />);
+    const downloadButton = await screen.findByRole('button', { name: /download pdf/i });
+    await user.click(downloadButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /preparing pdf/i })).toBeDisabled();
+    });
+
+    const callsBeforeSecondClick = vi.mocked(fetch).mock.calls.length;
+    await user.click(screen.getByRole('button', { name: /preparing pdf/i }));
+    expect(vi.mocked(fetch).mock.calls.length).toBe(callsBeforeSecondClick);
+
+    resolveDownload(mockPdfBlob());
+  });
+
+  it('shows an error message when the PDF download request fails', async () => {
+    const user = userEvent.setup();
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(completeBook))
+      .mockResolvedValueOnce(mockError(500, 'PDF render failed'));
+
+    render(<BookDetailPage />);
+    const downloadButton = await screen.findByRole('button', { name: /download pdf/i });
+    await user.click(downloadButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain(
+        'PDF download failed. Please try again.',
+      );
+    });
+    expect(screen.getByRole('button', { name: /^download pdf$/i })).not.toBeDisabled();
+  });
+
+  it('hides the Download PDF button when the book is complete but has no generated pages', async () => {
+    const completeBookNoPages: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: { ...makeBookPreview(), pages: [] },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBookNoPages));
 
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      const link = screen.getByRole('link', { name: /download pdf/i }) as HTMLAnchorElement;
-      expect(link.getAttribute('href')).toBe(
-        'http://localhost:4000/api/books/book-1/pdf/preview',
-      );
-      expect(link.download).toBe('storyme-preview-book-1.pdf');
+      expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined();
     });
+    expect(screen.queryByRole('button', { name: /download pdf/i })).toBeNull();
+  });
+
+  it('hides the Download PDF button when the book is complete but bookPreview is absent', async () => {
+    const completeBookNoPreview: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBookNoPreview));
+
+    render(<BookDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined();
+    });
+    expect(screen.queryByRole('button', { name: /download pdf/i })).toBeNull();
   });
 
   it('shows "Rendering PDF…" heading when status is pdf_render', async () => {
@@ -1379,10 +1544,11 @@ describe('BookDetailPage', () => {
     await waitFor(() => {
       expect(screen.queryByRole('link', { name: /open pdf/i })).toBeNull();
       expect(screen.queryByRole('link', { name: /download pdf/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /download pdf/i })).toBeNull();
     });
   });
 
-  it('shows generation failed message when status is failed', async () => {
+  it('shows generation failed message when status is failed, with no download action', async () => {
     const failedBook: BookDto = {
       ...MOCK_BOOK,
       status: BookStatus.Failed,
@@ -1394,6 +1560,8 @@ describe('BookDetailPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/generation failed/i)).toBeDefined();
     });
+    expect(screen.queryByRole('button', { name: /download pdf/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /download pdf/i })).toBeNull();
   });
 
   it('does not show PDF section for in-progress statuses like image_gen', async () => {
@@ -1540,6 +1708,7 @@ describe('BookDetailPage', () => {
       ...MOCK_BOOK,
       status: BookStatus.Complete,
       previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
     };
 
     vi.mocked(fetch)
@@ -1557,7 +1726,7 @@ describe('BookDetailPage', () => {
       expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
     );
     expect(screen.getByRole('link', { name: /open pdf/i })).toBeDefined();
-    expect(screen.getByRole('link', { name: /download pdf/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /download pdf/i })).toBeDefined();
   });
 
   // ── Retry generation ──────────────────────────────────────────────────────

@@ -16,9 +16,17 @@ describe('HomePage', () => {
     expect(cta).toBeDefined();
   });
 
-  it('renders the sign-in link', () => {
+  it('renders a link to view existing books', () => {
     render(<HomePage />);
-    const signIn = screen.getByRole('link', { name: /sign in/i });
-    expect(signIn).toBeDefined();
+    const viewBooks = screen.getByRole('link', { name: /view my books/i });
+    expect(viewBooks).toBeDefined();
+  });
+
+  it('points the primary CTA and secondary link at real in-app routes', () => {
+    render(<HomePage />);
+    const cta = screen.getByRole('link', { name: /create your first book/i }) as HTMLAnchorElement;
+    const viewBooks = screen.getByRole('link', { name: /view my books/i }) as HTMLAnchorElement;
+    expect(cta.getAttribute('href')).toBe('/dashboard/books/new');
+    expect(viewBooks.getAttribute('href')).toBe('/dashboard');
   });
 });

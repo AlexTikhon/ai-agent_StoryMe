@@ -34,22 +34,22 @@ export default function HomePage() {
 
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <a
-            href="/register"
+            href="/dashboard/books/new"
             className="inline-flex h-12 items-center justify-center rounded-xl bg-violet-600 px-8 text-base font-semibold text-white shadow-brand transition-all hover:bg-violet-500 focus-visible:ring-2 focus-visible:ring-violet-600 focus-visible:ring-offset-2"
           >
             Create Your First Book
           </a>
           <a
-            href="/login"
+            href="/dashboard"
             className="inline-flex h-12 items-center justify-center rounded-xl border border-border-default px-8 text-base font-semibold text-text-primary transition-all hover:bg-stone-100"
           >
-            Sign In
+            View My Books
           </a>
         </div>
 
         {/* Infrastructure status indicator (dev only) */}
         <div className="mt-16 rounded-xl border border-border-subtle bg-bg-subtle p-4 text-sm text-text-muted">
-          <p className="font-semibold text-text-secondary">Phase 1A — Backend Ready</p>
+          <p className="font-semibold text-text-secondary">MVP Demo</p>
           <p className="mt-1">
             <a
               href="/dashboard"

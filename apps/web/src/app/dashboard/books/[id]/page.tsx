@@ -18,6 +18,7 @@ import type {
 } from '@book/types';
 import { booksApi, bookPdfPreviewUrl } from '@/lib/api/books';
 import { ApiError } from '@/lib/api/client';
+import { safePdfFilename } from '@/lib/pdf-filename';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -128,6 +129,7 @@ export default function BookDetailPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditForm>({
@@ -178,7 +180,7 @@ export default function BookDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, loadAttempt]);
 
   // Poll while book is in a non-terminal generation state
   useEffect(() => {
@@ -342,9 +344,15 @@ export default function BookDetailPage() {
         {!loading && loadError && (
           <div
             role="alert"
-            className="mt-8 rounded-xl border border-danger-base/20 bg-danger-light px-5 py-4"
+            className="mt-8 flex items-center justify-between gap-4 rounded-xl border border-danger-base/20 bg-danger-light px-5 py-4"
           >
             <p className="text-sm text-danger-base">{loadError}</p>
+            <button
+              onClick={() => setLoadAttempt((n) => n + 1)}
+              className="shrink-0 text-sm font-semibold text-danger-base underline"
+            >
+              Retry
+            </button>
           </div>
         )}
 
@@ -1178,10 +1186,37 @@ function EditFormFields({ values, onChange, submitting, onCancel }: EditFormFiel
 // ── PdfSection ────────────────────────────────────────────────────────────────
 
 function PdfSection({ book }: { book: BookDto }) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
   const pdfApiUrl =
     book.status === BookStatus.Complete && book.previewPdfUrl
       ? bookPdfPreviewUrl(book.id)
       : null;
+  const previewPages = book.bookPreview?.pages;
+  const hasGeneratedPages = Array.isArray(previewPages) && previewPages.length > 0;
+  const canDownloadPdf = Boolean(pdfApiUrl) && hasGeneratedPages;
+
+  const handleDownload = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const blob = await booksApi.downloadPdf(book.id);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = safePdfFilename(book.title);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setDownloadError('PDF download failed. Please try again.');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (book.status === BookStatus.PdfRender) {
     return (
@@ -1204,7 +1239,7 @@ function PdfSection({ book }: { book: BookDto }) {
             Your PDF is ready
           </h2>
           <p className="mb-4 text-xs text-emerald-600">Preview PDF · locally generated file</p>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <a
               href={pdfApiUrl}
               target="_blank"
@@ -1213,14 +1248,27 @@ function PdfSection({ book }: { book: BookDto }) {
             >
               Open PDF
             </a>
-            <a
-              href={pdfApiUrl}
-              download={`storyme-preview-${book.id}.pdf`}
-              className="inline-flex h-9 items-center rounded-xl border border-border-default px-4 text-sm font-semibold text-text-secondary transition-all hover:bg-stone-100"
-            >
-              Download PDF
-            </a>
+            {canDownloadPdf ? (
+              <button
+                type="button"
+                onClick={() => void handleDownload()}
+                disabled={downloading}
+                className="inline-flex h-9 items-center rounded-xl border border-border-default px-4 text-sm font-semibold text-text-secondary transition-all hover:bg-stone-100 disabled:opacity-60"
+              >
+                {downloading ? 'Preparing PDF…' : 'Download PDF'}
+              </button>
+            ) : (
+              <p className="text-xs text-text-muted">No pages available to export yet.</p>
+            )}
           </div>
+          {downloadError && (
+            <p
+              role="alert"
+              className="mt-3 rounded-lg bg-danger-light px-3 py-2 text-xs text-danger-base"
+            >
+              {downloadError}
+            </p>
+          )}
         </div>
       );
     }

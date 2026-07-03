@@ -163,7 +163,7 @@ describe('NewBookPage wizard', () => {
 
   // ── Successful create ──────────────────────────────────────────────────────
 
-  it('calls POST /books and redirects to /dashboard on success', async () => {
+  it('calls POST /books and redirects to the new book detail page on success', async () => {
     const user = userEvent.setup();
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
 
@@ -178,7 +178,7 @@ describe('NewBookPage wizard', () => {
     await user.click(screen.getByRole('button', { name: 'Create Book' }));
 
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith('/dashboard');
+      expect(pushMock).toHaveBeenCalledWith('/dashboard/books/book-1');
     });
 
     const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
