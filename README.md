@@ -92,6 +92,12 @@ See **[docs/deployment-readiness.md](docs/deployment-readiness.md)** for a
 deployment-blockers audit, storage/auth limitation notes, and a recommended
 architecture — this has not been deployed anywhere yet.
 
+For an actual step-by-step deploy procedure (provider choices, exact env
+vars, migration/release order, smoke test), see
+**[docs/private-demo-deploy.md](docs/private-demo-deploy.md)** — scoped to a
+**private/internal demo only**, since `DevAuthGuard` is not safe to expose
+publicly.
+
 ## Known post-MVP TODOs
 
 - Replace `DevAuthGuard` with real session/JWT auth.

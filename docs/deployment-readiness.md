@@ -502,6 +502,15 @@ that undoes the change, not running the old one backwards.
 2. Real auth phase (see [Auth limitation note](#auth-limitation)) — this
    should happen before any public deploy, not just a private/internal one.
 
+## Private demo runbook
+
+Phase 5E turned the architecture/config decisions above into an actual
+step-by-step deploy procedure — see
+**[docs/private-demo-deploy.md](private-demo-deploy.md)** for exact env
+vars, setup order, build/migrate/run commands, a smoke test checklist, and
+rollback notes. Scoped to a private/internal demo only, per the auth
+limitation above.
+
 Storage (PDF + image) is no longer on this list — both `CloudPdfStorage` and
 `CloudImageAssetStorage` are implemented, tested (mocked S3 client), and
 wired via `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` (Phase 5B).
