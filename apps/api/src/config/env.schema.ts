@@ -47,6 +47,20 @@ export const envSchema = z
     STORY_GENERATION_PROVIDER: z.string().optional(),
     IMAGE_GENERATION_PROVIDER_TOKEN: z.string().optional(),
 
+    // Transactional email provider selection. Loose optional string (not a
+    // z.enum) for the same reason as STORY_GENERATION_PROVIDER above — the
+    // factory (email-provider.factory.ts) owns validating the value itself
+    // and runs at Nest module init, so an invalid value is still caught at
+    // boot, just one layer down. Defaults to "console" (ConsoleEmailService,
+    // no real email sent) so local dev/test/CI never depend on Resend
+    // credentials unless EMAIL_PROVIDER=resend is explicitly set.
+    EMAIL_PROVIDER: z.string().optional(),
+    RESEND_API_KEY: z.string().optional(),
+    // "from" address for outbound email, e.g. "StoryMe <noreply@storyme.app>".
+    // Only required when EMAIL_PROVIDER=resend — see the superRefine below.
+    EMAIL_FROM: z.string().optional(),
+    EMAIL_REPLY_TO: z.string().optional(),
+
     // AI Providers
     // ANTHROPIC_API_KEY and FAL_API_KEY are reserved for providers not wired up
     // yet (no code path reads them) — optional so deploys aren't blocked on
@@ -104,6 +118,23 @@ export const envSchema = z
           'OPENAI_API_KEY is required when STORY_GENERATION_PROVIDER=openai or IMAGE_GENERATION_PROVIDER_TOKEN=openai',
         path: ['OPENAI_API_KEY'],
       });
+    }
+
+    if (env.EMAIL_PROVIDER?.trim().toLowerCase() === 'resend') {
+      if (!env.RESEND_API_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'RESEND_API_KEY is required when EMAIL_PROVIDER=resend',
+          path: ['RESEND_API_KEY'],
+        });
+      }
+      if (!env.EMAIL_FROM) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'EMAIL_FROM is required when EMAIL_PROVIDER=resend',
+          path: ['EMAIL_FROM'],
+        });
+      }
     }
   });
 

@@ -410,15 +410,26 @@ still pass unchanged.
   removes the identity-spoofing risk `DevAuthGuard` had, rate limiting
   (Phase 6E) now caps brute-force/credential-stuffing volume, email
   verification (Phase 6F) confirms ownership of the registered address before
-  login, and password reset (Phase 6G) lets a user recover a forgotten
-  password without support intervention — but there is still no real
-  transactional email provider and no OAuth. That's the remaining gap before
+  login, password reset (Phase 6G) lets a user recover a forgotten password
+  without support intervention, and a real transactional email provider
+  (Phase 6H) means verification/reset emails now reach real inboxes when
+  configured — but there is still no OAuth. That's the remaining gap before
   public exposure, not the identity model itself.
-- **What's left**: a real email provider behind the `EmailService` interface
-  (see [Remaining blockers before public production](private-demo-deploy.md)
-  in the deploy runbook), then removing the `x-user-email`/`x-user-name`
-  CORS-allowed headers and `DevAuthGuard` entirely once no deployment still
-  relies on dev mode.
+- **What's left**: removing the `x-user-email`/`x-user-name` CORS-allowed
+  headers and `DevAuthGuard` entirely once no deployment still relies on dev
+  mode (see [Remaining blockers before public production](private-demo-deploy.md)
+  in the deploy runbook).
+- **Phase 6H (real transactional email provider)**: `EmailModule` now
+  selects between `ConsoleEmailService` (default; logs instead of sending)
+  and `ResendEmailService` (real HTTP calls to the Resend API) via
+  `createEmailService` (`apps/api/src/email/email-provider.factory.ts`),
+  driven by `EMAIL_PROVIDER=console|resend`. Selecting `resend` without
+  `RESEND_API_KEY`/`EMAIL_FROM` set fails fast at boot (`env.schema.ts`
+  `superRefine`, mirroring the existing `OPENAI_API_KEY` conditional
+  requirement). `AuthService` is unchanged — it still depends only on the
+  `EmailService` interface, so the register/login/verify/reset flows behave
+  identically regardless of which provider is active. See
+  [`docs/auth-architecture.md` §16](auth-architecture.md#16-phase-6h--real-transactional-email-provider).
 - **Phase 6F (email verification)**: new users register as unverified
   (`User.emailVerified: false`); `AuthService.register` mints a single-use,
   24-hour, SHA-256-hashed token (`User.emailVerificationTokenHash`/
@@ -635,11 +646,12 @@ that undoes the change, not running the old one backwards.
 1. Add the migration-deploy step to whatever deploy pipeline is chosen (CI
    job, release script, or platform release-phase hook), since the container
    itself intentionally doesn't run it.
-2. A real transactional email provider behind `EmailService` (see
-   [Auth limitation note](#auth-limitation)) — real auth (Phase 6B/6C), rate
-   limiting (Phase 6E), email verification (Phase 6F), and password reset
-   (Phase 6G) are all done end-to-end; this is what's left before any public
-   deploy.
+2. ~~A real transactional email provider behind `EmailService`~~ **Resolved
+   in Phase 6H** — `ResendEmailService` is available behind
+   `EMAIL_PROVIDER=resend`; a real deploy just needs `RESEND_API_KEY` and
+   `EMAIL_FROM` set (see [Auth limitation note](#auth-limitation) and
+   `docs/auth-architecture.md` §16). OAuth remains the last documented auth
+   follow-up.
 
 ## Private demo runbook
 

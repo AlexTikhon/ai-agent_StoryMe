@@ -29,11 +29,14 @@ see [docs/local-demo.md](local-demo.md).
   team/allowlist, and consider an IP allowlist or basic auth in front of the
   API host) if that ever happens.
 - **Even with real auth, this is still scoped as a private/internal demo**
-  — auth rate limiting (Phase 6E), email verification (Phase 6F), and
-  password reset (Phase 6G) are all done, but there is still no real
-  transactional email provider (verification/reset emails are only logged
-  locally by `ConsoleEmailService`). Do not treat this runbook as a
-  public-launch checklist; see
+  — auth rate limiting (Phase 6E), email verification (Phase 6F), password
+  reset (Phase 6G), and a real transactional email provider (Phase 6H) are
+  all done. Email still defaults to `ConsoleEmailService` (logs the link
+  instead of sending it) unless you explicitly set `EMAIL_PROVIDER=resend`
+  plus `RESEND_API_KEY`/`EMAIL_FROM` for this deployment — see
+  [§3 Environment variable matrix](#3-environment-variable-matrix) below and
+  [docs/auth-architecture.md §16](auth-architecture.md#16-phase-6h--real-transactional-email-provider).
+  Do not treat this runbook as a public-launch checklist; see
   [deployment-readiness.md](deployment-readiness.md) for what's still
   outstanding beyond auth.
 
@@ -127,6 +130,10 @@ ephemeral filesystem — see
 | `AUTH_MODE` | API | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt` | Must match the web app's `NEXT_PUBLIC_AUTH_MODE` exactly — a mismatch 401s every request. Only set to `dev` for a trusted-operator-only deployment (see the warning above). |
 | `PORT` | API | No (has default `4000`) | `4000` | Most hosts (Render/Fly/Railway) set this automatically; the API already reads and binds it on `0.0.0.0`. |
 | `ALLOWED_ORIGINS` | API | **Yes** | `https://storyme-demo.vercel.app` | CORS allowlist, comma-separated for multiple origins (e.g. preview + production Vercel URLs). Must match the web app's deployed origin exactly. |
+| `EMAIL_PROVIDER` | API | No (defaults to `console`) | `console` \| `resend` | Set to `resend` to send real verification/reset email; leaving it unset logs the link server-side instead (`ConsoleEmailService`) — fine for an internal/trusted demo, not for real users. |
+| `RESEND_API_KEY` | API | **Yes, if `EMAIL_PROVIDER=resend`** | `re_...` | Boot fails fast (env validation) if `EMAIL_PROVIDER=resend` is set without this. |
+| `EMAIL_FROM` | API | **Yes, if `EMAIL_PROVIDER=resend`** | `StoryMe <noreply@storyme.app>` | Must be a verified sender/domain in the Resend dashboard, or sends will fail at request time even though boot succeeds. |
+| `EMAIL_REPLY_TO` | API | No | `support@storyme.app` | Optional; omitted from the outbound email entirely when unset. |
 | `OPENAI_API_KEY` | API | Only if using real generation | `sk-...` | Required only when `STORY_GENERATION_PROVIDER=openai` or `IMAGE_GENERATION_PROVIDER_TOKEN=openai`. Leave the providers on `mock` (default) for a free/deterministic demo. |
 | `STORY_GENERATION_PROVIDER` | API | No (defaults to `mock`) | `mock` \| `openai` | Set to `openai` only if you want real story text and have budget. |
 | `IMAGE_GENERATION_PROVIDER_TOKEN` | API | No (defaults to `mock`) | `mock` \| `openai` | Same — real image generation costs money per call (see `REAL_GENERATION_MAX_PAGES` guardrail). |
@@ -336,9 +343,11 @@ restated for this private-demo scope:
 - **`AUTH_MODE=dev`/`DevAuthGuard` is not production-safe for public
   exposure** — real auth (`AUTH_MODE=jwt`, this runbook's default) closes
   that gap; dev mode remains only as a documented local/trusted-operator
-  fallback (see the warning at the top of this doc). No real transactional
-  email provider exists yet even under `jwt` mode — verification/reset
-  emails are only logged locally — still a private-demo-scoped limitation.
+  fallback (see the warning at the top of this doc). A real transactional
+  email provider now exists (`EMAIL_PROVIDER=resend`, Phase 6H) but is
+  opt-in — a deployment that leaves it unset still only logs verification/
+  reset links locally via `ConsoleEmailService`, which is a private-demo-
+  scoped limitation, not a code limitation.
 - **In-process generation, no worker process.** `GenerationTaskRunner` runs
   the generation pipeline in the same process as the HTTP server. This is
   fine for a single always-on instance (what this runbook provisions) but
@@ -363,15 +372,19 @@ restated for this private-demo scope:
 
 ## Remaining blockers before public production
 
-1. **A real transactional email provider for the real auth endpoints**
-   (`/api/auth/*`) — real credential verification (`AUTH_MODE=jwt`, Phase
-   6B/6C), auth rate limiting (Phase 6E), email verification (Phase 6F,
-   `POST /api/auth/{verify-email,resend-verification}`), and password reset
-   (Phase 6G, `POST /api/auth/{request-password-reset,reset-password}`) are
-   all done, but the only `EmailService` implementation today
-   (`ConsoleEmailService`) logs verification/reset links instead of sending
-   real email — see
-   [docs/auth-architecture.md §15](auth-architecture.md#15-phase-6g--password-reset).
+1. ~~A real transactional email provider for the real auth endpoints~~
+   **Resolved in Phase 6H** — `ResendEmailService` is available behind
+   `EMAIL_PROVIDER=resend` (see the [environment variable
+   matrix](#3-environment-variable-matrix) above). Real credential
+   verification (`AUTH_MODE=jwt`, Phase 6B/6C), auth rate limiting (Phase
+   6E), email verification (Phase 6F,
+   `POST /api/auth/{verify-email,resend-verification}`), password reset
+   (Phase 6G, `POST /api/auth/{request-password-reset,reset-password}`), and
+   now real email delivery (Phase 6H) are all done — see
+   [docs/auth-architecture.md §16](auth-architecture.md#16-phase-6h--real-transactional-email-provider).
+   This deployment must still explicitly set `EMAIL_PROVIDER=resend` plus
+   `RESEND_API_KEY`/`EMAIL_FROM` — it defaults to `ConsoleEmailService`
+   (console-only) otherwise.
 2. **Wire the migration step into an actual deploy pipeline** (platform
    release-phase hook or CI job), rather than running it by hand per this
    runbook.

@@ -1,12 +1,14 @@
 import { Module } from '@nestjs/common';
-import { ConsoleEmailService } from './console-email.service';
 import { EMAIL_SERVICE_TOKEN } from './email.service';
+import { createEmailService } from './email-provider.factory';
 
 @Module({
   providers: [
-    ConsoleEmailService,
-    { provide: EMAIL_SERVICE_TOKEN, useExisting: ConsoleEmailService },
+    {
+      provide: EMAIL_SERVICE_TOKEN,
+      useFactory: () => createEmailService(process.env),
+    },
   ],
-  exports: [EMAIL_SERVICE_TOKEN, ConsoleEmailService],
+  exports: [EMAIL_SERVICE_TOKEN],
 })
 export class EmailModule {}

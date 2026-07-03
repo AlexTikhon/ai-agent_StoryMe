@@ -284,4 +284,55 @@ describe('envSchema', () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe('EMAIL_PROVIDER conditional requirement', () => {
+    const REQUIRED = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+
+    it('boots with no RESEND_API_KEY/EMAIL_FROM when EMAIL_PROVIDER is unset (default console)', () => {
+      const result = envSchema.safeParse({ ...REQUIRED });
+      expect(result.success).toBe(true);
+    });
+
+    it('boots with no RESEND_API_KEY/EMAIL_FROM when EMAIL_PROVIDER is explicitly "console"', () => {
+      const result = envSchema.safeParse({ ...REQUIRED, EMAIL_PROVIDER: 'console' });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects when EMAIL_PROVIDER=resend and both RESEND_API_KEY and EMAIL_FROM are missing', () => {
+      const result = envSchema.safeParse({ ...REQUIRED, EMAIL_PROVIDER: 'resend' });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const paths = result.error.errors.map((e) => e.path.join('.'));
+        expect(paths).toContain('RESEND_API_KEY');
+        expect(paths).toContain('EMAIL_FROM');
+      }
+    });
+
+    it('rejects when EMAIL_PROVIDER=resend and only EMAIL_FROM is set', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        EMAIL_PROVIDER: 'resend',
+        EMAIL_FROM: 'StoryMe <noreply@storyme.app>',
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.errors.some((e) => e.path.join('.') === 'RESEND_API_KEY')).toBe(true);
+      }
+    });
+
+    it('accepts EMAIL_PROVIDER=resend when RESEND_API_KEY and EMAIL_FROM are both set', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        EMAIL_PROVIDER: 'resend',
+        RESEND_API_KEY: 're_test_key',
+        EMAIL_FROM: 'StoryMe <noreply@storyme.app>',
+      });
+      expect(result.success).toBe(true);
+    });
+  });
 });

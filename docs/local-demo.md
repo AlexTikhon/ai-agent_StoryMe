@@ -102,6 +102,14 @@ unless you have a specific reason to want the old shared-identity shortcut:
     copy that URL into the browser to set a new password. The link expires
     after 30 minutes and can only be used once. See
     [docs/auth-architecture.md §15](auth-architecture.md#15-phase-6g--password-reset).
+  - **Real email (Phase 6H, optional)**: `ConsoleEmailService` (the
+    console-logging behavior above) is the default and is what local dev
+    should keep using — no setup, no cost, no risk of accidentally emailing a
+    real inbox from a dev environment. To instead send real verification/
+    reset email locally, set `EMAIL_PROVIDER="resend"` plus `RESEND_API_KEY`
+    and `EMAIL_FROM` in `apps/api/.env` (see `.env.example`); the app refuses
+    to boot if `EMAIL_PROVIDER=resend` is set without both. See
+    [docs/auth-architecture.md §16](auth-architecture.md#16-phase-6h--real-transactional-email-provider).
 - `dev` — no login screen, no accounts. Every API request is scoped to a
   single dev user identified by the `x-user-email` header, sent automatically
   by the web app (see `DevAuthGuard`). Set both `AUTH_MODE=dev` (API) and

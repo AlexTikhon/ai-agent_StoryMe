@@ -1032,10 +1032,8 @@ tests, 197 web tests).
 
 - ~~Password-reset flow~~ **Resolved in Phase 6G** — see
   [§15](#15-phase-6g--password-reset) below.
-- **No real transactional email provider** — `ConsoleEmailService` is a
-  dev/local-only adapter; a production deploy needs a real `EmailService`
-  implementation (Resend/SES/Postmark/etc.) wired in behind
-  `EMAIL_SERVICE_TOKEN` before verification/reset emails reach real inboxes.
+- ~~No real transactional email provider~~ **Resolved in Phase 6H** — see
+  [§16](#16-phase-6h--real-transactional-email-provider) below.
 - **No OAuth** — unchanged from earlier phases, still a documented future
   follow-up.
 
@@ -1196,7 +1194,135 @@ tests, 210 web tests).
 
 ### 15.10 Remaining blockers before public production
 
-- **No real transactional email provider** — unchanged; `ConsoleEmailService`
-  still logs both verification and reset links instead of sending them.
+- ~~No real transactional email provider~~ **Resolved in Phase 6H** — see
+  [§16](#16-phase-6h--real-transactional-email-provider) below.
 - **No OAuth** — unchanged from earlier phases, still a documented future
   follow-up.
+
+## 16. Phase 6H — real transactional email provider
+
+Goal: close the last auth production blocker from Phase 6F/6G — swap in a
+real transport behind the existing `EmailService` boundary (§14.3) without
+touching `AuthService`, token semantics, or any existing test.
+`ConsoleEmailService` remains the default everywhere; nothing sends real
+email unless `EMAIL_PROVIDER=resend` is explicitly set.
+
+### 16.1 Provider selection (`apps/api/src/email/email-provider.factory.ts`)
+
+`createEmailService(env)` mirrors `createStoryGenerationProvider`
+(§3B/`story-generation-provider.factory.ts`) exactly: reads `EMAIL_PROVIDER`
+case-insensitively, defaults to `console` on missing/empty, throws a clear
+`Error` for anything other than `console`/`resend`, and — when `resend` is
+selected — throws a clear `Error` naming every missing required var
+(`RESEND_API_KEY`, `EMAIL_FROM`) rather than constructing a half-configured
+client. Takes an explicit env map (default `process.env`) so selection is
+unit-testable without mutating global state. `EmailModule` wires this as a
+single `useFactory` provider for `EMAIL_SERVICE_TOKEN` — `AuthService` still
+depends only on the `EmailService` interface and never learns which
+implementation is active.
+
+The same fail-fast check is duplicated one layer up in `env.schema.ts`'s
+`superRefine` (same pattern as the existing `OPENAI_API_KEY` conditional
+requirement): if `EMAIL_PROVIDER=resend` but `RESEND_API_KEY` or `EMAIL_FROM`
+is missing, the app refuses to boot at `EnvModule` validation time with a
+named-field error, before Nest even constructs `EmailModule`. The factory's
+own check is what actually protects any call site that constructs
+`createEmailService` outside of Nest's DI (e.g. a script), so both checks are
+intentionally kept in sync rather than relying on just one.
+
+### 16.2 `ResendEmailService` (`apps/api/src/email/resend-email.service.ts`)
+
+Calls the Resend HTTP API (`POST https://api.resend.com/emails`) directly via
+native `fetch` — no new dependency, mirroring
+`OpenAIStoryGenerationProvider`'s existing fetch-based approach rather than
+adding an SDK for two call sites. Per-request `AbortController` timeout
+(`timeoutMs`, default 10s) guards against a hung request blocking
+registration/reset indefinitely. Constructor validates `apiKey`/`from` are
+non-empty and throws `EmailProviderError` immediately if not — the same
+class also wraps every failure mode from `send()` (network error, timeout,
+non-2xx response) so `AuthService`'s `await this.emailService.send...()`
+calls see one consistent error type regardless of provider, without
+`AuthService` importing anything provider-specific.
+
+Both emails are sent with **HTML and plain-text bodies** built from the same
+payload the existing `EmailService` interface already defines (`to`, `name`,
+`token` — used only to build the URL upstream, never referenced directly
+here — and `verificationUrl`/`resetUrl`). Content requirements from this
+phase's own scope:
+
+- Verification email: app name (`StoryMe`), the verification link, and "this
+  link expires in 24 hours."
+- Password reset email: app name, the reset link, "this link expires in 30
+  minutes," and an explicit "if you didn't request this, you can safely
+  ignore this email — your password will not be changed" warning.
+
+User-supplied `name` is HTML-escaped before interpolation into the HTML body
+(`escapeHtml`) — the only untrusted string embedded in markup; the
+verification/reset URLs are server-constructed
+(`${WEB_APP_URL}/verify-email?token=...`) and not user input.
+
+**Never logs the verification/reset URL or token** — unlike
+`ConsoleEmailService`, which intentionally logs the link for local/dev
+inspection, `ResendEmailService.send()` only logs the recipient address and
+email kind (`"Sent verification email to=..."`) on success, and status
+code/reason (never the response body, which could echo request content back)
+on failure. The Resend API key is never included in any log line or thrown
+error message — errors surface the HTTP status and a truncated response body
+only.
+
+### 16.3 Configuration
+
+New env vars, all optional (only `RESEND_API_KEY`/`EMAIL_FROM` become
+required, enforced at boot, once `EMAIL_PROVIDER=resend` is set):
+
+- `EMAIL_PROVIDER` — `console` (default) | `resend`.
+- `RESEND_API_KEY` — Resend API key; required when `EMAIL_PROVIDER=resend`.
+- `EMAIL_FROM` — `from` address, e.g. `"StoryMe <noreply@storyme.app>"`; must
+  be a verified sender/domain in Resend; required when
+  `EMAIL_PROVIDER=resend`.
+- `EMAIL_REPLY_TO` — optional `reply-to` address, included in the Resend
+  payload only when set.
+
+`WEB_APP_URL` (added in Phase 6F) is unchanged and still the only source of
+the verification/reset link host.
+
+### 16.4 Tests
+
+- `apps/api/src/email/email-provider.factory.spec.ts` (new) — defaults to
+  `ConsoleEmailService` when unset/empty/`"console"` (case-insensitive);
+  returns `ResendEmailService` when `resend` is selected with both required
+  vars set; throws naming the missing var(s) when `resend` is selected
+  without `RESEND_API_KEY` and/or `EMAIL_FROM`; throws for an unknown
+  provider name.
+- `apps/api/src/email/resend-email.service.spec.ts` (new) — constructor
+  rejects an empty `apiKey`/`from`; verification and password-reset emails
+  each assert on the exact request sent to the mocked `fetchImpl` (`from`,
+  `to`, `subject`, `html`, `text` all contain the app name, link, and the
+  right expiration/warning copy); `reply_to` included only when configured;
+  a non-2xx response and a network/timeout error both reject with
+  `EmailProviderError`, and the timeout/network-error case is asserted not
+  to leak the configured API key into the thrown error's message. No test in
+  this file makes a real network call — `fetchImpl` is always a `vi.fn()`
+  mock.
+- `apps/api/src/config/env.schema.spec.ts` — extended with the
+  `EMAIL_PROVIDER=resend` conditional-requirement cases, mirroring the
+  existing `OPENAI_API_KEY` conditional-requirement `describe` block.
+- All pre-existing email/auth tests (`console-email.service.spec.ts`,
+  `auth.service.spec.ts`, `auth.controller.spec.ts`, `token.service.spec.ts`)
+  remain green unchanged — `AuthService` still only ever sees the
+  `EmailService` interface via a mock in its own spec, so it has no idea
+  `ResendEmailService` exists.
+
+### 16.5 Quality gates
+
+`pnpm --filter @book/types build`, `pnpm --filter @book/api test`,
+`pnpm --filter @book/api typecheck`, `pnpm --filter @book/api lint`,
+`pnpm --filter @book/web test`, `pnpm --filter @book/web typecheck`,
+`pnpm --filter @book/web build`, `pnpm --filter @book/web lint`.
+
+### 16.6 Remaining blockers before public production
+
+- **No OAuth** — unchanged from earlier phases, still a documented future
+  follow-up. This was the last auth-specific blocker called out in §14.12/
+  §15.10 — real auth, rate limiting, email verification, password reset, and
+  now real transactional email are all done end-to-end.
