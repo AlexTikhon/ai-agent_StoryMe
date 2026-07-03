@@ -40,6 +40,13 @@ see [docs/local-demo.md](local-demo.md).
   [deployment-readiness.md](deployment-readiness.md) for what's still
   outstanding beyond auth.
 
+**Deploying specifically to Vercel + Railway?** Skip straight to
+[§10 Vercel + Railway: concrete deployment configuration](#10-vercel--railway-concrete-deployment-configuration)
+for exact build/start/migrate commands, config files, and an env var list
+scoped to that pair of platforms. §§1–9 below remain the general-purpose
+version of this runbook (any Docker host for the API, any Node host for the
+web app).
+
 ## 1. Target architecture
 
 ```
@@ -521,6 +528,200 @@ code. None of these require a code change — they're deploy-time discipline.
   multiplying the effective rate limit and weakening brute-force
   protection. Don't enable autoscaling/multiple replicas for the API until
   this moves to a shared (e.g. Redis-backed) store.
+
+## 10. Vercel + Railway: concrete deployment configuration
+
+A concrete instantiation of §§1–9 above for one specific pair of hosts:
+**Railway** for the API (Docker service + managed Postgres + managed Redis)
+and **Vercel** for the web app. Nothing here changes the architecture,
+env var names, or security posture already documented above — this section
+just pins down exact commands/settings for this one platform pair.
+
+### 10.1 Railway (API)
+
+The repo root now has [`railway.json`](../railway.json) (config-as-code, picked
+up automatically once the Railway service is linked to this repo):
+
+```json
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "apps/api/Dockerfile"
+  },
+  "deploy": {
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
+```
+
+- **Root Directory**: set the Railway service's Root Directory to the
+  **repo root** (not `apps/api`). `apps/api/Dockerfile` copies root-relative
+  workspace manifests (`pnpm-workspace.yaml`, `packages/types/package.json`,
+  etc.), so the Docker build context must be the monorepo root — same
+  constraint as the existing `docker build -f apps/api/Dockerfile .` command
+  in [§4 Step 5](#step-5--build-the-api-image) above.
+- **Build command**: none to set — Railway builds `apps/api/Dockerfile`
+  directly (`builder: DOCKERFILE`), which already runs
+  `pnpm --filter @book/types build` then `pnpm prisma:generate && pnpm build`
+  inside the image (see the Dockerfile's builder stage).
+- **Start command**: none to set — the Dockerfile's `CMD ["node", "dist/main"]`
+  is what Railway runs; `PORT` is injected by Railway and the app already
+  binds `0.0.0.0:$PORT` (`apps/api/src/main.ts`).
+- **Migration command (release/pre-deploy step)**:
+
+  ```bash
+  pnpm --filter @book/api prisma:migrate:deploy
+  ```
+
+  Railway does not run this automatically. Run it either as Railway's
+  dashboard-configurable **Pre-Deploy Command** (Service → Settings →
+  Deploy), if enabled on your Railway plan, pointed at the same command; or
+  manually from a machine/CI job with network access to the Railway Postgres
+  instance's public/proxy connection string, **before** promoting a new
+  deploy to receive traffic. Same ordering constraint as
+  [§5 Migration and release order](#5-migration-and-release-order) above:
+  never run this inside the container's `CMD`.
+- **Health check path**: `/api/health` (already wired into `railway.json`'s
+  `deploy.healthcheckPath` above, and into the Dockerfile's own
+  `HEALTHCHECK` instruction — Railway uses its own HTTP check against this
+  path to decide when a deploy is healthy).
+- **Node/pnpm versions**: pinned by the Dockerfile, not by Railway's
+  Nixpacks builder — `node:20-alpine` base image, `corepack prepare
+  pnpm@9.4.0`. No separate Railway Node/pnpm version setting is needed since
+  `builder: DOCKERFILE` bypasses Nixpacks entirely.
+- **Managed Postgres / Redis**: add Railway's Postgres and Redis plugins to
+  the same project; use the connection strings they provide for
+  `DATABASE_URL` / `REDIS_URL` (Railway's internal/private network URL if the
+  API service is in the same project, to avoid egress and public-proxy
+  latency).
+- **Local Docker/`docker-compose` are unaffected** — `railway.json` is only
+  read by Railway; it doesn't change `docker build`, `docker-compose up`, or
+  any local script.
+
+### 10.2 Vercel (Web)
+
+`apps/web/vercel.json` (config-as-code, picked up automatically once the
+Vercel project's Root Directory is set to `apps/web`):
+
+```json
+{
+  "framework": "nextjs",
+  "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
+  "buildCommand": "cd ../.. && pnpm turbo run build --filter=@book/web"
+}
+```
+
+- **Root Directory** (Vercel project setting): `apps/web`.
+- **Framework preset**: Next.js (`framework: "nextjs"` in `vercel.json`) —
+  Vercel auto-detects the `.next` output, no `outputDirectory` override
+  needed.
+- **Install/build commands**: both `cd ../..` back to the monorepo root
+  first, because `@book/web` depends on the `@book/types` workspace package
+  (resolves to `packages/types/dist`, per its `package.json` `main`/`types`
+  fields) — running `pnpm install` and `pnpm turbo run build
+  --filter=@book/web` from the repo root lets Turborepo's `^build`
+  dependency graph (`turbo.json`) build `@book/types` before `@book/web`,
+  the same ordering the Dockerfile enforces manually for the API. This is
+  Vercel's documented pattern for a Turborepo + pnpm workspace, not
+  something specific to this repo.
+- **Start command**: none — Vercel serves the build output itself, same as
+  documented in [§4 Step 9](#step-9--builddeploy-web) above.
+
+### 10.3 Environment variables by service
+
+Exact names from `apps/api/src/config/env.schema.ts` and the two
+`.env.example` files — same variables as the
+[§3 Environment variable matrix](#3-environment-variable-matrix) above,
+grouped here by which platform's dashboard they get set in.
+
+**Railway (API) environment:**
+
+| Variable | Example value | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | *(from Railway Postgres plugin)* | |
+| `REDIS_URL` | *(from Railway Redis plugin)* | |
+| `AUTH_MODE` | `jwt` | Must match `NEXT_PUBLIC_AUTH_MODE` on Vercel. |
+| `JWT_SECRET` | `openssl rand -hex 32` output | |
+| `JWT_REFRESH_SECRET` | `openssl rand -hex 32` output | |
+| `WEB_APP_URL` | `https://your-app.vercel.app` | Used to build links in verification/reset email. |
+| `ALLOWED_ORIGINS` | `https://your-app.vercel.app` | CORS allowlist; comma-separate if adding a Vercel preview URL too. |
+| `EMAIL_PROVIDER` | `resend` | |
+| `RESEND_API_KEY` | `re_...` | Required once `EMAIL_PROVIDER=resend`. |
+| `EMAIL_FROM` | `StoryMe <noreply@yourdomain.com>` | Must be a verified sender/domain in Resend. |
+| `EMAIL_REPLY_TO` | `support@yourdomain.com` | Optional. |
+| `STORY_GENERATION_PROVIDER` | `mock` (or `openai`) | `mock` keeps the demo free/deterministic. |
+| `IMAGE_GENERATION_PROVIDER_TOKEN` | `mock` (or `openai`) | Same. |
+| `OPENAI_API_KEY` | `sk-...` | Only if either provider above is `openai`. |
+| `PDF_STORAGE_DRIVER` | `r2` (or `s3`, or leave `local`) | `local` is ephemeral on Railway's container filesystem — see [Storage decision note](deployment-readiness.md#storage-decision). |
+| `IMAGE_STORAGE_DRIVER` | `r2` (or `s3`, or leave `local`) | Same. |
+| `PDF_STORAGE_BUCKET` / `PDF_STORAGE_REGION` / `PDF_STORAGE_ENDPOINT` / `PDF_STORAGE_ACCESS_KEY_ID` / `PDF_STORAGE_SECRET_ACCESS_KEY` | *(bucket credentials)* | Only if `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` is `r2`/`s3`; shared by both. |
+| `PORT` | *(leave unset)* | Railway injects this; the app already reads it. |
+
+**Vercel (Web) environment:**
+
+| Variable | Example value | Notes |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | `https://your-api.up.railway.app/api` | Include the `/api` suffix. Baked in at build time — set before the first Vercel build/deploy. |
+| `NEXT_PUBLIC_AUTH_MODE` | `jwt` | Must match `AUTH_MODE` on Railway. |
+
+### 10.4 CORS / cookie / HTTPS notes
+
+- **Both origins must be HTTPS.** Vercel and Railway both provision HTTPS by
+  default — don't disable it or terminate TLS anywhere upstream of either
+  platform's own edge.
+- **`WEB_APP_URL` (Railway) must match the Vercel deployment's exact
+  origin** — it's used to build the verification/reset links sent in email;
+  a mismatch sends users to the wrong host.
+- **`ALLOWED_ORIGINS` (Railway) must include the Vercel frontend's exact
+  origin** — CORS is `credentials: true` (`apps/api/src/main.ts`), so this
+  must be the specific origin(s), never `*`. Comma-separate if you also need
+  to allow a Vercel preview-deployment URL.
+- **Cookie behavior in production**: the refresh cookie is
+  `Secure; SameSite=None` only when `NODE_ENV=production`
+  (`apps/api/src/auth/refresh-cookie.ts`) — this is required for a
+  cross-origin cookie (Railway API origin ≠ Vercel web origin) to be sent by
+  the browser at all. Set `NODE_ENV=production` on the Railway service.
+- **`trust proxy` is already set** (`app.set('trust proxy', 1)` in
+  `apps/api/src/main.ts`, added in [Phase 6I](deployment-readiness.md#phase-6i))
+  — Railway puts exactly one reverse-proxy hop in front of the container,
+  so this is already correct for `req.ip`-based rate limiting without
+  further changes.
+
+### 10.5 Post-deploy smoke test (Vercel + Railway)
+
+Same checks as the full [§6 Smoke test checklist](#6-smoke-test-checklist)
+above, restated as a quick pass for this platform pair. Use a throwaway
+email address you control.
+
+- [ ] Open the Vercel frontend URL — landing page loads with no console errors.
+- [ ] `curl https://<your-api>.up.railway.app/api/health` → `200`,
+      `"status":"ok"`, `db`/`redis` both `up`.
+- [ ] Register a new account at `/register` → redirected into `/dashboard`
+      signed in (unverified).
+- [ ] Receive the real verification email via Resend (check the inbox of the
+      address you registered).
+- [ ] Open the verification link → account marked verified.
+- [ ] Log out, then log back in at `/login` with the same credentials →
+      succeeds (would have failed with `401 EMAIL_NOT_VERIFIED` before
+      verifying).
+- [ ] Create a book via the 3-step wizard → redirected to the book detail
+      page with status `created`.
+- [ ] Click **Generate Story** → polls through pipeline stages to `complete`.
+- [ ] Open the PDF preview (`GET /api/books/:id/pdf/preview`) and download it.
+- [ ] Log out.
+- [ ] On `/login`, click **Forgot password?**, submit the same email, and
+      receive the real reset email via Resend.
+- [ ] Open the reset link, set a new password → succeeds.
+- [ ] Log in with the **new** password → succeeds.
+- [ ] Attempt to log in with the **old** password → rejected.
+- [ ] Tail Railway's service logs while repeating login/verification above →
+      confirm no raw JWT, refresh token, verification token, or reset token
+      value appears anywhere in the log output (see
+      [§9 Security notes](#security-notes) above).
 
 ## Remaining blockers before public production
 
