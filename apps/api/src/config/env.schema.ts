@@ -19,6 +19,11 @@ export const envSchema = z.object({
   // Auth
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
+  // dev: DevAuthGuard (x-user-email header, no credential check) — refuses to
+  // run when NODE_ENV=production regardless of this setting.
+  // jwt: real email/password + JWT access token + rotating refresh cookie.
+  // Defaults to jwt so an environment that forgets to set this is safe.
+  AUTH_MODE: z.enum(['dev', 'jwt']).default('jwt'),
 
   // AI Providers
   // ANTHROPIC_API_KEY and FAL_API_KEY are reserved for providers not wired up

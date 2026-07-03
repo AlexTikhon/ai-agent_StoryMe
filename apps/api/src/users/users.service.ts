@@ -22,4 +22,28 @@ export class UsersService {
 
     return this.prisma.user.create({ data });
   }
+
+  /** Looks up by email without creating one. Returns null when no user exists. */
+  async findByEmail(email: string): Promise<User | null> {
+    return this.prisma.user.findUnique({ where: { email } });
+  }
+
+  async findById(id: string): Promise<User | null> {
+    return this.prisma.user.findUnique({ where: { id } });
+  }
+
+  /** Creates a password-auth user. Email must already be confirmed unique by the caller. */
+  async create(data: {
+    email: string;
+    passwordHash: string;
+    name?: string | undefined;
+  }): Promise<User> {
+    return this.prisma.user.create({
+      data: {
+        email: data.email,
+        passwordHash: data.passwordHash,
+        name: data.name ?? null,
+      },
+    });
+  }
 }

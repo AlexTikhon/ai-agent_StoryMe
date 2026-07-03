@@ -172,4 +172,45 @@ describe('envSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('defaults AUTH_MODE to jwt when unset (safe default outside dev)', () => {
+    const result = envSchema.safeParse({
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+      OPENAI_API_KEY: 'sk-test',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.AUTH_MODE).toBe('jwt');
+    }
+  });
+
+  it('accepts an explicit AUTH_MODE of dev', () => {
+    const result = envSchema.safeParse({
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+      OPENAI_API_KEY: 'sk-test',
+      AUTH_MODE: 'dev',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.AUTH_MODE).toBe('dev');
+    }
+  });
+
+  it('rejects an unknown AUTH_MODE value', () => {
+    const result = envSchema.safeParse({
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+      OPENAI_API_KEY: 'sk-test',
+      AUTH_MODE: 'basic',
+    });
+    expect(result.success).toBe(false);
+  });
 });

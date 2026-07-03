@@ -338,29 +338,36 @@ still pass unchanged.
 
 ## Auth limitation note {#auth-limitation}
 
-- **Current behavior**: `DevAuthGuard` (`apps/api/src/auth/dev-auth.guard.ts`)
-  reads a plain `x-user-email` header (optionally `x-user-name`), validates
-  only that it looks like an email address, and creates/looks up a matching
-  `User` row on the fly — no password, session, or token is ever checked.
-  The web app sends fixed dev values (`dev@storyme.local`) on every request
-  (`apps/web/src/lib/api/client.ts`).
-- **Why this is acceptable for the local demo**: it lets the whole
-  create → generate → preview → PDF flow be exercised end-to-end without
-  building a login system first, and every downstream consumer
-  (`@CurrentUser`, controllers) only depends on `request.user` being
-  populated — so the guard is a swappable seam, not something wired
-  throughout the codebase.
-- **Why it is not production-ready**: anyone can act as any user simply by
-  setting an `x-user-email` header to any address — there is no proof of
-  identity. Exposing this publicly means no real access control exists.
-- **What a real auth phase must add**: credential verification (password
-  hash check or OAuth token exchange — `User.passwordHash`,
-  `oauthProvider`/`oauthId` and the `RefreshToken` model already exist in the
-  schema for this), session/JWT issuance and verification (`JWT_SECRET`/
-  `JWT_REFRESH_SECRET` are already validated at startup but nothing signs or
-  verifies a token yet), a login/signup surface on the web app, and removal
-  of the `x-user-email`/`x-user-name` CORS-allowed headers and `DevAuthGuard`
-  itself once replaced.
+- **Current behavior (as of Phase 6B)**: real backend auth now exists —
+  `POST /api/auth/{register,login,refresh,logout}` and `GET /api/auth/me`,
+  bcrypt-hashed passwords, short-lived JWT access tokens, and rotating
+  refresh tokens (with reuse detection) in an `HttpOnly` cookie. Protected
+  routes (`BooksController`, `AuthController#getMe`) use `AuthModeGuard`,
+  which picks `JwtAuthGuard` or `DevAuthGuard` per request from the new
+  `AUTH_MODE` env var (`dev` | `jwt`, defaults to `jwt`). See
+  `apps/api/src/auth/` and `docs/auth-architecture.md` for the full design.
+- **What's still `DevAuthGuard`-shaped**: the web app (`apps/web`) has not
+  been updated — it still hardcodes the `x-user-email`/`x-user-name` dev
+  headers on every request (`apps/web/src/lib/api/client.ts`) and has no
+  login/register UI. Practically, that means **the deployed demo must still
+  run with `AUTH_MODE=dev`** until frontend integration (login/register
+  pages, token storage, protected routing) lands in a follow-up phase —
+  setting `AUTH_MODE=jwt` today would lock the existing frontend out
+  entirely, since it never sends an `Authorization: Bearer` header.
+  `DevAuthGuard` itself still refuses to run when `NODE_ENV=production`
+  regardless of `AUTH_MODE`, as a safety net against exactly this
+  misconfiguration.
+- **Why it is not yet safe for public exposure**: until the frontend speaks
+  the new endpoints, the *effective* auth for any real deployment is still
+  `DevAuthGuard` — anyone who can reach the API and set `x-user-email` can
+  impersonate any user. The backend primitives (§ above) remove the
+  *implementation* blocker; the frontend cutover removes the *exposure*
+  blocker. Both are needed before this stops being private/internal-only.
+- **What's left**: a login/register UI and an `AuthProvider` on the web app
+  that stores the access token in memory, sends `Authorization: Bearer`,
+  and retries once through `/api/auth/refresh` on a 401 (see
+  `docs/auth-architecture.md` §5), then flipping the deployed `AUTH_MODE` to
+  `jwt` and removing the `x-user-email`/`x-user-name` CORS-allowed headers.
 
 ## Recommended deployment architecture
 

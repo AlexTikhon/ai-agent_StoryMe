@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { resolve } from 'node:path';
 import { AppModule } from './app.module';
@@ -18,6 +19,9 @@ async function bootstrap(): Promise<void> {
 
   // ── Security ──────────────────────────────────────────────────────────────
   app.use(helmet());
+
+  // Parses the storyme_refresh cookie into req.cookies for AuthController.
+  app.use(cookieParser());
 
   // ── CORS ──────────────────────────────────────────────────────────────────
   const allowedOrigins = (process.env['ALLOWED_ORIGINS'] ?? 'http://localhost:3000')

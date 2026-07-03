@@ -23,13 +23,13 @@ import type {
   GenerateBookResponse,
   GenerationDiagnosticsDto,
 } from '@book/types';
+import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { DevAuthGuard } from '../auth/dev-auth.guard';
 import { BooksService } from './books.service';
 import { CreateBookDto } from './dto/create-book.dto';
 import { UpdateBookDto } from './dto/update-book.dto';
 
-@UseGuards(DevAuthGuard)
+@UseGuards(AuthModeGuard)
 @Controller('books')
 export class BooksController {
   constructor(private readonly booksService: BooksService) {}
@@ -49,10 +49,7 @@ export class BooksController {
   }
 
   @Get(':id')
-  findOne(
-    @CurrentUser() user: User,
-    @Param('id', ParseUUIDPipe) id: string,
-  ): Promise<BookDto> {
+  findOne(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string): Promise<BookDto> {
     return this.booksService.findOneForUser(id, user.id);
   }
 

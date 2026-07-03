@@ -9,11 +9,19 @@ see [docs/local-demo.md](local-demo.md).
 
 ## ⚠️ Private/internal only — read this first
 
-- **This deployment must remain private/internal while `DevAuthGuard` is
-  active.** There is no real login. Every request is scoped to a user by a
-  plain `x-user-email` header — the API creates/looks up a matching `User`
-  row on the fly with **no password, session, or token check** (see
-  `apps/api/src/auth/dev-auth.guard.ts`).
+- **As of Phase 6B, the API has real backend auth** (register/login/JWT
+  access tokens/rotating refresh cookies — see
+  [docs/auth-architecture.md](auth-architecture.md)), gated by an
+  `AUTH_MODE=dev|jwt` env var. **This runbook still deploys with
+  `AUTH_MODE=dev`**, because the web app (`apps/web`) has not been updated to
+  use the new endpoints yet — it still hardcodes the `x-user-email`/
+  `x-user-name` dev headers on every request. Setting `AUTH_MODE=jwt` before
+  the frontend is cut over would lock the deployed frontend out entirely.
+- **This deployment must remain private/internal while `AUTH_MODE=dev` is
+  active.** There is no real login from the frontend's perspective. Every
+  request is scoped to a user by a plain `x-user-email` header — the API
+  creates/looks up a matching `User` row on the fly with **no password,
+  session, or token check** (see `apps/api/src/auth/dev-auth.guard.ts`).
 - **Anyone who can reach the API and set `x-user-email` can impersonate any
   user.** This isn't a theoretical risk — it's one curl flag away. Do not put
   either the API or web URL somewhere a stranger could find it.
@@ -21,9 +29,9 @@ see [docs/local-demo.md](local-demo.md).
   deployment (or restrict to a Vercel team/allowlist), and consider an
   IP allowlist or basic auth in front of the API host if the platform
   supports it.
-- **Public deployment requires the real-auth phase first** — see
+- **Public deployment requires the frontend auth cutover next** — see
   [Auth limitation note](deployment-readiness.md#auth-limitation) in the
-  readiness audit for what that phase needs to add.
+  readiness audit for exactly what's done vs. what's left.
 
 ## 1. Target architecture
 
@@ -109,8 +117,9 @@ ephemeral filesystem — see
 |---|---|---|---|---|
 | `DATABASE_URL` | API | **Yes** | `postgresql://user:pass@host:5432/db` | Managed Postgres connection string. |
 | `REDIS_URL` | API | **Yes** | `redis://:password@host:6379` | See [Is Redis required?](#is-redis-required) — needed to boot and pass health checks, not for queue processing yet. |
-| `JWT_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | Validated at startup; not actually used to sign/verify anything yet (real auth isn't built) — still required by env schema. |
-| `JWT_REFRESH_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | Same as above. |
+| `JWT_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | Signs/verifies access tokens (`JwtAuthGuard`, `TokenService`). |
+| `JWT_REFRESH_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | HMAC key used to hash refresh tokens before they're stored in `RefreshToken.tokenHash`. |
+| `AUTH_MODE` | API | **Yes, set to `dev` for this runbook** | `dev` \| `jwt` | Defaults to `jwt` (safe) if unset — must be explicitly set to `dev` here since the deployed frontend still only sends `x-user-email`. Only flip to `jwt` after the frontend auth cutover (see [Auth limitation note](deployment-readiness.md#auth-limitation)). |
 | `PORT` | API | No (has default `4000`) | `4000` | Most hosts (Render/Fly/Railway) set this automatically; the API already reads and binds it on `0.0.0.0`. |
 | `ALLOWED_ORIGINS` | API | **Yes** | `https://storyme-demo.vercel.app` | CORS allowlist, comma-separated for multiple origins (e.g. preview + production Vercel URLs). Must match the web app's deployed origin exactly. |
 | `OPENAI_API_KEY` | API | Only if using real generation | `sk-...` | Required only when `STORY_GENERATION_PROVIDER=openai` or `IMAGE_GENERATION_PROVIDER_TOKEN=openai`. Leave the providers on `mock` (default) for a free/deterministic demo. |

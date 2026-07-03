@@ -78,9 +78,14 @@ Runs on `http://localhost:3000`.
    and submit.
 3. You land on the new book's detail page with status `created`.
 
-There's no login screen in this MVP — every API request is scoped to a dev
-user identified by the `x-user-email` header, sent automatically by the web
-app (see `DevAuthGuard`).
+There's no login screen wired up in the web app yet — every API request is
+scoped to a dev user identified by the `x-user-email` header, sent
+automatically by the web app (see `DevAuthGuard`, active because
+`AUTH_MODE=dev` in `.env.example`). Real backend auth
+(`POST /api/auth/register`, `/login`, `/refresh`, `/logout`,
+`GET /api/auth/me`) exists as of Phase 6B — see `docs/auth-architecture.md`
+— but the frontend hasn't been wired to it, so leave `AUTH_MODE=dev` for
+local use until that lands.
 
 ## 8. Verify generation
 

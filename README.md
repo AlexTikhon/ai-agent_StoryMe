@@ -28,10 +28,14 @@ generate a book → download the PDF).
 
 ## What it does not do yet
 
-- **No real authentication.** Every request is scoped to a user by a plain
-  `x-user-email` header (`DevAuthGuard`), and a matching `User` row is
-  created automatically on first use. There is no login screen, password,
-  or session — see `apps/api/src/auth/dev-auth.guard.ts`.
+- **No frontend authentication yet.** The backend has real email/password
+  auth (JWT access tokens + rotating refresh cookies — see
+  `docs/auth-architecture.md`), but the web app hasn't been wired to it: it
+  still runs against `AUTH_MODE=dev`, where every request is scoped to a
+  user by a plain `x-user-email` header (`DevAuthGuard`) and a matching
+  `User` row is created automatically on first use. There is no login
+  screen yet — see `apps/api/src/auth/dev-auth.guard.ts` and
+  `apps/api/src/auth/auth-mode.guard.ts`.
 - **No payments/credits enforcement.** `User.credits` and Stripe fields exist
   in the schema but nothing in the API charges credits or calls Stripe.
 - **No queue-backed generation.** Generation runs in-process
@@ -100,7 +104,9 @@ publicly.
 
 ## Known post-MVP TODOs
 
-- Replace `DevAuthGuard` with real session/JWT auth.
+- Wire the frontend to the real `/api/auth/*` endpoints (login/register UI,
+  token storage, protected routing) and flip `AUTH_MODE` to `jwt` in
+  deployment — the backend side of this already exists (Phase 6B).
 - Wire credit deduction and Stripe billing.
 - Move generation onto the BullMQ/Redis queue instead of in-process execution.
 - Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial

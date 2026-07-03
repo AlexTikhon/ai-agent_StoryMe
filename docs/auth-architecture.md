@@ -1,11 +1,21 @@
 # StoryMe Auth Architecture — Phase 6A Plan
 
-Status: **planning only — nothing in this document has been implemented.**
-No auth libraries, guards, controllers, routes, or schema changes were made
-while writing it. See [Quality gates](#quality-gates) at the bottom.
+Status: **Phase 6B (backend implementation) is done.** Everything under
+§4–§8 below describing the backend (`AuthService`, `TokenService`,
+`JwtAuthGuard`, `AuthModeGuard`, the five `/api/auth/*` endpoints, cookie
+handling) now exists in code exactly as planned, with one addition not
+foreseen here: `AuthModeGuard`, a small composite guard that picks
+`DevAuthGuard` vs. `JwtAuthGuard` per request based on the new `AUTH_MODE`
+env var, so controllers need no code change to switch modes. See
+`apps/api/src/auth/` for the implementation and its `*.spec.ts` files for
+test coverage.
 
-This phase produces the plan. Implementation is a future phase (proposed
-name: Phase 6B).
+**Not done in Phase 6B** (still matches this plan's §5/§7 as future work):
+the frontend (§5 — login/register pages, `AuthProvider`, token storage,
+protected routing) is untouched. `apps/web` still hardcodes the
+`x-user-email`/`x-user-name` dev headers, so it only works against
+`AUTH_MODE=dev`. OAuth (§3 option C) was explicitly out of scope. Frontend
+integration is the next phase (Phase 6C).
 
 ---
 
