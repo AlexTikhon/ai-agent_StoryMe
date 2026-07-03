@@ -6,7 +6,7 @@ import type {
   GenerationDiagnosticsDto,
   UpdateBookInput,
 } from '@book/types';
-import { apiFetch } from './client';
+import { apiFetch, apiFetchBlob } from './client';
 
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000/api';
 
@@ -37,4 +37,6 @@ export const booksApi = {
 
   getGenerationDiagnostics: (id: string): Promise<GenerationDiagnosticsDto> =>
     apiFetch(`/books/${id}/generation-diagnostics`),
+
+  downloadPdf: (id: string): Promise<Blob> => apiFetchBlob(`/books/${id}/pdf/preview`),
 };
