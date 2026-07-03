@@ -359,6 +359,20 @@ export enum SupportedLanguage {
   Polish = 'pl',
 }
 
+/**
+ * Phase 4A: shared page-count bounds for the book creation input contract.
+ * Applied by CreateBookDto validation, BooksService normalization, and both
+ * StoryGenerationProviders (mock and OpenAI) — a single source of truth so
+ * the API-accepted range and the generation pipeline's target never drift.
+ * Coincidentally matches the default REAL_GENERATION_MAX_PAGES cost
+ * guardrail (apps/api/src/images/image-generation-provider.factory.ts), but
+ * that guardrail is independently configurable via env and caps real image
+ * generation cost, not the book creation input contract.
+ */
+export const MIN_BOOK_PAGE_COUNT = 4;
+export const MAX_BOOK_PAGE_COUNT = 12;
+export const DEFAULT_BOOK_PAGE_COUNT = 6;
+
 /** API-facing shape of a Book in the Phase 1A simple draft flow. */
 export interface BookDto {
   id: string;
@@ -368,6 +382,10 @@ export interface BookDto {
   childAge: number | null;
   language: SupportedLanguage | null;
   theme: string | null;
+  /** User-supplied desired educational message/lesson (Phase 4A). Distinct from the generated storyPlan.educationalMessage. */
+  educationalMessage: string | null;
+  /** Target story page count (Phase 4A), bounded by MIN_BOOK_PAGE_COUNT/MAX_BOOK_PAGE_COUNT. Null until a book is created under the Phase 4A contract. */
+  pageCount: number | null;
   status: BookStatus;
   characterCard?: CharacterCard | null;
   storyPlan?: StoryPlan | null;
@@ -384,8 +402,13 @@ export interface CreateBookInput {
   title: string;
   childName: string;
   childAge: number;
-  language: SupportedLanguage;
+  /** Optional — BooksService defaults to SupportedLanguage.English when omitted. */
+  language?: SupportedLanguage;
   theme: string;
+  /** Optional — bounded free text guiding the story's lesson/takeaway. */
+  educationalMessage?: string;
+  /** Optional — bounded by MIN_BOOK_PAGE_COUNT/MAX_BOOK_PAGE_COUNT; defaults to DEFAULT_BOOK_PAGE_COUNT when omitted. */
+  pageCount?: number;
 }
 
 export type UpdateBookInput = Partial<CreateBookInput>;

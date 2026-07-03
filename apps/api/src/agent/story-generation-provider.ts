@@ -1,6 +1,10 @@
 import {
+  DEFAULT_BOOK_PAGE_COUNT,
+  MAX_BOOK_PAGE_COUNT,
+  MIN_BOOK_PAGE_COUNT,
   Pronouns,
   type BookPreview,
+  type ChapterOutline,
   type CharacterCard,
   type GeneratedImageEntry,
   type IllustrationPlan,
@@ -15,6 +19,18 @@ export interface StoryGenerationInput {
   childAge: number;
   theme: string;
   language: string;
+  /** Target story page count. Defaults to DEFAULT_BOOK_PAGE_COUNT when omitted; providers clamp to [MIN_BOOK_PAGE_COUNT, MAX_BOOK_PAGE_COUNT]. */
+  pageCount?: number | undefined;
+  /** User-supplied desired educational message/lesson. When omitted, providers generate a default from theme. */
+  educationalMessage?: string | undefined;
+}
+
+/** Clamps a requested page count into [MIN_BOOK_PAGE_COUNT, MAX_BOOK_PAGE_COUNT], defaulting when absent/invalid — the last line of defense behind CreateBookDto's own bounds. */
+export function resolveTargetPageCount(pageCount: number | undefined): number {
+  if (typeof pageCount !== 'number' || !Number.isFinite(pageCount)) {
+    return DEFAULT_BOOK_PAGE_COUNT;
+  }
+  return Math.min(MAX_BOOK_PAGE_COUNT, Math.max(MIN_BOOK_PAGE_COUNT, Math.floor(pageCount)));
 }
 
 export type ResolvedPagePlan = PagePlan & { storyText: string; illustration: IllustrationPlan };
@@ -69,56 +85,108 @@ function buildCharacterCard(name: string, age: number): CharacterCard {
   };
 }
 
-function buildStoryPlan(name: string, theme: string): StoryPlan {
+const PAGES_PER_CHAPTER = 2;
+
+/**
+ * Chapter shape templates, one per possible chapter slot. Sized to cover
+ * MAX_BOOK_PAGE_COUNT / PAGES_PER_CHAPTER (12 / 2 = 6) chapters — the most
+ * buildStoryPlan will ever need. The first three preserve the exact template
+ * text this provider produced before Phase 4A's pageCount input existed.
+ */
+const CHAPTER_TEMPLATES: Array<(name: string, theme: string) => ChapterOutline> = [
+  (name) => ({
+    chapterNumber: 1,
+    title: 'A Magical Discovery',
+    summary: `${name} finds something unexpected and decides to investigate.`,
+    setting: 'The backyard garden',
+    emotionalArc: 'curiosity to excitement',
+    keyEvents: [`${name} notices a glowing light`, 'A friendly creature appears'],
+    illustrableScenes: [`${name} discovering a glowing light in the garden`],
+  }),
+  (name) => ({
+    chapterNumber: 2,
+    title: 'The Journey Begins',
+    summary: `${name} sets off on a journey and faces a small challenge with courage.`,
+    setting: 'An enchanted forest',
+    emotionalArc: 'nervousness to bravery',
+    keyEvents: [`${name} and friend enter the forest`, 'They face a small challenge and overcome it'],
+    illustrableScenes: [`${name} and friend walking through colorful mushrooms`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 3,
+    title: 'Home Again',
+    summary: `${name} returns home having learned something important about ${theme}.`,
+    setting: 'Home',
+    emotionalArc: 'pride and happiness',
+    keyEvents: [`${name} shares the story with family`, 'A final magical moment'],
+    illustrableScenes: [`${name} hugging family with a big smile`],
+  }),
+  (name) => ({
+    chapterNumber: 4,
+    title: 'A New Friend',
+    summary: `${name} meets someone new and learns to work together.`,
+    setting: 'A sunny meadow',
+    emotionalArc: 'shyness to friendship',
+    keyEvents: [`${name} shares something kind`, 'A bond of trust forms'],
+    illustrableScenes: [`${name} sharing a treat with a new friend in the meadow`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 5,
+    title: 'A Bigger Challenge',
+    summary: `${name} faces a bigger challenge tied to ${theme} and doesn't give up.`,
+    setting: 'A winding river',
+    emotionalArc: 'worry to determination',
+    keyEvents: [`${name} hits an obstacle`, `${name} tries again and succeeds`],
+    illustrableScenes: [`${name} crossing the river with determination`],
+  }),
+  (name) => ({
+    chapterNumber: 6,
+    title: 'A Joyful Celebration',
+    summary: `${name} celebrates the adventure with everyone who helped along the way.`,
+    setting: 'A festival under the stars',
+    emotionalArc: 'gratitude and joy',
+    keyEvents: [`${name} thanks new friends`, 'Everyone celebrates together'],
+    illustrableScenes: [`${name} celebrating under twinkling stars with friends`],
+  }),
+];
+
+function buildStoryPlan(
+  name: string,
+  theme: string,
+  pageCount: number,
+  educationalMessage?: string,
+): StoryPlan {
   const titleTheme = theme.split(' ')[0] ?? theme;
+  const chapterCount = Math.min(
+    CHAPTER_TEMPLATES.length,
+    Math.ceil(pageCount / PAGES_PER_CHAPTER),
+  );
+  const chapters = CHAPTER_TEMPLATES.slice(0, chapterCount).map((build, index) => ({
+    ...build(name, theme),
+    chapterNumber: index + 1,
+  }));
+
   return {
     title: `${name}'s ${titleTheme} Adventure`,
     theme,
-    educationalMessage: `Through ${theme}, we learn the importance of courage, kindness, and believing in ourselves.`,
+    educationalMessage:
+      educationalMessage ??
+      `Through ${theme}, we learn the importance of courage, kindness, and believing in ourselves.`,
     openingHook: `One sunny morning, ${name} discovered something magical that would change everything.`,
     resolution: `${name} returned home with a heart full of joy, knowing that every adventure begins with a single brave step.`,
-    chapters: [
-      {
-        chapterNumber: 1,
-        title: 'A Magical Discovery',
-        summary: `${name} finds something unexpected and decides to investigate.`,
-        setting: 'The backyard garden',
-        emotionalArc: 'curiosity to excitement',
-        keyEvents: [`${name} notices a glowing light`, 'A friendly creature appears'],
-        illustrableScenes: [`${name} discovering a glowing light in the garden`],
-      },
-      {
-        chapterNumber: 2,
-        title: 'The Journey Begins',
-        summary: `${name} sets off on a journey and faces a small challenge with courage.`,
-        setting: 'An enchanted forest',
-        emotionalArc: 'nervousness to bravery',
-        keyEvents: [
-          `${name} and friend enter the forest`,
-          'They face a small challenge and overcome it',
-        ],
-        illustrableScenes: [`${name} and friend walking through colorful mushrooms`],
-      },
-      {
-        chapterNumber: 3,
-        title: 'Home Again',
-        summary: `${name} returns home having learned something important about ${theme}.`,
-        setting: 'Home',
-        emotionalArc: 'pride and happiness',
-        keyEvents: [`${name} shares the story with family`, 'A final magical moment'],
-        illustrableScenes: [`${name} hugging family with a big smile`],
-      },
-    ],
+    chapters,
   };
 }
 
-function buildPagePlan(storyPlan: StoryPlan): PagePlan[] {
+function buildPagePlan(storyPlan: StoryPlan, pageCount: number): PagePlan[] {
   const pages: PagePlan[] = [];
   let pageNumber = 1;
 
   for (let chapterIndex = 0; chapterIndex < storyPlan.chapters.length; chapterIndex++) {
+    if (pages.length >= pageCount) break;
     const chapter = storyPlan.chapters[chapterIndex]!;
-    for (let pageInChapter = 1; pageInChapter <= 2; pageInChapter++) {
+    const pagesInChapter = Math.min(PAGES_PER_CHAPTER, pageCount - pages.length);
+    for (let pageInChapter = 1; pageInChapter <= pagesInChapter; pageInChapter++) {
       const scene =
         chapter.illustrableScenes[pageInChapter - 1] ??
         `Scene ${pageInChapter} of ${chapter.title}`;
@@ -299,11 +367,12 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
   readonly providerName = 'mock' as const;
 
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
-    const { bookId, childName, childAge, theme, language } = input;
+    const { bookId, childName, childAge, theme, language, educationalMessage } = input;
+    const pageCount = resolveTargetPageCount(input.pageCount);
 
     const characterCard = buildCharacterCard(childName, childAge);
-    const storyPlan = buildStoryPlan(childName, theme);
-    const pages = buildPagePlan(storyPlan);
+    const storyPlan = buildStoryPlan(childName, theme, pageCount, educationalMessage);
+    const pages = buildPagePlan(storyPlan, pageCount);
     const storyPlanWithDraft = buildStoryDraft(characterCard, { ...storyPlan, pages });
     const storyPlanFinal = buildIllustrationPlan(characterCard, storyPlanWithDraft);
     const bookPreview = buildBookPreview({ childName, childAge, language }, characterCard, storyPlanFinal);

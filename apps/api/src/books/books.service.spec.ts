@@ -87,6 +87,7 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     childAge: 5,
     language: 'en' as Book['language'],
     theme: 'friendship',
+    educationalMessage: null,
     characterCard: null,
     storyPlan: null,
     bookPreview: null,
@@ -155,6 +156,8 @@ describe('BooksService', () => {
         childAge: 5,
         language: 'en' as CreateBookDto['language'],
         theme: 'friendship',
+        educationalMessage: 'Kindness matters',
+        pageCount: 8,
       };
       const book = makeBook({ userId: 'u-1' });
       prisma.book.create.mockResolvedValue(book);
@@ -169,11 +172,63 @@ describe('BooksService', () => {
           childAge: dto.childAge,
           language: dto.language,
           theme: dto.theme,
+          educationalMessage: dto.educationalMessage,
+          pageCount: dto.pageCount,
         },
       });
       expect(result.id).toBe(book.id);
       expect(result.userId).toBe('u-1');
       expect(result.title).toBe(book.title);
+    });
+
+    it('defaults language to English when omitted from the dto', async () => {
+      const dto: CreateBookDto = {
+        title: 'The Adventures of Mia',
+        childName: 'Mia',
+        childAge: 5,
+        theme: 'friendship',
+      };
+      prisma.book.create.mockResolvedValue(makeBook({ userId: 'u-1' }));
+
+      await service.create('u-1', dto);
+
+      expect(prisma.book.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ language: 'en' }),
+      });
+    });
+
+    it('defaults pageCount to 6 when omitted from the dto', async () => {
+      const dto: CreateBookDto = {
+        title: 'The Adventures of Mia',
+        childName: 'Mia',
+        childAge: 5,
+        language: 'en' as CreateBookDto['language'],
+        theme: 'friendship',
+      };
+      prisma.book.create.mockResolvedValue(makeBook({ userId: 'u-1' }));
+
+      await service.create('u-1', dto);
+
+      expect(prisma.book.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ pageCount: 6 }),
+      });
+    });
+
+    it('persists educationalMessage as null when omitted from the dto', async () => {
+      const dto: CreateBookDto = {
+        title: 'The Adventures of Mia',
+        childName: 'Mia',
+        childAge: 5,
+        language: 'en' as CreateBookDto['language'],
+        theme: 'friendship',
+      };
+      prisma.book.create.mockResolvedValue(makeBook({ userId: 'u-1' }));
+
+      await service.create('u-1', dto);
+
+      expect(prisma.book.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ educationalMessage: null }),
+      });
     });
   });
 

@@ -47,13 +47,60 @@ describe('MockStoryGenerationProvider', () => {
       expect(typeof result.characterCard.visualAnchor).toBe('string');
     });
 
-    it('includes a storyPlan with 3 chapters and 2 pages per chapter', async () => {
+    it('includes a storyPlan with 3 chapters and 2 pages per chapter by default (pageCount omitted)', async () => {
       const provider = new MockStoryGenerationProvider();
 
       const result = await provider.generateStory(makeInput());
 
       expect(result.storyPlan.chapters).toHaveLength(3);
       expect(result.storyPlan.pages).toHaveLength(6);
+    });
+
+    it('honors a smaller pageCount (Phase 4A)', async () => {
+      const provider = new MockStoryGenerationProvider();
+
+      const result = await provider.generateStory(makeInput({ pageCount: 4 }));
+
+      expect(result.storyPlan.pages).toHaveLength(4);
+      expect(result.storyPlan.pages.map((p) => p.pageNumber)).toEqual([1, 2, 3, 4]);
+    });
+
+    it('honors a larger, odd pageCount by trimming the final chapter to one page (Phase 4A)', async () => {
+      const provider = new MockStoryGenerationProvider();
+
+      const result = await provider.generateStory(makeInput({ pageCount: 9 }));
+
+      expect(result.storyPlan.pages).toHaveLength(9);
+      expect(result.storyPlan.chapters).toHaveLength(5);
+    });
+
+    it('clamps an out-of-range pageCount to [4, 12] (Phase 4A)', async () => {
+      const provider = new MockStoryGenerationProvider();
+
+      const tooLow = await provider.generateStory(makeInput({ pageCount: 1 }));
+      const tooHigh = await provider.generateStory(makeInput({ pageCount: 100 }));
+
+      expect(tooLow.storyPlan.pages).toHaveLength(4);
+      expect(tooHigh.storyPlan.pages).toHaveLength(12);
+    });
+
+    it('uses a provided educationalMessage instead of the generated default (Phase 4A)', async () => {
+      const provider = new MockStoryGenerationProvider();
+
+      const result = await provider.generateStory(
+        makeInput({ educationalMessage: 'It is okay to make mistakes' }),
+      );
+
+      expect(result.storyPlan.educationalMessage).toBe('It is okay to make mistakes');
+    });
+
+    it('generates a default educationalMessage when none is provided', async () => {
+      const provider = new MockStoryGenerationProvider();
+
+      const result = await provider.generateStory(makeInput());
+
+      expect(result.storyPlan.educationalMessage.length).toBeGreaterThan(0);
+      expect(result.storyPlan.educationalMessage).toContain('friendship');
     });
 
     it('every storyPlan page has storyText and an illustration plan', async () => {

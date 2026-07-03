@@ -7,11 +7,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { BookStatus, GenerationJobType, type Book } from '@prisma/client';
-import type {
-  BookDto,
-  BooksPageDto,
-  GenerateBookResponse,
-  GenerationDiagnosticsDto,
+import {
+  DEFAULT_BOOK_PAGE_COUNT,
+  SupportedLanguage,
+  type BookDto,
+  type BooksPageDto,
+  type GenerateBookResponse,
+  type GenerationDiagnosticsDto,
 } from '@book/types';
 import { PrismaService } from '../database/prisma.service';
 import { AgentService } from '../agent/agent.service';
@@ -38,6 +40,15 @@ export class BooksService {
     private readonly generationJobService: GenerationJobService,
   ) {}
 
+  /**
+   * Persists a new draft book from a validated CreateBookDto. CreateBookDto's
+   * @Transform decorators already trim string fields, so normalization here
+   * is limited to defaults for fields the DTO leaves optional: language
+   * (SupportedLanguage.English) and pageCount (DEFAULT_BOOK_PAGE_COUNT).
+   * Downstream generation (AgentService) and retry both read these
+   * already-normalized values back off the Book row — there is no separate
+   * "raw request" input to reconcile.
+   */
   async create(userId: string, dto: CreateBookDto): Promise<BookDto> {
     const book = await this.prisma.book.create({
       data: {
@@ -45,8 +56,10 @@ export class BooksService {
         title: dto.title,
         childName: dto.childName,
         childAge: dto.childAge,
-        language: dto.language,
+        language: dto.language ?? SupportedLanguage.English,
         theme: dto.theme,
+        educationalMessage: dto.educationalMessage ?? null,
+        pageCount: dto.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
       },
     });
     return toBookDto(book);

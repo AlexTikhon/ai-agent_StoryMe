@@ -290,6 +290,9 @@ model Book {
   childAge         Int?        @map("child_age")
   language         BookLanguage?
   theme            String?
+  // Phase 4A: user-supplied desired educational message/lesson, distinct from
+  // the generated storyPlan.educationalMessage produced by the pipeline.
+  educationalMessage String?   @map("educational_message")
 
   characterCard         Json?       @map("character_card")
   storyPlan             Json?       @map("story_plan")

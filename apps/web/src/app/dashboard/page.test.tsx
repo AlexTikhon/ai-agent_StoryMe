@@ -26,6 +26,8 @@ const MOCK_BOOK: BookDto = {
   childAge: 5,
   language: SupportedLanguage.English,
   theme: 'Friendship',
+  educationalMessage: null,
+  pageCount: 6,
   status: BookStatus.Created,
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',

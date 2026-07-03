@@ -250,6 +250,8 @@ export class AgentService {
     const childAge = book.childAge ?? 6;
     const theme = book.theme ?? 'adventure';
     const language = (book.language as string) ?? 'en';
+    const pageCount = book.pageCount ?? undefined;
+    const educationalMessage = book.educationalMessage ?? undefined;
 
     const storyProviderName = this.storyGenerationProvider.providerName ?? null;
     const storyModelName = this.storyGenerationProvider.modelName ?? null;
@@ -272,6 +274,8 @@ export class AgentService {
         childAge,
         theme,
         language,
+        pageCount,
+        educationalMessage,
       });
       characterCard = result.characterCard;
       storyPlanFinal = result.storyPlan;

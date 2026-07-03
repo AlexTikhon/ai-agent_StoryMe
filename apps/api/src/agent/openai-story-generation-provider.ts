@@ -1,6 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { z } from 'zod';
 import {
+  DEFAULT_BOOK_PAGE_COUNT,
+  MAX_BOOK_PAGE_COUNT,
+  MIN_BOOK_PAGE_COUNT,
   Pronouns,
   type BookPreview,
   type CharacterCard,
@@ -11,6 +14,7 @@ import {
 import {
   buildBookPreview,
   buildImageGenerationResult,
+  resolveTargetPageCount,
   type ResolvedPagePlan,
   type StoryGenerationInput,
   type StoryGenerationProvider,
@@ -25,9 +29,10 @@ import {
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
-const TARGET_PAGE_COUNT = 6;
-const MIN_PAGE_COUNT = 4;
-const MAX_PAGE_COUNT = 12;
+/** Fallback target page count when a call site doesn't pass one via StoryGenerationInput.pageCount. Mirrors DEFAULT_BOOK_PAGE_COUNT. */
+const TARGET_PAGE_COUNT = DEFAULT_BOOK_PAGE_COUNT;
+const MIN_PAGE_COUNT = MIN_BOOK_PAGE_COUNT;
+const MAX_PAGE_COUNT = MAX_BOOK_PAGE_COUNT;
 const PAGES_PER_CHAPTER = 2;
 const MAX_STORY_TEXT_LENGTH = 1000;
 
@@ -87,6 +92,9 @@ export function buildStoryGenerationPrompt(
     `- Child's age: ${input.childAge}`,
     `- Theme: ${input.theme}`,
     `- Language: ${input.language}`,
+    ...(input.educationalMessage
+      ? [`- Desired educational message/lesson: ${input.educationalMessage}`]
+      : []),
     '',
     'Respond with strict JSON matching exactly this shape (no extra keys, no trailing commas):',
     '{',
@@ -101,6 +109,9 @@ export function buildStoryGenerationPrompt(
     '}',
     '',
     `Write every story field (title, storyText, learningGoal, etc.) in this language: ${input.language}.`,
+    ...(input.educationalMessage
+      ? [`Make the story's "educationalMessage" field reflect the desired educational message/lesson above.`]
+      : []),
     'Keep each page\'s "storyText" short (2-4 sentences) and appropriate for a young child listening or reading along.',
     'Each "illustrationPrompt" should describe a single illustration scene — setting, action, mood — suitable for a future image-generation model. Do not reference real people, brands, or copyrighted/trademarked characters, and keep every scene non-violent and non-scary.',
   ].join('\n');
@@ -248,7 +259,11 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
   }
 
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
-    const { system, user } = buildStoryGenerationPrompt(input, this.targetPageCount);
+    // Per-call pageCount (from the book's normalized input) takes priority
+    // over this.targetPageCount, which only applies when a caller omits it.
+    const targetPageCount =
+      input.pageCount != null ? resolveTargetPageCount(input.pageCount) : this.targetPageCount;
+    const { system, user } = buildStoryGenerationPrompt(input, targetPageCount);
 
     let response: Response;
     try {

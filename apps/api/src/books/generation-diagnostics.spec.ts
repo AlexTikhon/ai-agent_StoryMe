@@ -37,6 +37,7 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     childAge: 5,
     language: 'en' as Book['language'],
     theme: 'friendship',
+    educationalMessage: null,
     characterCard: null,
     storyPlan: null,
     bookPreview: { pages: [{ pageNumber: 1 }, { pageNumber: 2 }] } as unknown as Book['bookPreview'],

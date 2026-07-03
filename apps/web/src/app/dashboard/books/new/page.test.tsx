@@ -31,6 +31,8 @@ const MOCK_BOOK: BookDto = {
   childAge: 4,
   language: SupportedLanguage.English,
   theme: 'Space adventure',
+  educationalMessage: null,
+  pageCount: 6,
   status: BookStatus.Created,
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
@@ -154,8 +156,7 @@ describe('NewBookPage wizard', () => {
     await user.type(screen.getByPlaceholderText(/friendship/i), 'Dragons');
     await user.click(screen.getByRole('button', { name: 'Next' }));
 
-    expect(screen.getByText(/emma/i)).toBeDefined();
-    expect(screen.getByText(/6/)).toBeDefined();
+    expect(screen.getByText(/emma, age 6/i)).toBeDefined();
     expect(screen.getByText(/dragons/i)).toBeDefined();
     expect(screen.getByText(/english/i)).toBeDefined();
   });
@@ -186,6 +187,74 @@ describe('NewBookPage wizard', () => {
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.childName).toBe('Oliver');
     expect(body.theme).toBe('Space adventure');
+  });
+
+  // ── Phase 4A: pageCount + educationalMessage ───────────────────────────────
+
+  it('sends a trimmed CreateBookInput payload with a default pageCount and language', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
+
+    render(<NewBookPage />);
+
+    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), '  Oliver  ');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    await user.type(screen.getByPlaceholderText(/friendship/i), '  Space adventure  ');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalled());
+
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.childName).toBe('Oliver');
+    expect(body.theme).toBe('Space adventure');
+    expect(body.title).toBe("Oliver's Story");
+    expect(body.language).toBe('en');
+    expect(body.pageCount).toBe(6);
+    expect(body.educationalMessage).toBeUndefined();
+  });
+
+  it('shows a pageCount selector bounded to [4, 12] on the story step', async () => {
+    const user = userEvent.setup();
+    render(<NewBookPage />);
+
+    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    const pageCountSelect = screen.getByRole('combobox', { name: /number of pages/i });
+    const options = Array.from(pageCountSelect.querySelectorAll('option')).map((o) => o.value);
+    expect(options).toEqual(['4', '5', '6', '7', '8', '9', '10', '11', '12']);
+  });
+
+  it('includes the trimmed educationalMessage in the payload when provided', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
+
+    render(<NewBookPage />);
+
+    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
+    await user.type(
+      screen.getByPlaceholderText(/it's okay to make mistakes/i),
+      '  Sharing is caring  ',
+    );
+    const pageCountSelect = screen.getByRole('combobox', { name: /number of pages/i });
+    await user.selectOptions(pageCountSelect, '10');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalled());
+
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.educationalMessage).toBe('Sharing is caring');
+    expect(body.pageCount).toBe(10);
   });
 
   it('shows loading state while creating', async () => {

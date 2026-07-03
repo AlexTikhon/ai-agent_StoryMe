@@ -858,6 +858,128 @@ automatically re-run.
     progressing without throwing) is not detected until the next process
     restart — recovery only runs on boot, not on an interval.
 
+## Book creation input contract (Phase 4A)
+
+Phase 4A hardens the shape of `POST /books`' request body — validation,
+normalization, and how the validated fields reach the generation pipeline —
+without changing the pipeline's architecture or adding new provider
+concepts.
+
+### Stable input shape
+
+`CreateBookDto` (`apps/api/src/books/dto/create-book.dto.ts`), enforced by the
+global `ValidationPipe` (`whitelist: true`, `forbidNonWhitelisted: true`):
+
+| Field | Required | Bounds / rules |
+| --- | --- | --- |
+| `title` | yes | trimmed, 1–120 chars |
+| `childName` | yes | trimmed, 1–80 chars |
+| `childAge` | yes | integer, 1–12 |
+| `language` | no | `SupportedLanguage` enum (`en`/`ru`/`pl`); defaults to `en` |
+| `theme` | yes | trimmed, 1–120 chars |
+| `educationalMessage` | no | trimmed, 1–300 chars if present |
+| `pageCount` | no | integer, `MIN_BOOK_PAGE_COUNT`–`MAX_BOOK_PAGE_COUNT` (4–12); defaults to `DEFAULT_BOOK_PAGE_COUNT` (6) |
+
+`MIN_BOOK_PAGE_COUNT` / `MAX_BOOK_PAGE_COUNT` / `DEFAULT_BOOK_PAGE_COUNT` are
+exported from `@book/types` (`packages/types/src/book.types.ts`) and shared by
+the DTO, `BooksService`, and both `StoryGenerationProvider` implementations —
+one source of truth for the accepted range. This range coincidentally matches
+the default `REAL_GENERATION_MAX_PAGES` cost guardrail (see above), but the
+two are independently configurable: `REAL_GENERATION_MAX_PAGES` is an
+env-tunable cap on real (paid) image generation cost, not a request-input
+bound.
+
+`title`, `childName`, `theme`, and `educationalMessage` are trimmed by a
+`class-transformer` `@Transform` before `class-validator` runs, so a
+whitespace-only value (`"   "`) fails the `@Length(1, N)` check the same way
+an empty string does — normalization and validation see the same value.
+
+### Normalization and defaults
+
+`BooksService.create` is the single place defaults are applied:
+
+```ts
+language: dto.language ?? SupportedLanguage.English,
+educationalMessage: dto.educationalMessage ?? null,
+pageCount: dto.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
+```
+
+Everything the pipeline reads afterward comes from the persisted `Book` row —
+there is no separate "raw request" object floating around for
+`AgentService`/`StoryGenerationProvider` to re-normalize. This is also what
+makes retry (Phase 3G) automatically use normalized input: `retryGeneration`
+re-reads the same `Book` row and calls the same
+`AgentService.startBookGeneration`, so a retried generation targets the same
+already-normalized `pageCount`/`educationalMessage`/`theme` as the original
+attempt.
+
+### Persistence
+
+`Book.pageCount` (added in the Phase 1 schema but previously unused by the
+pipeline) and a new nullable `Book.educationalMessage` column
+(`educational_message`, migration
+`20260702010000_phase4a_book_input_contract`) store the normalized input.
+`BookDto` and `toBookDto` (`books.mapper.ts`) expose both fields to the
+frontend.
+
+### How input feeds generation
+
+`StoryGenerationInput` (`apps/api/src/agent/story-generation-provider.ts`)
+gained two optional fields: `pageCount` and `educationalMessage`.
+`AgentService.startBookGeneration` passes `book.pageCount` and
+`book.educationalMessage` straight through (both `?? undefined` if null).
+
+- **`resolveTargetPageCount(pageCount)`** (exported from
+  `story-generation-provider.ts`) clamps to `[MIN_BOOK_PAGE_COUNT,
+  MAX_BOOK_PAGE_COUNT]` and defaults to `DEFAULT_BOOK_PAGE_COUNT` when absent
+  or non-numeric — a defense-in-depth clamp behind the DTO's own bounds
+  (relevant for books created before this migration, whose `pageCount` is
+  `null`).
+- **`MockStoryGenerationProvider`** now builds a variable number of chapters
+  (`CHAPTER_TEMPLATES`, up to 6, `Math.ceil(pageCount / 2)` of them) and pages
+  to match the resolved page count, trimming the final chapter to one page
+  for an odd count. The default call shape (`pageCount` omitted) is
+  unchanged: 3 chapters, 6 pages, identical template text to before Phase 4A.
+  A provided `educationalMessage` replaces the generated
+  `storyPlan.educationalMessage` outright; otherwise the same
+  theme-derived default text is generated as before.
+- **`OpenAIStoryGenerationProvider`** resolves `targetPageCount` per call —
+  `input.pageCount` (clamped) if present, else the constructor's own default
+  — and passes it into `buildStoryGenerationPrompt`, which asks the model for
+  exactly that many pages. When `educationalMessage` is present, the prompt
+  adds a line naming it and instructs the model to reflect it in the
+  response's `educationalMessage` field. The LLM response schema's page-count
+  bounds (`min(4).max(12)`) already matched `MIN_BOOK_PAGE_COUNT`/
+  `MAX_BOOK_PAGE_COUNT` and now import them directly instead of duplicating
+  the literals.
+
+### Frontend
+
+`apps/web/src/app/dashboard/books/new/page.tsx`'s existing 3-step wizard
+gained two fields on the "Story" step: a `pageCount` `<select>` (options
+`MIN_BOOK_PAGE_COUNT`…`MAX_BOOK_PAGE_COUNT`, default `DEFAULT_BOOK_PAGE_COUNT`)
+and an optional `educationalMessage` `<textarea>` (`maxLength={300}`).
+`handleCreate` trims `childName`/`theme`/`educationalMessage` before building
+the request body and only includes `educationalMessage` in the payload when
+non-empty after trimming — the frontend never sends internal provider
+settings (model name, provider selection, timeouts/retries), only the same
+`CreateBookInput` shape the backend validates.
+
+### Known limitations (Phase 4A)
+
+- **No `storyTone` field.** The phase brief suggested one "if already
+  supported or easy to add" — it isn't currently supported anywhere in the
+  pipeline (no enum, no prompt wiring), and threading it through DTO →
+  schema → both providers → prompts with the same care as
+  `educationalMessage` was judged out of scope for this pass. Deferred to a
+  future phase if product wants it.
+- **No protagonist/character-detail fields beyond `childName`/`childAge`.**
+  None exist yet in the input contract to hedge on; `CharacterCard`'s
+  appearance/personality fields remain fully generated by the provider.
+- **Pre-Phase-4A books have `pageCount: null`.** They fall back to
+  `DEFAULT_BOOK_PAGE_COUNT` via `resolveTargetPageCount` at generation time
+  rather than being backfilled by the migration.
+
 ## Status transitions
 
 ```text

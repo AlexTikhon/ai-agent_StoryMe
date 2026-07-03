@@ -19,6 +19,8 @@ export function toBookDto(book: Book): BookDto {
     childAge: book.childAge,
     language: book.language as unknown as SupportedLanguage | null,
     theme: book.theme,
+    educationalMessage: book.educationalMessage,
+    pageCount: book.pageCount,
     status: book.status as unknown as BookStatus,
     characterCard: book.characterCard as unknown as CharacterCard | null,
     storyPlan: book.storyPlan as unknown as StoryPlan | null,

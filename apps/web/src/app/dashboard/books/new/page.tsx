@@ -3,7 +3,12 @@
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { SupportedLanguage } from '@book/types';
+import {
+  DEFAULT_BOOK_PAGE_COUNT,
+  MAX_BOOK_PAGE_COUNT,
+  MIN_BOOK_PAGE_COUNT,
+  SupportedLanguage,
+} from '@book/types';
 import { booksApi } from '@/lib/api/books';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -15,6 +20,8 @@ interface WizardValues {
   childAge: number;
   language: SupportedLanguage;
   theme: string;
+  educationalMessage: string;
+  pageCount: number;
 }
 
 const DEFAULT_VALUES: WizardValues = {
@@ -22,7 +29,14 @@ const DEFAULT_VALUES: WizardValues = {
   childAge: 4,
   language: SupportedLanguage.English,
   theme: '',
+  educationalMessage: '',
+  pageCount: DEFAULT_BOOK_PAGE_COUNT,
 };
+
+const PAGE_COUNT_OPTIONS: number[] = Array.from(
+  { length: MAX_BOOK_PAGE_COUNT - MIN_BOOK_PAGE_COUNT + 1 },
+  (_, i) => MIN_BOOK_PAGE_COUNT + i,
+);
 
 const LANGUAGES: { value: SupportedLanguage; label: string }[] = [
   { value: SupportedLanguage.English, label: 'English' },
@@ -54,9 +68,17 @@ export default function NewBookPage() {
     setSubmitting(true);
     setSubmitError(null);
     try {
+      const childName = values.childName.trim();
+      const theme = values.theme.trim();
+      const educationalMessage = values.educationalMessage.trim();
       await booksApi.create({
-        title: `${values.childName.trim()}'s Story`,
-        ...values,
+        title: `${childName}'s Story`,
+        childName,
+        childAge: values.childAge,
+        language: values.language,
+        theme,
+        ...(educationalMessage && { educationalMessage }),
+        pageCount: values.pageCount,
       });
       router.push('/dashboard');
     } catch (err) {
@@ -264,6 +286,33 @@ function StepStory({ values, onChange, onBack, onNext }: StepStoryProps) {
             className={inputCls}
           />
         </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-text-secondary">Number of pages</span>
+          <select
+            value={values.pageCount}
+            onChange={(e) => onChange({ pageCount: Number(e.target.value) })}
+            className={inputCls}
+          >
+            {PAGE_COUNT_OPTIONS.map((count) => (
+              <option key={count} value={count}>
+                {count} pages
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1.5 sm:col-span-2">
+          <span className="text-sm font-medium text-text-secondary">
+            Educational message <span className="text-text-muted">(optional)</span>
+          </span>
+          <textarea
+            value={values.educationalMessage}
+            onChange={(e) => onChange({ educationalMessage: e.target.value })}
+            placeholder="e.g. It's okay to make mistakes and try again"
+            maxLength={300}
+            rows={2}
+            className={inputCls}
+          />
+        </label>
       </div>
       <div className="mt-6 flex justify-between">
         <button
@@ -325,6 +374,16 @@ function StepReview({ values, onBack, onSubmit, submitting, error }: StepReviewP
           <dt className="font-medium text-text-muted">Theme</dt>
           <dd className="text-text-primary">{values.theme}</dd>
         </div>
+        <div className="flex justify-between py-2.5">
+          <dt className="font-medium text-text-muted">Pages</dt>
+          <dd className="text-text-primary">{values.pageCount}</dd>
+        </div>
+        {values.educationalMessage.trim() && (
+          <div className="flex justify-between py-2.5">
+            <dt className="font-medium text-text-muted">Lesson</dt>
+            <dd className="text-text-primary">{values.educationalMessage.trim()}</dd>
+          </div>
+        )}
       </dl>
 
       <div className="flex justify-between">

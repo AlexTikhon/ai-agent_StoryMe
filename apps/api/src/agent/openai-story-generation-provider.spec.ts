@@ -113,6 +113,47 @@ describe('OpenAIStoryGenerationProvider', () => {
     expect(body.response_format).toEqual({ type: 'json_object' });
   });
 
+  it('uses the per-call input.pageCount over the constructor default (Phase 4A)', async () => {
+    const fetchImpl = makeFetchOk(JSON.stringify(makeValidLlmPayload(4)));
+    const provider = new OpenAIStoryGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl,
+      targetPageCount: 6,
+    });
+
+    await provider.generateStory(makeInput({ pageCount: 4 }));
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body as string);
+    const userMessage = body.messages[1].content as string;
+    expect(userMessage).toContain('4-page');
+  });
+
+  it('falls back to the constructor targetPageCount when input.pageCount is omitted', async () => {
+    const fetchImpl = makeFetchOk(JSON.stringify(makeValidLlmPayload(8)));
+    const provider = new OpenAIStoryGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl,
+      targetPageCount: 8,
+    });
+
+    await provider.generateStory(makeInput());
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body as string);
+    const userMessage = body.messages[1].content as string;
+    expect(userMessage).toContain('8-page');
+  });
+
+  it('includes the educationalMessage guidance in the prompt when provided (Phase 4A)', async () => {
+    const fetchImpl = makeFetchOk(JSON.stringify(makeValidLlmPayload(6)));
+    const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-test', fetchImpl });
+
+    await provider.generateStory(makeInput({ educationalMessage: 'It is okay to make mistakes' }));
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body as string);
+    const userMessage = body.messages[1].content as string;
+    expect(userMessage).toContain('It is okay to make mistakes');
+  });
+
   it('throws a clear error when the response content is not valid JSON', async () => {
     const fetchImpl = makeFetchOk('not json at all');
     const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-test', fetchImpl });

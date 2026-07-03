@@ -33,6 +33,7 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     childAge: 5,
     language: 'en' as Book['language'],
     theme: 'friendship',
+    educationalMessage: null,
     characterCard: null,
     storyPlan: null,
     bookPreview: null,
@@ -177,6 +178,45 @@ describe('AgentService', () => {
       const pages = plan?.pages as Array<Record<string, unknown>>;
       expect(Array.isArray(pages)).toBe(true);
       expect(pages.length).toBe(chapters.length * 2);
+    });
+
+    it('honors the book\'s persisted pageCount when generating the storyPlan (Phase 4A)', async () => {
+      const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: 4 });
+      setupMocks();
+
+      await service.startBookGeneration(book);
+
+      const updateArg = prisma.book.update.mock.calls[0]?.[0];
+      const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
+      const pages = plan?.pages as Array<Record<string, unknown>>;
+      expect(pages.length).toBe(4);
+    });
+
+    it('defaults to 6 pages when the book has no persisted pageCount', async () => {
+      const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: null });
+      setupMocks();
+
+      await service.startBookGeneration(book);
+
+      const updateArg = prisma.book.update.mock.calls[0]?.[0];
+      const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
+      const pages = plan?.pages as Array<Record<string, unknown>>;
+      expect(pages.length).toBe(6);
+    });
+
+    it('uses the book\'s persisted educationalMessage as the storyPlan.educationalMessage (Phase 4A)', async () => {
+      const book = makeBook({
+        childName: 'Mia',
+        theme: 'friendship',
+        educationalMessage: 'It is okay to make mistakes',
+      });
+      setupMocks();
+
+      await service.startBookGeneration(book);
+
+      const updateArg = prisma.book.update.mock.calls[0]?.[0];
+      const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
+      expect(plan?.educationalMessage).toBe('It is okay to make mistakes');
     });
 
     it('assigns globally incrementing pageNumbers starting from 1', async () => {
