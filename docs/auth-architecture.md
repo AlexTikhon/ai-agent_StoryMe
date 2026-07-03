@@ -1,9 +1,10 @@
 # StoryMe Auth Architecture — Phase 6A Plan
 
-Status: **Phase 6B (backend), Phase 6C (frontend), and Phase 6D (JWT-mode
-end-to-end verification) are all done.** See
-[§12 Phase 6D — JWT mode verification](#12-phase-6d--jwt-mode-verification)
-at the bottom of this document for what changed in the verification pass.
+Status: **Phase 6B (backend), Phase 6C (frontend), Phase 6D (JWT-mode
+end-to-end verification), and Phase 6E (auth rate limiting) are all done.**
+See [§12 Phase 6D — JWT mode verification](#12-phase-6d--jwt-mode-verification)
+and [§13 Phase 6E — auth rate limiting](#13-phase-6e--auth-rate-limiting) at
+the bottom of this document for what changed in each pass.
 Everything under §4–§8 below describing the backend (`AuthService`,
 `TokenService`, `JwtAuthGuard`, `AuthModeGuard`, the five `/api/auth/*`
 endpoints, cookie handling) exists in code exactly as planned, with one
@@ -709,8 +710,8 @@ demo deploy:
 Unchanged from `docs/deployment-readiness.md`'s existing "What's left" list
 — this phase did not attempt any of these, per its explicit scope:
 
-- No rate limiting on `/api/auth/*` (brute force / credential stuffing /
-  registration abuse).
+- ~~No rate limiting on `/api/auth/*`.~~ **Resolved in Phase 6E** — see
+  [§13](#13-phase-6e--auth-rate-limiting) below.
 - No email verification.
 - No password-reset flow.
 - No OAuth (still a documented future follow-up, not required for `jwt`
@@ -722,3 +723,99 @@ Unchanged from `docs/deployment-readiness.md`'s existing "What's left" list
 `pnpm --filter @book/web test`, `pnpm --filter @book/web typecheck`,
 `pnpm --filter @book/web build` — all run for this phase; see the commit/PR
 description for exact pass counts.
+
+## 13. Phase 6E — auth rate limiting
+
+Goal: cap brute-force/credential-stuffing/registration-abuse volume against
+`/api/auth/*` without adding external infrastructure or touching the JWT/
+refresh-cookie logic itself. No email verification, no password reset — those
+remain open (see §12.5).
+
+### 13.1 Design
+
+- **`RateLimiterService`** (`apps/api/src/rate-limit/rate-limiter.service.ts`)
+  — a small, dependency-free, in-memory fixed-window counter:
+  `consume(key, windowMs, maxAttempts)` returns `{ allowed, remaining,
+  retryAfterMs }`, plus a `reset()` for test isolation. It knows nothing
+  about HTTP or auth — any future endpoint can reuse it directly. Registered
+  as a `@Global()` provider (`rate-limit.module.ts`, imported once in
+  `AppModule`, mirroring `CacheModule`'s pattern) so it doesn't need
+  re-importing per consumer.
+- **`AuthRateLimitGuard`** (`apps/api/src/auth/auth-rate-limit.guard.ts`) —
+  the auth-specific wiring: reads `AUTH_RATE_LIMIT_WINDOW_MS` /
+  `AUTH_RATE_LIMIT_MAX_ATTEMPTS` from `ConfigService`, builds a key from the
+  decorated handler's class+method name (so register/login/refresh/logout
+  each get an independent budget), the caller's IP, and — when the request
+  body has an `email` field — that email too. Keying on email when present
+  means a credential-stuffing run targeted at one victim email can't burn
+  through the shared-IP budget for every other legitimate user behind the
+  same NAT/proxy; keying on IP alone (no email, e.g. `refresh`/`logout`)
+  still caps a single attacker rotating identities from one address.
+  On exceeding the limit it sets a `Retry-After` header and throws
+  `HttpException({ error: 'Too many requests', code: 'RATE_LIMITED' }, 429)`.
+- **`HttpExceptionFilter`** (`apps/api/src/common/filters/http-exception.filter.ts`)
+  gained an optional `code` pass-through field on its JSON error shape (only
+  present when the thrown `HttpException`'s response object has one) so
+  `RATE_LIMITED` survives the global filter unchanged. Every other exception
+  path is unaffected since `code` is omitted entirely when absent.
+- **Applied via `@UseGuards(AuthRateLimitGuard)`** on `AuthController`'s
+  `register`, `login`, `refresh`, and `logout` — **not** `getMe`, which
+  already requires a valid bearer token and isn't a credential-guessing
+  target.
+
+### 13.2 Why in-memory, not Redis
+
+The app already provisions Redis (`REDIS_URL`, `CacheModule`), but nothing on
+the current critical path actually depends on it for correctness — it's
+health-checked and reserved for BullMQ, which itself isn't wired into the
+generation pipeline yet (`GenerationTaskRunner` runs in-process; see
+`docs/deployment-readiness.md`'s "In-process generation" known blocker).
+Adding a Redis-backed limiter now would mean the auth path's availability
+starts depending on Redis for the first time, for a feature whose current
+single-instance deploy target doesn't need it. `RateLimiterService`'s
+`consume()`/`reset()` shape is intentionally the entire surface a caller
+depends on, so a future `RedisRateLimiterService` implementing the same
+two methods is a drop-in swap when multi-instance deployment actually
+happens — no call-site changes needed, matching how `PdfStorage`/
+`ImageAssetStorage` already abstract local-vs-cloud storage in this codebase.
+
+**Known limitation**: state is per-process and unbounded-but-self-pruning —
+each key's entry is only overwritten (not proactively evicted) once its
+window elapses on the next `consume()` call for that same key, so a flood of
+distinct one-off keys (e.g. many distinct emails from many distinct IPs)
+grows the map until those keys are hit again or the process restarts. Not a
+concern at current traffic levels; would need an eviction sweep or a
+size-bounded store (e.g. LRU) before this became a real memory-growth risk.
+
+### 13.3 Configuration
+
+`AUTH_RATE_LIMIT_WINDOW_MS` (default `900000`, 15 minutes) and
+`AUTH_RATE_LIMIT_MAX_ATTEMPTS` (default `10`) — both optional with sane
+defaults in `env.schema.ts`, documented in `.env.example`. Defaults are
+deliberately generous enough not to interfere with normal local dev/demo
+usage (registering/logging in repeatedly while testing) while still bounding
+brute-force volume.
+
+### 13.4 Tests
+
+- `apps/api/src/rate-limit/rate-limiter.service.spec.ts` — window
+  allow/block behavior, window expiry reset, independent keys, `reset()`.
+- `apps/api/src/auth/auth-rate-limit.guard.spec.ts` — allows under the
+  threshold, throws 429 with the `RATE_LIMITED` code + `Retry-After` header
+  once exceeded, scopes independently per handler/email/IP.
+- `apps/api/src/auth/auth.controller.spec.ts` — asserts (via Nest's
+  `GUARDS_METADATA` reflection) that `AuthRateLimitGuard` is wired to
+  register/login/refresh/logout and deliberately not to `getMe`.
+
+No existing test changed behavior; the guard only takes effect through
+Nest's real request pipeline (no e2e/supertest harness exists in this repo —
+see §12.4), so the existing controller-level unit tests, which instantiate
+`AuthController` directly and call its methods, don't exercise guards at all
+and remain unaffected.
+
+### 13.5 Quality gates
+
+`pnpm --filter @book/api test`, `pnpm --filter @book/api typecheck`,
+`pnpm --filter @book/api lint` — all run for this phase. No web changes were
+needed (rate limiting is backend-only and the frontend doesn't special-case
+error codes today), so web gates were not re-run.

@@ -153,3 +153,12 @@ and `IMAGE_GENERATION_PROVIDER_TOKEN` unset in `apps/api/.env`. To use real
 OpenAI generation, set both to `"openai"` and provide a real
 `OPENAI_API_KEY`; real image generation costs money per call (see
 `REAL_GENERATION_MAX_PAGES` guardrail in `.env.example`).
+
+**"Too many requests" (429) on login/register/refresh**
+`/api/auth/*` is rate-limited (`AUTH_RATE_LIMIT_WINDOW_MS` /
+`AUTH_RATE_LIMIT_MAX_ATTEMPTS` in `.env.example`, default 10 attempts per 15
+minutes — see [docs/auth-architecture.md §13](auth-architecture.md#13-phase-6e--auth-rate-limiting)).
+The default shouldn't trip during normal manual testing; if you're
+deliberately hammering these endpoints (e.g. scripted testing), either wait
+out the window or raise `AUTH_RATE_LIMIT_MAX_ATTEMPTS` in `apps/api/.env` and
+restart the API.

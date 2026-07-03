@@ -407,16 +407,40 @@ still pass unchanged.
   distinct "account deactivated" message, matching this codebase's existing
   no-enumeration policy. See `apps/api/src/auth/*.spec.ts`.
 - **Why this is still private/internal-only**: real credential verification
-  removes the identity-spoofing risk `DevAuthGuard` had, but the auth
-  endpoints have no rate limiting, no email verification, and no
-  password-reset flow yet — brute-force/enumeration protection and account
-  recovery are still open. That's the remaining gap before public exposure,
-  not the identity model itself.
-- **What's left**: rate limiting + account recovery on `/api/auth/*` (see
+  removes the identity-spoofing risk `DevAuthGuard` had, and rate limiting
+  (Phase 6E) now caps brute-force/credential-stuffing volume, but the auth
+  endpoints still have no email verification and no password-reset flow —
+  account recovery is still open. That's the remaining gap before public
+  exposure, not the identity model itself.
+- **What's left**: account recovery (email verification + password reset) on
+  `/api/auth/*` (see
   [Remaining blockers before public production](private-demo-deploy.md) in
   the deploy runbook), then removing the `x-user-email`/`x-user-name`
   CORS-allowed headers and `DevAuthGuard` entirely once no deployment still
   relies on dev mode.
+- **Phase 6E (auth rate limiting)**: added `AuthRateLimitGuard`
+  (`apps/api/src/auth/auth-rate-limit.guard.ts`), applied via `@UseGuards` to
+  `POST /api/auth/{register,login,refresh,logout}` (not `GET /api/auth/me`,
+  which already requires a valid bearer token and isn't a credential-guessing
+  target). Backed by `RateLimiterService`
+  (`apps/api/src/rate-limit/rate-limiter.service.ts`) — a small, dependency-free,
+  in-memory fixed-window counter keyed by IP (+ request email when present, so
+  one targeted email can't exhaust the budget for every other user sharing an
+  IP). Configurable via `AUTH_RATE_LIMIT_WINDOW_MS` /
+  `AUTH_RATE_LIMIT_MAX_ATTEMPTS` (default 15 min / 10 attempts — generous
+  enough not to interfere with local dev/demo use). Exceeding the limit
+  returns `429 { "error": "Too many requests", "code": "RATE_LIMITED" }`
+  (no detail on which key was hit, to avoid email enumeration).
+  **In-memory means single-process only** — correct for this app's current
+  single-instance deploy target (see
+  [Recommended deployment architecture](#recommended-deployment-architecture)
+  below), but a future multi-instance deploy needs a shared store (e.g.
+  Redis, already provisioned for other purposes — see
+  [Required services](#required-services)) behind the same
+  `consume()`/`reset()` shape so counts are consistent across instances.
+  No existing auth behavior, JWT cookies, or refresh flow changed; see
+  `apps/api/src/rate-limit/rate-limiter.service.spec.ts` and
+  `apps/api/src/auth/auth-rate-limit.guard.spec.ts` for coverage.
 - **Phase 6D (JWT mode end-to-end verification)**: confirmed the Phase 6B/6C
   implementation actually works in real `AUTH_MODE=jwt` (ownership isolation,
   401-retry-once, session restore, route protection, `x-user-email` ignored
@@ -475,6 +499,10 @@ deploy (beyond local dev defaults):
 - `JWT_SECRET`, `JWT_REFRESH_SECRET` — generate real 32+ char secrets
   (`openssl rand -hex 32`); unused by any code path today but validated at
   startup ahead of the real-auth phase.
+- `AUTH_RATE_LIMIT_WINDOW_MS`, `AUTH_RATE_LIMIT_MAX_ATTEMPTS` — optional,
+  default to 15 minutes / 10 attempts; only worth overriding if that default
+  is too strict/loose for a specific deployment. See the
+  [Auth limitation note](#auth-limitation) Phase 6E entry above.
 - `ALLOWED_ORIGINS` — set to the deployed web app's origin(s).
 - `PORT` — usually set by the host; API already respects it.
 - `OPENAI_API_KEY` — required only if `STORY_GENERATION_PROVIDER=openai` or
@@ -570,9 +598,10 @@ that undoes the change, not running the old one backwards.
 1. Add the migration-deploy step to whatever deploy pipeline is chosen (CI
    job, release script, or platform release-phase hook), since the container
    itself intentionally doesn't run it.
-2. Rate limiting + account recovery on `/api/auth/*` (see
-   [Auth limitation note](#auth-limitation)) — real auth itself is done
-   end-to-end (Phase 6B/6C); this is what's left before any public deploy.
+2. Account recovery (email verification + password reset) on `/api/auth/*`
+   (see [Auth limitation note](#auth-limitation)) — real auth (Phase 6B/6C)
+   and rate limiting (Phase 6E) are both done end-to-end; this is what's left
+   before any public deploy.
 
 ## Private demo runbook
 

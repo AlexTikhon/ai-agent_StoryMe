@@ -6,6 +6,7 @@ import type { UserDto } from '@book/types';
 import type { Env } from '../config/env.schema';
 import { toUserDto } from '../users/users.mapper';
 import { AuthModeGuard } from './auth-mode.guard';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './current-user.decorator';
 import { LoginDto } from './dto/login.dto';
@@ -24,6 +25,7 @@ export class AuthController {
     private readonly config: ConfigService<Env, true>,
   ) {}
 
+  @UseGuards(AuthRateLimitGuard)
   @Post('register')
   async register(
     @Body() dto: RegisterDto,
@@ -34,6 +36,7 @@ export class AuthController {
     return { accessToken: result.accessToken, user: toUserDto(result.user) };
   }
 
+  @UseGuards(AuthRateLimitGuard)
   @Post('login')
   @HttpCode(200)
   async login(
@@ -45,6 +48,7 @@ export class AuthController {
     return { accessToken: result.accessToken, user: toUserDto(result.user) };
   }
 
+  @UseGuards(AuthRateLimitGuard)
   @Post('refresh')
   @HttpCode(200)
   async refresh(
@@ -56,6 +60,7 @@ export class AuthController {
     return { accessToken: result.accessToken, user: toUserDto(result.user) };
   }
 
+  @UseGuards(AuthRateLimitGuard)
   @Post('logout')
   @HttpCode(204)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<void> {

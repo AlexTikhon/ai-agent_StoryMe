@@ -5,6 +5,7 @@ import type { Env } from '../config/env.schema';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthModeGuard } from './auth-mode.guard';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { AuthService } from './auth.service';
 import { DevAuthGuard } from './dev-auth.guard';
 import { JwtAuthGuard } from './jwt-auth.guard';
@@ -21,7 +22,14 @@ import { TokenService } from './token.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, TokenService, DevAuthGuard, JwtAuthGuard, AuthModeGuard],
+  providers: [
+    AuthService,
+    TokenService,
+    DevAuthGuard,
+    JwtAuthGuard,
+    AuthModeGuard,
+    AuthRateLimitGuard,
+  ],
   // Re-export UsersModule alongside the guards: modules that only import
   // AuthModule to use @UseGuards(AuthModeGuard) (e.g. BooksModule) otherwise
   // fail to resolve DevAuthGuard's/JwtAuthGuard's own UsersService

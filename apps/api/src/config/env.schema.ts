@@ -26,6 +26,12 @@ export const envSchema = z
     // Defaults to jwt so an environment that forgets to set this is safe.
     AUTH_MODE: z.enum(['dev', 'jwt']).default('jwt'),
 
+    // Rate limiting on /api/auth/* (register, login, refresh, logout) — see
+    // apps/api/src/rate-limit/. In-memory, single-process; sane defaults that
+    // shouldn't interfere with normal local dev/demo usage.
+    AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
+    AUTH_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
+
     // Story/image generation provider selection. Kept as loose optional
     // strings (not a z.enum) so this schema can't diverge from the
     // case-insensitive parsing in story-generation-provider.factory.ts /

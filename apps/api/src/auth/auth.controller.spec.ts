@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
 import type { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import type { User } from '@prisma/client';
 import { UserRole } from '@book/types';
 import type { Env } from '../config/env.schema';
 import { AuthController } from './auth.controller';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import type { AuthService } from './auth.service';
 import { REFRESH_COOKIE_NAME } from './refresh-cookie';
 
@@ -139,6 +141,23 @@ describe('AuthController', () => {
 
       expect(authService.logout).toHaveBeenCalledWith('raw-refresh');
       expect(res.clearCookie).toHaveBeenCalledWith(REFRESH_COOKIE_NAME, { path: '/api/auth' });
+    });
+  });
+
+  describe('AuthRateLimitGuard wiring', () => {
+    it.each(['register', 'login', 'refresh', 'logout'] as const)(
+      'applies AuthRateLimitGuard to %s',
+      (method) => {
+        const guards: unknown[] =
+          Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype[method]) ?? [];
+        expect(guards).toContain(AuthRateLimitGuard);
+      },
+    );
+
+    it('does not apply AuthRateLimitGuard to getMe (not a brute-force target)', () => {
+      const guards: unknown[] =
+        Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype.getMe) ?? [];
+      expect(guards).not.toContain(AuthRateLimitGuard);
     });
   });
 
