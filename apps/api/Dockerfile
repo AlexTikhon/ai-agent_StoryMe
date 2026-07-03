@@ -18,6 +18,14 @@ FROM node:20-alpine AS builder
 
 RUN corepack enable && corepack prepare pnpm@9.4.0 --activate
 
+# Prisma's `prisma generate` probes the local libssl to pick its query-engine
+# binary. Without openssl installed it can't detect anything and silently
+# guesses the wrong (1.1.x) target for this Alpine's actual OpenSSL 3.x, so
+# the generated engine fails to load at runtime. Installing openssl here lets
+# it detect correctly; schema.prisma also pins linux-musl-openssl-3.0.x
+# explicitly so this doesn't depend on detection succeeding.
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -29,6 +37,11 @@ COPY tsconfig.base.json ./
 COPY packages/types ./packages/types
 COPY apps/api ./apps/api
 
+# Build the shared types package first — apps/api's tsc build resolves
+# @book/types via the workspace symlink to packages/types/dist, which
+# doesn't exist until this runs.
+RUN pnpm --filter @book/types build
+
 # Generate Prisma client, then build the NestJS app
 WORKDIR /app/apps/api
 RUN pnpm prisma:generate && pnpm build
@@ -39,17 +52,31 @@ FROM node:20-alpine AS runtime
 # Security: run as non-root user
 RUN addgroup -g 1001 -S nodejs && adduser -S nestjs -u 1001
 
+# The Prisma query engine binary is dynamically linked against libssl —
+# needed at runtime, not just at generate time (see builder stage comment).
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy built output and production node_modules
-COPY --from=builder --chown=nestjs:nodejs /app/apps/api/dist ./dist
-COPY --from=builder --chown=nestjs:nodejs /app/apps/api/node_modules ./node_modules
-COPY --from=builder --chown=nestjs:nodejs /app/apps/api/prisma ./prisma
+# pnpm's node_modules is symlink-based: every dependency under
+# apps/api/node_modules (and packages/types/node_modules) is a *relative*
+# symlink into the shared node_modules/.pnpm virtual store, and @book/types
+# is a relative symlink to ../../../packages/types. Those relative targets
+# only resolve at this exact directory depth, so this stage preserves the
+# same /app/{node_modules,packages/types,apps/api} layout the builder stage
+# used instead of flattening apps/api/node_modules up to ./node_modules —
+# flattening breaks every dependency's symlink resolution (including
+# @nestjs/core and @prisma/client, not just workspace packages).
+COPY --from=builder --chown=nestjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nestjs:nodejs /app/packages/types/dist ./packages/types/dist
+COPY --from=builder --chown=nestjs:nodejs /app/packages/types/package.json ./packages/types/package.json
+COPY --from=builder --chown=nestjs:nodejs /app/apps/api/dist ./apps/api/dist
+COPY --from=builder --chown=nestjs:nodejs /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=builder --chown=nestjs:nodejs /app/apps/api/prisma ./apps/api/prisma
 
-# Prisma client is generated into node_modules; copy the generated client
-COPY --from=builder --chown=nestjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+WORKDIR /app/apps/api
 
 USER nestjs
 

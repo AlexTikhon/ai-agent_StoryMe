@@ -3,7 +3,11 @@
 // Source of truth: PRD.md, API_SPEC.md, BACKEND_DESIGN.md, ARCHITECTURE.md
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // "native" covers local dev (Windows/macOS/glibc Linux); the Docker image
+  // builds and runs on Alpine (musl) with OpenSSL 3.x, so that target is
+  // pinned explicitly rather than relying on runtime libssl detection.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {

@@ -1,25 +1,98 @@
-# Deployment Readiness — Phase 5A/5B Audit
+# Deployment Readiness — Phase 5A/5B/5C Audit
 
 Audit of the current MVP's readiness to deploy outside a local dev machine.
 Phase 5A was an audit + minimal-cleanup pass; Phase 5B closed the one real
-code gap it found by adding `CloudImageAssetStorage`. Nothing here has been
-deployed, and no cloud provider, payments, or real auth were added.
+code gap it found by adding `CloudImageAssetStorage`; Phase 5C actually built
+and ran the Docker image end-to-end for the first time (previous phases had
+only inspected the Dockerfile statically) and fixed what that uncovered.
+Nothing here has been deployed to a real host, and no cloud provider,
+payments, or real auth were added.
 
 ## Current deployability status
 
-**Durable storage is now available end-to-end for a single-instance
-production deploy.** It runs correctly as a single long-lived process (which
-is how local dev and a single-instance/single-region deploy would work).
-Both generated PDFs and generated images default to the API container's
-local filesystem, which most hosts (containers, PaaS, serverless) do not
-persist across restarts, redeploys, or multiple instances — but both now
-have a working cloud-backed alternative (`PDF_STORAGE_DRIVER` /
-`IMAGE_STORAGE_DRIVER` set to `s3` or `r2`), so this is now a config choice
+**The API's Docker image now builds and boots successfully, verified
+end-to-end** (see [Phase 5C: Docker build verification](#phase-5c-docker)) —
+this had never actually been built before Phase 5C, and doing so surfaced
+three real bugs (two Docker-specific, one an application bug affecting every
+run mode) that are now fixed.
+
+**Durable storage is available end-to-end for a single-instance production
+deploy.** Both generated PDFs and generated images default to the API
+container's local filesystem, which most hosts (containers, PaaS,
+serverless) do not persist across restarts, redeploys, or multiple instances
+— but both now have a working cloud-backed alternative (`PDF_STORAGE_DRIVER`
+/ `IMAGE_STORAGE_DRIVER` set to `s3` or `r2`), so this is now a config choice
 rather than a missing feature.
 
 Everything else — env validation, CORS, health checks, migrations, build/start
 scripts — is already deploy-ready or only needs configuration, not code
 changes.
+
+## Phase 5C: Docker build verification {#phase-5c-docker}
+
+Previous phases only read the Dockerfile; nobody had actually run
+`docker build` against it. Doing so in Phase 5C failed immediately, and
+fixing that surfaced three separate, real bugs — the third breaks the app in
+*every* run mode, not just Docker:
+
+1. **`packages/types` was never built before `apps/api`'s `tsc` build ran.**
+   `apps/api` imports `@book/types`, which resolves to
+   `packages/types/dist/index.js` — but the Dockerfile only ever built
+   `apps/api`, so `dist/` didn't exist yet and the build failed with
+   `TS2307: Cannot find module '@book/types'`. Fixed by adding
+   `RUN pnpm --filter @book/types build` before the `apps/api` build step.
+2. **pnpm's symlinked `node_modules` doesn't survive being relocated.**
+   pnpm (unlike npm) doesn't hoist dependencies into a flat `node_modules` —
+   every package under `apps/api/node_modules` is a *relative* symlink into
+   a shared `node_modules/.pnpm` virtual store, and the `@book/types` entry
+   is a relative symlink to `packages/types`. The runtime stage's original
+   `COPY --from=builder .../apps/api/node_modules ./node_modules` collapsed
+   that into a shallower directory, so those relative symlink targets no
+   longer resolved — breaking *every* dependency, including `@nestjs/core`
+   itself (`Error: Cannot find module '@nestjs/core'` at container start).
+   Fixed by having the runtime stage preserve the exact
+   `/app/{node_modules,packages/types,apps/api}` directory layout the
+   builder stage used, instead of flattening it.
+3. **The Prisma query engine failed to load on Alpine
+   (`Error loading shared library libssl.so.1.1`).** `node:20-alpine`
+   ships OpenSSL 3.x with no `libssl.so.1.1` compat package available, and
+   with no `openssl` binary present at all, `prisma generate` couldn't probe
+   the actual version and silently defaulted to the wrong (1.1.x) engine
+   target. Fixed by installing `openssl` in both the builder and runtime
+   Alpine stages, and by pinning
+   `binaryTargets = ["native", "linux-musl-openssl-3.0.x"]` explicitly in
+   `apps/api/prisma/schema.prisma` so this doesn't depend on detection
+   succeeding.
+4. **`DevAuthGuard` failed to resolve its `UsersService` dependency at boot
+   — in every run mode, not just Docker** (`apps/api/src/auth/auth.module.ts`).
+   `BooksModule` only imports `AuthModule` (not `UsersModule` directly) and
+   applies `@UseGuards(DevAuthGuard)` to `BooksController`. Nest resolves a
+   cross-module guard's *own* constructor dependencies relative to what the
+   *consuming* module (`BooksModule`) can see, not just the guard's
+   declaring module (`AuthModule`) — so `AuthModule` exporting only
+   `DevAuthGuard` (and not also `UsersModule`) left `UsersService`
+   unreachable from `BooksModule`'s perspective, and the app crashed at
+   startup with `Nest can't resolve dependencies of the DevAuthGuard`.
+   Reproduced identically via `pnpm --filter @book/api dev`, via
+   `node dist/main` outside Docker, and inside the container — this was a
+   real, pre-existing bug independent of Docker; the app could not boot in
+   *any* mode before this fix. Fixed by also exporting `UsersModule` from
+   `AuthModule`.
+
+All four were verified fixed by: a successful `docker build`, starting the
+resulting container against real `docker-compose` Postgres/Redis, confirming
+`GET /api/health` returns `200 {"status":"ok",...}`, and confirming Docker's
+own `HEALTHCHECK` reports `healthy`. See
+[Build/run commands](#build-run-commands) below for the exact commands used.
+
+**Known tradeoff from fix #2**: preserving `node_modules` directory depth in
+the runtime stage (rather than flattening it) means the full pnpm virtual
+store — including devDependencies, since `pnpm install` in the deps stage
+doesn't use `--prod` — ships in the runtime image (~770MB uncompressed vs. a
+typical slim Node image). Trimming this would mean restructuring the install
+step (e.g. `pnpm deploy` or a `--prod` reinstall pass) — left as a follow-up
+since it's an optimization, not a correctness issue, and this phase is
+scoped to build/boot correctness.
 
 ## Known blockers
 
@@ -69,9 +142,11 @@ changes.
   `build` → `next build`, `start` → `next start`).
 - **Port binding**: API binds `0.0.0.0` (not `localhost`) and reads `PORT` from
   env, so it works behind any container/PaaS port-mapping scheme.
-- **Docker image build**: multi-stage, non-root user, only prod
-  `node_modules` + `dist` + generated Prisma client copied into the runtime
-  stage — no changes needed.
+- **Docker image build**: multi-stage, non-root user, verified to actually
+  build and boot as of Phase 5C (see
+  [Phase 5C: Docker build verification](#phase-5c-docker) above) — it needed
+  three real fixes first, so treat "the Dockerfile looks right" claims in
+  earlier phases as unverified until now.
 
 ## Minimal fixes made this phase
 
@@ -92,6 +167,20 @@ changes.
 
 No behavior changes for local dev or CI — `OPENAI_API_KEY` and all storage/DB
 requirements are unchanged; only unused required vars were relaxed.
+
+**Phase 5C** fixed the four issues in
+[Phase 5C: Docker build verification](#phase-5c-docker) above:
+`apps/api/Dockerfile` (build `@book/types` before `apps/api`; preserve
+`node_modules` directory depth in the runtime stage instead of flattening it;
+install `openssl` in both build and runtime Alpine stages),
+`apps/api/prisma/schema.prisma` (pin `binaryTargets` explicitly), and
+`apps/api/src/auth/auth.module.ts` (export `UsersModule` alongside
+`DevAuthGuard` so `BooksModule` can resolve the guard's dependency). No test,
+typecheck, or web-facing behavior changes — `pnpm --filter @book/api test`
+(425 tests), `pnpm --filter @book/api typecheck`,
+`pnpm --filter @book/web test` (142 tests),
+`pnpm --filter @book/web typecheck`, and `pnpm --filter @book/web build` all
+still pass unchanged.
 
 ## Storage decision note {#storage-decision}
 
@@ -215,24 +304,61 @@ deploy (beyond local dev defaults):
 - `ANTHROPIC_API_KEY`, `FAL_API_KEY`, `R2_*` (asset upload vars),
   `STRIPE_*`, `GOOGLE_*` — all optional; reserved for features not built yet.
 
-## Build commands
+## Build/run commands {#build-run-commands}
+
+### Local (no Docker)
 
 ```
 pnpm install --frozen-lockfile
 pnpm --filter @book/types build
 pnpm --filter @book/api prisma:generate
 pnpm build   # turbo run build across all apps/packages
-```
 
-## Start commands
-
-```
 # API
-pnpm --filter @book/api start        # or: docker build/run apps/api/Dockerfile
+pnpm --filter @book/api start        # node dist/main
 
 # Web
 pnpm --filter @book/web start        # or deploy to Vercel
 ```
+
+### Docker (API only — verified working end-to-end in Phase 5C)
+
+Build, from the repo root (the build context must be the repo root, not
+`apps/api/`, since the Dockerfile copies root-relative workspace manifests):
+
+```
+docker build -f apps/api/Dockerfile -t storyme-api:local .
+```
+
+Run, pointing at real Postgres/Redis (a managed DB/Redis in production, or
+the `docker-compose.yml` services for a local smoke test — note the compose
+Postgres publishes on host port `5433`, not the default `5432`):
+
+```
+docker run -d --name storyme-api -p 4000:4000 \
+  -e DATABASE_URL="postgresql://<user>:<pass>@<host>:5432/<db>" \
+  -e REDIS_URL="redis://<host>:6379" \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
+  -e JWT_REFRESH_SECRET="$(openssl rand -hex 32)" \
+  -e OPENAI_API_KEY="sk-..." \
+  -e ALLOWED_ORIGINS="https://your-web-app.example.com" \
+  storyme-api:local
+```
+
+Verify:
+
+```
+curl http://localhost:4000/api/health
+# {"status":"ok","info":{"db":{"status":"up"},"redis":{"status":"up"}},...}
+
+docker inspect --format='{{.State.Health.Status}}' storyme-api
+# healthy
+```
+
+The image does **not** run migrations automatically — run the migration
+command below against the target database before starting the container
+(first boot against an unmigrated database will fail `/api/health`'s DB
+check, not crash the process).
 
 ## Migration command
 
@@ -240,8 +366,17 @@ pnpm --filter @book/web start        # or deploy to Vercel
 pnpm --filter @book/api prisma:migrate:deploy
 ```
 
-Run this against the production database **before** starting the new API
-version — the Docker image does not run it automatically (see blockers).
+Run this as a separate release/deploy step, against the production database,
+**before** starting the new API version — the Docker image intentionally
+does not run it (see [Known blockers](#known-blockers) above). This is the
+same command CI uses (`.github/workflows/ci.yml`), just pointed at
+`DATABASE_URL` for the target environment instead of the CI database.
+
+**Rollback caution**: `prisma migrate deploy` only applies forward
+migrations — there is no automated rollback. Prisma migrations in this repo
+are plain SQL (`apps/api/prisma/migrations/*/migration.sql`); reverting a bad
+migration in production means writing and applying a new forward migration
+that undoes the change, not running the old one backwards.
 
 ## Suggested next phase
 
@@ -256,3 +391,9 @@ version — the Docker image does not run it automatically (see blockers).
 Storage (PDF + image) is no longer on this list — both `CloudPdfStorage` and
 `CloudImageAssetStorage` are implemented, tested (mocked S3 client), and
 wired via `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` (Phase 5B).
+
+The API Docker image itself is no longer on this list either — it now
+builds, boots, and passes its healthcheck end-to-end (Phase 5C). What
+remains after Phase 5C is exactly the three items above: wiring the
+migration-deploy step into an actual deploy pipeline, picking the web app's
+host, and the real-auth phase.
