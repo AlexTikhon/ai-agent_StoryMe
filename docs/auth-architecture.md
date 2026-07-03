@@ -1,6 +1,9 @@
 # StoryMe Auth Architecture — Phase 6A Plan
 
-Status: **Phase 6B (backend) and Phase 6C (frontend) are both done.**
+Status: **Phase 6B (backend), Phase 6C (frontend), and Phase 6D (JWT-mode
+end-to-end verification) are all done.** See
+[§12 Phase 6D — JWT mode verification](#12-phase-6d--jwt-mode-verification)
+at the bottom of this document for what changed in the verification pass.
 Everything under §4–§8 below describing the backend (`AuthService`,
 `TokenService`, `JwtAuthGuard`, `AuthModeGuard`, the five `/api/auth/*`
 endpoints, cookie handling) exists in code exactly as planned, with one
@@ -582,3 +585,140 @@ This phase changed only documentation (`docs/auth-architecture.md`, this
 file). No source, config, or schema files were modified, and no auth
 libraries were installed. Per `CLAUDE.md`, docs-only phases require no test
 run; none were run.
+
+---
+
+## 12. Phase 6D — JWT mode verification
+
+Goal: verify the Phase 6B/6C implementation actually works end-to-end in real
+`AUTH_MODE=jwt` (not just unit-tested in isolation), fix anything broken, and
+make `jwt` unambiguously the recommended local/private-demo mode. No new
+product features, no OAuth, no payments, no queue infra, no email
+verification/password reset — those remain listed as open blockers below.
+
+### 12.1 Bugs found and fixed
+
+1. **`.env.example` (repo root) set `AUTH_MODE="dev"` while
+   `apps/web/.env.example` already defaulted to `NEXT_PUBLIC_AUTH_MODE="jwt"`.**
+   Anyone who copied both example files verbatim — the exact instruction in
+   `docs/local-demo.md` step 3 — landed in a **mismatched** state: API
+   expects `x-user-email`, web sends a bearer token, every request 401s. Both
+   files' own comments already warned "a mismatch means every request 401s,"
+   but the shipped default value violated that. Fixed by changing the root
+   `.env.example` default to `AUTH_MODE="jwt"`, matching the web default and
+   the schema default (`env.schema.ts`'s `.default('jwt')`).
+2. **A silent-refresh failure mid-session never signaled the rest of the
+   app.** `apiFetch`/`apiFetchBlob` (`apps/web/src/lib/api/client.ts`) already
+   attempted exactly one refresh-and-retry on a `401`, and cleared the
+   in-memory access token if that refresh failed — but nothing told
+   `AuthProvider` the session had ended. In practice: a user active past
+   their 7-day refresh-cookie expiry (or one whose refresh token was revoked,
+   e.g. reuse-detection kicking in) kept seeing generic "Failed to load
+   books" / "Failed to update book" error banners indefinitely instead of
+   being bounced to `/login`. Fixed by adding a `storyme:auth-expired` window
+   event, dispatched exactly where the refresh attempt's `.catch` already
+   ran, and a listener in `AuthProvider` that flips `status` to `'anon'` —
+   which `DashboardLayout`'s existing redirect effect turns into a
+   `/login?next=...` bounce with no new redirect logic needed. Covered by
+   new tests in `client.test.ts` and `auth-context.test.tsx`.
+
+### 12.2 What was already correct (verified, not changed)
+
+Phase 6C's implementation and test coverage were more complete than a fresh
+audit expected — most of the risk areas this phase set out to check already
+had passing tests:
+
+- **`x-user-email` is ignored in `jwt` mode.** `JwtAuthGuard` only ever reads
+  the `Authorization` header; `AuthModeGuard` never invokes `DevAuthGuard`
+  when `AUTH_MODE=jwt`, so a spoofed `x-user-email` header has zero effect —
+  verified by an existing `jwt-auth.guard.spec.ts` test and unchanged.
+- **Cross-user book isolation.** Every `BooksService` method that takes a
+  book id also takes the caller's `userId` and routes through
+  `findOwnedOrThrow`, which scopes the Prisma lookup to `{ id, userId,
+  deletedAt: null }` — a book that exists but belongs to someone else 404s
+  exactly like a book that doesn't exist (no existence leak). This was
+  already tested for `findOneForUser`, `startGeneration`, `retryGeneration`,
+  and `getGenerationDiagnostics`; this phase added the missing equivalent
+  test for `getPreviewPdfBuffer` (the PDF download path) in
+  `books.service.spec.ts`.
+- **401-retry-once semantics.** `apiFetch`/`apiFetchBlob` retry exactly once
+  after a successful silent refresh, and do not loop or retry again on a
+  second `401` — already tested in `client.test.ts`.
+- **Session restore.** `AuthProvider` calls `GET /api/auth/me` on mount; a
+  `401` triggers the same refresh-once flow via the refresh cookie, landing
+  on `authed` (cookie valid) or `anon` (no valid cookie) — already tested.
+- **Dashboard route protection.** `/dashboard/*` redirects an anonymous
+  visitor to `/login?next=<path>` only in `jwt` mode; `dev` mode never gates
+  — already tested in `dashboard/layout.test.tsx`.
+- **Open-redirect guard on `?next=`.** `apps/web/src/app/login/page.tsx`'s
+  `safeNextPath` only honors a same-origin path (`startsWith('/')`, rejects
+  `//`), falling back to `/dashboard` otherwise.
+
+### 12.3 Cookie / CORS verification (local dev, cross-origin http)
+
+`apps/web` (`localhost:3000`) and `apps/api` (`localhost:4000`) are different
+origins (different ports) but the **same site** — `localhost` has no public
+suffix, so browsers treat it as one registrable domain regardless of port.
+This matters because `buildRefreshCookieOptions` (`refresh-cookie.ts`) sets
+`SameSite=Lax` (not `None`) outside production, and `SameSite=Lax` cookies
+are normally withheld from cross-site `fetch`/XHR — but same-site
+cross-origin requests are unaffected by that restriction, so the
+`storyme_refresh` cookie round-trips correctly on `POST /api/auth/refresh`
+called via `fetch(..., { credentials: 'include' })` from `localhost:3000` to
+`localhost:4000` with no HTTPS needed locally. This was confirmed by reading
+the cookie/CORS code paths together (`refresh-cookie.ts`, `main.ts`'s
+`app.enableCors({ credentials: true, origin: allowedOrigins })`) rather than
+by a live capture; if a future environment renames the local hostname away
+from `localhost` (e.g. a custom `*.test` domain), re-verify this assumption.
+In production (`NODE_ENV=production`), the cookie switches to
+`Secure; SameSite=None`, which requires HTTPS on both origins and an exact
+(non-wildcard) `ALLOWED_ORIGINS` entry for the deployed web origin — already
+documented in `docs/private-demo-deploy.md`.
+
+### 12.4 Manual verification checklist
+
+No browser-based E2E framework (Playwright or otherwise) exists in this repo
+yet, and adding one was explicitly out of scope for this phase. Ownership
+isolation, the 401-refresh-retry contract, session restore, and route
+protection are covered by the automated tests referenced in §12.2 instead.
+The remaining steps below only exercise real browser/cookie behavior and
+should be run manually against a local `AUTH_MODE=jwt` /
+`NEXT_PUBLIC_AUTH_MODE=jwt` stack (`docs/local-demo.md`) before a private
+demo deploy:
+
+- [ ] Register a new user at `/register`; confirm immediate redirect into
+      `/dashboard` already signed in (no separate login step required).
+- [ ] Create a book, generate it (mock provider), confirm the preview
+      renders and **Open PDF**/**Download PDF** both work.
+- [ ] Log out; confirm `/dashboard` immediately redirects to `/login`.
+- [ ] Log back in; confirm the same book is visible.
+- [ ] Reload the page (full browser refresh) while signed in; confirm the
+      session restores silently with no visible login flash beyond the
+      brief `status: 'loading'` state.
+- [ ] Register a **second** user in a different browser profile/incognito
+      window; confirm their dashboard is empty and navigating directly to
+      the first user's book detail URL renders "Book not found" (404), not
+      the first user's data.
+- [ ] In devtools, delete the `storyme_refresh` cookie while signed in, then
+      trigger any API call (e.g. click "Refresh status"); confirm the app
+      lands back on `/login` instead of showing a stuck error banner (this
+      exercises the `storyme:auth-expired` fix in §12.1).
+
+### 12.5 Remaining blockers before public (non-private-demo) production
+
+Unchanged from `docs/deployment-readiness.md`'s existing "What's left" list
+— this phase did not attempt any of these, per its explicit scope:
+
+- No rate limiting on `/api/auth/*` (brute force / credential stuffing /
+  registration abuse).
+- No email verification.
+- No password-reset flow.
+- No OAuth (still a documented future follow-up, not required for `jwt`
+  mode to be the recommended private-demo default).
+
+### 12.6 Quality gates
+
+`pnpm --filter @book/api test`, `pnpm --filter @book/api typecheck`,
+`pnpm --filter @book/web test`, `pnpm --filter @book/web typecheck`,
+`pnpm --filter @book/web build` — all run for this phase; see the commit/PR
+description for exact pass counts.

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AuthProvider, useAuth } from './auth-context';
+import { AUTH_EXPIRED_EVENT } from '../api/client';
 import { getAccessToken, setAccessToken } from './token-store';
 import { UserRole } from '@book/types';
 import type { UserDto } from '@book/types';
@@ -159,6 +160,29 @@ describe('AuthProvider', () => {
         expect(screen.getByTestId('email').textContent).toBe('none');
       });
       expect(getAccessToken()).toBeNull();
+    });
+
+    it('drops to anon when a later request dispatches storyme:auth-expired (refresh failed mid-session)', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockUnauthorized())
+        .mockResolvedValueOnce(mockOk({ accessToken: 'tok1', user: MOCK_USER }))
+        .mockResolvedValueOnce(mockOk(MOCK_USER));
+
+      render(
+        <AuthProvider>
+          <Probe />
+        </AuthProvider>,
+      );
+      await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('authed'));
+
+      act(() => {
+        window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('status').textContent).toBe('anon');
+        expect(screen.getByTestId('email').textContent).toBe('none');
+      });
     });
   });
 

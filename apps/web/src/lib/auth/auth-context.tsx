@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { UserDto } from '@book/types';
-import { apiFetch } from '../api/client';
+import { apiFetch, AUTH_EXPIRED_EVENT } from '../api/client';
 import { authApi } from '../api/auth';
 import { getAuthMode, type AuthMode } from './mode';
 import { setAccessToken } from './token-store';
@@ -50,6 +50,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
     // Intentionally runs once on mount only — authMode is an env-derived
     // constant for the lifetime of the app, not reactive state.
+  }, []);
+
+  // A later request's silent refresh can also fail (refresh cookie expired or
+  // revoked mid-session, after the initial restore already succeeded) — drop
+  // back to anon so the dashboard layout's redirect effect sends the user to
+  // /login instead of leaving them on a page that just keeps 401ing.
+  useEffect(() => {
+    const onAuthExpired = () => {
+      setUser(null);
+      setStatus('anon');
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {

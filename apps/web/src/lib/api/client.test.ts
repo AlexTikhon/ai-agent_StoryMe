@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { apiFetch, apiFetchBlob } from './client';
+import { apiFetch, apiFetchBlob, AUTH_EXPIRED_EVENT } from './client';
 import { setAccessToken } from '../auth/token-store';
 
 function mockOk(body: unknown, status = 200): Response {
@@ -81,6 +81,35 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
       await expect(apiFetch('/books')).rejects.toThrow();
       // Exactly 2 calls: the original request + one refresh attempt. No further retries.
       expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('dispatches storyme:auth-expired when the silent refresh fails', async () => {
+      setAccessToken('expired-token');
+      const onExpired = vi.fn();
+      window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockUnauthorized())
+        .mockResolvedValueOnce(mockUnauthorized());
+
+      await expect(apiFetch('/books')).rejects.toThrow();
+
+      expect(onExpired).toHaveBeenCalledTimes(1);
+      window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    });
+
+    it('does not dispatch storyme:auth-expired when the silent refresh succeeds', async () => {
+      setAccessToken('expired-token');
+      const onExpired = vi.fn();
+      window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockUnauthorized())
+        .mockResolvedValueOnce(mockOk({ accessToken: 'new-token', user: { id: 'u1' } }))
+        .mockResolvedValueOnce(mockOk({ items: [] }));
+
+      await apiFetch('/books');
+
+      expect(onExpired).not.toHaveBeenCalled();
+      window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
     });
   });
 

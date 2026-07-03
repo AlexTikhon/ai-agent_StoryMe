@@ -417,6 +417,21 @@ still pass unchanged.
   the deploy runbook), then removing the `x-user-email`/`x-user-name`
   CORS-allowed headers and `DevAuthGuard` entirely once no deployment still
   relies on dev mode.
+- **Phase 6D (JWT mode end-to-end verification)**: confirmed the Phase 6B/6C
+  implementation actually works in real `AUTH_MODE=jwt` (ownership isolation,
+  401-retry-once, session restore, route protection, `x-user-email` ignored
+  in `jwt` mode — all already had passing tests). Found and fixed two real
+  bugs: the root `.env.example` shipped `AUTH_MODE=dev` while
+  `apps/web/.env.example` already defaulted to `NEXT_PUBLIC_AUTH_MODE=jwt`
+  (a mismatch that 401s every request if copied verbatim, now both default
+  to `jwt`), and a mid-session refresh failure previously left the app
+  showing a generic error banner forever instead of redirecting to
+  `/login` (fixed via a `storyme:auth-expired` event —
+  `apps/web/src/lib/api/client.ts` /
+  `apps/web/src/lib/auth/auth-context.tsx`). Full writeup, cookie/CORS
+  verification, and the manual browser checklist (no E2E framework exists
+  yet) live in
+  [`docs/auth-architecture.md` §12](auth-architecture.md#12-phase-6d--jwt-mode-verification).
 
 ## Recommended deployment architecture
 

@@ -813,6 +813,16 @@ describe('BooksService', () => {
       expect(pdfStorage.getPreviewPdf).not.toHaveBeenCalled();
     });
 
+    it('throws NotFoundException when the PDF belongs to a different user — does not leak the file to a cross-user request', async () => {
+      // findFirst returns null because the userId filter excludes the row
+      prisma.book.findFirst.mockResolvedValue(null);
+
+      await expect(service.getPreviewPdfBuffer('b-1', 'u-other')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(pdfStorage.getPreviewPdf).not.toHaveBeenCalled();
+    });
+
     it('throws ConflictException when previewPdfUrl is null', async () => {
       const book = makeBook({ previewPdfUrl: null });
       prisma.book.findFirst.mockResolvedValue(book);

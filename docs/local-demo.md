@@ -70,26 +70,39 @@ pnpm --filter @book/web dev
 
 Runs on `http://localhost:3000`.
 
-## 7. Create a book
+## 7. Sign in
 
-1. Open `http://localhost:3000` and click **Create Your First Book** (or go
-   straight to `http://localhost:3000/dashboard`).
+The web app supports two auth modes, controlled by `NEXT_PUBLIC_AUTH_MODE`
+(`apps/web/.env.example`), which must match the API's `AUTH_MODE`
+(`apps/api/.env`). **`jwt` is the default and recommended mode** — use it
+unless you have a specific reason to want the old shared-identity shortcut:
+
+- `jwt` (default, recommended) — real login. Open
+  `http://localhost:3000/register`, create an account (email + password, 8+
+  chars with 1 uppercase and 1 number), and you're redirected straight into
+  `/dashboard` already signed in. Next time, use `/login` instead.
+  `/dashboard/*` redirects anonymous visitors to `/login?next=...`; a **Log
+  out** button in the dashboard header ends the session. Closing the tab and
+  reopening it restores the session silently (refresh cookie), no need to log
+  in again unless the 7-day refresh token has expired.
+- `dev` — no login screen, no accounts. Every API request is scoped to a
+  single dev user identified by the `x-user-email` header, sent automatically
+  by the web app (see `DevAuthGuard`). Set both `AUTH_MODE=dev` (API) and
+  `NEXT_PUBLIC_AUTH_MODE=dev` (web) for this — a mismatch 401s every request.
+  Useful for quick manual pipeline iteration when you don't want to deal with
+  a login form, but it has no credential check at all — see
+  [Auth limitation](../docs/deployment-readiness.md#auth-limitation) for why
+  this must never be used outside local dev.
+
+## 8. Create a book
+
+1. From the dashboard, click **Create Your First Book** (or **+ New Book**
+   if you already have drafts).
 2. Fill in the 3-step wizard (child's name/age → story theme/pages → review)
    and submit.
 3. You land on the new book's detail page with status `created`.
 
-The web app supports two auth modes, controlled by `NEXT_PUBLIC_AUTH_MODE`
-(`apps/web/.env.example`), which must match the API's `AUTH_MODE`:
-
-- `jwt` (default) — real login. Visit `/register` to create an account, or
-  `/login` if you already have one. `/dashboard/*` redirects to `/login` when
-  signed out.
-- `dev` — no login screen. Every API request is scoped to a dev user
-  identified by the `x-user-email` header, sent automatically by the web app
-  (see `DevAuthGuard`). Set both `AUTH_MODE=dev` (API) and
-  `NEXT_PUBLIC_AUTH_MODE=dev` (web) for this — a mismatch 401s every request.
-
-## 8. Verify generation
+## 9. Verify generation
 
 Click **Generate Story** on the book detail page. The page polls every 2.5s
 and walks through each pipeline stage (`char_build` → `story_plan` → … →
@@ -101,7 +114,12 @@ OpenAI credits spent.
 If generation fails, the detail page shows the failure reason and a **Retry
 generation** button.
 
-## 9. Open / download the PDF
+Books are scoped to the signed-in user (`jwt` mode) — a second registered
+user's dashboard is empty and cannot open your book's URL directly (404s).
+See [docs/auth-architecture.md §12.4](auth-architecture.md#124-manual-verification-checklist)
+for the full manual verification checklist, including this multi-user check.
+
+## 10. Open / download the PDF
 
 Once status reaches `complete`, the PDF section shows **Open PDF** and
 **Download PDF**, both backed by `GET /api/books/:id/pdf/preview`. Both

@@ -9,6 +9,21 @@ const DEV_NAME = 'Dev User';
 
 export { ApiError };
 
+/**
+ * Fired when a silent refresh-on-401 fails (refresh cookie missing/expired/
+ * revoked) — i.e. the session is truly over, not just the access token.
+ * AuthProvider listens for this to flip status to 'anon', which the
+ * dashboard layout's existing redirect effect turns into a /login bounce.
+ * Only ever dispatched in jwt mode — dev mode never calls refreshOnce.
+ */
+export const AUTH_EXPIRED_EVENT = 'storyme:auth-expired';
+
+function notifyAuthExpired(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
+
 // Coalesces concurrent 401s onto a single in-flight refresh instead of firing
 // one POST /api/auth/refresh per failed request.
 let refreshInFlight: Promise<string | null> | null = null;
@@ -31,6 +46,7 @@ function refreshOnce(): Promise<string | null> {
       })
       .catch(() => {
         setAccessToken(null);
+        notifyAuthExpired();
         return null;
       })
       .finally(() => {
