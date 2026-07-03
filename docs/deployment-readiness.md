@@ -1,12 +1,14 @@
-# Deployment Readiness — Phase 5A/5B/5C Audit
+# Deployment Readiness — Phase 5A/5B/5C/5D Audit
 
 Audit of the current MVP's readiness to deploy outside a local dev machine.
 Phase 5A was an audit + minimal-cleanup pass; Phase 5B closed the one real
 code gap it found by adding `CloudImageAssetStorage`; Phase 5C actually built
 and ran the Docker image end-to-end for the first time (previous phases had
-only inspected the Dockerfile statically) and fixed what that uncovered.
-Nothing here has been deployed to a real host, and no cloud provider,
-payments, or real auth were added.
+only inspected the Dockerfile statically) and fixed what that uncovered;
+Phase 5D audited the web app's deployment path (build/runtime assumptions,
+env handling, CORS alignment) and made the hosting decision that Phase 5C
+left open. Nothing here has been deployed to a real host, and no cloud
+provider, payments, or real auth were added.
 
 ## Current deployability status
 
@@ -15,6 +17,12 @@ end-to-end** (see [Phase 5C: Docker build verification](#phase-5c-docker)) —
 this had never actually been built before Phase 5C, and doing so surfaced
 three real bugs (two Docker-specific, one an application bug affecting every
 run mode) that are now fixed.
+
+**The web app's deployment path is now decided and documented** (see
+[Phase 5D: Web deployment readiness](#phase-5d-web) below) — Vercel (or any
+Node host running `next build` / `next start`), no Dockerfile needed. The
+audit found the app's build/runtime assumptions already correct; no code
+changes were required.
 
 **Durable storage is available end-to-end for a single-instance production
 deploy.** Both generated PDFs and generated images default to the API
@@ -94,6 +102,111 @@ step (e.g. `pnpm deploy` or a `--prod` reinstall pass) — left as a follow-up
 since it's an optimization, not a correctness issue, and this phase is
 scoped to build/boot correctness.
 
+## Phase 5D: Web deployment readiness {#phase-5d-web}
+
+Audited `apps/web`'s deployment path — build/runtime assumptions, env
+handling, CORS/API-URL alignment — and made the hosting decision Phase 5C
+left open (see [Known blockers](#known-blockers) item 3, now resolved below).
+**No code changes were needed**: the app's env handling, CORS setup, and
+build/start scripts were already deploy-ready.
+
+### Recommended web hosting: Vercel (or any Node host running `next build` / `next start`)
+
+`apps/web` is a standard Next.js 14 App Router app with no `output` mode set
+in `next.config.mjs` (no static export, no standalone bundling). Confirmed by
+running `pnpm --filter @book/web build`: `/dashboard/books/[id]` builds as a
+dynamic (server-rendered on demand) route, while `/`, `/dashboard`, and
+`/dashboard/books/new` are static — this mix is exactly what Vercel's default
+Next.js runtime (or `next start` on any Node host) handles natively, and it
+rules out static-export hosting (e.g. plain S3/Netlify-static) without
+further work. A **Dockerfile was not added** — Vercel/managed Next hosting
+was picked as the simpler path for an MVP demo, and the task only calls for
+one when Docker is the recommended target.
+
+- **Build command**: `pnpm --filter @book/web build` (`next build`).
+- **Start command**: only needed for self-hosting on a plain Node host —
+  `pnpm --filter @book/web start` (`next start`). Vercel builds and serves
+  the app itself; there is no separate start step to configure there.
+- **Output mode**: default (Node server), not static export — required
+  because of the dynamic `[id]` route above.
+
+### Environment variables
+
+- **`NEXT_PUBLIC_API_URL`** (`apps/web/.env.example`) — the only env var the
+  web app reads. Used in two places, both at module scope:
+  `apps/web/src/lib/api/client.ts` (`apiFetch`/`apiFetchBlob` base URL) and
+  `apps/web/src/lib/api/asset-url.ts` (`resolveAssetUrl`, used to turn
+  API-relative paths into absolute URLs for the PDF preview link).
+- **Baked in at build time, not read at request time.** Next.js inlines
+  `NEXT_PUBLIC_*` vars via webpack at build time; there is no server-side
+  runtime override. Practically: set `NEXT_PUBLIC_API_URL` in the Vercel
+  project's environment variables (or CI, for self-hosted builds) *before*
+  running the build — changing it requires a rebuild + redeploy, not just an
+  env var edit on a running instance.
+  - Defaults to `http://localhost:4000/api` when unset, which is only
+    correct for local dev.
+- No other env vars are read by the web app. There is no server-only secret
+  in `apps/web` today (dev-auth values are hardcoded constants, not env —
+  see [Dev-auth warning](#phase-5d-dev-auth) below).
+
+### API client / cross-origin behavior
+
+- `apiFetch`/`apiFetchBlob` use plain `fetch()` with no `credentials:
+  'include'` — auth is carried via the `x-user-email`/`x-user-name` headers
+  (`DevAuthGuard`), not cookies, so there's no same-site cookie concern when
+  web and API are deployed to different domains.
+- The API's CORS setup (`apps/api/src/main.ts`) already allows this:
+  `ALLOWED_ORIGINS` is env-driven (not hardcoded), and `allowedHeaders`
+  already includes `x-user-email`/`x-user-name` alongside the standard
+  headers. **The only action needed at deploy time is setting
+  `ALLOWED_ORIGINS` on the API to the web app's actual deployed origin** —
+  no code change.
+- Confirmed no other hardcoded `localhost` URLs exist in request paths.
+
+### Note: unused `next.config.mjs` image remote pattern
+
+`apps/web/next.config.mjs` whitelists `http://localhost:9000` (the local
+MinIO port from `docker-compose.yml`) under `images.remotePatterns`. Grepped
+the app for `next/image`/`<Image` usage — there is none; generated image URLs
+are currently only ever displayed as plain text
+(`ImageEntryCard` in `apps/web/src/app/dashboard/books/[id]/page.tsx`), never
+rendered via Next's `<Image>` component. This config is therefore inert today
+and not a deployment blocker, but flagging it: if a future phase renders
+generated images with `next/image`, this remote-pattern allowlist will need
+the production image host (e.g. the R2/S3 bucket's public domain) added, or
+image loading will silently fail in production.
+
+### Dev-auth warning {#phase-5d-dev-auth}
+
+Restating for the web-deployment context (full detail already in
+[Auth limitation note](#auth-limitation)): the web app sends a **hardcoded**
+`x-user-email: dev@storyme.local` / `x-user-name: Dev User` pair on every
+request (`apps/web/src/lib/api/client.ts`) — there is no login UI and no
+per-user identity. This is acceptable **only** for a private/internal MVP
+demo (e.g. a Vercel deploy behind a password/allowlist, or shared with a
+small trusted group). **Do not put this web deployment behind a public URL
+without first replacing `DevAuthGuard` with real auth** — anyone with the
+URL would be acting as the same fixed dev user, and (per the CORS config
+above) anyone who also knows the header trick could act as *any* user by
+setting their own `x-user-email`.
+
+### Web deployment checklist
+
+1. Set `NEXT_PUBLIC_API_URL` in the hosting platform's build-time env vars
+   to the deployed API's public URL (including the `/api` suffix, e.g.
+   `https://api.example.com/api`) — **before** the first build.
+2. Set `ALLOWED_ORIGINS` on the API to the deployed web app's origin
+   (e.g. `https://storyme.example.com`) — comma-separated if there are
+   multiple (e.g. preview + production Vercel URLs).
+3. Run `pnpm --filter @book/web build` (Vercel does this automatically from
+   the repo; a self-hosted Node host needs this plus `pnpm --filter @book/web
+   start` after).
+4. Verify the deployed web app can reach the deployed API: load the app,
+   create a book, confirm the detail page's polling and PDF preview link
+   work cross-origin.
+5. Keep the deployment private/internal (password-protect or restrict
+   access) until real auth replaces `DevAuthGuard` — see the warning above.
+
 ## Known blockers
 
 1. **Local filesystem storage is the default and is not durable in most
@@ -110,10 +223,11 @@ scoped to build/boot correctness.
    builds and runs `node dist/main` only — it does not apply migrations.
    Migrations must be run as a separate deploy step (`pnpm --filter @book/api
    prisma:migrate:deploy`) before the new container starts serving traffic.
-3. **No web app Dockerfile / hosting decision.** Only `apps/api` has a
-   Dockerfile. The web app (`apps/web`) is a standard Next.js app and can run
-   on Vercel or any Node host via `next build && next start`, but that choice
-   hasn't been made yet.
+3. ~~No web app Dockerfile / hosting decision.~~ **Resolved in Phase 5D**:
+   Vercel (or any Node host via `next build` / `next start`) is the
+   recommended path — see
+   [Phase 5D: Web deployment readiness](#phase-5d-web) above. No Dockerfile
+   was added since it isn't the recommended path for this MVP.
 4. **Dev-only auth.** `DevAuthGuard` trusts a plain `x-user-email` header with
    no credential check (see [Auth limitation](#auth-limitation) below). Fine
    for a local/internal demo; not safe to expose publicly.
@@ -253,7 +367,9 @@ still pass unchanged.
 A minimal, low-ops setup that fits the current single-process design:
 
 - **Web**: `apps/web` on Vercel (or any Node host) — no Docker needed, `next
-  build` / `next start`.
+  build` / `next start`. Confirmed in Phase 5D: build/env assumptions already
+  correct, see [Phase 5D: Web deployment readiness](#phase-5d-web) above for
+  the full checklist.
 - **API**: `apps/api/Dockerfile` on a single-instance container host (e.g.
   Fly.io, Render, Railway) — the in-process generation runner
   (`GenerationTaskRunner`) means horizontal scaling is not yet safe (a second
@@ -383,9 +499,7 @@ that undoes the change, not running the old one backwards.
 1. Add the migration-deploy step to whatever deploy pipeline is chosen (CI
    job, release script, or platform release-phase hook), since the container
    itself intentionally doesn't run it.
-2. Decide on the web app's host and add its Dockerfile/config only if not
-   using Vercel.
-3. Real auth phase (see [Auth limitation note](#auth-limitation)) — this
+2. Real auth phase (see [Auth limitation note](#auth-limitation)) — this
    should happen before any public deploy, not just a private/internal one.
 
 Storage (PDF + image) is no longer on this list — both `CloudPdfStorage` and
@@ -393,7 +507,11 @@ Storage (PDF + image) is no longer on this list — both `CloudPdfStorage` and
 wired via `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` (Phase 5B).
 
 The API Docker image itself is no longer on this list either — it now
-builds, boots, and passes its healthcheck end-to-end (Phase 5C). What
-remains after Phase 5C is exactly the three items above: wiring the
-migration-deploy step into an actual deploy pipeline, picking the web app's
-host, and the real-auth phase.
+builds, boots, and passes its healthcheck end-to-end (Phase 5C).
+
+The web app's hosting decision is no longer on this list either — Vercel (or
+any Node host via `next build`/`next start`) is the recommended path, its
+build/env/CORS assumptions were verified correct, and no Dockerfile was
+needed (Phase 5D). What remains after Phase 5D is exactly the two items
+above: wiring the migration-deploy step into an actual deploy pipeline, and
+the real-auth phase.
