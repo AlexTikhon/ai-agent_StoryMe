@@ -21,6 +21,9 @@ function makeUser(overrides: Partial<User> = {}): User {
     creditsUpdatedAt: null,
     role: 'user' as User['role'],
     emailVerified: false,
+    emailVerifiedAt: null,
+    emailVerificationTokenHash: null,
+    emailVerificationExpiresAt: null,
     deactivatedAt: null,
     notifyEmailOnCompletion: true,
     notifyEmailMarketing: false,
@@ -138,6 +141,28 @@ describe('UsersService', () => {
 
       expect(prisma.user.create).toHaveBeenCalledWith({
         data: { email: 'new@example.com', passwordHash: 'hashed', name: 'Bob' },
+      });
+    });
+
+    it('passes the optional email verification token hash and expiry through', async () => {
+      prisma.user.create.mockResolvedValue(makeUser());
+      const emailVerificationExpiresAt = new Date('2026-01-02');
+
+      await service.create({
+        email: 'new@example.com',
+        passwordHash: 'hashed',
+        emailVerificationTokenHash: 'hashed-token',
+        emailVerificationExpiresAt,
+      });
+
+      expect(prisma.user.create).toHaveBeenCalledWith({
+        data: {
+          email: 'new@example.com',
+          passwordHash: 'hashed',
+          name: null,
+          emailVerificationTokenHash: 'hashed-token',
+          emailVerificationExpiresAt,
+        },
       });
     });
   });

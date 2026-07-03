@@ -1,9 +1,18 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import type { User } from '@prisma/client';
 import { UserRole } from '@book/types';
+import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
 import { UsersService } from '../users/users.service';
+import { EMAIL_SERVICE_TOKEN, type EmailService } from '../email/email.service';
 import { TokenService } from './token.service';
 
 const BCRYPT_COST = 12;
@@ -22,6 +31,8 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly usersService: UsersService,
     private readonly tokenService: TokenService,
+    @Inject(EMAIL_SERVICE_TOKEN) private readonly emailService: EmailService,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
   async register(email: string, password: string, name?: string): Promise<AuthResult> {
@@ -31,7 +42,25 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
-    const user = await this.usersService.create({ email, passwordHash, name });
+    const verification = this.tokenService.generateEmailVerificationToken();
+    const user = await this.usersService.create({
+      email,
+      passwordHash,
+      name,
+      emailVerificationTokenHash: verification.hash,
+      emailVerificationExpiresAt: verification.expiresAt,
+    });
+
+    await this.emailService.sendVerificationEmail({
+      to: user.email,
+      name: user.name,
+      token: verification.raw,
+      verificationUrl: this.buildVerificationUrl(verification.raw),
+    });
+
+    // Registration still auto-signs the user in (existing behavior — see
+    // docs/auth-architecture.md §12.4); only a subsequent explicit login()
+    // is gated on verification, below.
     return this.issueTokenPair(user);
   }
 
@@ -49,7 +78,69 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    if (!user.emailVerified) {
+      throw new UnauthorizedException({
+        error: 'Email is not verified',
+        message: 'Email is not verified',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
     return this.issueTokenPair(user);
+  }
+
+  /** Rejects invalid/expired tokens; clears the token hash so it cannot be replayed after success. */
+  async verifyEmail(rawToken: string): Promise<void> {
+    const tokenHash = this.tokenService.hashEmailVerificationToken(rawToken);
+    const user = await this.prisma.user.findFirst({
+      where: { emailVerificationTokenHash: tokenHash },
+    });
+
+    if (
+      !user ||
+      !user.emailVerificationExpiresAt ||
+      user.emailVerificationExpiresAt.getTime() < Date.now()
+    ) {
+      throw new BadRequestException('Invalid or expired verification token');
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        emailVerifiedAt: new Date(),
+        emailVerificationTokenHash: null,
+        emailVerificationExpiresAt: null,
+      },
+    });
+  }
+
+  /**
+   * Always resolves the same way regardless of whether the email exists, is
+   * already verified, or belongs to a deactivated account — callers (the
+   * controller) must not branch on this to avoid leaking account existence.
+   */
+  async resendVerificationEmail(email: string): Promise<void> {
+    const user = await this.usersService.findByEmail(email);
+    if (!user || user.emailVerified || user.deactivatedAt) {
+      return;
+    }
+
+    const verification = this.tokenService.generateEmailVerificationToken();
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerificationTokenHash: verification.hash,
+        emailVerificationExpiresAt: verification.expiresAt,
+      },
+    });
+
+    await this.emailService.sendVerificationEmail({
+      to: user.email,
+      name: user.name,
+      token: verification.raw,
+      verificationUrl: this.buildVerificationUrl(verification.raw),
+    });
   }
 
   async refresh(rawRefreshToken: string | undefined): Promise<AuthResult> {
@@ -126,5 +217,10 @@ export class AuthService {
       refreshToken: refresh.raw,
       refreshTokenExpiresAt: refresh.expiresAt,
     };
+  }
+
+  private buildVerificationUrl(token: string): string {
+    const webAppUrl = this.config.get('WEB_APP_URL', { infer: true });
+    return `${webAppUrl}/verify-email?token=${encodeURIComponent(token)}`;
   }
 }

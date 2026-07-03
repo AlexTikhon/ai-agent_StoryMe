@@ -175,6 +175,12 @@ model User {
 
   role          UserRole  @default(user)
   emailVerified Boolean   @default(false) @map("email_verified")
+  emailVerifiedAt            DateTime? @map("email_verified_at")
+  // Only a hash of the verification token is ever stored — see AuthService.
+  // Unique so a hash collision can never verify the wrong account; null for
+  // users with no pending verification (never sent, or already verified).
+  emailVerificationTokenHash String?   @unique @map("email_verification_token_hash")
+  emailVerificationExpiresAt DateTime? @map("email_verification_expires_at")
   deactivatedAt DateTime? @map("deactivated_at")
 
   notifyEmailOnCompletion Boolean @default(true)  @map("notify_email_on_completion")

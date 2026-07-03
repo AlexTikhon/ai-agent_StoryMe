@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
+import { authApi } from '@/lib/api/auth';
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -13,6 +14,17 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const { status, user, authMode, logout } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
+
+  const handleResend = async () => {
+    if (!user) return;
+    setResendStatus('sending');
+    try {
+      await authApi.resendVerification(user.email);
+    } finally {
+      setResendStatus('sent');
+    }
+  };
 
   // Dev mode has no real login wall — identity travels via header on every
   // request, so the dashboard is never gated in that mode.
@@ -58,6 +70,25 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </button>
         )}
       </div>
+      {authMode === 'jwt' && user && !user.emailVerified && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle bg-amber-50 px-4 py-2 text-sm text-amber-900"
+        >
+          <span>Please verify your email address to keep full access to your account.</span>
+          <button
+            onClick={() => void handleResend()}
+            disabled={resendStatus === 'sending' || resendStatus === 'sent'}
+            className="font-medium text-violet-700 hover:text-violet-600 disabled:opacity-60"
+          >
+            {resendStatus === 'sent'
+              ? 'Verification email sent'
+              : resendStatus === 'sending'
+                ? 'Sending…'
+                : 'Resend verification email'}
+          </button>
+        </div>
+      )}
       {children}
     </div>
   );

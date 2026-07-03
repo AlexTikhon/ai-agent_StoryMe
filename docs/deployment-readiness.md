@@ -407,17 +407,39 @@ still pass unchanged.
   distinct "account deactivated" message, matching this codebase's existing
   no-enumeration policy. See `apps/api/src/auth/*.spec.ts`.
 - **Why this is still private/internal-only**: real credential verification
-  removes the identity-spoofing risk `DevAuthGuard` had, and rate limiting
-  (Phase 6E) now caps brute-force/credential-stuffing volume, but the auth
-  endpoints still have no email verification and no password-reset flow —
-  account recovery is still open. That's the remaining gap before public
+  removes the identity-spoofing risk `DevAuthGuard` had, rate limiting
+  (Phase 6E) now caps brute-force/credential-stuffing volume, and email
+  verification (Phase 6F) confirms ownership of the registered address before
+  login — but there is still no password-reset flow, no real transactional
+  email provider, and no OAuth. That's the remaining gap before public
   exposure, not the identity model itself.
-- **What's left**: account recovery (email verification + password reset) on
-  `/api/auth/*` (see
+- **What's left**: password-reset flow on `/api/auth/*` and a real email
+  provider behind the `EmailService` interface (see
   [Remaining blockers before public production](private-demo-deploy.md) in
   the deploy runbook), then removing the `x-user-email`/`x-user-name`
   CORS-allowed headers and `DevAuthGuard` entirely once no deployment still
   relies on dev mode.
+- **Phase 6F (email verification)**: new users register as unverified
+  (`User.emailVerified: false`); `AuthService.register` mints a single-use,
+  24-hour, SHA-256-hashed token (`User.emailVerificationTokenHash`/
+  `emailVerificationExpiresAt` — only the hash is ever persisted) and hands
+  the raw token to a new `EmailService` abstraction
+  (`apps/api/src/email/email.service.ts`), mirroring the `PdfStorage`/
+  `ImageAssetStorage` boundary pattern. The only implementation today,
+  `ConsoleEmailService`, logs the verification link instead of sending real
+  email — no third-party provider is wired up yet. `POST
+  /api/auth/verify-email` hashes the submitted token, verifies the user, and
+  clears the hash/expiry (so a token cannot be replayed after success);
+  `POST /api/auth/resend-verification` issues a fresh token and invalidates
+  the old one, always responding the same way regardless of whether the
+  email exists, is already verified, or is deactivated (no account-existence
+  leak). Both new endpoints are behind the existing `AuthRateLimitGuard`.
+  `AuthService.login` now rejects an unverified account with `401
+  { "error": "Email is not verified", "code": "EMAIL_NOT_VERIFIED" }` —
+  **registration itself is unaffected** and still auto-signs the new user in,
+  matching the existing "no separate login step" UX; only a *subsequent*
+  login attempt (e.g. after logging out) is gated on verification. See
+  [`docs/auth-architecture.md` §14](auth-architecture.md#14-phase-6f--email-verification).
 - **Phase 6E (auth rate limiting)**: added `AuthRateLimitGuard`
   (`apps/api/src/auth/auth-rate-limit.guard.ts`), applied via `@UseGuards` to
   `POST /api/auth/{register,login,refresh,logout}` (not `GET /api/auth/me`,
@@ -598,9 +620,10 @@ that undoes the change, not running the old one backwards.
 1. Add the migration-deploy step to whatever deploy pipeline is chosen (CI
    job, release script, or platform release-phase hook), since the container
    itself intentionally doesn't run it.
-2. Account recovery (email verification + password reset) on `/api/auth/*`
-   (see [Auth limitation note](#auth-limitation)) — real auth (Phase 6B/6C)
-   and rate limiting (Phase 6E) are both done end-to-end; this is what's left
+2. Password-reset flow on `/api/auth/*` and a real transactional email
+   provider behind `EmailService` (see [Auth limitation note](#auth-limitation))
+   — real auth (Phase 6B/6C), rate limiting (Phase 6E), and email
+   verification (Phase 6F) are all done end-to-end; this is what's left
    before any public deploy.
 
 ## Private demo runbook

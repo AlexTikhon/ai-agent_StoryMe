@@ -1,9 +1,11 @@
 # StoryMe Auth Architecture — Phase 6A Plan
 
 Status: **Phase 6B (backend), Phase 6C (frontend), Phase 6D (JWT-mode
-end-to-end verification), and Phase 6E (auth rate limiting) are all done.**
-See [§12 Phase 6D — JWT mode verification](#12-phase-6d--jwt-mode-verification)
-and [§13 Phase 6E — auth rate limiting](#13-phase-6e--auth-rate-limiting) at
+end-to-end verification), Phase 6E (auth rate limiting), and Phase 6F
+(email verification) are all done.**
+See [§12 Phase 6D — JWT mode verification](#12-phase-6d--jwt-mode-verification),
+[§13 Phase 6E — auth rate limiting](#13-phase-6e--auth-rate-limiting), and
+[§14 Phase 6F — email verification](#14-phase-6f--email-verification) at
 the bottom of this document for what changed in each pass.
 Everything under §4–§8 below describing the backend (`AuthService`,
 `TokenService`, `JwtAuthGuard`, `AuthModeGuard`, the five `/api/auth/*`
@@ -819,3 +821,220 @@ and remain unaffected.
 `pnpm --filter @book/api lint` — all run for this phase. No web changes were
 needed (rate limiting is backend-only and the frontend doesn't special-case
 error codes today), so web gates were not re-run.
+
+## 14. Phase 6F — email verification
+
+Goal: require new users to prove ownership of their registered email address
+before they can log back in, without adding a real third-party email
+provider or implementing password reset (both explicitly out of scope for
+this pass — password reset remains the one open account-recovery gap, see
+§12.5/§13 and `docs/deployment-readiness.md`).
+
+### 14.1 Schema
+
+Three new nullable columns on `User` (migration
+`20260703000000_phase6f_email_verification`), alongside the existing
+`emailVerified Boolean @default(false)`:
+
+- `emailVerifiedAt DateTime?` — set once, on successful verification.
+- `emailVerificationTokenHash String? @unique` — SHA-256 hash of the current
+  pending verification token; `null` when there is no pending token (never
+  issued, or already consumed). **Only the hash is ever persisted** — the
+  raw token exists only in memory for the duration of the request that
+  generates it, and in the outbound email/log line.
+- `emailVerificationExpiresAt DateTime?` — 24 hours from issuance
+  (`EMAIL_VERIFICATION_TOKEN_TTL_MS` in `token.service.ts`, not
+  env-configurable — same pattern as the existing 15-minute access-token and
+  7-day refresh-token TTL constants).
+
+### 14.2 Token generation and hashing (`TokenService`)
+
+`generateEmailVerificationToken()` returns `{ raw, hash, expiresAt }`: `raw`
+is 32 random bytes (hex), `hash` is **plain SHA-256** of `raw` — no HMAC
+secret, unlike `hashRefreshToken`. This is deliberate and matches the
+existing reasoning for refresh-token hashing (`token.service.ts`'s own
+comment): the input being hashed is already a high-entropy random value, not
+a human password or anything guessable, so a secret-keyed HMAC adds no
+resistance to reversal that the token's own entropy doesn't already provide.
+Using a distinct hash function (SHA-256 vs. HMAC-SHA256) rather than reusing
+`hashRefreshToken` also means an email-verification token hash and a
+refresh-token hash are never comparable to each other, keeping the two
+token spaces cryptographically separate even though both currently happen to
+use SHA-256 as the underlying primitive.
+
+### 14.3 `EmailService` abstraction (`apps/api/src/email/`)
+
+A storage-boundary-style interface, deliberately mirroring `PdfStorage`/
+`ImageAssetStorage`: `AuthService` depends only on `EmailService`
+(`sendVerificationEmail(payload)`), injected via `EMAIL_SERVICE_TOKEN`, so a
+real provider (Resend, SES, Postmark, etc.) is a drop-in swap later with no
+`AuthService` changes. The only implementation today, `ConsoleEmailService`
+(`console-email.service.ts`), logs the verification link via `Logger`
+instead of calling any real transport, and keeps the most recently "sent"
+payload per recipient in an in-memory `Map` — a `getLastVerificationEmail(to)`
+inspection hook that exists purely for tests/local dev, not part of the
+`EmailService` contract itself. **No real email is sent anywhere in this
+codebase yet** — this is the explicit scope boundary called out in the
+phase's own requirements (no third-party provider unless one already
+existed; none did).
+
+### 14.4 Registration (`AuthService.register`)
+
+Unchanged in shape, extended in content: still creates the `User` row and
+still auto-signs the caller in immediately (issues the same access
+token + refresh cookie as before) — this preserves the existing "register →
+land straight in `/dashboard`, no separate login step" UX
+(`docs/auth-architecture.md` §12.4's manual checklist, and the existing
+`register.test.tsx`/`RegisterPage` behavior) rather than introducing a new
+blocking step at signup. What's new: the created user starts
+`emailVerified: false`, `UsersService.create` is called with a freshly
+generated token hash + expiry, and `EmailService.sendVerificationEmail` is
+called with the raw token and a `${WEB_APP_URL}/verify-email?token=...`
+link before the token pair is issued.
+
+### 14.5 Login policy (`AuthService.login`)
+
+**Blocks login until verified** — the option this phase's own requirements
+called out as preferred, and the one that doesn't conflict with the existing
+auto-login-on-register UX (registration bypasses `login()` entirely, so it's
+unaffected by this gate). The check runs *after* the existing
+credential/deactivation check, in the same generic-message style: wrong
+password and unknown email both still throw the identical "Invalid email or
+password" message (no enumeration signal), and only once credentials are
+confirmed valid does an unverified account get a *distinct* rejection:
+
+```json
+{ "error": "Email is not verified", "code": "EMAIL_NOT_VERIFIED" }
+```
+
+`refresh()`/`logout()`/`JwtAuthGuard` are untouched — a session already
+established via register (or a prior verified login) keeps working normally
+even if the account is later found unverified again (which can't currently
+happen — there's no code path that un-verifies an account). The gate only
+ever fires on a fresh `POST /api/auth/login` call.
+
+### 14.6 Verification endpoint — `POST /api/auth/verify-email`
+
+Body `{ token: string }`. Hashes the submitted raw token and looks it up by
+`emailVerificationTokenHash` (the column is `@unique`, so at most one user
+can ever match a given hash). On a match with a non-expired
+`emailVerificationExpiresAt`: sets `emailVerified: true`,
+`emailVerifiedAt: now()`, and **clears both `emailVerificationTokenHash` and
+`emailVerificationExpiresAt`** in the same update — this is what makes the
+token single-use: a replay of the same raw token afterward hashes to a value
+no row matches anymore, so it 400s exactly like a token that was never
+valid. Unknown/expired tokens get the same generic `400 Bad Request`
+("Invalid or expired verification token") — no signal distinguishing
+"doesn't exist" from "expired" from "already used." Guarded by the existing
+`AuthRateLimitGuard`.
+
+### 14.7 Resend endpoint — `POST /api/auth/resend-verification`
+
+Body `{ email: string }`. Always resolves the same way (`204`, no body)
+regardless of whether the email exists, belongs to an already-verified
+account, or belongs to a deactivated account — `AuthService.resendVerificationEmail`
+returns early (no-op) in all three of those cases, with **no way for a
+caller to distinguish them from the success path**, matching this codebase's
+existing no-enumeration policy for `login`/register-duplicate-email
+handling. For a genuine unverified account, it generates a *new* token via
+`TokenService.generateEmailVerificationToken()` and overwrites the stored
+hash/expiry — the old raw token (if the user still has the original email)
+stops working immediately, since its hash no longer matches any stored row.
+Also guarded by `AuthRateLimitGuard`.
+
+### 14.8 Frontend changes (minimal, per phase scope)
+
+- `apps/web/src/lib/api/api-error.ts`: `ApiError` gained an optional `code`
+  field, and a new `parseApiError()` (returning `{ message, code? }`)
+  sits behind the existing `parseErrorMessage()` so every existing call site
+  keeps working unchanged while `client.ts`/`auth.ts` now thread `code`
+  through to the thrown `ApiError`.
+- `apps/web/src/lib/api/auth.ts`: two new methods, `verifyEmail(token)` and
+  `resendVerification(email)`, calling the two new endpoints.
+- `apps/web/src/app/verify-email/page.tsx` (new): reads `?token=` from the
+  URL, calls `verifyEmail`, and renders one of three states — verifying /
+  verified (link to `/login`) / failed (generic error + link back to
+  `/login`). No new routing logic beyond this single page.
+- `apps/web/src/app/login/page.tsx`: catches `ApiError` with
+  `code === 'EMAIL_NOT_VERIFIED'` specifically, shows "Please verify your
+  email before signing in," and offers a **Resend verification email**
+  button wired to `resendVerification`. Any other error keeps the previous
+  generic-message behavior unchanged.
+- `apps/web/src/app/dashboard/layout.tsx`: a small dismissless banner
+  (`role="status"`), shown only when `authMode === 'jwt'` and the signed-in
+  user's `emailVerified` is `false`, with the same resend action. This is
+  the "check your email" state for users who are already past registration
+  (register itself still lands them in the dashboard immediately, verified
+  or not) — deliberately not a full email-management UI.
+- `packages/types/src/user.types.ts` / `apps/api/src/users/users.mapper.ts`:
+  `UserDto` gained `emailVerified: boolean` so the frontend can read it —
+  the only reason the login/register pages and dashboard banner can react to
+  verification state at all.
+
+### 14.9 Configuration
+
+`WEB_APP_URL` (new, optional, defaults to `http://localhost:3000`) —
+the only new env var this phase adds. Used solely to build the
+`${WEB_APP_URL}/verify-email?token=...` link sent to `EmailService`; nothing
+else reads it. No new secret is needed (the token is hashed with plain
+SHA-256, not an HMAC secret — see §14.2), so `JWT_REFRESH_SECRET` gains no
+new responsibility from this phase.
+
+### 14.10 Tests
+
+- `apps/api/src/auth/token.service.spec.ts` — new token/hash determinism,
+  24-hour expiry, and confirms the hash does **not** depend on
+  `JWT_REFRESH_SECRET` (plain SHA-256, not HMAC — distinguishing it from
+  `hashRefreshToken`'s tests in the same file).
+- `apps/api/src/email/console-email.service.spec.ts` — records instead of
+  sending, per-recipient inspection hook, keeps only the most recent send.
+- `apps/api/src/auth/auth.service.spec.ts` — registered users start
+  unverified with only the hash persisted (asserts the raw token string
+  never appears anywhere in the `usersService.create` call argument);
+  verification email sent with the raw token; registration still auto-signs
+  in even though unverified; login rejects an unverified account with the
+  `EMAIL_NOT_VERIFIED` code (and confirms no refresh token row is created);
+  `verifyEmail` accepts a valid token, rejects unknown/expired tokens, and
+  rejects replay of an already-consumed token; `resendVerificationEmail`
+  issues a fresh token for a genuine unverified account and is a silent
+  no-op for an unknown/verified/deactivated email (three separate tests, one
+  per leak vector).
+- `apps/api/src/auth/auth.controller.spec.ts` — `verifyEmail`/
+  `resendVerification` delegate to `AuthService` with the right arguments,
+  and `AuthRateLimitGuard` wiring now covers both new routes (the existing
+  `it.each` guard-wiring test was extended, not duplicated).
+- `apps/api/src/users/users.service.spec.ts` — `create()` passes the
+  optional verification hash/expiry straight through when present.
+- Web: `apps/web/src/lib/api/auth.test.ts` (`verifyEmail`/
+  `resendVerification` request shape, `EMAIL_NOT_VERIFIED` code surfaced as
+  `ApiError.code`), `apps/web/src/app/verify-email/page.test.tsx` (all three
+  render states), `apps/web/src/app/login/page.test.tsx` (unverified-login
+  message + resend flow), `apps/web/src/app/dashboard/layout.test.tsx`
+  (banner shown for an unverified user, absent for a verified one).
+- All pre-existing auth tests remain green; the only fixture change needed
+  was bumping the shared `makeUser()`/`MOCK_USER` test helpers' default
+  `emailVerified` to `true` (so tests asserting "valid credentials succeed"
+  keep testing that, rather than incidentally tripping the new gate) and
+  adding the three new nullable Prisma-generated fields to those same
+  object literals so `tsc` still accepts them as a full `User` shape.
+
+### 14.11 Quality gates
+
+`pnpm --filter @book/types build` (regenerates the compiled `UserDto` type
+new the `emailVerified` field depends on), `pnpm --filter @book/api
+prisma:generate`, `pnpm --filter @book/api test`, `pnpm --filter @book/api
+typecheck`, `pnpm --filter @book/api lint`, `pnpm --filter @book/web test`,
+`pnpm --filter @book/web typecheck`, `pnpm --filter @book/web build`,
+`pnpm --filter @book/web lint` — all run and green for this phase (524 API
+tests, 197 web tests).
+
+### 14.12 Remaining blockers before public production
+
+- **Password-reset flow** — still not implemented, explicitly out of scope
+  for this phase per its own requirements. The natural next phase.
+- **No real transactional email provider** — `ConsoleEmailService` is a
+  dev/local-only adapter; a production deploy needs a real `EmailService`
+  implementation (Resend/SES/Postmark/etc.) wired in behind
+  `EMAIL_SERVICE_TOKEN` before verification emails reach real inboxes.
+- **No OAuth** — unchanged from earlier phases, still a documented future
+  follow-up.

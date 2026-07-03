@@ -99,4 +99,34 @@ describe('TokenService', () => {
       expect(service.hashRefreshToken(raw)).not.toBe(other.hashRefreshToken(raw));
     });
   });
+
+  describe('email verification tokens', () => {
+    it('generates a random raw value and a deterministic hash', () => {
+      const a = service.generateEmailVerificationToken();
+      const b = service.generateEmailVerificationToken();
+
+      expect(a.raw).not.toBe(b.raw);
+      expect(a.hash).toBe(service.hashEmailVerificationToken(a.raw));
+      expect(a.hash).not.toBe(a.raw);
+    });
+
+    it('sets a 24 hour expiry', () => {
+      const before = Date.now();
+      const token = service.generateEmailVerificationToken();
+      const hours = (token.expiresAt.getTime() - before) / (60 * 60 * 1000);
+
+      expect(hours).toBeGreaterThan(23.9);
+      expect(hours).toBeLessThanOrEqual(24);
+    });
+
+    it('hash does not depend on JWT_REFRESH_SECRET (plain SHA-256, not HMAC)', () => {
+      const other = new TokenService(
+        new JwtService(),
+        createConfig({ JWT_REFRESH_SECRET: 'a-totally-different-refresh-secret-32!!' }),
+      );
+      const raw = service.generateEmailVerificationToken().raw;
+
+      expect(service.hashEmailVerificationToken(raw)).toBe(other.hashEmailVerificationToken(raw));
+    });
+  });
 });

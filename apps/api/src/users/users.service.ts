@@ -37,12 +37,20 @@ export class UsersService {
     email: string;
     passwordHash: string;
     name?: string | undefined;
+    emailVerificationTokenHash?: string | undefined;
+    emailVerificationExpiresAt?: Date | undefined;
   }): Promise<User> {
     return this.prisma.user.create({
       data: {
         email: data.email,
         passwordHash: data.passwordHash,
         name: data.name ?? null,
+        ...(data.emailVerificationTokenHash
+          ? { emailVerificationTokenHash: data.emailVerificationTokenHash }
+          : {}),
+        ...(data.emailVerificationExpiresAt
+          ? { emailVerificationExpiresAt: data.emailVerificationExpiresAt }
+          : {}),
       },
     });
   }

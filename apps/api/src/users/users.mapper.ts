@@ -7,6 +7,7 @@ export function toUserDto(user: User): UserDto {
     email: user.email,
     name: user.name,
     role: user.role as unknown as UserRole,
+    emailVerified: user.emailVerified,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
   };

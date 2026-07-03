@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { useRouter, useSearchParams } from 'next/navigation';
 import LoginPage from './page';
 import { useAuth } from '@/lib/auth/auth-context';
+import { ApiError } from '@/lib/api/api-error';
+import { authApi } from '@/lib/api/auth';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(),
@@ -21,6 +23,10 @@ vi.mock('next/link', () => ({
 
 vi.mock('@/lib/auth/auth-context', () => ({
   useAuth: vi.fn(),
+}));
+
+vi.mock('@/lib/api/auth', () => ({
+  authApi: { resendVerification: vi.fn() },
 }));
 
 describe('LoginPage', () => {
@@ -100,6 +106,31 @@ describe('LoginPage', () => {
       expect(screen.getByRole('alert').textContent).toContain('Invalid email or password');
     });
     expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a verify-your-email message and a resend action on EMAIL_NOT_VERIFIED', async () => {
+    loginMock.mockRejectedValueOnce(
+      new ApiError(401, 'Email is not verified', 'EMAIL_NOT_VERIFIED'),
+    );
+    vi.mocked(authApi.resendVerification).mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    render(<LoginPage />);
+
+    await user.type(screen.getByLabelText(/email/i), 'emma@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'Passw0rd!');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('verify your email');
+    });
+    expect(pushMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: /resend verification email/i }));
+
+    await waitFor(() => {
+      expect(authApi.resendVerification).toHaveBeenCalledWith('emma@example.com');
+      expect(screen.getByText(/verification email sent/i)).toBeDefined();
+    });
   });
 
   it('links to the register page', () => {

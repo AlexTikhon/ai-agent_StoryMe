@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as bcrypt from 'bcryptjs';
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, UnauthorizedException } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
 import type { User } from '@prisma/client';
+import type { Env } from '../config/env.schema';
+import type { EmailService } from '../email/email.service';
 import { AuthService } from './auth.service';
 import type { UsersService } from '../users/users.service';
 import type { TokenService } from './token.service';
@@ -25,7 +28,13 @@ function makeUser(overrides: Partial<User> = {}): User {
     credits: 3,
     creditsUpdatedAt: null,
     role: 'user' as User['role'],
-    emailVerified: false,
+    // Verified by default so existing login/refresh/logout tests, which
+    // predate email verification, keep testing "valid session" behavior
+    // rather than incidentally tripping the new EMAIL_NOT_VERIFIED gate.
+    emailVerified: true,
+    emailVerifiedAt: new Date('2026-01-01'),
+    emailVerificationTokenHash: null,
+    emailVerificationExpiresAt: null,
     deactivatedAt: null,
     notifyEmailOnCompletion: true,
     notifyEmailMarketing: false,
@@ -41,6 +50,8 @@ describe('AuthService', () => {
   let prisma: MockPrisma;
   let usersService: UsersService;
   let tokenService: TokenService;
+  let emailService: EmailService;
+  let config: ConfigService<Env, true>;
   let service: AuthService;
 
   beforeEach(() => {
@@ -59,8 +70,20 @@ describe('AuthService', () => {
         expiresAt: new Date('2026-01-08'),
       }),
       hashRefreshToken: vi.fn().mockReturnValue('hashed-refresh'),
+      generateEmailVerificationToken: vi.fn().mockReturnValue({
+        raw: 'raw-verification-token',
+        hash: 'hashed-verification-token',
+        expiresAt: new Date('2026-01-02'),
+      }),
+      hashEmailVerificationToken: vi.fn().mockReturnValue('hashed-verification-token'),
     } as unknown as TokenService;
-    service = new AuthService(prisma as never, usersService, tokenService);
+    emailService = {
+      sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
+    } as unknown as EmailService;
+    config = {
+      get: vi.fn().mockReturnValue('http://localhost:3000'),
+    } as unknown as ConfigService<Env, true>;
+    service = new AuthService(prisma as never, usersService, tokenService, emailService, config);
   });
 
   describe('register', () => {
@@ -103,6 +126,47 @@ describe('AuthService', () => {
           expiresAt: new Date('2026-01-08'),
         },
       });
+    });
+
+    it('creates the user as unverified with only the token hash persisted, never the raw token', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(null);
+      (usersService.create as Mock).mockResolvedValue(makeUser({ emailVerified: false }));
+      prisma.refreshToken.create.mockResolvedValue({});
+
+      await service.register('alice@example.com', 'Password1');
+
+      const createArg = (usersService.create as Mock).mock.calls[0][0];
+      expect(createArg.emailVerificationTokenHash).toBe('hashed-verification-token');
+      expect(createArg.emailVerificationExpiresAt).toEqual(new Date('2026-01-02'));
+      expect(createArg).not.toHaveProperty('rawToken');
+      expect(JSON.stringify(createArg)).not.toContain('raw-verification-token');
+    });
+
+    it('sends the verification email with the raw token via EmailService', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(null);
+      (usersService.create as Mock).mockResolvedValue(
+        makeUser({ email: 'alice@example.com', name: 'Alice', emailVerified: false }),
+      );
+      prisma.refreshToken.create.mockResolvedValue({});
+
+      await service.register('alice@example.com', 'Password1', 'Alice');
+
+      expect(emailService.sendVerificationEmail).toHaveBeenCalledWith({
+        to: 'alice@example.com',
+        name: 'Alice',
+        token: 'raw-verification-token',
+        verificationUrl: 'http://localhost:3000/verify-email?token=raw-verification-token',
+      });
+    });
+
+    it('still auto-signs the user in on success even though the account starts unverified', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(null);
+      (usersService.create as Mock).mockResolvedValue(makeUser({ emailVerified: false }));
+      prisma.refreshToken.create.mockResolvedValue({});
+
+      const result = await service.register('alice@example.com', 'Password1');
+
+      expect(result.accessToken).toBe('access-token');
     });
   });
 
@@ -163,6 +227,29 @@ describe('AuthService', () => {
       }
 
       expect(deactivatedMessage).toBe('Invalid email or password');
+    });
+
+    it('rejects login for an unverified account with the EMAIL_NOT_VERIFIED code', async () => {
+      const passwordHash = await bcrypt.hash('Password1', 4);
+      (usersService.findByEmail as Mock).mockResolvedValue(
+        makeUser({ passwordHash, emailVerified: false }),
+      );
+
+      let caught: unknown;
+      try {
+        await service.login('alice@example.com', 'Password1');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(UnauthorizedException);
+      const response = (caught as UnauthorizedException).getResponse() as {
+        error: string;
+        code: string;
+      };
+      expect(response.code).toBe('EMAIL_NOT_VERIFIED');
+      expect(response.error).toBe('Email is not verified');
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
   });
 
@@ -268,6 +355,131 @@ describe('AuthService', () => {
       await service.logout(undefined);
 
       expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('verifyEmail', () => {
+    it('verifies the user and clears the token hash/expiry for a valid token', async () => {
+      const pending = makeUser({
+        emailVerified: false,
+        emailVerificationTokenHash: 'hashed-verification-token',
+        emailVerificationExpiresAt: new Date(Date.now() + 100_000),
+      });
+      prisma.user.findFirst.mockResolvedValue(pending);
+      prisma.user.update.mockResolvedValue({ ...pending, emailVerified: true });
+
+      await service.verifyEmail('raw-verification-token');
+
+      expect(tokenService.hashEmailVerificationToken).toHaveBeenCalledWith(
+        'raw-verification-token',
+      );
+      expect(prisma.user.findFirst).toHaveBeenCalledWith({
+        where: { emailVerificationTokenHash: 'hashed-verification-token' },
+      });
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: pending.id },
+        data: {
+          emailVerified: true,
+          emailVerifiedAt: expect.any(Date),
+          emailVerificationTokenHash: null,
+          emailVerificationExpiresAt: null,
+        },
+      });
+    });
+
+    it('rejects an unknown token', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(service.verifyEmail('bogus-token')).rejects.toThrow(BadRequestException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired token', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        makeUser({
+          emailVerified: false,
+          emailVerificationTokenHash: 'hashed-verification-token',
+          emailVerificationExpiresAt: new Date(Date.now() - 1000),
+        }),
+      );
+
+      await expect(service.verifyEmail('raw-verification-token')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('cannot be reused after a successful verification (hash already cleared)', async () => {
+      // First call succeeds and clears the hash server-side; the second call
+      // with the same raw token now finds no matching row.
+      prisma.user.findFirst.mockResolvedValueOnce(
+        makeUser({
+          emailVerified: false,
+          emailVerificationTokenHash: 'hashed-verification-token',
+          emailVerificationExpiresAt: new Date(Date.now() + 100_000),
+        }),
+      );
+      prisma.user.update.mockResolvedValue({});
+      await service.verifyEmail('raw-verification-token');
+
+      prisma.user.findFirst.mockResolvedValueOnce(null);
+      await expect(service.verifyEmail('raw-verification-token')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('resendVerificationEmail', () => {
+    it('issues a fresh token and invalidates the old one for an unverified account', async () => {
+      const user = makeUser({
+        emailVerified: false,
+        emailVerificationTokenHash: 'old-hash',
+        emailVerificationExpiresAt: new Date('2026-01-01'),
+      });
+      (usersService.findByEmail as Mock).mockResolvedValue(user);
+      prisma.user.update.mockResolvedValue({});
+
+      await service.resendVerificationEmail('alice@example.com');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: user.id },
+        data: {
+          emailVerificationTokenHash: 'hashed-verification-token',
+          emailVerificationExpiresAt: new Date('2026-01-02'),
+        },
+      });
+      expect(emailService.sendVerificationEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ to: 'alice@example.com', token: 'raw-verification-token' }),
+      );
+    });
+
+    it('does not leak that the email is unknown', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(null);
+
+      await service.resendVerificationEmail('nobody@example.com');
+
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(emailService.sendVerificationEmail).not.toHaveBeenCalled();
+    });
+
+    it('does not leak that the account is already verified', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(makeUser({ emailVerified: true }));
+
+      await service.resendVerificationEmail('alice@example.com');
+
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(emailService.sendVerificationEmail).not.toHaveBeenCalled();
+    });
+
+    it('does not leak that the account is deactivated', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(
+        makeUser({ emailVerified: false, deactivatedAt: new Date('2026-01-01') }),
+      );
+
+      await service.resendVerificationEmail('alice@example.com');
+
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(emailService.sendVerificationEmail).not.toHaveBeenCalled();
     });
   });
 });

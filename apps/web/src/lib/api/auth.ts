@@ -1,5 +1,5 @@
 import type { UserDto } from '@book/types';
-import { ApiError, parseErrorMessage } from './api-error';
+import { ApiError, parseApiError } from './api-error';
 
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000/api';
 
@@ -18,10 +18,15 @@ async function authPost(path: string, body?: unknown): Promise<Response> {
   });
 }
 
+async function throwApiError(res: Response): Promise<never> {
+  const { message, code } = await parseApiError(res);
+  throw new ApiError(res.status, message, code);
+}
+
 async function authResponse(path: string, body?: unknown): Promise<AuthResponse> {
   const res = await authPost(path, body);
   if (!res.ok) {
-    throw new ApiError(res.status, await parseErrorMessage(res));
+    await throwApiError(res);
   }
   return res.json() as Promise<AuthResponse>;
 }
@@ -39,7 +44,22 @@ export const authApi = {
   logout: async (): Promise<void> => {
     const res = await authPost('/auth/logout');
     if (!res.ok && res.status !== 204) {
-      throw new ApiError(res.status, await parseErrorMessage(res));
+      await throwApiError(res);
+    }
+  },
+
+  verifyEmail: async (token: string): Promise<void> => {
+    const res = await authPost('/auth/verify-email', { token });
+    if (!res.ok) {
+      await throwApiError(res);
+    }
+  },
+
+  /** Never throws on "unknown email" — the API intentionally responds the same way regardless. */
+  resendVerification: async (email: string): Promise<void> => {
+    const res = await authPost('/auth/resend-verification', { email });
+    if (!res.ok && res.status !== 204) {
+      await throwApiError(res);
     }
   },
 };

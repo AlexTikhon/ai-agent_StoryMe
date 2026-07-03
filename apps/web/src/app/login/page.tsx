@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { Suspense, useEffect, useState, type FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
+import { ApiError } from '@/lib/api/api-error';
+import { authApi } from '@/lib/api/auth';
 
 const inputCls =
   'rounded-lg border border-border-default bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600';
@@ -29,6 +31,8 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+  const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
 
   useEffect(() => {
     // router/searchParams are intentionally excluded: only auth state
@@ -42,12 +46,29 @@ function LoginForm() {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
+    setUnverifiedEmail(null);
+    setResendStatus('idle');
     try {
       await login(email, password);
       router.push(safeNextPath(searchParams.get('next')));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to sign in');
+      if (err instanceof ApiError && err.code === 'EMAIL_NOT_VERIFIED') {
+        setError('Please verify your email before signing in.');
+        setUnverifiedEmail(email);
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to sign in');
+      }
       setSubmitting(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (!unverifiedEmail) return;
+    setResendStatus('sending');
+    try {
+      await authApi.resendVerification(unverifiedEmail);
+    } finally {
+      setResendStatus('sent');
     }
   };
 
@@ -64,6 +85,21 @@ function LoginForm() {
             >
               {error}
             </p>
+          )}
+
+          {unverifiedEmail && (
+            <button
+              type="button"
+              onClick={() => void handleResend()}
+              disabled={resendStatus === 'sending' || resendStatus === 'sent'}
+              className="-mt-2 self-start text-sm font-medium text-violet-600 hover:text-violet-500 disabled:opacity-60"
+            >
+              {resendStatus === 'sent'
+                ? 'Verification email sent — check your inbox.'
+                : resendStatus === 'sending'
+                  ? 'Sending…'
+                  : 'Resend verification email'}
+            </button>
           )}
 
           <label className="flex flex-col gap-1.5">

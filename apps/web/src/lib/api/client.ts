@@ -1,6 +1,6 @@
 import { getAuthMode } from '../auth/mode';
 import { getAccessToken, setAccessToken } from '../auth/token-store';
-import { ApiError, parseErrorMessage } from './api-error';
+import { ApiError, parseApiError } from './api-error';
 import { authApi } from './auth';
 
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000/api';
@@ -87,7 +87,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit, isRetry = fa
   if (res.status === 204) return undefined as T;
 
   if (!res.ok) {
-    throw new ApiError(res.status, await parseErrorMessage(res));
+    const { message, code } = await parseApiError(res);
+    throw new ApiError(res.status, message, code);
   }
 
   return res.json() as Promise<T>;
@@ -109,7 +110,8 @@ export async function apiFetchBlob(
   }
 
   if (!res.ok) {
-    throw new ApiError(res.status, await parseErrorMessage(res));
+    const { message, code } = await parseApiError(res);
+    throw new ApiError(res.status, message, code);
   }
 
   return res.blob();

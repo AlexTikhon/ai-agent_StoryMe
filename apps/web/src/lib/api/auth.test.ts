@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { authApi } from './auth';
+import { ApiError } from './api-error';
 import { UserRole } from '@book/types';
 import type { UserDto } from '@book/types';
 
@@ -8,6 +9,7 @@ const MOCK_USER: UserDto = {
   email: 'emma@example.com',
   name: 'Emma',
   role: UserRole.User,
+  emailVerified: true,
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
 };
@@ -16,8 +18,12 @@ function mockOk(body: unknown, status = 200): Response {
   return { ok: true, status, json: async () => body } as unknown as Response;
 }
 
-function mockError(status: number, message: string): Response {
-  return { ok: false, status, json: async () => ({ message }) } as unknown as Response;
+function mockError(status: number, message: string, code?: string): Response {
+  return {
+    ok: false,
+    status,
+    json: async () => ({ message, ...(code ? { code } : {}) }),
+  } as unknown as Response;
 }
 
 describe('authApi', () => {
@@ -91,6 +97,53 @@ describe('authApi', () => {
       await expect(authApi.login('emma@example.com', 'wrong')).rejects.toThrow(
         'Invalid email or password',
       );
+    });
+
+    it('surfaces the EMAIL_NOT_VERIFIED code on an unverified account', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        mockError(401, 'Email is not verified', 'EMAIL_NOT_VERIFIED'),
+      );
+
+      const error = await authApi
+        .login('emma@example.com', 'Passw0rd!')
+        .catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).code).toBe('EMAIL_NOT_VERIFIED');
+    });
+  });
+
+  describe('verifyEmail()', () => {
+    it('sends POST /auth/verify-email with the token', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk({ verified: true }));
+
+      await authApi.verifyEmail('raw-token');
+
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/auth/verify-email');
+      expect(JSON.parse(init.body as string)).toEqual({ token: 'raw-token' });
+    });
+
+    it('throws with the EMAIL_VERIFICATION error code on invalid/expired token', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        mockError(400, 'Invalid or expired verification token'),
+      );
+
+      await expect(authApi.verifyEmail('bogus')).rejects.toThrow(
+        'Invalid or expired verification token',
+      );
+    });
+  });
+
+  describe('resendVerification()', () => {
+    it('sends POST /auth/resend-verification with the email and resolves on 204', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+
+      await expect(authApi.resendVerification('emma@example.com')).resolves.toBeUndefined();
+
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/auth/resend-verification');
+      expect(JSON.parse(init.body as string)).toEqual({ email: 'emma@example.com' });
     });
   });
 

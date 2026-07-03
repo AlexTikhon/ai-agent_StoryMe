@@ -15,6 +15,7 @@ const USER = {
   email: 'alice@example.com',
   name: 'Alice',
   role: 'user',
+  emailVerified: true,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),
 } as unknown as User;
@@ -54,6 +55,7 @@ describe('AuthController', () => {
           email: 'alice@example.com',
           name: 'Alice',
           role: UserRole.User,
+          emailVerified: true,
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-01T00:00:00.000Z',
         },
@@ -144,15 +146,57 @@ describe('AuthController', () => {
     });
   });
 
+  describe('verifyEmail', () => {
+    it('hashes and verifies the token, returning { verified: true }', async () => {
+      const authService = {
+        verifyEmail: vi.fn().mockResolvedValue(undefined),
+      } as unknown as AuthService;
+      const controller = new AuthController(authService, createConfig());
+
+      const result = await controller.verifyEmail({ token: 'raw-token' });
+
+      expect(authService.verifyEmail).toHaveBeenCalledWith('raw-token');
+      expect(result).toEqual({ verified: true });
+    });
+
+    it('propagates rejection for an invalid/expired token', async () => {
+      const authService = {
+        verifyEmail: vi.fn().mockRejectedValue(new Error('Invalid or expired verification token')),
+      } as unknown as AuthService;
+      const controller = new AuthController(authService, createConfig());
+
+      await expect(controller.verifyEmail({ token: 'bogus' })).rejects.toThrow(
+        'Invalid or expired verification token',
+      );
+    });
+  });
+
+  describe('resendVerification', () => {
+    it('delegates to AuthService with the given email', async () => {
+      const authService = {
+        resendVerificationEmail: vi.fn().mockResolvedValue(undefined),
+      } as unknown as AuthService;
+      const controller = new AuthController(authService, createConfig());
+
+      await controller.resendVerification({ email: 'alice@example.com' });
+
+      expect(authService.resendVerificationEmail).toHaveBeenCalledWith('alice@example.com');
+    });
+  });
+
   describe('AuthRateLimitGuard wiring', () => {
-    it.each(['register', 'login', 'refresh', 'logout'] as const)(
-      'applies AuthRateLimitGuard to %s',
-      (method) => {
-        const guards: unknown[] =
-          Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype[method]) ?? [];
-        expect(guards).toContain(AuthRateLimitGuard);
-      },
-    );
+    it.each([
+      'register',
+      'login',
+      'refresh',
+      'logout',
+      'verifyEmail',
+      'resendVerification',
+    ] as const)('applies AuthRateLimitGuard to %s', (method) => {
+      const guards: unknown[] =
+        Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype[method]) ?? [];
+      expect(guards).toContain(AuthRateLimitGuard);
+    });
 
     it('does not apply AuthRateLimitGuard to getMe (not a brute-force target)', () => {
       const guards: unknown[] =

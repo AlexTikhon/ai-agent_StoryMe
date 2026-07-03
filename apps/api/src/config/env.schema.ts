@@ -11,6 +11,11 @@ export const envSchema = z
     PORT: z.coerce.number().int().positive().default(4000),
     ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
 
+    // Web app origin, used only to build links sent in transactional emails
+    // (e.g. the email verification link: `${WEB_APP_URL}/verify-email?token=...`).
+    // Defaults to the local web dev server.
+    WEB_APP_URL: z.string().url().default('http://localhost:3000'),
+
     // Database
     DATABASE_URL: z.string().url('DATABASE_URL must be a valid postgresql:// URL'),
 

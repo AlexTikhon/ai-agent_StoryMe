@@ -11,6 +11,8 @@ import { AuthService } from './auth.service';
 import { CurrentUser } from './current-user.decorator';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { buildRefreshCookieOptions, REFRESH_COOKIE_NAME } from './refresh-cookie';
 
 export interface AuthResponse {
@@ -72,6 +74,21 @@ export class AuthController {
   @Get('me')
   getMe(@CurrentUser() user: User): UserDto {
     return toUserDto(user);
+  }
+
+  @UseGuards(AuthRateLimitGuard)
+  @Post('verify-email')
+  @HttpCode(200)
+  async verifyEmail(@Body() dto: VerifyEmailDto): Promise<{ verified: true }> {
+    await this.authService.verifyEmail(dto.token);
+    return { verified: true };
+  }
+
+  @UseGuards(AuthRateLimitGuard)
+  @Post('resend-verification')
+  @HttpCode(204)
+  async resendVerification(@Body() dto: ResendVerificationDto): Promise<void> {
+    await this.authService.resendVerificationEmail(dto.email);
   }
 
   private setRefreshCookie(res: Response, rawRefreshToken: string): void {

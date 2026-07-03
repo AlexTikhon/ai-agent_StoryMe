@@ -85,6 +85,16 @@ unless you have a specific reason to want the old shared-identity shortcut:
   out** button in the dashboard header ends the session. Closing the tab and
   reopening it restores the session silently (refresh cookie), no need to log
   in again unless the 7-day refresh token has expired.
+  - **Email verification (Phase 6F)**: new accounts start unverified — a
+    banner in the dashboard header offers to resend the verification link.
+    Registration itself still signs you in immediately either way, but a
+    *later* `/login` attempt (e.g. after clicking **Log out**) is rejected
+    with `401 EMAIL_NOT_VERIFIED` until the account is verified. No real
+    email is sent locally — the API logs the verification link to its
+    console instead (`[ConsoleEmailService] Verification email for
+    <email>: http://localhost:3000/verify-email?token=...`); copy that URL
+    into the browser to verify. See
+    [docs/auth-architecture.md §14](auth-architecture.md#14-phase-6f--email-verification).
 - `dev` — no login screen, no accounts. Every API request is scoped to a
   single dev user identified by the `x-user-email` header, sent automatically
   by the web app (see `DevAuthGuard`). Set both `AUTH_MODE=dev` (API) and

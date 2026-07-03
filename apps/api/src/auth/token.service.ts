@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import type { Env } from '../config/env.schema';
 import { REFRESH_TOKEN_TTL_MS } from './refresh-cookie';
 import type { AccessTokenPayload } from './jwt-payload';
 
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
+export const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export interface GeneratedRefreshToken {
   /** Raw value — only ever sent to the client via the HttpOnly cookie. */
@@ -14,6 +15,14 @@ export interface GeneratedRefreshToken {
   /** HMAC(JWT_REFRESH_SECRET, raw) — the only form persisted to the DB. */
   hash: string;
   family: string;
+  expiresAt: Date;
+}
+
+export interface GeneratedEmailVerificationToken {
+  /** Raw value — only ever sent to the user via the verification link/email. */
+  raw: string;
+  /** SHA-256(raw) — the only form persisted to the DB. */
+  hash: string;
   expiresAt: Date;
 }
 
@@ -60,5 +69,23 @@ export class TokenService {
     return createHmac('sha256', this.config.get('JWT_REFRESH_SECRET', { infer: true }))
       .update(raw)
       .digest('hex');
+  }
+
+  /**
+   * Plain SHA-256, no secret — same reasoning as the refresh token hash: this
+   * hashes a high-entropy random value, not a human password, so no
+   * secret-keyed HMAC or slow KDF is needed for it to resist reversal.
+   */
+  generateEmailVerificationToken(): GeneratedEmailVerificationToken {
+    const raw = randomBytes(32).toString('hex');
+    return {
+      raw,
+      hash: this.hashEmailVerificationToken(raw),
+      expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TOKEN_TTL_MS),
+    };
+  }
+
+  hashEmailVerificationToken(raw: string): string {
+    return createHash('sha256').update(raw).digest('hex');
   }
 }

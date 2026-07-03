@@ -10,6 +10,7 @@ export interface UserDto {
   email: string;
   name: string | null;
   role: UserRole;
+  emailVerified: boolean;
   createdAt: string;
   updatedAt: string;
 }
