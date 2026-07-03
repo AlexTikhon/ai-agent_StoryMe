@@ -48,6 +48,16 @@ describe('CreateBookDto', () => {
     expect(errors.some((e) => e.property === 'childName')).toBe(true);
   });
 
+  it('rejects a whitespace-only title', async () => {
+    const { errors } = await validateDto({ ...validPayload(), title: '   ' });
+    expect(errors.some((e) => e.property === 'title')).toBe(true);
+  });
+
+  it('rejects a title longer than 120 characters', async () => {
+    const { errors } = await validateDto({ ...validPayload(), title: 'a'.repeat(121) });
+    expect(errors.some((e) => e.property === 'title')).toBe(true);
+  });
+
   it('rejects a whitespace-only theme', async () => {
     const { errors } = await validateDto({ ...validPayload(), theme: '   ' });
     expect(errors.some((e) => e.property === 'theme')).toBe(true);
@@ -88,6 +98,15 @@ describe('CreateBookDto', () => {
     });
     expect(errors).toHaveLength(0);
     expect(dto.educationalMessage).toBe('Kindness matters');
+  });
+
+  it('accepts a full payload with both pageCount and educationalMessage', async () => {
+    const { errors } = await validateDto({
+      ...validPayload(),
+      pageCount: 10,
+      educationalMessage: 'Kindness matters',
+    });
+    expect(errors).toHaveLength(0);
   });
 
   it('accepts pageCount within [4, 12]', async () => {
