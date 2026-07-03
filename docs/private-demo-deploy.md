@@ -153,6 +153,58 @@ Vars not covered above (`STRIPE_*`, `GOOGLE_*`, `ANTHROPIC_API_KEY`,
 not built yet — see `.env.example` for the full annotated list. They can be
 left unset.
 
+### 3.1 Tiered checklist {#env-tiers}
+
+The matrix above is the authoritative per-var reference; this is the same
+information regrouped as three literal checklists so a deploy operator can
+tell at a glance which tier a given var falls in.
+
+**Required for this private demo:**
+
+- [ ] `DATABASE_URL` — managed Postgres.
+- [ ] `REDIS_URL` — required to boot and pass `/api/health`, see
+      [Is Redis required?](#is-redis-required).
+- [ ] `JWT_SECRET` / `JWT_REFRESH_SECRET` — 32+ char random hex each.
+- [ ] `AUTH_MODE=jwt` (API) / `NEXT_PUBLIC_AUTH_MODE=jwt` (web) — must match.
+- [ ] `ALLOWED_ORIGINS` — the web app's exact deployed origin.
+- [ ] `WEB_APP_URL` — used to build links in verification/reset email; set to
+      the deployed web origin so those links point at the real app, not
+      `localhost`.
+- [ ] `NEXT_PUBLIC_API_URL` — the deployed API's public URL, **including the
+      `/api` suffix**, set before the web app's first build.
+- [ ] `PDF_STORAGE_DRIVER=r2` (or `s3`) and `IMAGE_STORAGE_DRIVER=r2` (or
+      `s3`) plus `PDF_STORAGE_BUCKET`/`PDF_STORAGE_REGION`/
+      `PDF_STORAGE_ACCESS_KEY_ID`/`PDF_STORAGE_SECRET_ACCESS_KEY`
+      (`PDF_STORAGE_ENDPOINT` for R2) — see
+      [Storage decision](deployment-readiness.md#storage-decision). Only
+      optional if the demo host has a genuinely persistent filesystem and
+      restarts are acceptable to lose PDFs/images over — not true of any host
+      recommended in [§2](#2-recommended-provider-path).
+
+**Optional for local/dev (safe to leave unset or at their defaults):**
+
+- `AUTH_MODE` / `NEXT_PUBLIC_AUTH_MODE` — default to `jwt` already.
+- `EMAIL_PROVIDER` — defaults to `console` (logs the link instead of
+  sending); fine for a trusted-operator private demo.
+- `STORY_GENERATION_PROVIDER` / `IMAGE_GENERATION_PROVIDER_TOKEN` — default
+  to `mock`, deterministic, no network calls, no cost.
+- `AUTH_RATE_LIMIT_WINDOW_MS` / `AUTH_RATE_LIMIT_MAX_ATTEMPTS` — sane
+  defaults (15 min / 10 attempts).
+- `PORT` — most hosts set this automatically.
+
+**Required before real public traffic (beyond this private-demo runbook):**
+
+- [ ] `EMAIL_PROVIDER=resend` plus `RESEND_API_KEY` and `EMAIL_FROM` — real
+      users need real verification/reset email, not a server-side log line.
+- [ ] A Redis-backed (shared) rate limiter in place of the current in-memory
+      one, if running more than one API instance — see
+      [Security notes](#security-notes).
+- [ ] `prisma migrate deploy` wired into an actual release pipeline instead
+      of being run by hand — see
+      [§5 Migration and release order](#5-migration-and-release-order).
+- [ ] Real fonts embedded for `ru`/`pl` PDF output (currently blank
+      Cyrillic glyphs / missing Polish diacritics) if serving those locales.
+
 ## 4. Setup order
 
 Run these in order — each step depends on state from the one before it.
@@ -296,9 +348,36 @@ start/restart the API container after it succeeds.
 
 ## 6. Smoke test checklist
 
-Run this after step 10, and again after any redeploy:
+Run this after step 10, and again after any redeploy. Use a throwaway email
+address you control (or a `+alias` on one you own) — this checklist creates
+a real account.
 
+### Boot / health
+
+- [ ] `curl https://<your-api-host>/api/health` returns `200` with
+      `"status":"ok"` and both `db`/`redis` sub-statuses `up` (see
+      [Step 7](#step-7--start-the-api-and-verify-health) above).
 - [ ] Open the web app's landing page (`/`) — loads without console errors.
+
+### Auth: register → verify → login → logout
+
+- [ ] Navigate to `/register`, create a new account (email + password, 8+
+      chars with 1 uppercase and 1 number). Confirm it redirects straight
+      into `/dashboard` already signed in (registration auto-signs in, even
+      though the account is unverified).
+- [ ] Confirm a verification link was produced: with
+      `EMAIL_PROVIDER=resend`, check the inbox for the registered address;
+      with the default `EMAIL_PROVIDER=console`, check the API's server logs
+      for the `[ConsoleEmailService] Verification email for <email>: ...`
+      line instead.
+- [ ] Open the verification link and confirm the account is marked verified.
+- [ ] Click **Log out** in the dashboard header.
+- [ ] Log back in at `/login` with the same credentials — confirm this now
+      succeeds (a login attempt before verifying would have failed with
+      `401 EMAIL_NOT_VERIFIED`).
+
+### Book creation and generation
+
 - [ ] Navigate to `/dashboard`.
 - [ ] Click **Create Your First Book**, fill in the 3-step wizard, submit.
 - [ ] Confirm redirect to the new book's detail page with status `created`.
@@ -317,6 +396,29 @@ Run this after step 10, and again after any redeploy:
       the PDF — confirm it still works. This is the check that actually
       proves `PDF_STORAGE_DRIVER=r2`/`IMAGE_STORAGE_DRIVER=r2` is wired
       correctly; with the default `local` driver this step would fail.
+- [ ] Click **Log out** again to end this session before the next check.
+
+### Auth: forgot password → reset → old password rejected
+
+- [ ] On `/login`, click **Forgot password?**, submit the same email.
+- [ ] Retrieve the reset link the same way as the verification link above
+      (Resend inbox or `[ConsoleEmailService] Password reset email for
+      <email>: ...` in the server logs).
+- [ ] Open the reset link, set a new password, confirm it succeeds.
+- [ ] Log in at `/login` with the **new** password — confirm it succeeds.
+- [ ] Attempt to log in with the **old** password — confirm it is rejected.
+      (A password reset revokes all existing refresh tokens, so this also
+      implicitly verifies any other open session from this account would
+      now be logged out.)
+
+### Logs
+
+- [ ] With the app running in production mode (`NODE_ENV=production`), tail
+      the API's logs while repeating a couple of the steps above (login,
+      verification) and confirm no raw JWT, refresh token, verification
+      token, or reset token value appears in the log output — only
+      request/response metadata and the generic messages described in
+      [Security notes](#security-notes) below.
 
 ## 7. Rollback notes
 
@@ -369,6 +471,56 @@ restated for this private-demo scope:
   the order, but doesn't wire it into a specific platform's release-phase
   hook (Render's "pre-deploy command," Fly's `release_command`, etc.) since
   that's platform-specific and out of scope for this docs-only phase.
+
+## 9. Security notes {#security-notes}
+
+Operational rules for this deployment, beyond what's already enforced in
+code. None of these require a code change — they're deploy-time discipline.
+
+- **Do not use `EMAIL_PROVIDER=console` (the default) for a deployment with
+  real users.** It logs the verification/reset link to the server's stdout
+  instead of emailing it — fine for a trusted-operator private demo where
+  the operator can read those logs, unsafe for anyone else since whoever can
+  read the logs can complete anyone's verification/reset flow. Set
+  `EMAIL_PROVIDER=resend` + `RESEND_API_KEY` + `EMAIL_FROM` once real users
+  are involved.
+- **Never let raw tokens reach logs.** The codebase already only persists
+  hashes of verification/reset tokens (`User.emailVerificationTokenHash`,
+  `User.passwordResetTokenHash`) and refresh tokens
+  (`RefreshToken.tokenHash`) — the raw values exist only transiently
+  (in the HTTP response/email body). Don't add logging (`console.log`,
+  `Logger.debug`, request/response body loggers) that would print a raw
+  token, access token, or password anywhere in a request path. The
+  [smoke test checklist's Logs step](#6-smoke-test-checklist) above is the
+  concrete check for this.
+- **Use HTTPS on both the API and web origins in production.** The refresh
+  cookie is `Secure` + `SameSite=None` only when `NODE_ENV=production`
+  (`apps/api/src/auth/refresh-cookie.ts`) — over plain HTTP in production
+  the browser would silently drop it, breaking session persistence, not
+  just leaking it. Every host recommended in [§2](#2-recommended-provider-path)
+  (Vercel, Render/Fly/Railway) provides HTTPS by default; don't disable it
+  or terminate TLS somewhere the cookie's `Secure` flag would be violated.
+- **Set `ALLOWED_ORIGINS` to the exact deployed web origin(s), nothing
+  broader.** CORS is `credentials: true` (`apps/api/src/main.ts`), so a
+  wildcard or overly broad origin list would let any matching site make
+  authenticated requests using a logged-in user's cookies/token. Comma-
+  separate only the specific origins actually in use (e.g. a production
+  Vercel URL plus its preview-deployment URL), never `*`.
+- **Rotate `JWT_SECRET`, `JWT_REFRESH_SECRET`, `RESEND_API_KEY`, and storage
+  credentials immediately if any of them leak** (committed by accident,
+  exposed in a log, shared over an insecure channel). Rotating
+  `JWT_SECRET`/`JWT_REFRESH_SECRET` invalidates every existing access/
+  refresh token — every signed-in user is logged out and must log back in;
+  there is no graceful dual-secret rollover implemented today, so treat
+  rotation as a deliberate, announced action, not a silent one.
+- **Do not run more than one API instance without a shared rate limiter.**
+  `AuthRateLimitGuard`/`RateLimiterService` is in-memory and per-process
+  (see [`docs/auth-architecture.md` §13.2](auth-architecture.md#132-why-in-memory-not-redis))
+  — correct for the single-instance deploy this runbook provisions, but
+  multiple replicas would each keep an independent counter, silently
+  multiplying the effective rate limit and weakening brute-force
+  protection. Don't enable autoscaling/multiple replicas for the API until
+  this moves to a shared (e.g. Redis-backed) store.
 
 ## Remaining blockers before public production
 
