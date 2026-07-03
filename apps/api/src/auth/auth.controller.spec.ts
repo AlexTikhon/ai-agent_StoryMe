@@ -184,6 +184,48 @@ describe('AuthController', () => {
     });
   });
 
+  describe('requestPasswordReset', () => {
+    it('delegates to AuthService and always returns a generic { ok: true }', async () => {
+      const authService = {
+        requestPasswordReset: vi.fn().mockResolvedValue(undefined),
+      } as unknown as AuthService;
+      const controller = new AuthController(authService, createConfig());
+
+      const result = await controller.requestPasswordReset({ email: 'alice@example.com' });
+
+      expect(authService.requestPasswordReset).toHaveBeenCalledWith('alice@example.com');
+      expect(result).toEqual({ ok: true });
+    });
+  });
+
+  describe('resetPassword', () => {
+    it('delegates to AuthService with the token and new password', async () => {
+      const authService = {
+        resetPassword: vi.fn().mockResolvedValue(undefined),
+      } as unknown as AuthService;
+      const controller = new AuthController(authService, createConfig());
+
+      const result = await controller.resetPassword({
+        token: 'raw-reset-token',
+        password: 'NewPassword1',
+      });
+
+      expect(authService.resetPassword).toHaveBeenCalledWith('raw-reset-token', 'NewPassword1');
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('propagates rejection for an invalid/expired token', async () => {
+      const authService = {
+        resetPassword: vi.fn().mockRejectedValue(new Error('Invalid or expired reset token')),
+      } as unknown as AuthService;
+      const controller = new AuthController(authService, createConfig());
+
+      await expect(
+        controller.resetPassword({ token: 'bogus', password: 'NewPassword1' }),
+      ).rejects.toThrow('Invalid or expired reset token');
+    });
+  });
+
   describe('AuthRateLimitGuard wiring', () => {
     it.each([
       'register',
@@ -192,6 +234,8 @@ describe('AuthController', () => {
       'logout',
       'verifyEmail',
       'resendVerification',
+      'requestPasswordReset',
+      'resetPassword',
     ] as const)('applies AuthRateLimitGuard to %s', (method) => {
       const guards: unknown[] =
         Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype[method]) ?? [];

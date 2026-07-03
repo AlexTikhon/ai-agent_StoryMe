@@ -8,6 +8,7 @@ import type { AccessTokenPayload } from './jwt-payload';
 
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
 export const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const PASSWORD_RESET_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface GeneratedRefreshToken {
   /** Raw value — only ever sent to the client via the HttpOnly cookie. */
@@ -20,6 +21,14 @@ export interface GeneratedRefreshToken {
 
 export interface GeneratedEmailVerificationToken {
   /** Raw value — only ever sent to the user via the verification link/email. */
+  raw: string;
+  /** SHA-256(raw) — the only form persisted to the DB. */
+  hash: string;
+  expiresAt: Date;
+}
+
+export interface GeneratedPasswordResetToken {
+  /** Raw value — only ever sent to the user via the reset link/email. */
   raw: string;
   /** SHA-256(raw) — the only form persisted to the DB. */
   hash: string;
@@ -86,6 +95,24 @@ export class TokenService {
   }
 
   hashEmailVerificationToken(raw: string): string {
+    return createHash('sha256').update(raw).digest('hex');
+  }
+
+  /**
+   * Same reasoning as email verification tokens: plain SHA-256, no HMAC
+   * secret, since the input is already a high-entropy random value rather
+   * than something guessable that would need secret-keyed resistance.
+   */
+  generatePasswordResetToken(): GeneratedPasswordResetToken {
+    const raw = randomBytes(32).toString('hex');
+    return {
+      raw,
+      hash: this.hashPasswordResetToken(raw),
+      expiresAt: new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS),
+    };
+  }
+
+  hashPasswordResetToken(raw: string): string {
     return createHash('sha256').update(raw).digest('hex');
   }
 }

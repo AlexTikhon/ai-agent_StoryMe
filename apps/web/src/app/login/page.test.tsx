@@ -138,4 +138,10 @@ describe('LoginPage', () => {
     const link = screen.getByRole('link', { name: /register/i });
     expect(link.getAttribute('href')).toBe('/register');
   });
+
+  it('links to the forgot-password page', () => {
+    render(<LoginPage />);
+    const link = screen.getByRole('link', { name: /forgot password/i });
+    expect(link.getAttribute('href')).toBe('/forgot-password');
+  });
 });

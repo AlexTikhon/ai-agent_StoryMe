@@ -147,6 +147,53 @@ describe('authApi', () => {
     });
   });
 
+  describe('requestPasswordReset()', () => {
+    it('sends POST /auth/request-password-reset with the email', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ok: true }));
+
+      await authApi.requestPasswordReset('emma@example.com');
+
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/auth/request-password-reset');
+      expect(init.credentials).toBe('include');
+      expect(JSON.parse(init.body as string)).toEqual({ email: 'emma@example.com' });
+    });
+
+    it('resolves the same generic way for an unknown email (server never distinguishes)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ok: true }));
+
+      await expect(authApi.requestPasswordReset('nobody@example.com')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('resetPassword()', () => {
+    it('sends POST /auth/reset-password with the token and new password', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ok: true }));
+
+      await authApi.resetPassword('raw-reset-token', 'NewPassword1');
+
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/auth/reset-password');
+      expect(JSON.parse(init.body as string)).toEqual({
+        token: 'raw-reset-token',
+        password: 'NewPassword1',
+      });
+    });
+
+    it('throws with the INVALID_RESET_TOKEN code for an invalid/expired token', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        mockError(400, 'Invalid or expired reset token', 'INVALID_RESET_TOKEN'),
+      );
+
+      const error = await authApi
+        .resetPassword('bogus', 'NewPassword1')
+        .catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).code).toBe('INVALID_RESET_TOKEN');
+    });
+  });
+
   describe('refresh()', () => {
     it('sends POST /auth/refresh with no body and credentials included', async () => {
       vi.mocked(fetch).mockResolvedValueOnce(mockOk({ accessToken: 'tok2', user: MOCK_USER }));

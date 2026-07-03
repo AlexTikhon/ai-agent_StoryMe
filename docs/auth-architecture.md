@@ -1030,11 +1030,173 @@ tests, 197 web tests).
 
 ### 14.12 Remaining blockers before public production
 
-- **Password-reset flow** — still not implemented, explicitly out of scope
-  for this phase per its own requirements. The natural next phase.
+- ~~Password-reset flow~~ **Resolved in Phase 6G** — see
+  [§15](#15-phase-6g--password-reset) below.
 - **No real transactional email provider** — `ConsoleEmailService` is a
   dev/local-only adapter; a production deploy needs a real `EmailService`
   implementation (Resend/SES/Postmark/etc.) wired in behind
-  `EMAIL_SERVICE_TOKEN` before verification emails reach real inboxes.
+  `EMAIL_SERVICE_TOKEN` before verification/reset emails reach real inboxes.
+- **No OAuth** — unchanged from earlier phases, still a documented future
+  follow-up.
+
+## 15. Phase 6G — password reset
+
+Goal: let a user with a forgotten password regain access without a real
+transactional email provider, mirroring Phase 6F's email-verification design
+(same token-hashing strategy, same `EmailService` boundary, same
+no-account-enumeration policy) rather than inventing a second pattern.
+
+### 15.1 Schema
+
+Three new nullable columns on `User` (migration
+`20260703010000_phase6g_password_reset`):
+
+- `passwordResetTokenHash String? @unique` — SHA-256 hash of the current
+  pending reset token; `null` when there is no pending token. **Only the
+  hash is ever persisted**, same as `emailVerificationTokenHash`.
+- `passwordResetExpiresAt DateTime?` — 30 minutes from issuance
+  (`PASSWORD_RESET_TOKEN_TTL_MS` in `token.service.ts`), deliberately shorter
+  than the 24-hour email verification window since a reset link grants
+  immediate account takeover if intercepted.
+- `passwordResetRequestedAt DateTime?` — timestamp of the most recent reset
+  request, kept for support/audit visibility; not read by any code path
+  today (rate limiting is handled entirely by `AuthRateLimitGuard`, not by
+  this column).
+
+### 15.2 Token generation and hashing (`TokenService`)
+
+`generatePasswordResetToken()` returns `{ raw, hash, expiresAt }` using the
+exact same primitive as `generateEmailVerificationToken()` — 32 random bytes
+(hex) hashed with plain SHA-256, no HMAC secret — for the same reason: the
+input is already high-entropy and random, not a guessable human password, so
+a secret-keyed hash adds no resistance to reversal. `hashPasswordResetToken`
+is a separate named method (not a reuse of `hashEmailVerificationToken`)
+purely for call-site clarity; the underlying hash function is identical.
+
+### 15.3 `EmailService` extension
+
+`sendPasswordResetEmail(payload)` added to the `EmailService` interface
+alongside the existing `sendVerificationEmail`. `ConsoleEmailService` logs
+the reset link instead of sending it and keeps the most recently "sent"
+password-reset payload per recipient in a separate in-memory map
+(`getLastPasswordResetEmail(to)`), independent of the verification-email map
+so the two inspection hooks never collide for a recipient who triggers both
+flows. **No real email is sent anywhere in this codebase** — same explicit
+scope boundary as Phase 6F.
+
+### 15.4 Request endpoint — `POST /api/auth/request-password-reset`
+
+Body `{ email: string }`. `AuthService.requestPasswordReset` always resolves
+the same way — the controller always returns `200 { ok: true }` — regardless
+of whether the email exists or belongs to a deactivated account, matching
+this codebase's existing no-enumeration policy (`resendVerificationEmail`,
+`login`). For a genuine account: generates a fresh token via
+`TokenService.generatePasswordResetToken()`, overwrites
+`passwordResetTokenHash`/`passwordResetExpiresAt` (which is what
+invalidates any previously issued, still-unused reset token — its hash no
+longer matches any stored row), stamps `passwordResetRequestedAt`, and calls
+`EmailService.sendPasswordResetEmail` with the raw token and a
+`${WEB_APP_URL}/reset-password?token=...` link. Guarded by the existing
+`AuthRateLimitGuard`.
+
+### 15.5 Reset endpoint — `POST /api/auth/reset-password`
+
+Body `{ token: string, password: string }`, `password` validated against the
+identical policy as registration (`class-validator`: 8–72 chars, 1
+uppercase, 1 number — `ResetPasswordDto` mirrors `RegisterDto`). Hashes the
+submitted raw token and looks it up by `passwordResetTokenHash` (`@unique`,
+so at most one user can match). Unknown or expired tokens both reject with
+the identical body:
+
+```json
+{ "error": "Invalid or expired reset token", "code": "INVALID_RESET_TOKEN" }
+```
+
+— no signal distinguishing "doesn't exist" from "expired" from "already
+used," same reasoning as `verifyEmail`'s generic rejection. On success:
+bcrypt-hashes the new password (same `BCRYPT_COST` as registration/login),
+clears both `passwordResetTokenHash` and `passwordResetExpiresAt` in the same
+update (making the token single-use — a replay hashes to a value no row
+matches anymore), and **revokes every non-revoked `RefreshToken` row for that
+user** so a session already established before the reset (e.g. by whoever
+had originally compromised the account) doesn't outlive the password change.
+`login`/`register`/`refresh`/`verify-email` are otherwise untouched. Guarded
+by `AuthRateLimitGuard`.
+
+### 15.6 Frontend changes
+
+- `apps/web/src/lib/api/auth.ts`: `requestPasswordReset(email)` and
+  `resetPassword(token, password)`, calling the two new endpoints.
+- `apps/web/src/app/forgot-password/page.tsx` (new): email form; always
+  renders the same generic success message
+  ("If an account exists for this email, a reset link has been sent.")
+  regardless of whether the request actually found an account — only a
+  request-level failure (e.g. rate limited) surfaces a distinct error.
+- `apps/web/src/app/reset-password/page.tsx` (new): reads `?token=` from the
+  URL; new-password + confirm-password form with client-side
+  mismatch checking; success state links to `/login`; a missing token in the
+  URL renders a dedicated "reset link invalid" state with a link back to
+  `/forgot-password`, while a token rejected by the API (invalid/expired)
+  surfaces inline on the form, mirroring the login page's existing
+  inline-error convention.
+- `apps/web/src/app/login/page.tsx`: a **Forgot password?** link next to the
+  password field, pointing at `/forgot-password`.
+
+### 15.7 Configuration
+
+No new env vars — reuses `WEB_APP_URL` (already added in Phase 6F) to build
+the reset link, same as the verification link.
+
+### 15.8 Tests
+
+- `apps/api/src/auth/token.service.spec.ts` — password-reset token/hash
+  determinism, 30-minute expiry, hash independence from
+  `JWT_REFRESH_SECRET`.
+- `apps/api/src/email/console-email.service.spec.ts` — records password
+  reset payloads separately from verification payloads, per-recipient
+  inspection hook, keeps only the most recent send.
+- `apps/api/src/auth/dto/reset-password.dto.spec.ts` (new) — exercises the
+  password policy directly via `class-validator`'s `validate()` (mirrors
+  `create-book.dto.spec.ts`'s pattern), since the DTO's `ValidationPipe`
+  enforcement isn't exercised by the controller-level unit tests here (no
+  e2e/supertest harness exists in this repo — see §12.4).
+- `apps/api/src/auth/auth.service.spec.ts` — reset request issues a token
+  with only the hash persisted (raw token never appears in the
+  `prisma.user.update` call argument) and emails the raw token; a second
+  request overwrites (invalidates) the first token's hash; unknown-email and
+  deactivated-account requests are silent no-ops; `resetPassword` accepts a
+  valid token (hashes the new password, clears the token, revokes all
+  refresh tokens for the user), rejects unknown/expired tokens with
+  `INVALID_RESET_TOKEN`, and rejects replay of an already-consumed token.
+- `apps/api/src/auth/auth.controller.spec.ts` — `requestPasswordReset`/
+  `resetPassword` delegate to `AuthService` with the right arguments and
+  always return `{ ok: true }`; `AuthRateLimitGuard` wiring extended to cover
+  both new routes.
+- Web: `apps/web/src/lib/api/auth.test.ts` (request/reset request shapes,
+  `INVALID_RESET_TOKEN` code surfaced as `ApiError.code`),
+  `apps/web/src/app/forgot-password/page.test.tsx` (identical generic
+  success for known/unknown email, request-failure error state, login link),
+  `apps/web/src/app/reset-password/page.test.tsx` (success state, mismatched
+  confirmation caught client-side without calling the API, invalid/expired
+  token error, missing-token state), `apps/web/src/app/login/page.test.tsx`
+  (forgot-password link present).
+- All pre-existing auth/email-verification tests remain green — no shared
+  fixture changes were needed beyond `tsc` accepting the three new nullable
+  `User` fields (spec files are excluded from `apps/api`'s typecheck
+  `include`, so existing `makeUser()` helpers didn't need updating).
+
+### 15.9 Quality gates
+
+`pnpm --filter @book/types build`, `pnpm --filter @book/api prisma:generate`,
+`pnpm --filter @book/api test`, `pnpm --filter @book/api typecheck`,
+`pnpm --filter @book/api lint`, `pnpm --filter @book/web test`,
+`pnpm --filter @book/web typecheck`, `pnpm --filter @book/web build`,
+`pnpm --filter @book/web lint` — all run and green for this phase (550 API
+tests, 210 web tests).
+
+### 15.10 Remaining blockers before public production
+
+- **No real transactional email provider** — unchanged; `ConsoleEmailService`
+  still logs both verification and reset links instead of sending them.
 - **No OAuth** — unchanged from earlier phases, still a documented future
   follow-up.

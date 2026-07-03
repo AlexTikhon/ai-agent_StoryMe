@@ -11,7 +11,9 @@ import { AuthService } from './auth.service';
 import { CurrentUser } from './current-user.decorator';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { buildRefreshCookieOptions, REFRESH_COOKIE_NAME } from './refresh-cookie';
 
@@ -89,6 +91,22 @@ export class AuthController {
   @HttpCode(204)
   async resendVerification(@Body() dto: ResendVerificationDto): Promise<void> {
     await this.authService.resendVerificationEmail(dto.email);
+  }
+
+  @UseGuards(AuthRateLimitGuard)
+  @Post('request-password-reset')
+  @HttpCode(200)
+  async requestPasswordReset(@Body() dto: RequestPasswordResetDto): Promise<{ ok: true }> {
+    await this.authService.requestPasswordReset(dto.email);
+    return { ok: true };
+  }
+
+  @UseGuards(AuthRateLimitGuard)
+  @Post('reset-password')
+  @HttpCode(200)
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<{ ok: true }> {
+    await this.authService.resetPassword(dto.token, dto.password);
+    return { ok: true };
   }
 
   private setRefreshCookie(res: Response, rawRefreshToken: string): void {

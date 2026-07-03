@@ -181,6 +181,12 @@ model User {
   // users with no pending verification (never sent, or already verified).
   emailVerificationTokenHash String?   @unique @map("email_verification_token_hash")
   emailVerificationExpiresAt DateTime? @map("email_verification_expires_at")
+  // Only a hash of the reset token is ever stored — see AuthService. Unique
+  // so a hash collision can never reset the wrong account; null when there is
+  // no pending reset (never requested, expired and superseded, or consumed).
+  passwordResetTokenHash     String?   @unique @map("password_reset_token_hash")
+  passwordResetExpiresAt     DateTime? @map("password_reset_expires_at")
+  passwordResetRequestedAt   DateTime? @map("password_reset_requested_at")
   deactivatedAt DateTime? @map("deactivated_at")
 
   notifyEmailOnCompletion Boolean @default(true)  @map("notify_email_on_completion")

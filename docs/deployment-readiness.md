@@ -408,15 +408,15 @@ still pass unchanged.
   no-enumeration policy. See `apps/api/src/auth/*.spec.ts`.
 - **Why this is still private/internal-only**: real credential verification
   removes the identity-spoofing risk `DevAuthGuard` had, rate limiting
-  (Phase 6E) now caps brute-force/credential-stuffing volume, and email
+  (Phase 6E) now caps brute-force/credential-stuffing volume, email
   verification (Phase 6F) confirms ownership of the registered address before
-  login — but there is still no password-reset flow, no real transactional
-  email provider, and no OAuth. That's the remaining gap before public
-  exposure, not the identity model itself.
-- **What's left**: password-reset flow on `/api/auth/*` and a real email
-  provider behind the `EmailService` interface (see
-  [Remaining blockers before public production](private-demo-deploy.md) in
-  the deploy runbook), then removing the `x-user-email`/`x-user-name`
+  login, and password reset (Phase 6G) lets a user recover a forgotten
+  password without support intervention — but there is still no real
+  transactional email provider and no OAuth. That's the remaining gap before
+  public exposure, not the identity model itself.
+- **What's left**: a real email provider behind the `EmailService` interface
+  (see [Remaining blockers before public production](private-demo-deploy.md)
+  in the deploy runbook), then removing the `x-user-email`/`x-user-name`
   CORS-allowed headers and `DevAuthGuard` entirely once no deployment still
   relies on dev mode.
 - **Phase 6F (email verification)**: new users register as unverified
@@ -440,6 +440,21 @@ still pass unchanged.
   matching the existing "no separate login step" UX; only a *subsequent*
   login attempt (e.g. after logging out) is gated on verification. See
   [`docs/auth-architecture.md` §14](auth-architecture.md#14-phase-6f--email-verification).
+- **Phase 6G (password reset)**: `POST /api/auth/request-password-reset`
+  always returns `200 { "ok": true }` regardless of whether the email exists
+  or is deactivated (same no-enumeration policy as Phase 6F); for a genuine
+  account it mints a single-use, 30-minute, SHA-256-hashed token
+  (`User.passwordResetTokenHash`/`passwordResetExpiresAt` — only the hash is
+  ever persisted) and sends it via the same `EmailService` boundary
+  (`sendPasswordResetEmail`, logged by `ConsoleEmailService` in dev/test).
+  `POST /api/auth/reset-password` hashes the submitted token, rejects an
+  unknown/expired match with `400
+  { "error": "Invalid or expired reset token", "code": "INVALID_RESET_TOKEN" }`,
+  and on success hashes the new password, clears the token (single-use), and
+  revokes every persisted `RefreshToken` for that user so a session
+  established before the reset can't outlive it. Both endpoints are behind
+  the existing `AuthRateLimitGuard`. See
+  [`docs/auth-architecture.md` §15](auth-architecture.md#15-phase-6g--password-reset).
 - **Phase 6E (auth rate limiting)**: added `AuthRateLimitGuard`
   (`apps/api/src/auth/auth-rate-limit.guard.ts`), applied via `@UseGuards` to
   `POST /api/auth/{register,login,refresh,logout}` (not `GET /api/auth/me`,
@@ -620,11 +635,11 @@ that undoes the change, not running the old one backwards.
 1. Add the migration-deploy step to whatever deploy pipeline is chosen (CI
    job, release script, or platform release-phase hook), since the container
    itself intentionally doesn't run it.
-2. Password-reset flow on `/api/auth/*` and a real transactional email
-   provider behind `EmailService` (see [Auth limitation note](#auth-limitation))
-   — real auth (Phase 6B/6C), rate limiting (Phase 6E), and email
-   verification (Phase 6F) are all done end-to-end; this is what's left
-   before any public deploy.
+2. A real transactional email provider behind `EmailService` (see
+   [Auth limitation note](#auth-limitation)) — real auth (Phase 6B/6C), rate
+   limiting (Phase 6E), email verification (Phase 6F), and password reset
+   (Phase 6G) are all done end-to-end; this is what's left before any public
+   deploy.
 
 ## Private demo runbook
 

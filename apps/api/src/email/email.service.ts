@@ -6,6 +6,14 @@ export interface VerificationEmailPayload {
   verificationUrl: string;
 }
 
+export interface PasswordResetEmailPayload {
+  to: string;
+  name?: string | null;
+  /** Raw (unhashed) token — only ever passed to the email transport, never persisted. */
+  token: string;
+  resetUrl: string;
+}
+
 /**
  * Storage-style boundary for outbound transactional email, mirroring
  * PdfStorage/ImageAssetStorage: callers (AuthService) depend only on this
@@ -14,6 +22,7 @@ export interface VerificationEmailPayload {
  */
 export interface EmailService {
   sendVerificationEmail(payload: VerificationEmailPayload): Promise<void>;
+  sendPasswordResetEmail(payload: PasswordResetEmailPayload): Promise<void>;
 }
 
 export const EMAIL_SERVICE_TOKEN = 'EMAIL_SERVICE';

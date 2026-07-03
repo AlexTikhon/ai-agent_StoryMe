@@ -62,4 +62,19 @@ export const authApi = {
       await throwApiError(res);
     }
   },
+
+  /** Never throws on "unknown email" — the API intentionally responds the same way regardless. */
+  requestPasswordReset: async (email: string): Promise<void> => {
+    const res = await authPost('/auth/request-password-reset', { email });
+    if (!res.ok) {
+      await throwApiError(res);
+    }
+  },
+
+  resetPassword: async (token: string, password: string): Promise<void> => {
+    const res = await authPost('/auth/reset-password', { token, password });
+    if (!res.ok) {
+      await throwApiError(res);
+    }
+  },
 };

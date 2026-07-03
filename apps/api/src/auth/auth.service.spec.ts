@@ -76,9 +76,16 @@ describe('AuthService', () => {
         expiresAt: new Date('2026-01-02'),
       }),
       hashEmailVerificationToken: vi.fn().mockReturnValue('hashed-verification-token'),
+      generatePasswordResetToken: vi.fn().mockReturnValue({
+        raw: 'raw-reset-token',
+        hash: 'hashed-reset-token',
+        expiresAt: new Date('2026-01-01T00:30:00.000Z'),
+      }),
+      hashPasswordResetToken: vi.fn().mockReturnValue('hashed-reset-token'),
     } as unknown as TokenService;
     emailService = {
       sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
+      sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
     } as unknown as EmailService;
     config = {
       get: vi.fn().mockReturnValue('http://localhost:3000'),
@@ -480,6 +487,162 @@ describe('AuthService', () => {
 
       expect(prisma.user.update).not.toHaveBeenCalled();
       expect(emailService.sendVerificationEmail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('requestPasswordReset', () => {
+    it('issues a reset token, persists only its hash, and emails the raw token', async () => {
+      const user = makeUser();
+      (usersService.findByEmail as Mock).mockResolvedValue(user);
+      prisma.user.update.mockResolvedValue({});
+
+      await service.requestPasswordReset('alice@example.com');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: user.id },
+        data: {
+          passwordResetTokenHash: 'hashed-reset-token',
+          passwordResetExpiresAt: new Date('2026-01-01T00:30:00.000Z'),
+          passwordResetRequestedAt: expect.any(Date),
+        },
+      });
+      expect(JSON.stringify((prisma.user.update as Mock).mock.calls[0][0])).not.toContain(
+        'raw-reset-token',
+      );
+      expect(emailService.sendPasswordResetEmail).toHaveBeenCalledWith({
+        to: 'alice@example.com',
+        name: user.name,
+        token: 'raw-reset-token',
+        resetUrl: 'http://localhost:3000/reset-password?token=raw-reset-token',
+      });
+    });
+
+    it('invalidates a previously issued token by overwriting the stored hash', async () => {
+      const user = makeUser({
+        passwordResetTokenHash: 'old-hash',
+        passwordResetExpiresAt: new Date('2026-01-01'),
+      });
+      (usersService.findByEmail as Mock).mockResolvedValue(user);
+      prisma.user.update.mockResolvedValue({});
+
+      await service.requestPasswordReset('alice@example.com');
+
+      expect(prisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ passwordResetTokenHash: 'hashed-reset-token' }),
+        }),
+      );
+    });
+
+    it('does not leak that the email is unknown', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(null);
+
+      await service.requestPasswordReset('nobody@example.com');
+
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(emailService.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+
+    it('does not leak that the account is deactivated', async () => {
+      (usersService.findByEmail as Mock).mockResolvedValue(
+        makeUser({ deactivatedAt: new Date('2026-01-01') }),
+      );
+
+      await service.requestPasswordReset('alice@example.com');
+
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(emailService.sendPasswordResetEmail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resetPassword', () => {
+    it('hashes the new password, clears the token, and revokes existing sessions', async () => {
+      const user = makeUser({
+        passwordResetTokenHash: 'hashed-reset-token',
+        passwordResetExpiresAt: new Date(Date.now() + 100_000),
+      });
+      prisma.user.findFirst.mockResolvedValue(user);
+      prisma.user.update.mockResolvedValue({});
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.resetPassword('raw-reset-token', 'NewPassword1');
+
+      expect(tokenService.hashPasswordResetToken).toHaveBeenCalledWith('raw-reset-token');
+      expect(prisma.user.findFirst).toHaveBeenCalledWith({
+        where: { passwordResetTokenHash: 'hashed-reset-token' },
+      });
+
+      const updateArg = (prisma.user.update as Mock).mock.calls[0][0];
+      expect(updateArg.where).toEqual({ id: user.id });
+      expect(updateArg.data.passwordResetTokenHash).toBeNull();
+      expect(updateArg.data.passwordResetExpiresAt).toBeNull();
+      expect(updateArg.data.passwordHash).not.toBe('NewPassword1');
+      expect(await bcrypt.compare('NewPassword1', updateArg.data.passwordHash)).toBe(true);
+
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+    });
+
+    it('rejects an unknown token', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(service.resetPassword('bogus-token', 'NewPassword1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired token', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        makeUser({
+          passwordResetTokenHash: 'hashed-reset-token',
+          passwordResetExpiresAt: new Date(Date.now() - 1000),
+        }),
+      );
+
+      await expect(service.resetPassword('raw-reset-token', 'NewPassword1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('reports the INVALID_RESET_TOKEN code for an invalid/expired token', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      let caught: unknown;
+      try {
+        await service.resetPassword('bogus-token', 'NewPassword1');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(BadRequestException);
+      const response = (caught as BadRequestException).getResponse() as {
+        error: string;
+        code: string;
+      };
+      expect(response.code).toBe('INVALID_RESET_TOKEN');
+      expect(response.error).toBe('Invalid or expired reset token');
+    });
+
+    it('cannot be reused after a successful reset (hash already cleared)', async () => {
+      prisma.user.findFirst.mockResolvedValueOnce(
+        makeUser({
+          passwordResetTokenHash: 'hashed-reset-token',
+          passwordResetExpiresAt: new Date(Date.now() + 100_000),
+        }),
+      );
+      prisma.user.update.mockResolvedValue({});
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+      await service.resetPassword('raw-reset-token', 'NewPassword1');
+
+      prisma.user.findFirst.mockResolvedValueOnce(null);
+      await expect(service.resetPassword('raw-reset-token', 'AnotherPassword1')).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 });

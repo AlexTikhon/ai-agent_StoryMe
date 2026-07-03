@@ -29,12 +29,13 @@ see [docs/local-demo.md](local-demo.md).
   team/allowlist, and consider an IP allowlist or basic auth in front of the
   API host) if that ever happens.
 - **Even with real auth, this is still scoped as a private/internal demo**
-  — auth rate limiting (Phase 6E) and email verification (Phase 6F) are both
-  done, but there is still no password-reset flow and no real transactional
-  email provider (verification emails are only logged locally by
-  `ConsoleEmailService`). Do not treat this runbook as a public-launch
-  checklist; see [deployment-readiness.md](deployment-readiness.md) for
-  what's still outstanding beyond auth.
+  — auth rate limiting (Phase 6E), email verification (Phase 6F), and
+  password reset (Phase 6G) are all done, but there is still no real
+  transactional email provider (verification/reset emails are only logged
+  locally by `ConsoleEmailService`). Do not treat this runbook as a
+  public-launch checklist; see
+  [deployment-readiness.md](deployment-readiness.md) for what's still
+  outstanding beyond auth.
 
 ## 1. Target architecture
 
@@ -335,9 +336,9 @@ restated for this private-demo scope:
 - **`AUTH_MODE=dev`/`DevAuthGuard` is not production-safe for public
   exposure** — real auth (`AUTH_MODE=jwt`, this runbook's default) closes
   that gap; dev mode remains only as a documented local/trusted-operator
-  fallback (see the warning at the top of this doc). No rate limiting on
-  auth endpoints, no email verification, and no password-reset flow exist
-  yet even under `jwt` mode — still a private-demo-scoped limitation.
+  fallback (see the warning at the top of this doc). No real transactional
+  email provider exists yet even under `jwt` mode — verification/reset
+  emails are only logged locally — still a private-demo-scoped limitation.
 - **In-process generation, no worker process.** `GenerationTaskRunner` runs
   the generation pipeline in the same process as the HTTP server. This is
   fine for a single always-on instance (what this runbook provisions) but
@@ -362,14 +363,15 @@ restated for this private-demo scope:
 
 ## Remaining blockers before public production
 
-1. **Password-reset flow and a real transactional email provider for the real
-   auth endpoints** (`/api/auth/*`) — real credential verification
-   (`AUTH_MODE=jwt`, Phase 6B/6C), auth rate limiting (Phase 6E), and email
-   verification (Phase 6F, `POST /api/auth/{verify-email,resend-verification}`)
-   are all done, but there is still no password-reset flow, and the only
-   `EmailService` implementation today (`ConsoleEmailService`) logs
-   verification links instead of sending real email — see
-   [docs/auth-architecture.md §14](auth-architecture.md#14-phase-6f--email-verification).
+1. **A real transactional email provider for the real auth endpoints**
+   (`/api/auth/*`) — real credential verification (`AUTH_MODE=jwt`, Phase
+   6B/6C), auth rate limiting (Phase 6E), email verification (Phase 6F,
+   `POST /api/auth/{verify-email,resend-verification}`), and password reset
+   (Phase 6G, `POST /api/auth/{request-password-reset,reset-password}`) are
+   all done, but the only `EmailService` implementation today
+   (`ConsoleEmailService`) logs verification/reset links instead of sending
+   real email — see
+   [docs/auth-architecture.md §15](auth-architecture.md#15-phase-6g--password-reset).
 2. **Wire the migration step into an actual deploy pipeline** (platform
    release-phase hook or CI job), rather than running it by hand per this
    runbook.

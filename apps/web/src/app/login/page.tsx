@@ -115,7 +115,15 @@ function LoginForm() {
           </label>
 
           <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-text-secondary">Password</span>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-text-secondary">Password</span>
+              <Link
+                href="/forgot-password"
+                className="text-xs font-medium text-violet-600 hover:text-violet-500"
+              >
+                Forgot password?
+              </Link>
+            </div>
             <input
               required
               type="password"

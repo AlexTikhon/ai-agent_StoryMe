@@ -143,6 +143,74 @@ export class AuthService {
     });
   }
 
+  /**
+   * Always resolves the same way regardless of whether the email exists or
+   * belongs to a deactivated account — callers (the controller) must not
+   * branch on this to avoid leaking account existence.
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await this.usersService.findByEmail(email);
+    if (!user || user.deactivatedAt) {
+      return;
+    }
+
+    const reset = this.tokenService.generatePasswordResetToken();
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetTokenHash: reset.hash,
+        passwordResetExpiresAt: reset.expiresAt,
+        passwordResetRequestedAt: new Date(),
+      },
+    });
+
+    await this.emailService.sendPasswordResetEmail({
+      to: user.email,
+      name: user.name,
+      token: reset.raw,
+      resetUrl: this.buildPasswordResetUrl(reset.raw),
+    });
+  }
+
+  /**
+   * Rejects invalid/expired tokens; clears the token hash so it cannot be
+   * replayed after success, and revokes every persisted refresh token for
+   * the account so a stolen session can't outlive a password reset.
+   */
+  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
+    const tokenHash = this.tokenService.hashPasswordResetToken(rawToken);
+    const user = await this.prisma.user.findFirst({
+      where: { passwordResetTokenHash: tokenHash },
+    });
+
+    if (
+      !user ||
+      !user.passwordResetExpiresAt ||
+      user.passwordResetExpiresAt.getTime() < Date.now()
+    ) {
+      throw new BadRequestException({
+        error: 'Invalid or expired reset token',
+        message: 'Invalid or expired reset token',
+        code: 'INVALID_RESET_TOKEN',
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        passwordResetTokenHash: null,
+        passwordResetExpiresAt: null,
+      },
+    });
+
+    await this.prisma.refreshToken.updateMany({
+      where: { userId: user.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
   async refresh(rawRefreshToken: string | undefined): Promise<AuthResult> {
     if (!rawRefreshToken) {
       throw new UnauthorizedException('Missing refresh token');
@@ -222,5 +290,10 @@ export class AuthService {
   private buildVerificationUrl(token: string): string {
     const webAppUrl = this.config.get('WEB_APP_URL', { infer: true });
     return `${webAppUrl}/verify-email?token=${encodeURIComponent(token)}`;
+  }
+
+  private buildPasswordResetUrl(token: string): string {
+    const webAppUrl = this.config.get('WEB_APP_URL', { infer: true });
+    return `${webAppUrl}/reset-password?token=${encodeURIComponent(token)}`;
   }
 }

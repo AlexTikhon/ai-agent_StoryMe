@@ -95,6 +95,13 @@ unless you have a specific reason to want the old shared-identity shortcut:
     <email>: http://localhost:3000/verify-email?token=...`); copy that URL
     into the browser to verify. See
     [docs/auth-architecture.md §14](auth-architecture.md#14-phase-6f--email-verification).
+  - **Password reset (Phase 6G)**: click **Forgot password?** on `/login` to
+    request a reset link. As with verification, no real email is sent
+    locally — the API logs it instead (`[ConsoleEmailService] Password reset
+    email for <email>: http://localhost:3000/reset-password?token=...`);
+    copy that URL into the browser to set a new password. The link expires
+    after 30 minutes and can only be used once. See
+    [docs/auth-architecture.md §15](auth-architecture.md#15-phase-6g--password-reset).
 - `dev` — no login screen, no accounts. Every API request is scoped to a
   single dev user identified by the `x-user-email` header, sent automatically
   by the web app (see `DevAuthGuard`). Set both `AUTH_MODE=dev` (API) and
