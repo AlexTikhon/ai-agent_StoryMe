@@ -9,29 +9,30 @@ see [docs/local-demo.md](local-demo.md).
 
 ## ⚠️ Private/internal only — read this first
 
-- **As of Phase 6B, the API has real backend auth** (register/login/JWT
-  access tokens/rotating refresh cookies — see
-  [docs/auth-architecture.md](auth-architecture.md)), gated by an
-  `AUTH_MODE=dev|jwt` env var. **This runbook still deploys with
-  `AUTH_MODE=dev`**, because the web app (`apps/web`) has not been updated to
-  use the new endpoints yet — it still hardcodes the `x-user-email`/
-  `x-user-name` dev headers on every request. Setting `AUTH_MODE=jwt` before
-  the frontend is cut over would lock the deployed frontend out entirely.
-- **This deployment must remain private/internal while `AUTH_MODE=dev` is
-  active.** There is no real login from the frontend's perspective. Every
-  request is scoped to a user by a plain `x-user-email` header — the API
-  creates/looks up a matching `User` row on the fly with **no password,
-  session, or token check** (see `apps/api/src/auth/dev-auth.guard.ts`).
-- **Anyone who can reach the API and set `x-user-email` can impersonate any
-  user.** This isn't a theoretical risk — it's one curl flag away. Do not put
-  either the API or web URL somewhere a stranger could find it.
-- **Restrict access** at the platform level: password-protect the Vercel
-  deployment (or restrict to a Vercel team/allowlist), and consider an
-  IP allowlist or basic auth in front of the API host if the platform
-  supports it.
-- **Public deployment requires the frontend auth cutover next** — see
-  [Auth limitation note](deployment-readiness.md#auth-limitation) in the
-  readiness audit for exactly what's done vs. what's left.
+- **As of Phase 6C, both API and web have real auth wired end-to-end**
+  (register/login/JWT access tokens/rotating refresh cookies — see
+  [docs/auth-architecture.md](auth-architecture.md)), gated by
+  `AUTH_MODE` (API) and `NEXT_PUBLIC_AUTH_MODE` (web), both `dev | jwt`.
+  **This runbook now deploys with `AUTH_MODE=jwt` /
+  `NEXT_PUBLIC_AUTH_MODE=jwt`** — real login/register, no shared identity.
+  The two values must match between API and web deployments or every
+  request 401s.
+- **`AUTH_MODE=dev` remains available as a documented local-only fallback**,
+  not for any deployment reachable by anyone other than the operator. In
+  that mode every request is scoped to a user by a plain `x-user-email`
+  header — the API creates/looks up a matching `User` row on the fly with
+  **no password, session, or token check** (see
+  `apps/api/src/auth/dev-auth.guard.ts`). If a deployment is ever
+  misconfigured with `AUTH_MODE=dev`, anyone who can reach the API and set
+  `x-user-email` can impersonate any user — restrict access at the platform
+  level (password-protect the Vercel deployment or restrict to a
+  team/allowlist, and consider an IP allowlist or basic auth in front of the
+  API host) if that ever happens.
+- **Even with real auth, this is still scoped as a private/internal demo**
+  — no rate limiting on auth endpoints, no email verification, no
+  password-reset flow. Do not treat this runbook as a public-launch
+  checklist; see [deployment-readiness.md](deployment-readiness.md) for
+  what's still outstanding beyond auth.
 
 ## 1. Target architecture
 
@@ -60,7 +61,8 @@ apps/web (Next.js, Vercel)  ──HTTPS, CORS──▶  apps/api (NestJS, Docker
   (`CloudPdfStorage`, `CloudImageAssetStorage`).
 - **Generation**: current in-process runner (`GenerationTaskRunner`) — no
   separate worker process, no queue infrastructure to stand up.
-- **Auth**: `DevAuthGuard` only — see the warning above.
+- **Auth**: `JwtAuthGuard` (email/password + JWT + rotating refresh cookie),
+  `AUTH_MODE=jwt` by default — see the warning above.
 - **Redis**: see [Is Redis required?](#is-redis-required) below — short
   answer: **yes, to boot**, but not for its intended purpose yet.
 
@@ -119,7 +121,7 @@ ephemeral filesystem — see
 | `REDIS_URL` | API | **Yes** | `redis://:password@host:6379` | See [Is Redis required?](#is-redis-required) — needed to boot and pass health checks, not for queue processing yet. |
 | `JWT_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | Signs/verifies access tokens (`JwtAuthGuard`, `TokenService`). |
 | `JWT_REFRESH_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | HMAC key used to hash refresh tokens before they're stored in `RefreshToken.tokenHash`. |
-| `AUTH_MODE` | API | **Yes, set to `dev` for this runbook** | `dev` \| `jwt` | Defaults to `jwt` (safe) if unset — must be explicitly set to `dev` here since the deployed frontend still only sends `x-user-email`. Only flip to `jwt` after the frontend auth cutover (see [Auth limitation note](deployment-readiness.md#auth-limitation)). |
+| `AUTH_MODE` | API | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt` | Must match the web app's `NEXT_PUBLIC_AUTH_MODE` exactly — a mismatch 401s every request. Only set to `dev` for a trusted-operator-only deployment (see the warning above). |
 | `PORT` | API | No (has default `4000`) | `4000` | Most hosts (Render/Fly/Railway) set this automatically; the API already reads and binds it on `0.0.0.0`. |
 | `ALLOWED_ORIGINS` | API | **Yes** | `https://storyme-demo.vercel.app` | CORS allowlist, comma-separated for multiple origins (e.g. preview + production Vercel URLs). Must match the web app's deployed origin exactly. |
 | `OPENAI_API_KEY` | API | Only if using real generation | `sk-...` | Required only when `STORY_GENERATION_PROVIDER=openai` or `IMAGE_GENERATION_PROVIDER_TOKEN=openai`. Leave the providers on `mock` (default) for a free/deterministic demo. |
@@ -134,7 +136,7 @@ ephemeral filesystem — see
 | `PDF_STORAGE_SECRET_ACCESS_KEY` | API | **Yes** (if using cloud storage) | `<r2-or-iam-secret>` | Treat as a secret — set via the host's secret manager, not committed anywhere. |
 | `PDF_STORAGE_PUBLIC_BASE_URL` | API | No | *(not currently read by any code path)* | Not present in `apps/api/src/config/env.schema.ts` or `pdf-storage.ts` today — PDFs are served through the API's own preview endpoint (`GET /api/books/:id/pdf/preview`), not a direct public bucket URL. Included here for completeness since the task template asked for it; there is nothing to set. |
 | `NEXT_PUBLIC_API_URL` | Web | **Yes** | `https://storyme-api-demo.onrender.com/api` | Baked in at **build time** (Next.js inlines `NEXT_PUBLIC_*` at build), not read at request time — must be set in Vercel's project env vars *before* the first build, and changing it requires a rebuild. Include the `/api` suffix. |
-| dev-auth (`x-user-email`/`x-user-name`) | Web → API | N/A — no env var | *(hardcoded in `apps/web/src/lib/api/client.ts`)* | Not configurable via env; the web app always sends `dev@storyme.local` / `Dev User`. This is the mechanism the [private-only warning](#️-privateinternal-only--read-this-first) above is about. |
+| `NEXT_PUBLIC_AUTH_MODE` | Web | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt` | Same build-time-inlined caveat as `NEXT_PUBLIC_API_URL`. Must match the API's `AUTH_MODE` exactly. |
 
 Vars not covered above (`STRIPE_*`, `GOOGLE_*`, `ANTHROPIC_API_KEY`,
 `FAL_API_KEY`, `R2_ACCOUNT_ID`/`R2_*`) are optional and reserved for features
@@ -328,9 +330,12 @@ Carried over from the underlying audit
 ([deployment-readiness.md — Known blockers](deployment-readiness.md#known-blockers)),
 restated for this private-demo scope:
 
-- **`DevAuthGuard` is not production-safe for public exposure** — see the
-  warning at the top of this doc. This is the hard blocker for anything
-  beyond a private demo.
+- **`AUTH_MODE=dev`/`DevAuthGuard` is not production-safe for public
+  exposure** — real auth (`AUTH_MODE=jwt`, this runbook's default) closes
+  that gap; dev mode remains only as a documented local/trusted-operator
+  fallback (see the warning at the top of this doc). No rate limiting on
+  auth endpoints, no email verification, and no password-reset flow exist
+  yet even under `jwt` mode — still a private-demo-scoped limitation.
 - **In-process generation, no worker process.** `GenerationTaskRunner` runs
   the generation pipeline in the same process as the HTTP server. This is
   fine for a single always-on instance (what this runbook provisions) but
@@ -355,11 +360,10 @@ restated for this private-demo scope:
 
 ## Remaining blockers before public production
 
-1. **Real auth phase** — replace `DevAuthGuard` with credential
-   verification + session/JWT issuance (schema already has `passwordHash`,
-   `oauthProvider`/`oauthId`, `RefreshToken` for this) before any public
-   URL. See
-   [Auth limitation note](deployment-readiness.md#auth-limitation).
+1. **Rate limiting, email verification, and password reset for the real
+   auth endpoints** (`/api/auth/*`) — real credential verification exists
+   (`AUTH_MODE=jwt`, Phase 6B/6C), but brute-force/enumeration protection
+   and account-recovery flows don't yet.
 2. **Wire the migration step into an actual deploy pipeline** (platform
    release-phase hook or CI job), rather than running it by hand per this
    runbook.

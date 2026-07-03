@@ -38,8 +38,14 @@ export class AuthService {
   async login(email: string, password: string): Promise<AuthResult> {
     const user = await this.usersService.findByEmail(email);
 
-    // Generic message either way — do not reveal whether the email exists.
-    if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
+    // Generic message in every branch, including deactivated — do not reveal
+    // whether the email exists or the account's deactivation state.
+    if (
+      !user ||
+      user.deactivatedAt ||
+      !user.passwordHash ||
+      !(await bcrypt.compare(password, user.passwordHash))
+    ) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -73,7 +79,7 @@ export class AuthService {
     }
 
     const user = await this.usersService.findById(record.userId);
-    if (!user) {
+    if (!user || user.deactivatedAt) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 

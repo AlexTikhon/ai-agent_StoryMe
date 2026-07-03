@@ -47,10 +47,6 @@ export default function DashboardPage() {
         <div className="mb-8 flex items-center justify-between gap-4">
           <div>
             <h1 className="font-display text-3xl font-bold text-text-primary">My Book Drafts</h1>
-            <p className="mt-1 text-sm text-text-muted">
-              Signed in as{' '}
-              <span className="font-medium text-text-secondary">dev@storyme.local</span>
-            </p>
           </div>
           <Link
             href="/dashboard/books/new"

@@ -110,7 +110,9 @@ export function buildStoryGenerationPrompt(
     '',
     `Write every story field (title, storyText, learningGoal, etc.) in this language: ${input.language}.`,
     ...(input.educationalMessage
-      ? [`Make the story's "educationalMessage" field reflect the desired educational message/lesson above.`]
+      ? [
+          `Make the story's "educationalMessage" field reflect the desired educational message/lesson above.`,
+        ]
       : []),
     'Keep each page\'s "storyText" short (2-4 sentences) and appropriate for a young child listening or reading along.',
     'Each "illustrationPrompt" should describe a single illustration scene — setting, action, mood — suitable for a future image-generation model. Do not reference real people, brands, or copyrighted/trademarked characters, and keep every scene non-violent and non-scary.',

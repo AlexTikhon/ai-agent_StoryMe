@@ -109,7 +109,10 @@ const CHAPTER_TEMPLATES: Array<(name: string, theme: string) => ChapterOutline> 
     summary: `${name} sets off on a journey and faces a small challenge with courage.`,
     setting: 'An enchanted forest',
     emotionalArc: 'nervousness to bravery',
-    keyEvents: [`${name} and friend enter the forest`, 'They face a small challenge and overcome it'],
+    keyEvents: [
+      `${name} and friend enter the forest`,
+      'They face a small challenge and overcome it',
+    ],
     illustrableScenes: [`${name} and friend walking through colorful mushrooms`],
   }),
   (name, theme) => ({
@@ -157,10 +160,7 @@ function buildStoryPlan(
   educationalMessage?: string,
 ): StoryPlan {
   const titleTheme = theme.split(' ')[0] ?? theme;
-  const chapterCount = Math.min(
-    CHAPTER_TEMPLATES.length,
-    Math.ceil(pageCount / PAGES_PER_CHAPTER),
-  );
+  const chapterCount = Math.min(CHAPTER_TEMPLATES.length, Math.ceil(pageCount / PAGES_PER_CHAPTER));
   const chapters = CHAPTER_TEMPLATES.slice(0, chapterCount).map((build, index) => ({
     ...build(name, theme),
     chapterNumber: index + 1,
@@ -375,7 +375,11 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
     const pages = buildPagePlan(storyPlan, pageCount);
     const storyPlanWithDraft = buildStoryDraft(characterCard, { ...storyPlan, pages });
     const storyPlanFinal = buildIllustrationPlan(characterCard, storyPlanWithDraft);
-    const bookPreview = buildBookPreview({ childName, childAge, language }, characterCard, storyPlanFinal);
+    const bookPreview = buildBookPreview(
+      { childName, childAge, language },
+      characterCard,
+      storyPlanFinal,
+    );
     const imageGenerationResult = buildImageGenerationResult(bookId, bookPreview);
 
     return { characterCard, storyPlan: storyPlanFinal, bookPreview, imageGenerationResult };

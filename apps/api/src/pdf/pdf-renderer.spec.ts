@@ -24,7 +24,7 @@ function makeCoverEntry(overrides: Partial<BookLayoutEntry> = {}): BookLayoutEnt
     },
     textBlock: {
       box: { x: 180, y: 1620, width: 2040, height: 600 },
-      text: "Test Book Title",
+      text: 'Test Book Title',
       fontFamily: 'Fraunces',
       fontSize: 32,
       lineHeight: 1.2,
@@ -170,10 +170,7 @@ describe('renderStorybookPdf', () => {
 
   it('same input produces buffers of identical length (compress:false, deterministic content)', async () => {
     const layout = makeLayout([makeCoverEntry(), makePageEntry(1)]);
-    const [a, b] = await Promise.all([
-      renderStorybookPdf(layout),
-      renderStorybookPdf(layout),
-    ]);
+    const [a, b] = await Promise.all([renderStorybookPdf(layout), renderStorybookPdf(layout)]);
     // Byte count must match when content and font data are identical
     expect(a.length).toBe(b.length);
   });

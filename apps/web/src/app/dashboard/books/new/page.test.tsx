@@ -229,28 +229,31 @@ describe('NewBookPage wizard', () => {
     expect(options).toEqual(['4', '5', '6', '7', '8', '9', '10', '11', '12']);
   });
 
-  it.each([4, 12])('sends pageCount %i when selected at the bounds of the range', async (pageCount) => {
-    const user = userEvent.setup();
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
+  it.each([4, 12])(
+    'sends pageCount %i when selected at the bounds of the range',
+    async (pageCount) => {
+      const user = userEvent.setup();
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
 
-    render(<NewBookPage />);
+      render(<NewBookPage />);
 
-    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+      await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
+      await user.click(screen.getByRole('button', { name: 'Next' }));
 
-    await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
-    const pageCountSelect = screen.getByRole('combobox', { name: /number of pages/i });
-    await user.selectOptions(pageCountSelect, String(pageCount));
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+      await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
+      const pageCountSelect = screen.getByRole('combobox', { name: /number of pages/i });
+      await user.selectOptions(pageCountSelect, String(pageCount));
+      await user.click(screen.getByRole('button', { name: 'Next' }));
 
-    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+      await user.click(screen.getByRole('button', { name: 'Create Book' }));
 
-    await waitFor(() => expect(pushMock).toHaveBeenCalled());
+      await waitFor(() => expect(pushMock).toHaveBeenCalled());
 
-    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.pageCount).toBe(pageCount);
-  });
+      const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body.pageCount).toBe(pageCount);
+    },
+  );
 
   it('does not send a whitespace-only educationalMessage', async () => {
     const user = userEvent.setup();

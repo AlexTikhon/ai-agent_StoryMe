@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { SupportedLanguage, BookStatus } from '@book/types';
 import type {
@@ -736,7 +736,9 @@ function GenerationDiagnosticsPanel({
 
   // generationMetadata is always present per the DTO contract, but panel stays
   // resilient to a malformed/partial payload rather than throwing during render.
-  const meta = diagnostics.generationMetadata ?? ({} as Partial<GenerationDiagnosticsDto['generationMetadata']>);
+  const meta =
+    diagnostics.generationMetadata ??
+    ({} as Partial<GenerationDiagnosticsDto['generationMetadata']>);
   const hasFailure = Boolean(diagnostics.failedStep ?? diagnostics.errorMessage);
 
   return (
@@ -1188,14 +1190,35 @@ function EditFormFields({ values, onChange, submitting, onCancel }: EditFormFiel
 function PdfSection({ book }: { book: BookDto }) {
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
 
   const pdfApiUrl =
-    book.status === BookStatus.Complete && book.previewPdfUrl
-      ? bookPdfPreviewUrl(book.id)
-      : null;
+    book.status === BookStatus.Complete && book.previewPdfUrl ? bookPdfPreviewUrl(book.id) : null;
   const previewPages = book.bookPreview?.pages;
   const hasGeneratedPages = Array.isArray(previewPages) && previewPages.length > 0;
   const canDownloadPdf = Boolean(pdfApiUrl) && hasGeneratedPages;
+
+  // A plain `<a target="_blank">` navigation can't attach the Authorization
+  // header the API requires, so the click is intercepted here: fetch the PDF
+  // through the authenticated client and open the resulting blob instead. The
+  // href itself is left pointing at the real API endpoint (kept stable for
+  // right-click/copy-link and so the link degrades sensibly if JS fails).
+  const handleOpen = async (e: MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (opening) return;
+    setOpening(true);
+    setOpenError(null);
+    try {
+      const blob = await booksApi.downloadPdf(book.id);
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      setOpenError('Could not open PDF. Please try again.');
+    } finally {
+      setOpening(false);
+    }
+  };
 
   const handleDownload = async () => {
     if (downloading) return;
@@ -1244,9 +1267,12 @@ function PdfSection({ book }: { book: BookDto }) {
               href={pdfApiUrl}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={(e) => {
+                void handleOpen(e);
+              }}
               className="inline-flex h-9 items-center rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500"
             >
-              Open PDF
+              {opening ? 'Opening…' : 'Open PDF'}
             </a>
             {canDownloadPdf ? (
               <button
@@ -1261,12 +1287,12 @@ function PdfSection({ book }: { book: BookDto }) {
               <p className="text-xs text-text-muted">No pages available to export yet.</p>
             )}
           </div>
-          {downloadError && (
+          {(openError ?? downloadError) && (
             <p
               role="alert"
               className="mt-3 rounded-lg bg-danger-light px-3 py-2 text-xs text-danger-base"
             >
-              {downloadError}
+              {openError ?? downloadError}
             </p>
           )}
         </div>

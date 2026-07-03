@@ -99,9 +99,9 @@ describe('LocalImageAssetStorage', () => {
 
   it('rejects path-traversal keys on save', async () => {
     const storage = new LocalImageAssetStorage();
-    await expect(
-      storage.saveImageAsset('../evil', VALID_PNG, 'image/png'),
-    ).rejects.toThrow(/Invalid image asset key/);
+    await expect(storage.saveImageAsset('../evil', VALID_PNG, 'image/png')).rejects.toThrow(
+      /Invalid image asset key/,
+    );
     await expect(
       storage.saveImageAsset(`${TEST_BOOK_ID}/../../evil`, VALID_PNG, 'image/png'),
     ).rejects.toThrow(/Invalid image asset key/);
@@ -116,11 +116,7 @@ describe('LocalImageAssetStorage', () => {
   it('rejects unsupported content types on save', async () => {
     const storage = new LocalImageAssetStorage();
     await expect(
-      storage.saveImageAsset(
-        `${TEST_BOOK_ID}/bad-type`,
-        VALID_PNG,
-        'image/gif' as never,
-      ),
+      storage.saveImageAsset(`${TEST_BOOK_ID}/bad-type`, VALID_PNG, 'image/gif' as never),
     ).rejects.toThrow(/Unsupported image content type/);
   });
 
@@ -261,9 +257,9 @@ describe('CloudImageAssetStorage', () => {
 
   it('rejects for keys containing path-traversal characters', async () => {
     const storage = new CloudImageAssetStorage(validCloudConfig);
-    await expect(
-      storage.saveImageAsset('../evil', Buffer.from('x'), 'image/png'),
-    ).rejects.toThrow(/Invalid image asset key/);
+    await expect(storage.saveImageAsset('../evil', Buffer.from('x'), 'image/png')).rejects.toThrow(
+      /Invalid image asset key/,
+    );
     await expect(storage.getImageAsset('../evil')).rejects.toThrow(/Invalid image asset key/);
     expect(sendMock).not.toHaveBeenCalled();
   });

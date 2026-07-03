@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { GenerationJobStatus, GenerationJobType, type AgentStep, type GenerationJob } from '@prisma/client';
+import {
+  GenerationJobStatus,
+  GenerationJobType,
+  type AgentStep,
+  type GenerationJob,
+} from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 
 /**

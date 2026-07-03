@@ -101,8 +101,7 @@ function isNotFoundError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const name = (err as { name?: unknown }).name;
   if (name === 'NoSuchKey' || name === 'NotFound') return true;
-  const statusCode = (err as { $metadata?: { httpStatusCode?: number } }).$metadata
-    ?.httpStatusCode;
+  const statusCode = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
   return statusCode === 404;
 }
 
@@ -234,15 +233,21 @@ export function imageAssetKey(
 }
 
 /**
- * Pre-resolves every layout entry's image bytes from local storage (if any
- * were saved) into a Map, then returns a synchronous ImageBufferResolver over
- * that Map. renderStorybookPdf's resolveImageBuffer seam is intentionally
+ * Pre-resolves every layout entry's image bytes from storage (if any were
+ * saved) into a Map, then returns a synchronous ImageBufferResolver over that
+ * Map. renderStorybookPdf's resolveImageBuffer seam is intentionally
  * synchronous (see pdf-renderer.ts), so all async storage reads must happen
  * up front — this is that bridge.
  *
- * When nothing has been saved (the current pipeline never saves real image
- * bytes yet — see docs/pdf-rendering.md), every lookup misses and the
- * returned resolver behaves exactly like passing no resolver at all.
+ * AgentService.startBookGeneration saves real bytes for every generated
+ * image entry (via the injected ImageGenerationProvider) before calling this
+ * — see docs/pdf-rendering.md — so the normal book-generation path resolves
+ * real bytes here, not placeholders. A per-entry lookup still misses (and
+ * that entry falls back to the placeholder rectangle) when a save was
+ * skipped after a provider/storage failure, or when this is called against
+ * storage nothing was ever saved to (e.g. the standalone `pnpm render:pdf`
+ * sample script, which renders a hardcoded layout without going through
+ * AgentService or ImageAssetStorage at all).
  */
 export async function buildImageBufferResolver(
   storage: ImageAssetStorage,

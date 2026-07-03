@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { booksApi } from './books';
+import { setAccessToken } from '../auth/token-store';
 import { SupportedLanguage, BookStatus } from '@book/types';
 import type { BookDto, BooksPageDto, GenerateBookResponse } from '@book/types';
 
@@ -37,14 +38,19 @@ function mockError(status: number, message: string | string[]): Response {
 describe('booksApi', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
+    setAccessToken(null);
+    delete process.env['NEXT_PUBLIC_AUTH_MODE'];
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    setAccessToken(null);
+    delete process.env['NEXT_PUBLIC_AUTH_MODE'];
   });
 
   describe('list()', () => {
-    it('sends GET /books with pagination params and dev auth headers', async () => {
+    it('sends GET /books with pagination params and a Bearer token in jwt mode', async () => {
+      setAccessToken('access-token-123');
       const page: BooksPageDto = { items: [MOCK_BOOK], page: 1, limit: 20, total: 1 };
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(page));
 
@@ -53,9 +59,24 @@ describe('booksApi', () => {
       expect(fetch).toHaveBeenCalledOnce();
       const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
       expect(url).toBe('http://localhost:4000/api/books?page=1&limit=20');
+      expect((init.headers as Record<string, string>)['Authorization']).toBe(
+        'Bearer access-token-123',
+      );
+      expect((init.headers as Record<string, string>)['x-user-email']).toBeUndefined();
+      expect(result).toEqual(page);
+    });
+
+    it('sends dev auth headers instead of a Bearer token when AUTH_MODE=dev', async () => {
+      process.env['NEXT_PUBLIC_AUTH_MODE'] = 'dev';
+      const page: BooksPageDto = { items: [MOCK_BOOK], page: 1, limit: 20, total: 1 };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(page));
+
+      await booksApi.list();
+
+      const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
       expect((init.headers as Record<string, string>)['x-user-email']).toBe('dev@storyme.local');
       expect((init.headers as Record<string, string>)['x-user-name']).toBe('Dev User');
-      expect(result).toEqual(page);
+      expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined();
     });
 
     it('forwards custom page and limit params', async () => {

@@ -64,6 +64,26 @@ describe('JwtAuthGuard', () => {
     await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
+  it('rejects a valid token whose user has been deactivated', async () => {
+    const deactivatedUser = {
+      id: 'u-1',
+      email: 'a@example.com',
+      deactivatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    } as User;
+    const tokenService = {
+      verifyAccessToken: vi
+        .fn()
+        .mockReturnValue({ sub: 'u-1', email: 'a@example.com', role: 'user' }),
+    } as unknown as TokenService;
+    const usersService = {
+      findById: vi.fn().mockResolvedValue(deactivatedUser),
+    } as unknown as UsersService;
+    const guard = new JwtAuthGuard(tokenService, usersService);
+    const { context } = createContext({ authorization: 'Bearer good.token.value' });
+
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+  });
+
   it('attaches the fresh DB user to request.user for a valid token', async () => {
     const user = { id: 'u-1', email: 'a@example.com' } as User;
     const tokenService = {

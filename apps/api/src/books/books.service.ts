@@ -225,11 +225,18 @@ export class BooksService {
           'failed',
         );
       } else {
-        await this.markJob(this.generationJobService.markCompleted(jobId), jobId, book.id, 'completed');
+        await this.markJob(
+          this.generationJobService.markCompleted(jobId),
+          jobId,
+          book.id,
+          'completed',
+        );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Background generation pipeline threw unexpectedly for book ${book.id}: ${message}`);
+      this.logger.error(
+        `Background generation pipeline threw unexpectedly for book ${book.id}: ${message}`,
+      );
       await this.prisma.book
         .update({
           where: { id: book.id },
@@ -259,7 +266,9 @@ export class BooksService {
   ): Promise<void> {
     await update.catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to mark generation job ${jobId} ${action} for book ${bookId}: ${message}`);
+      this.logger.error(
+        `Failed to mark generation job ${jobId} ${action} for book ${bookId}: ${message}`,
+      );
     });
   }
 

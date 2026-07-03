@@ -26,16 +26,21 @@ generate a book → download the PDF).
 - Render and preview/download the finished book as a PDF.
 - Retry generation after a failure.
 
+## Authentication
+
+Real email/password auth (JWT access token + rotating `HttpOnly` refresh
+cookie) is implemented end-to-end — backend (`docs/auth-architecture.md`)
+and frontend (login/register pages, `AuthProvider`, protected `/dashboard`
+routes). Controlled by `AUTH_MODE` (API) / `NEXT_PUBLIC_AUTH_MODE` (web),
+both `dev | jwt`, defaulting to `jwt`. `dev` mode is kept as a documented
+local-only fallback: every request carries a hardcoded `x-user-email`
+header (`DevAuthGuard`) instead of a bearer token, no login screen, no
+credential check. See `apps/api/src/auth/dev-auth.guard.ts` and
+`apps/api/src/auth/auth-mode.guard.ts`. **The two `AUTH_MODE` values must
+match between API and web** or every request 401s.
+
 ## What it does not do yet
 
-- **No frontend authentication yet.** The backend has real email/password
-  auth (JWT access tokens + rotating refresh cookies — see
-  `docs/auth-architecture.md`), but the web app hasn't been wired to it: it
-  still runs against `AUTH_MODE=dev`, where every request is scoped to a
-  user by a plain `x-user-email` header (`DevAuthGuard`) and a matching
-  `User` row is created automatically on first use. There is no login
-  screen yet — see `apps/api/src/auth/dev-auth.guard.ts` and
-  `apps/api/src/auth/auth-mode.guard.ts`.
 - **No payments/credits enforcement.** `User.credits` and Stripe fields exist
   in the schema but nothing in the API charges credits or calls Stripe.
 - **No queue-backed generation.** Generation runs in-process
@@ -45,6 +50,15 @@ generate a book → download the PDF).
 - **No cancellation or partial-completion flow.** `BookStatus.Cancelled` and
   `BookStatus.Partial` exist in the schema/types as reserved states for
   future work but no code path currently produces them.
+- **Russian/Polish PDF output is not production-ready.** `SupportedLanguage`
+  offers `ru` and `pl` in the book-creation form, but the PDF renderer only
+  uses PDFKit's built-in fonts (WinAnsi/Latin-1 encoding) — Cyrillic (`ru`)
+  renders as blank glyphs entirely, and Polish diacritics (ą ć ę ł ń ó ś ź ż)
+  are missing too. Books created in those languages generate successfully
+  and the story text is correct, but the exported PDF will have missing
+  characters. See `apps/api/docs/pdf-rendering.md#font--unicode-limitation`
+  for the fix (embedding licensed Unicode fonts) — deliberately not done in
+  this pass; no font was added without an explicit licensing decision.
 
 ## Mock vs. real (OpenAI) generation
 
@@ -104,9 +118,6 @@ publicly.
 
 ## Known post-MVP TODOs
 
-- Wire the frontend to the real `/api/auth/*` endpoints (login/register UI,
-  token storage, protected routing) and flip `AUTH_MODE` to `jwt` in
-  deployment — the backend side of this already exists (Phase 6B).
 - Wire credit deduction and Stripe billing.
 - Move generation onto the BullMQ/Redis queue instead of in-process execution.
 - Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial

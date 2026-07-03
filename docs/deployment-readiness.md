@@ -145,22 +145,32 @@ one when Docker is the recommended target.
   env var edit on a running instance.
   - Defaults to `http://localhost:4000/api` when unset, which is only
     correct for local dev.
-- No other env vars are read by the web app. There is no server-only secret
-  in `apps/web` today (dev-auth values are hardcoded constants, not env —
-  see [Dev-auth warning](#phase-5d-dev-auth) below).
+- `NEXT_PUBLIC_AUTH_MODE` (`dev` | `jwt`, defaults to `jwt`) — same
+  build-time-inlined caveat as `NEXT_PUBLIC_API_URL`. Must match the API's
+  `AUTH_MODE`. See [Dev-auth warning](#phase-5d-dev-auth) below.
+- No server-only secret exists in `apps/web` — the access token lives only
+  in an in-memory module (`apps/web/src/lib/auth/token-store.ts`), never
+  `localStorage`/`sessionStorage`, and the refresh token never reaches JS at
+  all (`HttpOnly` cookie).
 
 ### API client / cross-origin behavior
 
-- `apiFetch`/`apiFetchBlob` use plain `fetch()` with no `credentials:
-  'include'` — auth is carried via the `x-user-email`/`x-user-name` headers
-  (`DevAuthGuard`), not cookies, so there's no same-site cookie concern when
-  web and API are deployed to different domains.
-- The API's CORS setup (`apps/api/src/main.ts`) already allows this:
-  `ALLOWED_ORIGINS` is env-driven (not hardcoded), and `allowedHeaders`
-  already includes `x-user-email`/`x-user-name` alongside the standard
-  headers. **The only action needed at deploy time is setting
-  `ALLOWED_ORIGINS` on the API to the web app's actual deployed origin** —
-  no code change.
+- In `jwt` mode (default), `apiFetch`/`apiFetchBlob` send `credentials:
+  'include'` (so the `storyme_refresh` `HttpOnly` cookie round-trips
+  cross-origin) plus `Authorization: Bearer <accessToken>` from the
+  in-memory token store. A `401` triggers exactly one silent
+  `POST /api/auth/refresh` + retry before surfacing the error (see
+  `apps/web/src/lib/api/client.ts`).
+- In `dev` mode, identity is still carried via the `x-user-email`/
+  `x-user-name` headers (`DevAuthGuard`), unchanged from before.
+- The API's CORS setup (`apps/api/src/main.ts`) already allows both:
+  `ALLOWED_ORIGINS` is env-driven (not hardcoded), `credentials: true` is
+  set, and `allowedHeaders` includes `Authorization` alongside
+  `x-user-email`/`x-user-name`. **The only action needed at deploy time is
+  setting `ALLOWED_ORIGINS` on the API to the web app's actual deployed
+  origin** — no code change. `SameSite=None; Secure` on the refresh cookie
+  (`refresh-cookie.ts`) requires HTTPS on both origins in production, which
+  Vercel/Render/Fly/Railway provide by default.
 - Confirmed no other hardcoded `localhost` URLs exist in request paths.
 
 ### Note: unused `next.config.mjs` image remote pattern
@@ -178,34 +188,36 @@ image loading will silently fail in production.
 
 ### Dev-auth warning {#phase-5d-dev-auth}
 
-Restating for the web-deployment context (full detail already in
-[Auth limitation note](#auth-limitation)): the web app sends a **hardcoded**
+As of Phase 6C, `apps/web` has real login/register (`/login`, `/register`,
+`AuthProvider`, protected `/dashboard/*` routes) and defaults to
+`NEXT_PUBLIC_AUTH_MODE=jwt`, matching the API's `AUTH_MODE=jwt` default —
+per-user identity via password + JWT, no shared dev user. `dev` mode is
+kept only as a documented **local/trusted-operator-only** fallback: setting
+`NEXT_PUBLIC_AUTH_MODE=dev` sends a **hardcoded**
 `x-user-email: dev@storyme.local` / `x-user-name: Dev User` pair on every
-request (`apps/web/src/lib/api/client.ts`) — there is no login UI and no
-per-user identity. This is acceptable **only** for a private/internal MVP
-demo (e.g. a Vercel deploy behind a password/allowlist, or shared with a
-small trusted group). **Do not put this web deployment behind a public URL
-without first replacing `DevAuthGuard` with real auth** — anyone with the
-URL would be acting as the same fixed dev user, and (per the CORS config
-above) anyone who also knows the header trick could act as *any* user by
-setting their own `x-user-email`.
+request (`apps/web/src/lib/api/client.ts`), skips the login screen
+entirely, and requires the matching API to also run `AUTH_MODE=dev`. **Do
+not deploy any publicly reachable environment with `AUTH_MODE=dev`** —
+anyone who reaches the API and sets their own `x-user-email` header can
+impersonate any user, dev-mode identity is not connected to any credential.
 
 ### Web deployment checklist
 
 1. Set `NEXT_PUBLIC_API_URL` in the hosting platform's build-time env vars
    to the deployed API's public URL (including the `/api` suffix, e.g.
    `https://api.example.com/api`) — **before** the first build.
-2. Set `ALLOWED_ORIGINS` on the API to the deployed web app's origin
+2. Set `NEXT_PUBLIC_AUTH_MODE` to match the API's `AUTH_MODE` (both default
+   to `jwt` if left unset — a mismatch 401s every request).
+3. Set `ALLOWED_ORIGINS` on the API to the deployed web app's origin
    (e.g. `https://storyme.example.com`) — comma-separated if there are
    multiple (e.g. preview + production Vercel URLs).
-3. Run `pnpm --filter @book/web build` (Vercel does this automatically from
+4. Run `pnpm --filter @book/web build` (Vercel does this automatically from
    the repo; a self-hosted Node host needs this plus `pnpm --filter @book/web
    start` after).
-4. Verify the deployed web app can reach the deployed API: load the app,
-   create a book, confirm the detail page's polling and PDF preview link
-   work cross-origin.
-5. Keep the deployment private/internal (password-protect or restrict
-   access) until real auth replaces `DevAuthGuard` — see the warning above.
+5. Verify the deployed web app can reach the deployed API: register/log in,
+   create a book, confirm the detail page's polling and PDF open/download
+   work cross-origin, and that `/dashboard` redirects to `/login` when
+   signed out.
 
 ## Known blockers
 
@@ -228,9 +240,12 @@ setting their own `x-user-email`.
    recommended path — see
    [Phase 5D: Web deployment readiness](#phase-5d-web) above. No Dockerfile
    was added since it isn't the recommended path for this MVP.
-4. **Dev-only auth.** `DevAuthGuard` trusts a plain `x-user-email` header with
-   no credential check (see [Auth limitation](#auth-limitation) below). Fine
-   for a local/internal demo; not safe to expose publicly.
+4. ~~Dev-only auth.~~ **Resolved in Phase 6B/6C**: real email/password auth
+   (JWT access token + rotating refresh cookie) exists end-to-end, backend
+   and frontend, and is the default (`AUTH_MODE`/`NEXT_PUBLIC_AUTH_MODE=jwt`).
+   `DevAuthGuard` remains only as an explicit, documented local/
+   trusted-operator fallback (`AUTH_MODE=dev`) — see
+   [Auth limitation](#auth-limitation) below.
 5. **In-process generation, no worker process.** `GenerationTaskRunner` runs
    the generation pipeline in the same process as the HTTP server. BullMQ/Redis
    are provisioned but unused for this. Acceptable for a single-instance
@@ -238,6 +253,14 @@ setting their own `x-user-email`.
    multiple API instances (otherwise a redeploy mid-generation drops the job —
    `GenerationJobRecoveryService` already detects and fails these stale jobs on
    next boot, so this fails safely rather than silently, but the job is lost).
+6. **`ru`/`pl` PDF output is not production-ready.** `SupportedLanguage`
+   offers Russian and Polish, but the PDF renderer only has PDFKit's
+   built-in WinAnsi-only fonts — Cyrillic renders as blank glyphs entirely,
+   Polish diacritics are missing. Story generation and layout are unaffected;
+   only the exported PDF is wrong. No fonts were embedded in this pass
+   pending an explicit licensing decision — see
+   `apps/api/docs/pdf-rendering.md#backlog-rupl-pdf-output-is-not-production-ready`
+   for the concrete gap and the implementation plan once a font is chosen.
 
 ## Things already in good shape (no fix needed)
 
@@ -270,8 +293,24 @@ setting their own `x-user-email`.
   providers that don't exist yet. Changed to optional; `OPENAI_API_KEY`
   (actually read by the real story/image providers) is unchanged and still
   required.
+
+  **Follow-up fix (later pass)**: the claim above ("still required") was
+  itself a bug — `OPENAI_API_KEY` was `z.string().min(1)` unconditionally,
+  so the API refused to boot in the default mock/mock configuration even
+  though nothing on that path calls OpenAI. `story-generation-provider.factory.ts`
+  / `image-generation-provider.factory.ts` already gated their own
+  `OPENAI_API_KEY` requirement correctly on the selected provider; the env
+  schema just didn't match. Fixed via `.superRefine()`: `OPENAI_API_KEY` is
+  now optional at the schema level and only required when
+  `STORY_GENERATION_PROVIDER` or `IMAGE_GENERATION_PROVIDER_TOKEN` is
+  (case-insensitively) `"openai"` — matching what `.env.example` and this
+  doc's [Required env vars](#required-env-vars-production) section already
+  claimed. See `env.schema.spec.ts` for coverage of both the mock-mode-boots
+  and openai-without-key-fails cases.
 - **`.env.example`**: updated comments to match — those vars are now shown
-  commented-out/optional with a note on why.
+  commented-out/optional with a note on why. `OPENAI_API_KEY` itself is now
+  also commented out in the default mock/mock template (see follow-up fix
+  above).
 - **`apps/api/Dockerfile`**: added a `HEALTHCHECK` instruction wired to the
   existing `/api/health` endpoint (container orchestrators can now detect an
   unhealthy instance), and a comment clarifying that migrations are **not**
@@ -338,36 +377,46 @@ still pass unchanged.
 
 ## Auth limitation note {#auth-limitation}
 
-- **Current behavior (as of Phase 6B)**: real backend auth now exists —
-  `POST /api/auth/{register,login,refresh,logout}` and `GET /api/auth/me`,
-  bcrypt-hashed passwords, short-lived JWT access tokens, and rotating
-  refresh tokens (with reuse detection) in an `HttpOnly` cookie. Protected
-  routes (`BooksController`, `AuthController#getMe`) use `AuthModeGuard`,
-  which picks `JwtAuthGuard` or `DevAuthGuard` per request from the new
-  `AUTH_MODE` env var (`dev` | `jwt`, defaults to `jwt`). See
-  `apps/api/src/auth/` and `docs/auth-architecture.md` for the full design.
-- **What's still `DevAuthGuard`-shaped**: the web app (`apps/web`) has not
-  been updated — it still hardcodes the `x-user-email`/`x-user-name` dev
-  headers on every request (`apps/web/src/lib/api/client.ts`) and has no
-  login/register UI. Practically, that means **the deployed demo must still
-  run with `AUTH_MODE=dev`** until frontend integration (login/register
-  pages, token storage, protected routing) lands in a follow-up phase —
-  setting `AUTH_MODE=jwt` today would lock the existing frontend out
-  entirely, since it never sends an `Authorization: Bearer` header.
-  `DevAuthGuard` itself still refuses to run when `NODE_ENV=production`
-  regardless of `AUTH_MODE`, as a safety net against exactly this
-  misconfiguration.
-- **Why it is not yet safe for public exposure**: until the frontend speaks
-  the new endpoints, the *effective* auth for any real deployment is still
-  `DevAuthGuard` — anyone who can reach the API and set `x-user-email` can
-  impersonate any user. The backend primitives (§ above) remove the
-  *implementation* blocker; the frontend cutover removes the *exposure*
-  blocker. Both are needed before this stops being private/internal-only.
-- **What's left**: a login/register UI and an `AuthProvider` on the web app
-  that stores the access token in memory, sends `Authorization: Bearer`,
-  and retries once through `/api/auth/refresh` on a 401 (see
-  `docs/auth-architecture.md` §5), then flipping the deployed `AUTH_MODE` to
-  `jwt` and removing the `x-user-email`/`x-user-name` CORS-allowed headers.
+- **Current behavior (as of Phase 6C)**: real auth exists end-to-end.
+  Backend (Phase 6B): `POST /api/auth/{register,login,refresh,logout}` and
+  `GET /api/auth/me`, bcrypt-hashed passwords, short-lived JWT access
+  tokens, and rotating refresh tokens (with reuse detection) in an
+  `HttpOnly` cookie. Frontend (Phase 6C): `/login`, `/register` pages, an
+  `AuthProvider` holding the access token in memory (never
+  `localStorage`), `Authorization: Bearer` on authenticated requests, a
+  silent refresh-and-retry-once on `401`, and `/dashboard/*` routes
+  redirecting to `/login` when signed out. Protected routes
+  (`BooksController`, `AuthController#getMe`) use `AuthModeGuard`, which
+  picks `JwtAuthGuard` or `DevAuthGuard` per request from `AUTH_MODE`
+  (`dev` | `jwt`, defaults to `jwt`); the web app mirrors this with
+  `NEXT_PUBLIC_AUTH_MODE`. See `apps/api/src/auth/`,
+  `apps/web/src/lib/auth/`, and `docs/auth-architecture.md` for the full
+  design.
+- **`DevAuthGuard` fallback**: kept only as a documented local/
+  trusted-operator convenience (`AUTH_MODE=dev` + matching
+  `NEXT_PUBLIC_AUTH_MODE=dev`) — no login screen, identity via a hardcoded
+  `x-user-email` header. `DevAuthGuard` itself still refuses to run when
+  `NODE_ENV=production` regardless of `AUTH_MODE`, as a safety net against
+  accidental misconfiguration.
+- **Deactivated-user hardening (later pass)**: `JwtAuthGuard`, `AuthService.login`,
+  and `AuthService.refresh` all now reject a user with `deactivatedAt` set —
+  previously only a code comment in `jwt-auth.guard.ts` claimed this
+  ("a deactivated account... takes effect immediately") without the schema
+  field actually being checked anywhere. Login/refresh reuse the existing
+  generic "invalid credentials"/"invalid token" messages rather than a
+  distinct "account deactivated" message, matching this codebase's existing
+  no-enumeration policy. See `apps/api/src/auth/*.spec.ts`.
+- **Why this is still private/internal-only**: real credential verification
+  removes the identity-spoofing risk `DevAuthGuard` had, but the auth
+  endpoints have no rate limiting, no email verification, and no
+  password-reset flow yet — brute-force/enumeration protection and account
+  recovery are still open. That's the remaining gap before public exposure,
+  not the identity model itself.
+- **What's left**: rate limiting + account recovery on `/api/auth/*` (see
+  [Remaining blockers before public production](private-demo-deploy.md) in
+  the deploy runbook), then removing the `x-user-email`/`x-user-name`
+  CORS-allowed headers and `DevAuthGuard` entirely once no deployment still
+  relies on dev mode.
 
 ## Recommended deployment architecture
 
@@ -506,8 +555,9 @@ that undoes the change, not running the old one backwards.
 1. Add the migration-deploy step to whatever deploy pipeline is chosen (CI
    job, release script, or platform release-phase hook), since the container
    itself intentionally doesn't run it.
-2. Real auth phase (see [Auth limitation note](#auth-limitation)) — this
-   should happen before any public deploy, not just a private/internal one.
+2. Rate limiting + account recovery on `/api/auth/*` (see
+   [Auth limitation note](#auth-limitation)) — real auth itself is done
+   end-to-end (Phase 6B/6C); this is what's left before any public deploy.
 
 ## Private demo runbook
 

@@ -40,7 +40,9 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     educationalMessage: null,
     characterCard: null,
     storyPlan: null,
-    bookPreview: { pages: [{ pageNumber: 1 }, { pageNumber: 2 }] } as unknown as Book['bookPreview'],
+    bookPreview: {
+      pages: [{ pageNumber: 1 }, { pageNumber: 2 }],
+    } as unknown as Book['bookPreview'],
     imageGenerationResult: null,
     bookLayout: null,
     chapters: null,
@@ -98,7 +100,11 @@ describe('buildGenerationMetadata', () => {
   it('reads storyProvider/imageProvider from the matching AgentLog rows', () => {
     const logs = [
       makeAgentLog({ step: 'story_plan' as AgentLog['step'], provider: 'mock' }),
-      makeAgentLog({ step: 'image_gen' as AgentLog['step'], provider: 'openai', model: 'gpt-image-1' }),
+      makeAgentLog({
+        step: 'image_gen' as AgentLog['step'],
+        provider: 'openai',
+        model: 'gpt-image-1',
+      }),
     ];
 
     const metadata = buildGenerationMetadata(makeBook({ aiModelVersions: null }), logs);
@@ -116,12 +122,15 @@ describe('buildGenerationMetadata', () => {
   });
 
   it('prefers Book.aiModelVersions over the AgentLog model column for storyModel/imageModel', () => {
-    const logs = [
-      makeAgentLog({ step: 'story_plan' as AgentLog['step'], model: 'log-model' }),
-    ];
+    const logs = [makeAgentLog({ step: 'story_plan' as AgentLog['step'], model: 'log-model' })];
 
     const metadata = buildGenerationMetadata(
-      makeBook({ aiModelVersions: { story: 'gpt-4o-mini', image: 'gpt-image-1' } as unknown as Book['aiModelVersions'] }),
+      makeBook({
+        aiModelVersions: {
+          story: 'gpt-4o-mini',
+          image: 'gpt-image-1',
+        } as unknown as Book['aiModelVersions'],
+      }),
       logs,
     );
 
@@ -195,7 +204,11 @@ describe('buildGenerationDiagnostics', () => {
 
   it('maps AgentLog rows into recentLogs preserving step/status/provider/model/error', () => {
     const logs = [
-      makeAgentLog({ step: 'image_gen' as AgentLog['step'], status: 'error' as AgentLog['status'], error: 'boom' }),
+      makeAgentLog({
+        step: 'image_gen' as AgentLog['step'],
+        status: 'error' as AgentLog['status'],
+        error: 'boom',
+      }),
     ];
 
     const diagnostics = buildGenerationDiagnostics(makeBook(), logs);
@@ -209,9 +222,7 @@ describe('buildGenerationDiagnostics', () => {
   });
 
   it('never leaks OPENAI_API_KEY, prompts, image base64, or raw provider responses through recentLogs', () => {
-    const logs = [
-      makeAgentLog({ error: 'OpenAI request failed: 401 Unauthorized' }),
-    ];
+    const logs = [makeAgentLog({ error: 'OpenAI request failed: 401 Unauthorized' })];
 
     const diagnostics = buildGenerationDiagnostics(makeBook(), logs);
 

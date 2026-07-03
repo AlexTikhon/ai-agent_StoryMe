@@ -151,7 +151,9 @@ describe('BooksController.generate', () => {
 describe('BooksController.retryGeneration', () => {
   it('delegates to booksService.retryGeneration and returns its response', async () => {
     const booksService = createMockBooksService();
-    const response: GenerateBookResponse = { book: { ...BOOK_DTO, status: 'story_plan' } as BookDto };
+    const response: GenerateBookResponse = {
+      book: { ...BOOK_DTO, status: 'story_plan' } as BookDto,
+    };
     booksService.retryGeneration.mockResolvedValue(response);
     const controller = new BooksController(booksService);
 
@@ -249,7 +251,10 @@ describe('BooksController.getPreviewPdf', () => {
 describe('BooksController.getGenerationDiagnostics', () => {
   it('delegates to booksService.getGenerationDiagnostics with the current user', async () => {
     const booksService = createMockBooksService();
-    const diagnostics = { bookId: 'b-1', status: 'complete' } as unknown as GenerationDiagnosticsDto;
+    const diagnostics = {
+      bookId: 'b-1',
+      status: 'complete',
+    } as unknown as GenerationDiagnosticsDto;
     booksService.getGenerationDiagnostics.mockResolvedValue(diagnostics);
     const controller = new BooksController(booksService);
 
@@ -261,7 +266,9 @@ describe('BooksController.getGenerationDiagnostics', () => {
 
   it('propagates NotFoundException for a missing book', async () => {
     const booksService = createMockBooksService();
-    booksService.getGenerationDiagnostics.mockRejectedValue(new NotFoundException('Book not found'));
+    booksService.getGenerationDiagnostics.mockRejectedValue(
+      new NotFoundException('Book not found'),
+    );
     const controller = new BooksController(booksService);
 
     await expect(controller.getGenerationDiagnostics(FAKE_USER, 'missing')).rejects.toThrow(

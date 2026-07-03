@@ -196,7 +196,10 @@ export class AgentService {
   ) {}
 
   /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
-  private modelLabel(provider: { readonly providerName?: string; readonly modelName?: string }): string {
+  private modelLabel(provider: {
+    readonly providerName?: string;
+    readonly modelName?: string;
+  }): string {
     return provider.modelName ?? provider.providerName ?? 'unknown';
   }
 

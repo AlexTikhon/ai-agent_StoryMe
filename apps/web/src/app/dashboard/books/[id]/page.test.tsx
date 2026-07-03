@@ -165,7 +165,9 @@ function mockPdfBlob(content = 'pdf-bytes', status = 200): Response {
   } as unknown as Response;
 }
 
-function makeDiagnostics(overrides: Partial<GenerationDiagnosticsDto> = {}): GenerationDiagnosticsDto {
+function makeDiagnostics(
+  overrides: Partial<GenerationDiagnosticsDto> = {},
+): GenerationDiagnosticsDto {
   return {
     bookId: 'book-1',
     status: BookStatus.StoryDraft,
@@ -1326,10 +1328,38 @@ describe('BookDetailPage', () => {
 
     await waitFor(() => {
       const link = screen.getByRole('link', { name: /open pdf/i }) as HTMLAnchorElement;
-      expect(link.getAttribute('href')).toBe(
-        'http://localhost:4000/api/books/book-1/pdf/preview',
-      );
+      expect(link.getAttribute('href')).toBe('http://localhost:4000/api/books/book-1/pdf/preview');
     });
+  });
+
+  it('clicking Open PDF fetches the PDF via the authenticated client and opens a blob URL instead of navigating directly', async () => {
+    const user = userEvent.setup();
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(completeBook))
+      .mockResolvedValueOnce(mockPdfBlob());
+
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+    render(<BookDetailPage />);
+    const openLink = await screen.findByRole('link', { name: /open pdf/i });
+    await user.click(openLink);
+
+    await waitFor(() => {
+      expect(openSpy).toHaveBeenCalledWith('blob:mock-url', '_blank', 'noopener,noreferrer');
+    });
+
+    const calls = fetchMock.fetchFn.mock.calls as [string, RequestInit][];
+    const [pdfUrl] = calls[calls.length - 1];
+    expect(pdfUrl).toBe('http://localhost:4000/api/books/book-1/pdf/preview');
+    expect(global.URL.createObjectURL).toHaveBeenCalled();
+
+    openSpy.mockRestore();
   });
 
   it('clicking Download PDF fetches the PDF endpoint and triggers a blob download with a safe filename', async () => {
@@ -1898,7 +1928,9 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() =>
-      expect(screen.getByText(/book is complete, but pdf link is not available yet/i)).toBeDefined(),
+      expect(
+        screen.getByText(/book is complete, but pdf link is not available yet/i),
+      ).toBeDefined(),
     );
 
     expect(screen.queryByText(/generation in progress/i)).toBeNull();
@@ -1962,9 +1994,7 @@ describe('BookDetailPage', () => {
               element.textContent === 'Failed step: image_gen',
           ),
         ).toBeDefined();
-        expect(
-          panel.getByText('Image provider returned an error after 3 attempts.'),
-        ).toBeDefined();
+        expect(panel.getByText('Image provider returned an error after 3 attempts.')).toBeDefined();
         expect(panel.getByText(/try again later, or check diagnostics/i)).toBeDefined();
       });
     });
@@ -2025,7 +2055,11 @@ describe('BookDetailPage', () => {
           mockOk(
             makeDiagnostics({
               status: BookStatus.ImageGen,
-              generationMetadata: { storyProvider: 'mock', imageProvider: 'mock', generatedPages: 1 },
+              generationMetadata: {
+                storyProvider: 'mock',
+                imageProvider: 'mock',
+                generatedPages: 1,
+              },
             }),
           ),
         );
@@ -2033,7 +2067,11 @@ describe('BookDetailPage', () => {
           mockOk(
             makeDiagnostics({
               status: BookStatus.ImageGen,
-              generationMetadata: { storyProvider: 'mock', imageProvider: 'mock', generatedPages: 3 },
+              generationMetadata: {
+                storyProvider: 'mock',
+                imageProvider: 'mock',
+                generatedPages: 3,
+              },
             }),
           ),
         );
@@ -2059,9 +2097,7 @@ describe('BookDetailPage', () => {
         vi.mocked(fetch)
           .mockResolvedValueOnce(mockOk(generatingBook))
           .mockResolvedValueOnce(mockOk(failedBook));
-        queueDiagnostics(
-          mockOk(makeDiagnostics({ status: BookStatus.StoryDraft })),
-        );
+        queueDiagnostics(mockOk(makeDiagnostics({ status: BookStatus.StoryDraft })));
         queueDiagnostics(
           mockOk(
             makeDiagnostics({

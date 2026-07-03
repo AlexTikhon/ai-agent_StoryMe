@@ -29,6 +29,35 @@ This is a known, accepted limitation for the current phase. Book text
 containing such characters currently passes DTO validation and layout, but
 will render incorrectly in the final PDF.
 
+### BACKLOG: `ru`/`pl` PDF output is not production-ready
+
+`SupportedLanguage` (`packages/types/src/book.types.ts`) offers `en` | `ru` |
+`pl` in the book-creation form, and story generation (mock and OpenAI) both
+produce correct `ru`/`pl` text — this limitation is PDF-rendering-only.
+Concretely, for a book created with:
+
+- `ru` (Russian) — Cyrillic is entirely outside WinAnsi. Every character in
+  the story text renders as a blank/missing glyph. The PDF is effectively
+  unreadable.
+- `pl` (Polish) — mostly Latin, but the diacritic letters (`ą ć ę ł ń ó ś ź
+  ż`, upper and lower case) fall outside WinAnsi and will render blank while
+  surrounding ASCII text renders fine — visibly broken rather than fully
+  unreadable, but still wrong.
+
+**Do not ship `ru`/`pl` as a real feature (marketing, public launch) until
+this is fixed** — today it's a silent per-glyph rendering gap, not a hard
+error, so nothing currently blocks a user from generating and downloading a
+broken PDF. Treat this the same as the other public-production blockers in
+`docs/deployment-readiness.md` (rate limiting, email verification, password
+reset): known, documented, not yet scheduled.
+
+Not fixed in this pass deliberately — embedding a Unicode-capable font
+requires picking and vendoring a specific font file, which is a licensing
+decision (redistribution rights, font file size in the repo/image) that
+shouldn't be made silently as a side effect of an unrelated change. See
+"Future Unicode font phase" below for the actual implementation plan once
+that decision is made.
+
 ## Future Unicode font phase (not implemented)
 
 To support non-Latin text, a future phase should:
@@ -138,24 +167,34 @@ interface) also exists and is used when `IMAGE_GENERATION_PROVIDER_TOKEN=openai`
 is explicitly set — see `local-generation-pipeline.md`. No changes to
 `buildImageBufferResolver` or the renderer were needed to add it.
 
-### Local image asset storage boundary
+### Image asset storage boundary
 
 `apps/api/src/images/image-asset-storage.ts` defines `ImageAssetStorage`, a
-local-first key/value byte store for generated image assets, independent of
-the PDF renderer and of `PdfStorage`:
+key/value byte store for generated image assets, independent of the PDF
+renderer and of `PdfStorage`. Two implementations exist, selected via
+`IMAGE_STORAGE_DRIVER` (`local` default | `s3` | `r2`) through
+`createImageAssetStorage`:
 
-- `saveImageAsset(key, buffer, contentType)` — writes bytes under
+- `LocalImageAssetStorage` — writes bytes under
   `<api-root>/tmp/images/<key>.<ext>` (ext derived from `contentType`:
   `image/png` → `.png`, `image/jpeg` → `.jpg`, `image/svg+xml` → `.svg`).
+- `CloudImageAssetStorage` — an S3-compatible driver (AWS S3 or Cloudflare
+  R2), mirroring `CloudPdfStorage` and reusing the same `PDF_STORAGE_*`
+  bucket/credential env vars (image assets live alongside PDF previews in
+  the same bucket, under an `images/` prefix, so no separate credentials are
+  needed). Registered the same way as the local driver, via
+  `IMAGE_ASSET_STORAGE_TOKEN` in `books.module.ts`.
+
+Both implementations share the same interface:
+
+- `saveImageAsset(key, buffer, contentType)` — persists bytes.
 - `getImageAsset(key)` — reads bytes back by key, returning `undefined` if
-  nothing was saved for it.
+  nothing was saved for it (or, for the cloud driver, on a not-found
+  response from the object store).
 - Keys are `"/"`-separated segments (e.g. `"<bookId>/cover"`); every segment
   must match `^[\w-]+$` or the call throws — this rejects path traversal
-  (`../`, absolute paths, backslashes) before touching the filesystem.
-- `LocalImageAssetStorage` is the only implementation today, registered via
-  `IMAGE_ASSET_STORAGE_TOKEN` in `books.module.ts`, mirroring the
-  `PdfStorage` / `PDF_STORAGE_TOKEN` pattern so a cloud-backed implementation
-  can be added later without changing callers.
+  (`../`, absolute paths, backslashes) before touching the filesystem or
+  building a cloud object key.
 - `imageAssetKey(bookId, kind, pageNumber?)` builds the stable key for a
   book's cover / page / back-cover slot, matching the same identity already
   used for `GeneratedImageEntry.id` (`<bookId>-cover`, `<bookId>-page-<n>`,
@@ -164,14 +203,13 @@ the PDF renderer and of `PdfStorage`:
   layout entry's bytes from storage (async, before rendering starts) into a
   `Map`, then returns a synchronous `ImageBufferResolver` closure over that
   map — bridging the necessarily-async storage read to the renderer's
-  necessarily-synchronous embedding seam.
+  necessarily-synchronous embedding seam. This works identically regardless
+  of which driver is configured, since both implement the same interface.
 
 Out of scope for this boundary, deliberately:
 
 - AI/image generation of any kind.
 - Fetching remote URLs.
-- Cloud image storage (S3/R2) — `ImageAssetStorage` is local-only today; a
-  cloud implementation would follow the same pattern as `CloudPdfStorage`.
 - Publicly serving saved image assets over HTTP.
 
 ### Real-image phase

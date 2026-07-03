@@ -213,4 +213,75 @@ describe('envSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  describe('OPENAI_API_KEY conditional requirement', () => {
+    const REQUIRED = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+
+    it('boots with no OPENAI_API_KEY when both providers are unset (default mock)', () => {
+      const result = envSchema.safeParse({ ...REQUIRED });
+      expect(result.success).toBe(true);
+    });
+
+    it('boots with no OPENAI_API_KEY when both providers are explicitly "mock"', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        STORY_GENERATION_PROVIDER: 'mock',
+        IMAGE_GENERATION_PROVIDER_TOKEN: 'mock',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects when STORY_GENERATION_PROVIDER=openai and OPENAI_API_KEY is missing', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        STORY_GENERATION_PROVIDER: 'openai',
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.errors.some((e) => e.path.join('.') === 'OPENAI_API_KEY')).toBe(true);
+      }
+    });
+
+    it('rejects when IMAGE_GENERATION_PROVIDER_TOKEN=openai and OPENAI_API_KEY is missing', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        IMAGE_GENERATION_PROVIDER_TOKEN: 'openai',
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.errors.some((e) => e.path.join('.') === 'OPENAI_API_KEY')).toBe(true);
+      }
+    });
+
+    it('rejects case-insensitively (e.g. "OpenAI") to match the provider factories', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        STORY_GENERATION_PROVIDER: 'OpenAI',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts STORY_GENERATION_PROVIDER=openai when OPENAI_API_KEY is set', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        STORY_GENERATION_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'sk-test',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('accepts IMAGE_GENERATION_PROVIDER_TOKEN=openai when OPENAI_API_KEY is set', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        IMAGE_GENERATION_PROVIDER_TOKEN: 'openai',
+        OPENAI_API_KEY: 'sk-test',
+      });
+      expect(result.success).toBe(true);
+    });
+  });
 });

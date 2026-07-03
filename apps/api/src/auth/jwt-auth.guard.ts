@@ -35,7 +35,7 @@ export class JwtAuthGuard implements CanActivate {
     // deactivated account or role change takes effect immediately instead of
     // waiting for the 15-minute access token to expire.
     const user = await this.usersService.findById(payload.sub);
-    if (!user) {
+    if (!user || user.deactivatedAt) {
       throw new UnauthorizedException('Invalid or expired access token');
     }
 

@@ -1,21 +1,29 @@
 # StoryMe Auth Architecture — Phase 6A Plan
 
-Status: **Phase 6B (backend implementation) is done.** Everything under
-§4–§8 below describing the backend (`AuthService`, `TokenService`,
-`JwtAuthGuard`, `AuthModeGuard`, the five `/api/auth/*` endpoints, cookie
-handling) now exists in code exactly as planned, with one addition not
-foreseen here: `AuthModeGuard`, a small composite guard that picks
-`DevAuthGuard` vs. `JwtAuthGuard` per request based on the new `AUTH_MODE`
-env var, so controllers need no code change to switch modes. See
-`apps/api/src/auth/` for the implementation and its `*.spec.ts` files for
-test coverage.
+Status: **Phase 6B (backend) and Phase 6C (frontend) are both done.**
+Everything under §4–§8 below describing the backend (`AuthService`,
+`TokenService`, `JwtAuthGuard`, `AuthModeGuard`, the five `/api/auth/*`
+endpoints, cookie handling) exists in code exactly as planned, with one
+addition not foreseen here: `AuthModeGuard`, a small composite guard that
+picks `DevAuthGuard` vs. `JwtAuthGuard` per request based on the new
+`AUTH_MODE` env var, so controllers need no code change to switch modes.
+See `apps/api/src/auth/` for the implementation and its `*.spec.ts` files
+for test coverage.
 
-**Not done in Phase 6B** (still matches this plan's §5/§7 as future work):
-the frontend (§5 — login/register pages, `AuthProvider`, token storage,
-protected routing) is untouched. `apps/web` still hardcodes the
-`x-user-email`/`x-user-name` dev headers, so it only works against
-`AUTH_MODE=dev`. OAuth (§3 option C) was explicitly out of scope. Frontend
-integration is the next phase (Phase 6C).
+Phase 6C implemented §5 as planned: `apps/web/src/lib/auth/auth-context.tsx`
+(`AuthProvider`/`useAuth`), `apps/web/src/lib/auth/token-store.ts`
+(in-memory access token), `apps/web/src/lib/api/auth.ts` (`authApi`, raw
+`fetch` against `/api/auth/*` with `credentials: 'include'`),
+`apps/web/src/app/login/page.tsx` and `.../register/page.tsx`, and
+`apps/web/src/app/dashboard/layout.tsx` (route protection + logout). One
+deviation from §5's original sketch: instead of an explicit upfront
+`POST /api/auth/refresh` call on mount, `AuthProvider` calls
+`GET /api/auth/me` directly and lets `apiFetch`'s built-in
+refresh-once-on-401 logic (`apps/web/src/lib/api/client.ts`) restore the
+session from the cookie — same effect, one fewer code path. `apps/web`'s
+dev-header behavior (`x-user-email`/`x-user-name`) is now gated behind
+`NEXT_PUBLIC_AUTH_MODE=dev` (default `jwt`) rather than being unconditional.
+OAuth (§3 option C) remains out of scope.
 
 ---
 

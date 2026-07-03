@@ -78,14 +78,16 @@ Runs on `http://localhost:3000`.
    and submit.
 3. You land on the new book's detail page with status `created`.
 
-There's no login screen wired up in the web app yet — every API request is
-scoped to a dev user identified by the `x-user-email` header, sent
-automatically by the web app (see `DevAuthGuard`, active because
-`AUTH_MODE=dev` in `.env.example`). Real backend auth
-(`POST /api/auth/register`, `/login`, `/refresh`, `/logout`,
-`GET /api/auth/me`) exists as of Phase 6B — see `docs/auth-architecture.md`
-— but the frontend hasn't been wired to it, so leave `AUTH_MODE=dev` for
-local use until that lands.
+The web app supports two auth modes, controlled by `NEXT_PUBLIC_AUTH_MODE`
+(`apps/web/.env.example`), which must match the API's `AUTH_MODE`:
+
+- `jwt` (default) — real login. Visit `/register` to create an account, or
+  `/login` if you already have one. `/dashboard/*` redirects to `/login` when
+  signed out.
+- `dev` — no login screen. Every API request is scoped to a dev user
+  identified by the `x-user-email` header, sent automatically by the web app
+  (see `DevAuthGuard`). Set both `AUTH_MODE=dev` (API) and
+  `NEXT_PUBLIC_AUTH_MODE=dev` (web) for this — a mismatch 401s every request.
 
 ## 8. Verify generation
 
@@ -101,11 +103,13 @@ generation** button.
 
 ## 9. Open / download the PDF
 
-Once status reaches `complete`, the PDF section shows **Open PDF** (opens
-`GET /api/books/:id/pdf/preview` in a new tab) and **Download PDF** (fetches
-the same endpoint as a blob and saves it locally). PDFs are written to
-`apps/api/tmp/` by the default `LocalPdfStorage` driver — no S3/R2 needed for
-the demo.
+Once status reaches `complete`, the PDF section shows **Open PDF** and
+**Download PDF**, both backed by `GET /api/books/:id/pdf/preview`. Both
+fetch the PDF through the authenticated API client (so the bearer token or
+dev header attaches correctly) and open it as a blob URL/download rather
+than navigating the browser directly to the API, which under `jwt` mode
+can't carry an `Authorization` header. PDFs are written to `apps/api/tmp/`
+by the default `LocalPdfStorage` driver — no S3/R2 needed for the demo.
 
 ## Troubleshooting
 

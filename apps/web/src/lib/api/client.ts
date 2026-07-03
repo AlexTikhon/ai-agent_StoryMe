@@ -1,68 +1,99 @@
+import { getAuthMode } from '../auth/mode';
+import { getAccessToken, setAccessToken } from '../auth/token-store';
+import { ApiError, parseErrorMessage } from './api-error';
+import { authApi } from './auth';
+
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000/api';
 const DEV_EMAIL = 'dev@storyme.local';
 const DEV_NAME = 'Dev User';
 
-export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'ApiError';
+export { ApiError };
+
+// Coalesces concurrent 401s onto a single in-flight refresh instead of firing
+// one POST /api/auth/refresh per failed request.
+let refreshInFlight: Promise<string | null> | null = null;
+
+function identityHeaders(): Record<string, string> {
+  if (getAuthMode() === 'dev') {
+    return { 'x-user-email': DEV_EMAIL, 'x-user-name': DEV_NAME };
   }
+  const token = getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+function refreshOnce(): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = authApi
+      .refresh()
+      .then((res) => {
+        setAccessToken(res.accessToken);
+        return res.accessToken;
+      })
+      .catch(() => {
+        setAccessToken(null);
+        return null;
+      })
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+function rawFetch(
+  path: string,
+  init: RequestInit | undefined,
+  baseHeaders: Record<string, string>,
+) {
+  return fetch(`${API_BASE}${path}`, {
     ...init,
+    // Required so the refresh cookie round-trips cross-origin (jwt mode); a
+    // harmless no-op in dev mode, which carries identity via headers instead.
+    credentials: 'include',
     headers: {
-      'Content-Type': 'application/json',
-      'x-user-email': DEV_EMAIL,
-      'x-user-name': DEV_NAME,
+      ...baseHeaders,
+      ...identityHeaders(),
       ...(init?.headers as Record<string, string>),
     },
   });
+}
+
+export async function apiFetch<T>(path: string, init?: RequestInit, isRetry = false): Promise<T> {
+  const res = await rawFetch(path, init, { 'Content-Type': 'application/json' });
+
+  if (res.status === 401 && !isRetry && getAuthMode() === 'jwt') {
+    const newToken = await refreshOnce();
+    if (newToken) {
+      return apiFetch<T>(path, init, true);
+    }
+  }
 
   if (res.status === 204) return undefined as T;
 
   if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const body = (await res.json()) as { message?: string | string[] };
-      if (body.message) {
-        message = Array.isArray(body.message) ? body.message.join(', ') : String(body.message);
-      }
-    } catch {
-      // ignore parse error
-    }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, await parseErrorMessage(res));
   }
 
   return res.json() as Promise<T>;
 }
 
 /** Like apiFetch, but for endpoints that return a binary body (e.g. PDF downloads). */
-export async function apiFetchBlob(path: string, init?: RequestInit): Promise<Blob> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      'x-user-email': DEV_EMAIL,
-      'x-user-name': DEV_NAME,
-      ...(init?.headers as Record<string, string>),
-    },
-  });
+export async function apiFetchBlob(
+  path: string,
+  init?: RequestInit,
+  isRetry = false,
+): Promise<Blob> {
+  const res = await rawFetch(path, init, {});
+
+  if (res.status === 401 && !isRetry && getAuthMode() === 'jwt') {
+    const newToken = await refreshOnce();
+    if (newToken) {
+      return apiFetchBlob(path, init, true);
+    }
+  }
 
   if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const body = (await res.json()) as { message?: string | string[] };
-      if (body.message) {
-        message = Array.isArray(body.message) ? body.message.join(', ') : String(body.message);
-      }
-    } catch {
-      // ignore parse error
-    }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, await parseErrorMessage(res));
   }
 
   return res.blob();

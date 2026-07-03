@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { MockStoryGenerationProvider, type StoryGenerationInput } from './story-generation-provider';
+import {
+  MockStoryGenerationProvider,
+  type StoryGenerationInput,
+} from './story-generation-provider';
 
 function makeInput(overrides: Partial<StoryGenerationInput> = {}): StoryGenerationInput {
   return {
@@ -132,9 +135,7 @@ describe('MockStoryGenerationProvider', () => {
       const result = await provider.generateStory(makeInput({ bookId: 'book-42' }));
 
       expect(result.imageGenerationResult.provider).toBe('local_mock');
-      expect(result.imageGenerationResult.images).toHaveLength(
-        result.bookPreview.pages.length + 2,
-      );
+      expect(result.imageGenerationResult.images).toHaveLength(result.bookPreview.pages.length + 2);
       for (const image of result.imageGenerationResult.images) {
         expect(image.id.startsWith('book-42')).toBe(true);
       }

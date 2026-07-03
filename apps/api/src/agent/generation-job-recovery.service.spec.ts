@@ -151,7 +151,10 @@ describe('GenerationJobRecoveryService', () => {
 
     expect(prisma.generationJob.update).toHaveBeenCalledWith({
       where: { id: job.id },
-      data: expect.objectContaining({ status: 'failed', errorMessage: GENERATION_INTERRUPTED_MESSAGE }),
+      data: expect.objectContaining({
+        status: 'failed',
+        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
+      }),
     });
   });
 

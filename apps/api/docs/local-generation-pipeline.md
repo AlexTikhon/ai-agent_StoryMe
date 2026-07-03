@@ -1299,10 +1299,11 @@ image-generation cost guardrail (see "Real provider hardening (Phase 3D)"
 above), plus a manual smoke test
 (`pnpm --filter @book/api smoke:real-generation`). What's left:
 
-- **Cloud storage**: `PdfStorage` already has a `CloudPdfStorage` (S3/R2)
-  implementation behind `PDF_STORAGE_DRIVER`; `ImageAssetStorage` would need
-  an equivalent cloud implementation following the same pattern before image
-  bytes could live outside local disk.
+- ~~Cloud storage~~ **Done**: both `PdfStorage` (`CloudPdfStorage`, behind
+  `PDF_STORAGE_DRIVER`) and `ImageAssetStorage` (`CloudImageAssetStorage`,
+  behind `IMAGE_STORAGE_DRIVER`) have S3/R2 implementations — see
+  `apps/api/docs/pdf-rendering.md`'s "Image asset storage boundary" section
+  and `docs/deployment-readiness.md`.
 - **Public image serving**: mock/real image bytes still live only in
   `ImageAssetStorage` for PDF embedding — nothing serves them over HTTP yet
   (see "What's intentionally not real yet" above).

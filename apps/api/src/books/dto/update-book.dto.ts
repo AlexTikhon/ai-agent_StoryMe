@@ -4,7 +4,9 @@ import { MAX_BOOK_PAGE_COUNT, MIN_BOOK_PAGE_COUNT, SupportedLanguage } from '@bo
 
 /** Trims strings before validation so whitespace-only input fails Length's min bound. Non-strings pass through for class-validator's @IsString to reject. */
 function trim(): PropertyDecorator {
-  return Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value));
+  return Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  );
 }
 
 export class UpdateBookDto {

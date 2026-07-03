@@ -58,11 +58,15 @@ function createMockGenerationJobService(): jest.Mocked<GenerationJobService> {
     findActive: vi.fn().mockResolvedValue(null),
     findLatest: vi.fn().mockResolvedValue(null),
     createQueued: vi.fn().mockResolvedValue(makeGenerationJob()),
-    markRunning: vi.fn().mockResolvedValue(makeGenerationJob({ status: 'running' as GenerationJob['status'] })),
+    markRunning: vi
+      .fn()
+      .mockResolvedValue(makeGenerationJob({ status: 'running' as GenerationJob['status'] })),
     markCompleted: vi
       .fn()
       .mockResolvedValue(makeGenerationJob({ status: 'completed' as GenerationJob['status'] })),
-    markFailed: vi.fn().mockResolvedValue(makeGenerationJob({ status: 'failed' as GenerationJob['status'] })),
+    markFailed: vi
+      .fn()
+      .mockResolvedValue(makeGenerationJob({ status: 'failed' as GenerationJob['status'] })),
   } as unknown as jest.Mocked<GenerationJobService>;
 }
 
@@ -507,7 +511,9 @@ describe('BooksService', () => {
     it('throws ConflictException when an active GenerationJob already exists for the book', async () => {
       const book = makeBook({ status: STATUS_CREATED });
       prisma.book.findFirst.mockResolvedValue(book);
-      generationJobService.findActive.mockResolvedValue(makeGenerationJob({ status: 'running' as GenerationJob['status'] }));
+      generationJobService.findActive.mockResolvedValue(
+        makeGenerationJob({ status: 'running' as GenerationJob['status'] }),
+      );
 
       await expect(service.startGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
       expect(prisma.book.update).not.toHaveBeenCalled();
@@ -667,7 +673,12 @@ describe('BooksService', () => {
     it('creates a retry GenerationJob with attempt incremented past the post-increment retryCount', async () => {
       const book = makeBook({ status: STATUS_FAILED });
       // retryCount is already incremented by the prisma.book.update mock below.
-      const cleared = makeBook({ status: STATUS_CHAR_BUILD, failedStep: null, errorMessage: null, retryCount: 1 });
+      const cleared = makeBook({
+        status: STATUS_CHAR_BUILD,
+        failedStep: null,
+        errorMessage: null,
+        retryCount: 1,
+      });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.book.update.mockResolvedValue(cleared);
 
@@ -684,7 +695,9 @@ describe('BooksService', () => {
     it('throws ConflictException when an active GenerationJob already exists for the book', async () => {
       const book = makeBook({ status: STATUS_FAILED });
       prisma.book.findFirst.mockResolvedValue(book);
-      generationJobService.findActive.mockResolvedValue(makeGenerationJob({ status: 'queued' as GenerationJob['status'] }));
+      generationJobService.findActive.mockResolvedValue(
+        makeGenerationJob({ status: 'queued' as GenerationJob['status'] }),
+      );
 
       await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
       expect(prisma.book.update).not.toHaveBeenCalled();
@@ -794,7 +807,9 @@ describe('BooksService', () => {
     it('throws NotFoundException when book does not exist', async () => {
       prisma.book.findFirst.mockResolvedValue(null);
 
-      await expect(service.getPreviewPdfBuffer('no-such', 'u-1')).rejects.toThrow(NotFoundException);
+      await expect(service.getPreviewPdfBuffer('no-such', 'u-1')).rejects.toThrow(
+        NotFoundException,
+      );
       expect(pdfStorage.getPreviewPdf).not.toHaveBeenCalled();
     });
 
@@ -858,7 +873,11 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
       generationJobService.findLatest.mockResolvedValue(
-        makeGenerationJob({ id: 'job-9', status: 'completed' as GenerationJob['status'], attempt: 2 }),
+        makeGenerationJob({
+          id: 'job-9',
+          status: 'completed' as GenerationJob['status'],
+          attempt: 2,
+        }),
       );
 
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');

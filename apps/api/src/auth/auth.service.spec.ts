@@ -148,6 +148,22 @@ describe('AuthService', () => {
         UnauthorizedException,
       );
     });
+
+    it('rejects a deactivated account with correct credentials, using the identical generic message', async () => {
+      const passwordHash = await bcrypt.hash('Password1', 4);
+      (usersService.findByEmail as Mock).mockResolvedValue(
+        makeUser({ passwordHash, deactivatedAt: new Date('2026-01-01') }),
+      );
+
+      let deactivatedMessage = '';
+      try {
+        await service.login('alice@example.com', 'Password1');
+      } catch (err) {
+        deactivatedMessage = (err as UnauthorizedException).message;
+      }
+
+      expect(deactivatedMessage).toBe('Invalid email or password');
+    });
   });
 
   describe('refresh', () => {
@@ -211,6 +227,24 @@ describe('AuthService', () => {
       prisma.refreshToken.findUnique.mockResolvedValue(null);
 
       await expect(service.refresh('raw-refresh')).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('rejects refresh for a deactivated user, even with a valid unexpired token', async () => {
+      const record = {
+        id: 'rt-1',
+        userId: 'u-1',
+        tokenHash: 'hashed-refresh',
+        family: 'family-1',
+        expiresAt: new Date(Date.now() + 100_000),
+        revokedAt: null,
+      };
+      prisma.refreshToken.findUnique.mockResolvedValue(record);
+      (usersService.findById as Mock).mockResolvedValue(
+        makeUser({ deactivatedAt: new Date('2026-01-01') }),
+      );
+
+      await expect(service.refresh('raw-refresh')).rejects.toThrow(UnauthorizedException);
+      expect(prisma.refreshToken.update).not.toHaveBeenCalled();
     });
 
     it('rejects when no refresh token cookie is present', async () => {

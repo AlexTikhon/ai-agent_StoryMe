@@ -32,11 +32,7 @@ function resolveFont(fontFamily: string, isDisplay: boolean): string {
   return isDisplay ? 'Helvetica-Bold' : 'Helvetica';
 }
 
-function renderTextBlock(
-  doc: PDFKit.PDFDocument,
-  tb: LayoutTextBlock,
-  isDisplay: boolean,
-): void {
+function renderTextBlock(doc: PDFKit.PDFDocument, tb: LayoutTextBlock, isDisplay: boolean): void {
   const x = pt(tb.box.x);
   const y = pt(tb.box.y);
   const w = Math.max(pt(tb.box.width), 1);
@@ -224,7 +220,9 @@ export function renderStorybookPdf(
         renderPage(doc, entry, resolveImageBuffer);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[pdf-renderer] Failed to render entry "${entry.id}" (${entry.kind}): ${message}`);
+        console.warn(
+          `[pdf-renderer] Failed to render entry "${entry.id}" (${entry.kind}): ${message}`,
+        );
         doc
           .fillColor('#CC0000')
           .font('Helvetica')

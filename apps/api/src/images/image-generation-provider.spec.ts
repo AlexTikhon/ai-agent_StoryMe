@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { MockImageGenerationProvider, type ImageGenerationInput } from './image-generation-provider';
+import {
+  MockImageGenerationProvider,
+  type ImageGenerationInput,
+} from './image-generation-provider';
 import { Pronouns, type CharacterCard, type GeneratedImageEntry } from '@book/types';
 
 function makeCharacterCard(overrides: Partial<CharacterCard> = {}): CharacterCard {
@@ -72,7 +75,9 @@ describe('MockImageGenerationProvider', () => {
 
   it('produces different output for a different seed', async () => {
     const provider = new MockImageGenerationProvider();
-    const cover = await provider.generateImage(makeInput({ entry: makeEntry({ seed: 'b-1:cover:0' }) }));
+    const cover = await provider.generateImage(
+      makeInput({ entry: makeEntry({ seed: 'b-1:cover:0' }) }),
+    );
     const page = await provider.generateImage(
       makeInput({ entry: makeEntry({ seed: 'b-1:page:1' }) }),
     );

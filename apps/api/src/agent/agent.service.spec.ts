@@ -5,7 +5,10 @@ import { AgentService } from './agent.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
-import { MockStoryGenerationProvider, type StoryGenerationProvider } from './story-generation-provider';
+import {
+  MockStoryGenerationProvider,
+  type StoryGenerationProvider,
+} from './story-generation-provider';
 import {
   MockImageGenerationProvider,
   type ImageGenerationProvider,
@@ -108,9 +111,7 @@ describe('AgentService', () => {
         previewPdfUrl: '/files/books/b-1/storybook.pdf',
         ...bookOverrides,
       });
-      prisma.book.update
-        .mockResolvedValueOnce(layoutBook)
-        .mockResolvedValueOnce(completedBook);
+      prisma.book.update.mockResolvedValueOnce(layoutBook).mockResolvedValueOnce(completedBook);
       prisma.agentLog.createMany.mockResolvedValue({ count: 9 });
       return completedBook;
     }
@@ -180,7 +181,7 @@ describe('AgentService', () => {
       expect(pages.length).toBe(chapters.length * 2);
     });
 
-    it('honors the book\'s persisted pageCount when generating the storyPlan (Phase 4A)', async () => {
+    it("honors the book's persisted pageCount when generating the storyPlan (Phase 4A)", async () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: 4 });
       setupMocks();
 
@@ -204,7 +205,7 @@ describe('AgentService', () => {
       expect(pages.length).toBe(6);
     });
 
-    it('uses the book\'s persisted educationalMessage as the storyPlan.educationalMessage (Phase 4A)', async () => {
+    it("uses the book's persisted educationalMessage as the storyPlan.educationalMessage (Phase 4A)", async () => {
       const book = makeBook({
         childName: 'Mia',
         theme: 'friendship',
@@ -709,7 +710,9 @@ describe('AgentService', () => {
 
       await service.startBookGeneration(book);
 
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to save mock image asset'));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to save mock image asset'),
+      );
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
       const images = result.images as Array<Record<string, unknown>>;
@@ -1035,9 +1038,9 @@ describe('AgentService', () => {
 
       await service.startBookGeneration(book);
 
-      const entries = (prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+      const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
         Record<string, unknown>
-      >);
+      >;
       const pdfEntry = entries.find((e) => e.step === 'pdf_render');
       expect(pdfEntry?.status).toBe('success');
     });
@@ -1101,9 +1104,9 @@ describe('AgentService', () => {
 
       await service.startBookGeneration(book);
 
-      const entries = (prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+      const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
         Record<string, unknown>
-      >);
+      >;
       const pdfEntry = entries.find((e) => e.step === 'pdf_render');
       expect(pdfEntry?.status).toBe('error');
       expect(typeof pdfEntry?.error).toBe('string');
@@ -1281,9 +1284,9 @@ describe('AgentService', () => {
       it('calls storyGenerationProvider.generateStory with the book fields', async () => {
         const book = makeBook({ childName: 'Mia', childAge: 5, theme: 'friendship' });
         setupMocks();
-        const generateStory = vi.fn().mockImplementation((input) =>
-          new MockStoryGenerationProvider().generateStory(input),
-        );
+        const generateStory = vi
+          .fn()
+          .mockImplementation((input) => new MockStoryGenerationProvider().generateStory(input));
         const spyingService = new AgentService(
           prisma as never,
           mockPdfStorage as unknown as PdfStorage,

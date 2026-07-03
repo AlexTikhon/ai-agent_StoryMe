@@ -41,10 +41,7 @@ function validateBookId(bookId: string): void {
  * Served at:   /files/books/<bookId>/storybook.pdf
  */
 export class LocalPdfStorage implements PdfStorage {
-  async savePreviewPdf(
-    bookId: string,
-    buffer: Buffer,
-  ): Promise<{ url: string; path?: string }> {
+  async savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }> {
     validateBookId(bookId);
     const dir = join(TMP_ROOT, 'books', bookId);
     await mkdir(dir, { recursive: true });
@@ -91,8 +88,7 @@ function isNotFoundError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const name = (err as { name?: unknown }).name;
   if (name === 'NoSuchKey' || name === 'NotFound') return true;
-  const statusCode = (err as { $metadata?: { httpStatusCode?: number } }).$metadata
-    ?.httpStatusCode;
+  const statusCode = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
   return statusCode === 404;
 }
 
@@ -220,7 +216,10 @@ export function readCloudConfig(
  * Returns the configured PdfStorage implementation.
  * Supported drivers: local (default), s3, r2.
  */
-export function createPdfStorage(driver = 'local', env: NodeJS.ProcessEnv = process.env): PdfStorage {
+export function createPdfStorage(
+  driver = 'local',
+  env: NodeJS.ProcessEnv = process.env,
+): PdfStorage {
   if (driver === 'local') return new LocalPdfStorage();
   if (driver === 's3' || driver === 'r2') {
     return new CloudPdfStorage(readCloudConfig(driver, env));
