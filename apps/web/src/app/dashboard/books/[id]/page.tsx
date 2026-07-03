@@ -502,6 +502,18 @@ function BookDetailView({
             <dd className="text-text-primary">{book.theme}</dd>
           </div>
         )}
+        {book.pageCount != null && (
+          <div className="flex justify-between py-2.5">
+            <dt className="font-medium text-text-muted">Page count</dt>
+            <dd className="text-text-primary">{book.pageCount}</dd>
+          </div>
+        )}
+        {book.educationalMessage != null && book.educationalMessage.trim().length > 0 && (
+          <div className="flex justify-between gap-4 py-2.5">
+            <dt className="font-medium text-text-muted">Educational message</dt>
+            <dd className="text-right text-text-primary">{book.educationalMessage}</dd>
+          </div>
+        )}
         <div className="flex justify-between py-2.5">
           <dt className="font-medium text-text-muted">Created</dt>
           <dd className="text-text-primary">{new Date(book.createdAt).toLocaleDateString()}</dd>
@@ -789,10 +801,12 @@ function GenerationDiagnosticsPanel({
 // ── BookPreviewSection ────────────────────────────────────────────────────────
 
 function BookPreviewSection({ preview }: { preview: BookPreview }) {
+  const previewPages = Array.isArray(preview.pages) ? preview.pages : [];
+
   return (
     <div className="mb-6 rounded-xl border border-teal-100 bg-teal-50 p-4">
       <h2 className="mb-3 font-display text-base font-semibold text-teal-800">
-        Book preview is ready
+        Generated story preview
       </h2>
 
       <div className="mb-4 rounded-lg border border-teal-100 bg-white p-3 text-sm">
@@ -804,11 +818,17 @@ function BookPreviewSection({ preview }: { preview: BookPreview }) {
         </div>
       </div>
 
-      <ul className="mb-4 space-y-3">
-        {preview.pages.map((page) => (
-          <BookPreviewPageItem key={page.pageNumber} page={page} />
-        ))}
-      </ul>
+      {previewPages.length > 0 ? (
+        <ul className="mb-4 space-y-3">
+          {previewPages.map((page) => (
+            <BookPreviewPageItem key={page.pageNumber} page={page} />
+          ))}
+        </ul>
+      ) : (
+        <p className="mb-4 rounded-lg border border-teal-100 bg-white p-3 text-sm text-text-muted">
+          No pages were generated for this preview yet.
+        </p>
+      )}
 
       <div className="mb-3 rounded-lg border border-teal-100 bg-white p-3 text-sm">
         <p className="mb-0.5 font-medium text-text-primary">Back cover</p>

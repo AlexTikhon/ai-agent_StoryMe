@@ -270,6 +270,42 @@ describe('BookDetailPage', () => {
     });
   });
 
+  // ── pageCount / educationalMessage display ────────────────────────────────
+
+  it('shows page count when pageCount is present on the book', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ...MOCK_BOOK, pageCount: 8 }));
+    render(<BookDetailPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Page count')).toBeDefined();
+      expect(screen.getByText('8')).toBeDefined();
+    });
+  });
+
+  it('does not show page count when pageCount is null', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ...MOCK_BOOK, pageCount: null }));
+    render(<BookDetailPage />);
+    await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
+    expect(screen.queryByText('Page count')).toBeNull();
+  });
+
+  it('shows educational message when present and non-empty on the book', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockOk({ ...MOCK_BOOK, educationalMessage: 'Sharing makes everyone happier.' }),
+    );
+    render(<BookDetailPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Educational message')).toBeDefined();
+      expect(screen.getByText('Sharing makes everyone happier.')).toBeDefined();
+    });
+  });
+
+  it('does not show educational message when it is null or empty', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ...MOCK_BOOK, educationalMessage: '   ' }));
+    render(<BookDetailPage />);
+    await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
+    expect(screen.queryByText('Educational message')).toBeNull();
+  });
+
   // ── Error / not found states ───────────────────────────────────────────────
 
   it('renders an error banner when the API returns a server error', async () => {
@@ -895,7 +931,7 @@ describe('BookDetailPage', () => {
     await user.click(screen.getByRole('button', { name: /generate story/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: /book preview is ready/i })).toBeDefined();
+      expect(screen.getByRole('heading', { name: /generated story preview/i })).toBeDefined();
       expect(screen.getByText("Emma's Friendship Adventure")).toBeDefined();
       expect(screen.getByText(/A friendship story for Emma/i)).toBeDefined();
     });
@@ -913,7 +949,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: /book preview is ready/i })).toBeDefined();
+      expect(screen.getByRole('heading', { name: /generated story preview/i })).toBeDefined();
       expect(screen.getByText("Emma's Friendship Adventure")).toBeDefined();
     });
   });
@@ -974,6 +1010,23 @@ describe('BookDetailPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('preview_ready')).toBeDefined();
+    });
+  });
+
+  it('shows a fallback message when the generated preview has no pages', async () => {
+    const emptyPreview = { ...makeBookPreview(), pages: [] };
+    const bookWithEmptyPreview = {
+      ...MOCK_BOOK,
+      status: BookStatus.PreviewReady,
+      bookPreview: emptyPreview,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(bookWithEmptyPreview));
+
+    render(<BookDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /generated story preview/i })).toBeDefined();
+      expect(screen.getByText(/no pages were generated for this preview yet/i)).toBeDefined();
     });
   });
 
@@ -1207,7 +1260,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: /book preview is ready/i })).toBeDefined();
+      expect(screen.getByRole('heading', { name: /generated story preview/i })).toBeDefined();
       expect(screen.queryByRole('heading', { name: /images are ready/i })).toBeNull();
     });
   });
