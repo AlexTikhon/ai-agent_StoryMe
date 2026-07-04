@@ -791,6 +791,91 @@ describe('AgentService', () => {
       });
     });
 
+    // ── MAX_ILLUSTRATIONS_PER_BOOK cost cap ───────────────────────────────────
+
+    describe('MAX_ILLUSTRATIONS_PER_BOOK cost cap (real provider only)', () => {
+      function makeRealImageProvider() {
+        return {
+          providerName: 'openai' as const,
+          modelName: 'gpt-image-1',
+          generateImage: vi.fn().mockResolvedValue({
+            buffer: Buffer.from('fake-png'),
+            contentType: 'image/png' as const,
+          }),
+        };
+      }
+
+      async function withMaxIllustrationsEnv(
+        value: string | undefined,
+        run: () => Promise<void>,
+      ): Promise<void> {
+        const original = process.env.MAX_ILLUSTRATIONS_PER_BOOK;
+        if (value === undefined) delete process.env.MAX_ILLUSTRATIONS_PER_BOOK;
+        else process.env.MAX_ILLUSTRATIONS_PER_BOOK = value;
+        try {
+          await run();
+        } finally {
+          if (original === undefined) delete process.env.MAX_ILLUSTRATIONS_PER_BOOK;
+          else process.env.MAX_ILLUSTRATIONS_PER_BOOK = original;
+        }
+      }
+
+      it('caps real generation calls to MAX_ILLUSTRATIONS_PER_BOOK and leaves the rest as placeholders', async () => {
+        await withMaxIllustrationsEnv('2', async () => {
+          const book = makeBook();
+          const realProvider = makeRealImageProvider();
+          const realService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            new MockStoryGenerationProvider(),
+            realProvider,
+          );
+          setupMocks();
+
+          const result = await realService.startBookGeneration(book);
+
+          expect(result.status).not.toBe('failed');
+          expect(realProvider.generateImage).toHaveBeenCalledTimes(2);
+          expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(2);
+        });
+      });
+
+      it('does not cap the free mock provider', async () => {
+        await withMaxIllustrationsEnv('2', async () => {
+          const book = makeBook();
+          setupMocks();
+
+          await service.startBookGeneration(book);
+
+          const updateArg = prisma.book.update.mock.calls[0]?.[0];
+          const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+          const images = result.images as Array<Record<string, unknown>>;
+          expect(images.length).toBeGreaterThan(2);
+          expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length);
+        });
+      });
+
+      it('defaults to 3 real images when MAX_ILLUSTRATIONS_PER_BOOK is unset', async () => {
+        await withMaxIllustrationsEnv(undefined, async () => {
+          const book = makeBook();
+          const realProvider = makeRealImageProvider();
+          const realService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            new MockStoryGenerationProvider(),
+            realProvider,
+          );
+          setupMocks();
+
+          await realService.startBookGeneration(book);
+
+          expect(realProvider.generateImage).toHaveBeenCalledTimes(3);
+        });
+      });
+    });
+
     // ── Phase 2H: Layout engine ───────────────────────────────────────────────
 
     it('stores bookLayout in the book update', async () => {

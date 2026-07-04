@@ -45,3 +45,22 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
     };
   }
 }
+
+const DEFAULT_MAX_ILLUSTRATIONS_PER_BOOK = 3;
+
+/**
+ * Cost guardrail for real (paid) image generation: caps how many of a book's
+ * image entries (cover/pages/back_cover, taken in their existing order)
+ * AgentService.generateAndSaveImageAssets actually sends to the real
+ * ImageGenerationProvider. Entries beyond the cap are skipped before any API
+ * call is made and fall back to the existing placeholder-rectangle rendering
+ * — the same fallback any entry ImageAssetStorage has no bytes for already
+ * gets (see buildImageBufferResolver in image-asset-storage.ts). Only applies
+ * when the real provider is selected; MockImageGenerationProvider is free, so
+ * AgentService never caps it.
+ */
+export function resolveMaxIllustrationsPerBook(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env['MAX_ILLUSTRATIONS_PER_BOOK'];
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_ILLUSTRATIONS_PER_BOOK;
+}

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   MockImageGenerationProvider,
+  resolveMaxIllustrationsPerBook,
   type ImageGenerationInput,
 } from './image-generation-provider';
 import { Pronouns, type CharacterCard, type GeneratedImageEntry } from '@book/types';
@@ -83,5 +84,53 @@ describe('MockImageGenerationProvider', () => {
     );
 
     expect(cover.buffer.equals(page.buffer)).toBe(false);
+  });
+});
+
+describe('resolveMaxIllustrationsPerBook', () => {
+  it('defaults to 3 when unset', () => {
+    expect(resolveMaxIllustrationsPerBook({} as NodeJS.ProcessEnv)).toBe(3);
+  });
+
+  it('defaults to 3 when empty', () => {
+    expect(
+      resolveMaxIllustrationsPerBook({
+        MAX_ILLUSTRATIONS_PER_BOOK: '',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(3);
+  });
+
+  it('parses a valid positive integer from env', () => {
+    expect(
+      resolveMaxIllustrationsPerBook({
+        MAX_ILLUSTRATIONS_PER_BOOK: '5',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(5);
+  });
+
+  it('floors a non-integer value', () => {
+    expect(
+      resolveMaxIllustrationsPerBook({
+        MAX_ILLUSTRATIONS_PER_BOOK: '4.9',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(4);
+  });
+
+  it('falls back to the default for zero, negative, or non-numeric values', () => {
+    expect(
+      resolveMaxIllustrationsPerBook({
+        MAX_ILLUSTRATIONS_PER_BOOK: '0',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(3);
+    expect(
+      resolveMaxIllustrationsPerBook({
+        MAX_ILLUSTRATIONS_PER_BOOK: '-2',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(3);
+    expect(
+      resolveMaxIllustrationsPerBook({
+        MAX_ILLUSTRATIONS_PER_BOOK: 'not-a-number',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(3);
   });
 });

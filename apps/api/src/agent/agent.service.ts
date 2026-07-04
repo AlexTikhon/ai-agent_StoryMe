@@ -10,6 +10,7 @@ import {
 } from '../images/image-asset-storage';
 import {
   IMAGE_GENERATION_PROVIDER_TOKEN,
+  resolveMaxIllustrationsPerBook,
   type ImageGenerationProvider,
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
@@ -246,14 +247,31 @@ export class AgentService {
    *   skipped — it must not fail book generation; the renderer already falls
    *   back to a placeholder for any entry whose bytes are missing (see
    *   docs/pdf-rendering.md).
+   *
+   * Before either of those, real (paid) generation is capped to the first
+   * MAX_ILLUSTRATIONS_PER_BOOK entries (default 3, see
+   * resolveMaxIllustrationsPerBook) when the injected provider is the real
+   * one — entries beyond the cap never reach the provider at all, so they
+   * cost nothing and simply render as placeholders. The free mock provider
+   * is never capped.
    */
   private async generateAndSaveImageAssets(
     bookId: string,
     characterCard: CharacterCard,
     images: GeneratedImageEntry[],
   ): Promise<void> {
+    const isRealProvider = this.imageGenerationProvider.providerName === 'openai';
+    const limit = isRealProvider ? resolveMaxIllustrationsPerBook() : images.length;
+    const imagesToGenerate = images.slice(0, limit);
+
+    if (imagesToGenerate.length < images.length) {
+      this.logger.log(
+        `Capping real illustration generation to ${imagesToGenerate.length}/${images.length} images for book ${bookId} (MAX_ILLUSTRATIONS_PER_BOOK); remaining pages keep the placeholder.`,
+      );
+    }
+
     const generated = await Promise.all(
-      images.map(async (image) => {
+      imagesToGenerate.map(async (image) => {
         const { buffer, contentType } = await this.imageGenerationProvider.generateImage({
           bookId,
           entry: image,

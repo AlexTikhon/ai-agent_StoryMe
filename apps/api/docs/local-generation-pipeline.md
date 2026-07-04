@@ -348,6 +348,27 @@ Since `AgentService.generateAndSaveImageAssets` fails the whole book
 effectively caps real (paid) generation to books with at most
 `REAL_GENERATION_MAX_PAGES` story pages.
 
+### Per-book illustration budget — `MAX_ILLUSTRATIONS_PER_BOOK`
+
+A second, tighter cost guardrail lives in `AgentService.generateAndSaveImageAssets`
+itself (`apps/api/src/agent/agent.service.ts`), not the provider: when the
+injected `ImageGenerationProvider.providerName === 'openai'`, only the first
+`MAX_ILLUSTRATIONS_PER_BOOK` entries (default `3` if unset/malformed — see
+`resolveMaxIllustrationsPerBook` in `apps/api/src/images/image-generation-provider.ts`)
+of a book's `images` array (cover, then pages in order, then back cover) are
+actually sent to the provider. The remaining entries are skipped entirely —
+no network call, no cost — and render as the ordinary placeholder rectangle
+at PDF-render time, exactly like any entry `ImageAssetStorage` has no bytes
+for. `MockImageGenerationProvider` is never capped (`providerName === 'mock'`),
+since it's free — every test/CI run, which always uses the mock provider,
+still gets one real (mock) image per entry, unaffected by this cap.
+
+This is deliberately independent of `REAL_GENERATION_MAX_PAGES` above: that
+guardrail rejects (hard error, fails the whole book) any single page request
+beyond a page-number threshold; this one silently limits the *count* of real
+illustrations per book to control cost on every real-provider book generation,
+regardless of page count, without ever failing generation.
+
 ### Manual end-to-end smoke test
 
 `apps/api/scripts/smoke-real-generation.ts`
