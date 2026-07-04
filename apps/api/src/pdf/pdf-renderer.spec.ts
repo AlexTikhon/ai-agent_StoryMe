@@ -445,7 +445,13 @@ describe('renderStorybookPdf Cyrillic / Unicode text', () => {
           color: '#FFFFFF',
         },
       }),
-      { ...makePageEntry(1), textBlock: { ...makePageEntry(1).textBlock!, text: 'Майя нашла волшебный лес и подружилась с лисой.' } },
+      {
+        ...makePageEntry(1),
+        textBlock: {
+          ...makePageEntry(1).textBlock!,
+          text: 'Майя нашла волшебный лес и подружилась с лисой.',
+        },
+      },
     ]);
 
     const buf = await renderStorybookPdf(layout);
@@ -484,7 +490,13 @@ describe('renderStorybookPdf Cyrillic / Unicode text', () => {
 
   it('does not crash on Polish diacritics either', async () => {
     const layout = makeLayout([
-      { ...makePageEntry(1), textBlock: { ...makePageEntry(1).textBlock!, text: 'Zając and źrebię: ąćęłńóśźż ĄĆĘŁŃÓŚŹŻ' } },
+      {
+        ...makePageEntry(1),
+        textBlock: {
+          ...makePageEntry(1).textBlock!,
+          text: 'Zając and źrebię: ąćęłńóśźż ĄĆĘŁŃÓŚŹŻ',
+        },
+      },
     ]);
 
     const buf = await renderStorybookPdf(layout);

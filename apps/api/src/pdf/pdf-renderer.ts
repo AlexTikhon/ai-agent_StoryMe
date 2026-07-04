@@ -11,7 +11,14 @@ import type { BookLayout, BookLayoutEntry, LayoutImageBlock, LayoutTextBlock } f
  */
 const FONT_REGULAR_NAME = 'NotoSans';
 const FONT_BOLD_NAME = 'NotoSans-Bold';
-const FONT_REGULAR_PATH = path.join(__dirname, '..', '..', 'assets', 'fonts', 'NotoSans-Regular.ttf');
+const FONT_REGULAR_PATH = path.join(
+  __dirname,
+  '..',
+  '..',
+  'assets',
+  'fonts',
+  'NotoSans-Regular.ttf',
+);
 const FONT_BOLD_PATH = path.join(__dirname, '..', '..', 'assets', 'fonts', 'NotoSans-Bold.ttf');
 
 /** Registers the embedded Unicode fonts on a document; call once before drawing any text. */
