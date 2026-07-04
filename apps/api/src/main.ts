@@ -3,7 +3,6 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
-import { resolve } from 'node:path';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
@@ -21,9 +20,12 @@ async function bootstrap(): Promise<void> {
   // lockout risk on routes like refresh/logout that have no email to key on).
   app.set('trust proxy', 1);
 
-  // Serve locally generated book PDFs at /files/books/<bookId>/storybook.pdf
-  // Source directory: apps/api/tmp/ (gitignored)
-  app.useStaticAssets(resolve(__dirname, '..', 'tmp'), { prefix: '/files' });
+  // Personalized book PDFs are intentionally NOT served as static files —
+  // LocalPdfStorage/CloudPdfStorage are only ever read through
+  // BooksService.getPreviewPdfBuffer (GET /api/books/:id/pdf/preview), which
+  // checks ownership before returning bytes. Do not add a static/public
+  // route over the PDF storage directory; that would let anyone who learns
+  // or guesses a bookId download another user's book without auth.
 
   // ── Security ──────────────────────────────────────────────────────────────
   app.use(helmet());

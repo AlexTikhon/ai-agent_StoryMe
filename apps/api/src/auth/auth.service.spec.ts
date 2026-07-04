@@ -285,14 +285,16 @@ describe('AuthService', () => {
       expect(result.accessToken).toBe('access-token');
     });
 
-    it('rejects reuse of an already-revoked token and revokes the whole family', async () => {
+    it('rejects reuse of a token revoked well outside the grace window and revokes the whole family', async () => {
       const record = {
         id: 'rt-1',
         userId: 'u-1',
         tokenHash: 'hashed-refresh',
         family: 'family-1',
         expiresAt: new Date(Date.now() + 100_000),
-        revokedAt: new Date(),
+        // Well past REFRESH_REUSE_GRACE_MS (10s) — a real replay, not a
+        // same-instant multi-tab race.
+        revokedAt: new Date(Date.now() - 60_000),
       };
       prisma.refreshToken.findUnique.mockResolvedValue(record);
       prisma.refreshToken.updateMany.mockResolvedValue({ count: 2 });
@@ -302,6 +304,45 @@ describe('AuthService', () => {
         where: { family: 'family-1', revokedAt: null },
         data: { revokedAt: expect.any(Date) },
       });
+    });
+
+    it('tolerates reuse of a just-rotated token within the grace window (multi-tab race) by issuing a fresh token without revoking the family', async () => {
+      const record = {
+        id: 'rt-1',
+        userId: 'u-1',
+        tokenHash: 'hashed-refresh',
+        family: 'family-1',
+        expiresAt: new Date(Date.now() + 100_000),
+        // A second tab presenting the same pre-rotation token milliseconds
+        // after another tab already rotated it.
+        revokedAt: new Date(Date.now() - 50),
+      };
+      prisma.refreshToken.findUnique.mockResolvedValue(record);
+      (usersService.findById as Mock).mockResolvedValue(makeUser());
+
+      const result = await service.refresh('raw-refresh');
+
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+      expect(tokenService.generateRefreshToken).toHaveBeenCalledWith('family-1');
+      expect(result.accessToken).toBe('access-token');
+    });
+
+    it('rejects grace-window reuse for a deactivated user', async () => {
+      const record = {
+        id: 'rt-1',
+        userId: 'u-1',
+        tokenHash: 'hashed-refresh',
+        family: 'family-1',
+        expiresAt: new Date(Date.now() + 100_000),
+        revokedAt: new Date(Date.now() - 50),
+      };
+      prisma.refreshToken.findUnique.mockResolvedValue(record);
+      (usersService.findById as Mock).mockResolvedValue(
+        makeUser({ deactivatedAt: new Date('2026-01-01') }),
+      );
+
+      await expect(service.refresh('raw-refresh')).rejects.toThrow(UnauthorizedException);
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
     });
 
     it('rejects an expired refresh token', async () => {

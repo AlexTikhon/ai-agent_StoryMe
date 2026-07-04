@@ -38,7 +38,11 @@ function validateBookId(bookId: string): void {
 /**
  * Local filesystem implementation.
  * Output path: <api-root>/tmp/books/<bookId>/storybook.pdf
- * Served at:   /files/books/<bookId>/storybook.pdf
+ * Not served as a static file — only readable via getPreviewPdf(), which
+ * BooksService.getPreviewPdfBuffer() calls after an ownership check (see
+ * GET /api/books/:id/pdf/preview). The `url` returned here is stored on
+ * Book.previewPdfUrl purely as a "PDF exists" marker for BookDto/diagnostics;
+ * it is not, and must not become, a fetchable HTTP route.
  */
 export class LocalPdfStorage implements PdfStorage {
   async savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }> {

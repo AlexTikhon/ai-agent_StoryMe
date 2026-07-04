@@ -17,6 +17,17 @@ import { TokenService } from './token.service';
 
 const BCRYPT_COST = 12;
 
+/**
+ * How long after rotating out a refresh token we still tolerate one more
+ * presentation of it as a benign race rather than theft. Multi-tab browsers
+ * can have two tabs read the same pre-rotation cookie and both attempt to
+ * refresh within milliseconds of each other; without this grace window the
+ * loser looks identical to a stolen/replayed token and the whole family gets
+ * revoked, logging every tab out. Kept short so it doesn't meaningfully
+ * widen the window for actual token theft.
+ */
+const REFRESH_REUSE_GRACE_MS = 10_000;
+
 export interface AuthResult {
   user: User;
   accessToken: string;
@@ -224,8 +235,20 @@ export class AuthService {
     }
 
     if (record.revokedAt) {
-      // Reuse of an already-rotated-out token: treat as theft and kill the
-      // whole family so the legitimate holder is forced to log in again.
+      const revokedMsAgo = Date.now() - record.revokedAt.getTime();
+      if (revokedMsAgo <= REFRESH_REUSE_GRACE_MS) {
+        // Likely a second browser tab that read the same pre-rotation cookie
+        // and raced this one, not theft — issue a fresh token in the same
+        // family instead of revoking it and logging every tab out. See
+        // REFRESH_REUSE_GRACE_MS above.
+        const user = await this.usersService.findById(record.userId);
+        if (!user || user.deactivatedAt) {
+          throw new UnauthorizedException('Invalid refresh token');
+        }
+        return this.issueTokenPair(user, record.family);
+      }
+      // Reuse well after rotation: treat as theft and kill the whole family
+      // so the legitimate holder is forced to log in again.
       await this.prisma.refreshToken.updateMany({
         where: { family: record.family, revokedAt: null },
         data: { revokedAt: new Date() },

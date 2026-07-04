@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter, useParams } from 'next/navigation';
 import BookDetailPage from './page';
@@ -264,10 +264,14 @@ describe('BookDetailPage', () => {
 
   // ── Loading state ──────────────────────────────────────────────────────────
 
-  it('shows a loading skeleton while the book is being fetched', () => {
+  it('shows a loading skeleton while the book is being fetched', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK));
     render(<BookDetailPage />);
     expect(screen.getByRole('status', { name: /loading book/i })).toBeDefined();
+    // Let the pending fetch settle under act() before the test ends.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: "Emma's Story" })).toBeDefined(),
+    );
   });
 
   // ── Successful render ──────────────────────────────────────────────────────
@@ -1457,6 +1461,9 @@ describe('BookDetailPage', () => {
     expect(vi.mocked(fetch).mock.calls.length).toBe(callsBeforeSecondClick);
 
     resolveDownload(mockPdfBlob());
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^download pdf$/i })).not.toBeDisabled();
+    });
   });
 
   it('shows an error message when the PDF download request fails', async () => {
@@ -1637,7 +1644,11 @@ describe('BookDetailPage', () => {
         expect(screen.getByRole('heading', { name: /rendering pdf/i })).toBeDefined(),
       );
 
-      await vi.advanceTimersByTimeAsync(2500);
+      await act(async () => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+      });
 
       await waitFor(() =>
         expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
@@ -1659,13 +1670,21 @@ describe('BookDetailPage', () => {
       render(<BookDetailPage />);
       await waitFor(() => expect(screen.getByText('layout')).toBeDefined());
 
-      await vi.advanceTimersByTimeAsync(2500);
+      await act(async () => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+      });
       await waitFor(() =>
         expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
       );
 
       const callCountAfterComplete = vi.mocked(fetch).mock.calls.length;
-      await vi.advanceTimersByTimeAsync(2500);
+      await act(async () => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+      });
       expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterComplete);
     });
 
@@ -1680,11 +1699,19 @@ describe('BookDetailPage', () => {
       render(<BookDetailPage />);
       await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
 
-      await vi.advanceTimersByTimeAsync(2500);
+      await act(async () => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+      });
       await waitFor(() => expect(screen.getByText(/generation failed/i)).toBeDefined());
 
       const callCountAfterFailed = vi.mocked(fetch).mock.calls.length;
-      await vi.advanceTimersByTimeAsync(2500);
+      await act(async () => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+      });
       expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterFailed);
     });
 
@@ -1703,7 +1730,9 @@ describe('BookDetailPage', () => {
       );
 
       const callCountAfterLoad = vi.mocked(fetch).mock.calls.length;
-      await vi.advanceTimersByTimeAsync(5000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
       expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterLoad);
     });
   });
@@ -1883,7 +1912,11 @@ describe('BookDetailPage', () => {
 
         await waitFor(() => expect(screen.getByText('story_draft')).toBeDefined());
 
-        await vi.advanceTimersByTimeAsync(2500);
+        await act(async () => {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2500);
+          });
+        });
 
         await waitFor(() =>
           expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
@@ -2083,7 +2116,11 @@ describe('BookDetailPage', () => {
           expect(panel.getByText('1')).toBeDefined();
         });
 
-        await vi.advanceTimersByTimeAsync(2500);
+        await act(async () => {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2500);
+          });
+        });
 
         await waitFor(() => {
           const panel = within(screen.getByTestId('generation-diagnostics'));
@@ -2111,13 +2148,23 @@ describe('BookDetailPage', () => {
         render(<BookDetailPage />);
         await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
 
-        await vi.advanceTimersByTimeAsync(2500);
+        await act(async () => {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2500);
+          });
+        });
         await waitFor(() => expect(screen.getByText(/generation failed/i)).toBeDefined());
 
         // let any fetch triggered by the status transition itself settle before snapshotting
-        await vi.advanceTimersByTimeAsync(0);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
         const callCountAfterFailed = fetchMock.fetchFn.mock.calls.length;
-        await vi.advanceTimersByTimeAsync(2500);
+        await act(async () => {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2500);
+          });
+        });
         expect(fetchMock.fetchFn.mock.calls.length).toBe(callCountAfterFailed);
       });
     });

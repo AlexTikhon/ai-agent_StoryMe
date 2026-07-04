@@ -6,7 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { BookStatus, GenerationJobType, type Book } from '@prisma/client';
+import { BookStatus, GenerationJobType, Prisma, type Book } from '@prisma/client';
 import {
   DEFAULT_BOOK_PAGE_COUNT,
   SupportedLanguage,
@@ -130,15 +130,22 @@ export class BooksService {
       throw new ConflictException('Generation is already in progress for this book');
     }
 
-    const cleared = await this.prisma.book.update({
-      where: { id: bookId },
-      data: {
+    // The pre-checks above are best-effort — two concurrent retries can both
+    // pass them before either writes. `claimStatusTransition`'s conditional
+    // UPDATE (`where: { id, status: failed }`) is the actual guard: only one
+    // concurrent caller's UPDATE can match a still-`failed` row, so only one
+    // GenerationJob/pipeline ever gets scheduled per failure.
+    const cleared = await this.claimStatusTransition(
+      bookId,
+      BookStatus.failed,
+      {
         status: GENERATION_STARTED_STATUS,
         failedStep: null,
         errorMessage: null,
         retryCount: { increment: 1 },
       },
-    });
+      'Only failed books can be retried',
+    );
 
     const job = await this.generationJobService.createQueued({
       bookId,
@@ -149,7 +156,7 @@ export class BooksService {
       attempt: cleared.retryCount + 1,
     });
 
-    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(cleared, job.id));
+    await this.scheduleOrThrow(cleared, job.id);
 
     return { book: toBookDto(cleared) };
   }
@@ -182,10 +189,15 @@ export class BooksService {
       throw new ConflictException('Generation is already in progress for this book');
     }
 
-    const started = await this.prisma.book.update({
-      where: { id: bookId },
-      data: { status: GENERATION_STARTED_STATUS },
-    });
+    // See the comment in retryGeneration — this conditional UPDATE is the
+    // real duplicate-generation guard; the checks above are just a nicer
+    // error message for the common (non-racing) case.
+    const started = await this.claimStatusTransition(
+      bookId,
+      BookStatus.created,
+      { status: GENERATION_STARTED_STATUS },
+      'Generation already started or completed for this book',
+    );
 
     const job = await this.generationJobService.createQueued({
       bookId,
@@ -194,9 +206,81 @@ export class BooksService {
       attempt: 1,
     });
 
-    this.generationTaskRunner.run(bookId, () => this.runGenerationPipeline(started, job.id));
+    await this.scheduleOrThrow(started, job.id);
 
     return { book: toBookDto(started) };
+  }
+
+  /**
+   * Atomically transitions `bookId` from `fromStatus` to `data`, using the
+   * UPDATE's own WHERE clause (rather than a separate read-then-write) as the
+   * concurrency guard: Postgres serializes concurrent UPDATEs on the same
+   * row, so only the first of two racing callers can match `status:
+   * fromStatus` — the loser's UPDATE affects zero rows, which Prisma surfaces
+   * as a P2025 "record not found" error, translated here into the same
+   * ConflictException the pre-check above would have thrown had it won the race.
+   */
+  private async claimStatusTransition(
+    bookId: string,
+    fromStatus: BookStatus,
+    data: Prisma.BookUpdateInput,
+    conflictMessage: string,
+  ): Promise<Book> {
+    try {
+      return await this.prisma.book.update({
+        where: { id: bookId, status: fromStatus },
+        data,
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+        throw new ConflictException(conflictMessage);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Schedules the pipeline via GenerationTaskRunner and handles a `false`
+   * return explicitly. This should be unreachable in practice — the caller
+   * just won the atomic status claim above, so no other request can also be
+   * mid-schedule for this book — but the runner's in-memory `running` set is
+   * a separate source of truth, so a mismatch is a real (if unlikely) bug
+   * surface, not a case to ignore. Rather than leave the book/job stuck in a
+   * non-terminal, un-runnable state forever, this marks both failed and
+   * surfaces a ConflictException to the caller.
+   */
+  private async scheduleOrThrow(book: Book, jobId: string): Promise<void> {
+    const scheduled = this.generationTaskRunner.run(book.id, () =>
+      this.runGenerationPipeline(book, jobId),
+    );
+    if (scheduled) return;
+
+    this.logger.error(
+      `GenerationTaskRunner rejected book ${book.id} immediately after an atomic status claim — marking the job failed instead of leaving it queued forever.`,
+    );
+    await this.markJob(
+      this.generationJobService.markFailed(jobId, {
+        errorMessage: 'Generation runner rejected this job (already running)',
+      }),
+      jobId,
+      book.id,
+      'failed',
+    );
+    await this.prisma.book
+      .update({
+        where: { id: book.id },
+        data: {
+          status: BookStatus.failed,
+          errorMessage: 'Could not start generation — please try again',
+        },
+      })
+      .catch((updateErr: unknown) => {
+        const message = updateErr instanceof Error ? updateErr.message : String(updateErr);
+        this.logger.error(
+          `Failed to mark book ${book.id} failed after a rejected schedule: ${message}`,
+        );
+      });
+    throw new ConflictException('Generation is already in progress for this book');
   }
 
   /**

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import type { Book, GenerationJob } from '@prisma/client';
+import { Prisma, type Book, type GenerationJob } from '@prisma/client';
 import { BooksService } from './books.service';
 import type { AgentService } from '../agent/agent.service';
 import type { GenerationTaskRunner } from '../agent/generation-task-runner';
@@ -51,6 +51,14 @@ function makeGenerationJob(overrides: Partial<GenerationJob> = {}): GenerationJo
     updatedAt: new Date('2026-01-01'),
     ...overrides,
   };
+}
+
+/** Simulates the "record not found" error Prisma throws when a conditional update's WHERE clause matches zero rows — the concurrency guard's signal that another request already won the race. */
+function recordNotFoundError(): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError('Record to update not found.', {
+    code: 'P2025',
+    clientVersion: '5.17.0',
+  });
 }
 
 function createMockGenerationJobService(): jest.Mocked<GenerationJobService> {
@@ -394,7 +402,7 @@ describe('BooksService', () => {
       const result = await service.startGeneration('u-1', 'b-1');
 
       expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1' },
+        where: { id: 'b-1', status: STATUS_CREATED },
         data: { status: 'char_build' },
       });
       expect(result.book.status).toBe('char_build');
@@ -598,6 +606,65 @@ describe('BooksService', () => {
       expect(prisma.book.update).not.toHaveBeenCalled();
       expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
+
+    describe('concurrency', () => {
+      it('claims the transition with a conditional update guarded on the current status', async () => {
+        const book = makeBook({ status: STATUS_CREATED });
+        const started = makeBook({ status: STATUS_CHAR_BUILD });
+        prisma.book.findFirst.mockResolvedValue(book);
+        prisma.book.update.mockResolvedValue(started);
+
+        await service.startGeneration('u-1', 'b-1');
+
+        expect(prisma.book.update).toHaveBeenCalledWith({
+          where: { id: 'b-1', status: STATUS_CREATED },
+          data: { status: 'char_build' },
+        });
+      });
+
+      it('throws ConflictException (and never schedules a job) when a concurrent request already won the status transition', async () => {
+        // Both requests pass the pre-checks (findFirst still sees `created`),
+        // but the conditional UPDATE's WHERE clause loses the race — Prisma
+        // reports zero matching rows as a P2025 "record not found" error.
+        const book = makeBook({ status: STATUS_CREATED });
+        prisma.book.findFirst.mockResolvedValue(book);
+        prisma.book.update.mockRejectedValue(recordNotFoundError());
+
+        await expect(service.startGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+        expect(generationJobService.createQueued).not.toHaveBeenCalled();
+        expect(generationTaskRunner.run).not.toHaveBeenCalled();
+      });
+
+      it('re-throws unrelated prisma errors from the conditional update instead of masking them as a conflict', async () => {
+        const book = makeBook({ status: STATUS_CREATED });
+        prisma.book.findFirst.mockResolvedValue(book);
+        prisma.book.update.mockRejectedValue(new Error('connection reset'));
+
+        await expect(service.startGeneration('u-1', 'b-1')).rejects.toThrow('connection reset');
+        expect(generationJobService.createQueued).not.toHaveBeenCalled();
+      });
+
+      it('marks the book and job failed and throws ConflictException when GenerationTaskRunner.run() returns false right after the atomic claim', async () => {
+        const book = makeBook({ status: STATUS_CREATED });
+        const started = makeBook({ status: STATUS_CHAR_BUILD });
+        prisma.book.findFirst.mockResolvedValue(book);
+        prisma.book.update.mockResolvedValue(started);
+        generationTaskRunner.run.mockReturnValue(false);
+
+        await expect(service.startGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+
+        expect(generationJobService.markFailed).toHaveBeenCalledWith('job-1', {
+          errorMessage: 'Generation runner rejected this job (already running)',
+        });
+        expect(prisma.book.update).toHaveBeenLastCalledWith({
+          where: { id: 'b-1' },
+          data: {
+            status: 'failed',
+            errorMessage: 'Could not start generation — please try again',
+          },
+        });
+      });
+    });
   });
 
   // ─── retryGeneration ─────────────────────────────────────────────────────────
@@ -616,7 +683,7 @@ describe('BooksService', () => {
       const result = await service.retryGeneration('u-1', 'b-1');
 
       expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1' },
+        where: { id: 'b-1', status: STATUS_FAILED },
         data: expect.objectContaining({
           status: 'char_build',
           failedStep: null,
@@ -740,6 +807,66 @@ describe('BooksService', () => {
       await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
       expect(prisma.book.update).not.toHaveBeenCalled();
       expect(generationTaskRunner.run).not.toHaveBeenCalled();
+    });
+
+    describe('concurrency', () => {
+      it('claims the transition with a conditional update guarded on the current status', async () => {
+        const book = makeBook({ status: STATUS_FAILED });
+        const cleared = makeBook({
+          status: STATUS_CHAR_BUILD,
+          failedStep: null,
+          errorMessage: null,
+        });
+        prisma.book.findFirst.mockResolvedValue(book);
+        prisma.book.update.mockResolvedValue(cleared);
+
+        await service.retryGeneration('u-1', 'b-1');
+
+        expect(prisma.book.update).toHaveBeenCalledWith({
+          where: { id: 'b-1', status: STATUS_FAILED },
+          data: {
+            status: 'char_build',
+            failedStep: null,
+            errorMessage: null,
+            retryCount: { increment: 1 },
+          },
+        });
+      });
+
+      it('throws ConflictException (and never schedules a job) when a concurrent retry already won the status transition', async () => {
+        const book = makeBook({ status: STATUS_FAILED });
+        prisma.book.findFirst.mockResolvedValue(book);
+        prisma.book.update.mockRejectedValue(recordNotFoundError());
+
+        await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+        expect(generationJobService.createQueued).not.toHaveBeenCalled();
+        expect(generationTaskRunner.run).not.toHaveBeenCalled();
+      });
+
+      it('marks the book and job failed and throws ConflictException when GenerationTaskRunner.run() returns false right after the atomic claim', async () => {
+        const book = makeBook({ status: STATUS_FAILED });
+        const cleared = makeBook({
+          status: STATUS_CHAR_BUILD,
+          failedStep: null,
+          errorMessage: null,
+        });
+        prisma.book.findFirst.mockResolvedValue(book);
+        prisma.book.update.mockResolvedValue(cleared);
+        generationTaskRunner.run.mockReturnValue(false);
+
+        await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+
+        expect(generationJobService.markFailed).toHaveBeenCalledWith('job-1', {
+          errorMessage: 'Generation runner rejected this job (already running)',
+        });
+        expect(prisma.book.update).toHaveBeenLastCalledWith({
+          where: { id: 'b-1' },
+          data: {
+            status: 'failed',
+            errorMessage: 'Could not start generation — please try again',
+          },
+        });
+      });
     });
 
     it('throws NotFoundException when the book belongs to a different user', async () => {

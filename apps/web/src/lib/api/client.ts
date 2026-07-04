@@ -25,8 +25,81 @@ function notifyAuthExpired(): void {
 }
 
 // Coalesces concurrent 401s onto a single in-flight refresh instead of firing
-// one POST /api/auth/refresh per failed request.
+// one POST /api/auth/refresh per failed request. This only covers one JS
+// context — see the localStorage-based cross-tab coordination below for the
+// multi-tab case.
 let refreshInFlight: Promise<string | null> | null = null;
+
+// Cross-tab coordination: when tab A is mid-refresh, tab B should wait for
+// A's result instead of firing its own POST /api/auth/refresh — both tabs
+// may be racing on the same (about-to-be-rotated) refresh cookie, and two
+// simultaneous refresh calls are exactly the multi-tab logout scenario this
+// guards against. The server tolerates a stray duplicate call via a short
+// reuse grace period (see AuthService.REFRESH_REUSE_GRACE_MS), so this is a
+// best-effort optimization, not a correctness requirement: if the lock or
+// storage event is unavailable/missed, the tab just falls back to its own
+// refresh call.
+export const REFRESH_LOCK_KEY = 'storyme:refresh-lock';
+export const REFRESH_RESULT_KEY = 'storyme:refresh-result';
+const REFRESH_LOCK_TTL_MS = 8000;
+const REFRESH_WAIT_TIMEOUT_MS = 5000;
+
+interface RefreshLock {
+  id: string;
+  startedAt: number;
+}
+
+interface RefreshResult {
+  lockId: string;
+  token: string | null;
+}
+
+function readJSON<T>(key: string): T | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeJSON(key: string, value: unknown): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage unavailable (private browsing, quota) — coordination is
+    // best-effort, so just skip it.
+  }
+}
+
+function removeKey(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+/** Waits for the tab holding `lockId` to publish its refresh result, falling back to null (triggering our own refresh) if it never does. */
+function waitForCrossTabRefresh(lockId: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (token: string | null) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('storage', onStorage);
+      clearTimeout(timer);
+      resolve(token);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== REFRESH_RESULT_KEY || !event.newValue) return;
+      const result = readJSON<RefreshResult>(REFRESH_RESULT_KEY);
+      if (result?.lockId === lockId) finish(result.token);
+    };
+    window.addEventListener('storage', onStorage);
+    const timer = setTimeout(() => finish(null), REFRESH_WAIT_TIMEOUT_MS);
+  });
+}
 
 function identityHeaders(): Record<string, string> {
   if (getAuthMode() === 'dev') {
@@ -36,23 +109,64 @@ function identityHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-function refreshOnce(): Promise<string | null> {
-  if (!refreshInFlight) {
-    refreshInFlight = authApi
-      .refresh()
-      .then((res) => {
-        setAccessToken(res.accessToken);
-        return res.accessToken;
-      })
-      .catch(() => {
-        setAccessToken(null);
-        notifyAuthExpired();
-        return null;
-      })
-      .finally(() => {
-        refreshInFlight = null;
-      });
+/** Actually calls POST /api/auth/refresh, publishing the result for any tab waiting on `waitForCrossTabRefresh`. */
+function performOwnRefresh(): Promise<string | null> {
+  const lockId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  if (typeof window !== 'undefined') {
+    writeJSON(REFRESH_LOCK_KEY, { id: lockId, startedAt: Date.now() } satisfies RefreshLock);
   }
+
+  return authApi
+    .refresh()
+    .then((res) => {
+      setAccessToken(res.accessToken);
+      return res.accessToken;
+    })
+    .catch(() => {
+      setAccessToken(null);
+      notifyAuthExpired();
+      return null;
+    })
+    .then((token) => {
+      if (typeof window !== 'undefined') {
+        writeJSON(REFRESH_RESULT_KEY, { lockId, token } satisfies RefreshResult);
+        removeKey(REFRESH_LOCK_KEY);
+      }
+      return token;
+    });
+}
+
+function refreshOnce(): Promise<string | null> {
+  if (refreshInFlight) return refreshInFlight;
+
+  if (typeof window !== 'undefined') {
+    const existingLock = readJSON<RefreshLock>(REFRESH_LOCK_KEY);
+    if (existingLock && Date.now() - existingLock.startedAt < REFRESH_LOCK_TTL_MS) {
+      // Another tab is already refreshing — wait for its result instead of
+      // racing it with a second POST /api/auth/refresh.
+      refreshInFlight = waitForCrossTabRefresh(existingLock.id)
+        .then((token) => {
+          if (token) {
+            // The token belongs to the other tab's in-memory store — this
+            // tab needs its own copy for identityHeaders() to pick it up.
+            setAccessToken(token);
+            return token;
+          }
+          // The other tab never published a result in time (or its refresh
+          // failed) — fall back to doing it ourselves rather than assuming
+          // the session is dead.
+          return performOwnRefresh();
+        })
+        .finally(() => {
+          refreshInFlight = null;
+        });
+      return refreshInFlight;
+    }
+  }
+
+  refreshInFlight = performOwnRefresh().finally(() => {
+    refreshInFlight = null;
+  });
   return refreshInFlight;
 }
 
