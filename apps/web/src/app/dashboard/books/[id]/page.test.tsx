@@ -401,6 +401,49 @@ describe('BookDetailPage', () => {
     });
   });
 
+  it('pre-fills the title field from the book and includes it in the PATCH payload', async () => {
+    const user = userEvent.setup();
+    const updated = { ...MOCK_BOOK, title: "Emma's New Title" };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK))
+      .mockResolvedValueOnce(mockOk(updated));
+
+    render(<BookDetailPage />);
+    await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+
+    const titleInput = screen.getByDisplayValue("Emma's Story");
+    await user.clear(titleInput);
+    await user.type(titleInput, "Emma's New Title");
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1, name: "Emma's New Title" })).toBeDefined();
+    });
+
+    const patchCall = fetchMock.fetchFn.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    const [, init] = patchCall as [unknown, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({ title: "Emma's New Title" });
+  });
+
+  it('shows a validation error when saving with an empty title', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK));
+    render(<BookDetailPage />);
+
+    await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+
+    const titleInput = screen.getByDisplayValue("Emma's Story");
+    await user.clear(titleInput);
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(screen.getByRole('alert').textContent).toContain('Title is required');
+  });
+
   // ── Delete ────────────────────────────────────────────────────────────────
 
   it('deletes the book and redirects to /dashboard', async () => {
@@ -1135,6 +1178,34 @@ describe('BookDetailPage', () => {
     });
   });
 
+  it('shows Edit and Delete buttons for a complete book (edit-then-regenerate flow)', async () => {
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+
+    render(<BookDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^edit$/i })).toBeDefined();
+      expect(screen.getByRole('button', { name: /^delete$/i })).toBeDefined();
+    });
+  });
+
+  it('shows Edit and Delete buttons for a failed book', async () => {
+    const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(failedBook));
+
+    render(<BookDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^edit$/i })).toBeDefined();
+      expect(screen.getByRole('button', { name: /^delete$/i })).toBeDefined();
+    });
+  });
+
   it('hides Edit and Delete buttons when status is page_plan', async () => {
     const pagePlanBook = { ...MOCK_BOOK, status: BookStatus.PagePlan };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(pagePlanBook));
@@ -1802,6 +1873,23 @@ describe('BookDetailPage', () => {
       });
     });
 
+    it('asks for confirmation before retrying, and does nothing if the user cancels', async () => {
+      const user = userEvent.setup();
+      const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(false));
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(failedBook));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /retry generation/i }));
+      await user.click(screen.getByRole('button', { name: /retry generation/i }));
+
+      expect(window.confirm).toHaveBeenCalled();
+      const retryCall = fetchMock.fetchFn.mock.calls.find(([input]) =>
+        String(input).includes('/retry-generation'),
+      );
+      expect(retryCall).toBeUndefined();
+    });
+
     it('does not show the Retry generation button for non-failed books', async () => {
       const inProgress = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(inProgress));
@@ -1817,6 +1905,7 @@ describe('BookDetailPage', () => {
       const user = userEvent.setup();
       const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
       const retried: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockOk(failedBook))
         .mockResolvedValueOnce(mockOk({ book: retried }));
@@ -1838,6 +1927,7 @@ describe('BookDetailPage', () => {
 
     it('disables the button while the retry request is in progress', async () => {
       const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
       let resolveRetry: (value: Response) => void = () => {};
       const pending = new Promise<Response>((resolve) => {
         resolveRetry = resolve;
@@ -1869,6 +1959,7 @@ describe('BookDetailPage', () => {
     it('shows a safe error message when the retry request fails', async () => {
       const user = userEvent.setup();
       const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockOk(failedBook))
         .mockResolvedValueOnce(mockError(500, 'Internal server error'));
@@ -1899,6 +1990,7 @@ describe('BookDetailPage', () => {
           status: BookStatus.Complete,
           previewPdfUrl: '/files/books/book-1/storybook.pdf',
         };
+        vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
 
         vi.mocked(fetch)
           .mockResolvedValueOnce(mockOk(failedBook))
@@ -1921,6 +2013,131 @@ describe('BookDetailPage', () => {
         await waitFor(() =>
           expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
         );
+      });
+    });
+  });
+
+  // ── Regenerate book (complete books) ──────────────────────────────────────
+
+  describe('Regenerate book', () => {
+    it('shows a Regenerate book button for complete books instead of Retry generation', async () => {
+      const completeBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /regenerate book/i })).toBeDefined();
+      });
+      expect(screen.queryByRole('button', { name: /^retry generation$/i })).toBeNull();
+    });
+
+    it('asks for confirmation and calls retry-generation when confirmed', async () => {
+      const user = userEvent.setup();
+      const completeBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      const regenerated: BookDto = { ...MOCK_BOOK, status: BookStatus.CharBuild };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(completeBook))
+        .mockResolvedValueOnce(mockOk({ book: regenerated }));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /regenerate book/i }));
+      await user.click(screen.getByRole('button', { name: /regenerate book/i }));
+
+      expect(window.confirm).toHaveBeenCalled();
+      await waitFor(() => {
+        const call = fetchMock.fetchFn.mock.calls.find(([input]) =>
+          String(input).includes('/retry-generation'),
+        );
+        expect(call).toBeDefined();
+      });
+    });
+
+    it('does nothing when the user cancels the regenerate confirmation', async () => {
+      const user = userEvent.setup();
+      const completeBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(false));
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /regenerate book/i }));
+      await user.click(screen.getByRole('button', { name: /regenerate book/i }));
+
+      const call = fetchMock.fetchFn.mock.calls.find(([input]) =>
+        String(input).includes('/retry-generation'),
+      );
+      expect(call).toBeUndefined();
+    });
+
+    it('shows a hint banner after saving an edit to a complete book, prompting regeneration', async () => {
+      const user = userEvent.setup();
+      const completeBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      const editedBook: BookDto = { ...completeBook, theme: 'Adventure' };
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(completeBook))
+        .mockResolvedValueOnce(mockOk(editedBook));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /^edit$/i }));
+      await user.click(screen.getByRole('button', { name: /^edit$/i }));
+
+      const themeInput = screen.getByPlaceholderText(/friendship/i);
+      await user.clear(themeInput);
+      await user.type(themeInput, 'Adventure');
+      await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/regenerate the book to update/i)).toBeDefined();
+      });
+    });
+
+    it('clears the hint banner once regeneration is started', async () => {
+      const user = userEvent.setup();
+      const completeBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      const editedBook: BookDto = { ...completeBook, theme: 'Adventure' };
+      const regenerated: BookDto = { ...MOCK_BOOK, status: BookStatus.CharBuild };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(completeBook))
+        .mockResolvedValueOnce(mockOk(editedBook))
+        .mockResolvedValueOnce(mockOk({ book: regenerated }));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /^edit$/i }));
+      await user.click(screen.getByRole('button', { name: /^edit$/i }));
+
+      const themeInput = screen.getByPlaceholderText(/friendship/i);
+      await user.clear(themeInput);
+      await user.type(themeInput, 'Adventure');
+      await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+      await waitFor(() => screen.getByText(/regenerate the book to update/i));
+
+      await user.click(screen.getByRole('button', { name: /regenerate book/i }));
+
+      await waitFor(() => {
+        expect(screen.queryByText(/regenerate the book to update/i)).toBeNull();
       });
     });
   });

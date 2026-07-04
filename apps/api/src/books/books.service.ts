@@ -28,6 +28,21 @@ import type { UpdateBookDto } from './dto/update-book.dto';
 /** Book.status value written the moment generation is scheduled — the first pipeline step, non-terminal. */
 const GENERATION_STARTED_STATUS = BookStatus.char_build;
 
+/**
+ * Statuses where the generation pipeline is not actively running — safe for
+ * update()/remove() to mutate. Mirrors TERMINAL_BOOK_STATUSES in
+ * generation-job-recovery.service.ts, plus the pre-generation `created` draft
+ * state (which is terminal in the sense that nothing is running, even though
+ * it isn't a pipeline outcome).
+ */
+const EDITABLE_BOOK_STATUSES = new Set<BookStatus>([
+  BookStatus.created,
+  BookStatus.complete,
+  BookStatus.failed,
+  BookStatus.partial,
+  BookStatus.cancelled,
+]);
+
 @Injectable()
 export class BooksService {
   private readonly logger = new Logger(BooksService.name);
@@ -90,8 +105,8 @@ export class BooksService {
 
   async update(id: string, userId: string, dto: UpdateBookDto): Promise<BookDto> {
     const book = await this.findOwnedOrThrow(id, userId);
-    if (book.status !== BookStatus.created) {
-      throw new ConflictException('Only draft books can be updated');
+    if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
+      throw new ConflictException('Book cannot be edited while generation is in progress');
     }
     const updated = await this.prisma.book.update({
       where: { id },
@@ -102,8 +117,8 @@ export class BooksService {
 
   async remove(id: string, userId: string): Promise<void> {
     const book = await this.findOwnedOrThrow(id, userId);
-    if (book.status !== BookStatus.created) {
-      throw new ConflictException('Only draft books can be deleted');
+    if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
+      throw new ConflictException('Book cannot be deleted while generation is in progress');
     }
     await this.prisma.book.update({
       where: { id },
@@ -112,16 +127,18 @@ export class BooksService {
   }
 
   /**
-   * Retries a failed book generation in place: clears the failure markers,
-   * flips status back to a non-terminal generating state, and schedules the
-   * same pipeline used by startGeneration to run in the background.
-   * AgentService appends new AgentLog rows rather than deleting prior ones,
-   * so retry history stays visible in generation diagnostics.
+   * Re-runs book generation in place: clears the failure markers, flips
+   * status back to a non-terminal generating state, and schedules the same
+   * pipeline used by startGeneration to run in the background. Used both to
+   * retry a failed book and to regenerate a complete one (replacing its
+   * story/images/PDF with a fresh run against the book's current source
+   * fields). AgentService appends new AgentLog rows rather than deleting
+   * prior ones, so history stays visible in generation diagnostics.
    */
   async retryGeneration(userId: string, bookId: string): Promise<GenerateBookResponse> {
     const book = await this.findOwnedOrThrow(bookId, userId);
-    if (book.status !== BookStatus.failed) {
-      throw new ConflictException('Only failed books can be retried');
+    if (book.status !== BookStatus.failed && book.status !== BookStatus.complete) {
+      throw new ConflictException('Only failed or complete books can be regenerated');
     }
     if (this.generationTaskRunner.isRunning(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
@@ -130,21 +147,21 @@ export class BooksService {
       throw new ConflictException('Generation is already in progress for this book');
     }
 
-    // The pre-checks above are best-effort — two concurrent retries can both
-    // pass them before either writes. `claimStatusTransition`'s conditional
-    // UPDATE (`where: { id, status: failed }`) is the actual guard: only one
-    // concurrent caller's UPDATE can match a still-`failed` row, so only one
-    // GenerationJob/pipeline ever gets scheduled per failure.
+    // The pre-checks above are best-effort — two concurrent regenerate calls
+    // can both pass them before either writes. `claimStatusTransition`'s
+    // conditional UPDATE (`where: { id, status: book.status }`) is the actual
+    // guard: only one concurrent caller's UPDATE can match the still-current
+    // row, so only one GenerationJob/pipeline ever gets scheduled per call.
     const cleared = await this.claimStatusTransition(
       bookId,
-      BookStatus.failed,
+      book.status,
       {
         status: GENERATION_STARTED_STATUS,
         failedStep: null,
         errorMessage: null,
         retryCount: { increment: 1 },
       },
-      'Only failed books can be retried',
+      'Only failed or complete books can be regenerated',
     );
 
     const job = await this.generationJobService.createQueued({

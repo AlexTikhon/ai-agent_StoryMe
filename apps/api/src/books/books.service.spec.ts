@@ -348,12 +348,38 @@ describe('BooksService', () => {
       expect(result.title).toBe('New Title');
     });
 
-    it('throws ConflictException when book has advanced past created', async () => {
+    it('throws ConflictException when the book is actively generating', async () => {
       const book = makeBook({ status: STATUS_IN_PROGRESS });
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.update('b-1', 'u-1', { title: 'X' })).rejects.toThrow(ConflictException);
       expect(prisma.book.update).not.toHaveBeenCalled();
+    });
+
+    it('updates a complete book (edit-then-regenerate flow)', async () => {
+      const book = makeBook({ status: STATUS_COMPLETE });
+      const updated = makeBook({ title: 'New Title', status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(updated);
+
+      const result = await service.update('b-1', 'u-1', { title: 'New Title' });
+
+      expect(prisma.book.update).toHaveBeenCalledWith({
+        where: { id: 'b-1' },
+        data: { title: 'New Title' },
+      });
+      expect(result.title).toBe('New Title');
+    });
+
+    it('updates a failed book', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      const updated = makeBook({ title: 'New Title', status: STATUS_FAILED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(updated);
+
+      const result = await service.update('b-1', 'u-1', { title: 'New Title' });
+
+      expect(result.title).toBe('New Title');
     });
   });
 
@@ -375,12 +401,37 @@ describe('BooksService', () => {
       );
     });
 
-    it('throws ConflictException when book has advanced past created', async () => {
+    it('throws ConflictException when the book is actively generating', async () => {
       const book = makeBook({ status: STATUS_IN_PROGRESS });
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.remove('b-1', 'u-1')).rejects.toThrow(ConflictException);
       expect(prisma.book.update).not.toHaveBeenCalled();
+    });
+
+    it('soft-deletes a complete book', async () => {
+      const book = makeBook({ status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue({ ...book, deletedAt: new Date() });
+
+      await service.remove('b-1', 'u-1');
+
+      expect(prisma.book.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'b-1' },
+          data: expect.objectContaining({ deletedAt: expect.any(Date) }),
+        }),
+      );
+    });
+
+    it('soft-deletes a failed book', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue({ ...book, deletedAt: new Date() });
+
+      await service.remove('b-1', 'u-1');
+
+      expect(prisma.book.update).toHaveBeenCalled();
     });
 
     it('throws NotFoundException when book does not exist', async () => {
@@ -791,12 +842,20 @@ describe('BooksService', () => {
       expect(generationTaskRunner.run).not.toHaveBeenCalled();
     });
 
-    it('throws ConflictException when the book is already complete', async () => {
+    it('regenerates a complete book (edit-then-regenerate / regenerate-book flow)', async () => {
       const book = makeBook({ status: STATUS_COMPLETE });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, failedStep: null, errorMessage: null });
       prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
 
-      await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
-      expect(generationTaskRunner.run).not.toHaveBeenCalled();
+      const result = await service.retryGeneration('u-1', 'b-1');
+
+      expect(prisma.book.update).toHaveBeenCalledWith({
+        where: { id: 'b-1', status: STATUS_COMPLETE },
+        data: expect.objectContaining({ status: 'char_build' }),
+      });
+      expect(result.book.status).toBe('char_build');
+      expect(generationTaskRunner.run).toHaveBeenCalledOnce();
     });
 
     it('throws ConflictException when the runner reports the book is already generating', async () => {

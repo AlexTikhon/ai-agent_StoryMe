@@ -6,6 +6,17 @@ import type { BookDto } from '@book/types';
 import { BookStatus } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 
+/** Books not actively running the generation pipeline — safe to edit/delete. Mirrors the API's EDITABLE_BOOK_STATUSES gate. */
+function isBookEditable(status: BookStatus): boolean {
+  return (
+    status === BookStatus.Created ||
+    status === BookStatus.Complete ||
+    status === BookStatus.Failed ||
+    status === BookStatus.Partial ||
+    status === BookStatus.Cancelled
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -28,7 +39,7 @@ export default function DashboardPage() {
   }, [loadBooks]);
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Delete this draft? This cannot be undone.')) return;
+    if (!window.confirm('Delete this book? This cannot be undone.')) return;
     setDeletingId(id);
     try {
       await booksApi.remove(id);
@@ -100,6 +111,7 @@ interface BookCardProps {
 
 function BookCard({ book, onDelete, deleting }: BookCardProps) {
   const isDraft = book.status === BookStatus.Created;
+  const editable = isBookEditable(book.status);
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-border-subtle bg-bg-surface p-5 shadow-xs transition-shadow hover:shadow-sm">
@@ -151,11 +163,11 @@ function BookCard({ book, onDelete, deleting }: BookCardProps) {
           href={`/dashboard/books/${book.id}`}
           className="flex-1 rounded-lg border border-border-default py-1.5 text-center text-sm font-medium text-text-secondary transition-all hover:bg-stone-100"
         >
-          Edit
+          {isDraft ? 'Edit' : 'View'}
         </Link>
         <button
           onClick={onDelete}
-          disabled={deleting}
+          disabled={deleting || !editable}
           className="flex-1 rounded-lg border border-danger-base/20 bg-danger-light py-1.5 text-sm font-medium text-danger-base transition-all hover:bg-red-100 disabled:opacity-60"
         >
           {deleting ? '…' : 'Delete'}

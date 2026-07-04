@@ -124,6 +124,26 @@ describe('DashboardPage', () => {
     });
   });
 
+  it('shows a View button (instead of Edit) for a complete book', async () => {
+    const completeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Complete };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([completeBook])));
+    render(<DashboardPage />);
+    await waitFor(() => {
+      const link = screen.getByRole('link', { name: /^view$/i });
+      expect(link.getAttribute('href')).toBe('/dashboard/books/book-1');
+    });
+    expect(screen.queryByRole('link', { name: /^edit$/i })).toBeNull();
+  });
+
+  it('disables the Delete button while a book is still generating', async () => {
+    const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([generatingBook])));
+    render(<DashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^delete$/i })).toBeDisabled();
+    });
+  });
+
   it('Create First Book link in empty state links to the wizard', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([])));
     render(<DashboardPage />);

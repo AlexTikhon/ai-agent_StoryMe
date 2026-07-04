@@ -103,9 +103,11 @@ describe('BooksController.update', () => {
     expect(result).toBe(BOOK_DTO);
   });
 
-  it('propagates ConflictException when the book has advanced past created', async () => {
+  it('propagates ConflictException when the book is actively generating', async () => {
     const booksService = createMockBooksService();
-    booksService.update.mockRejectedValue(new ConflictException('Only draft books can be updated'));
+    booksService.update.mockRejectedValue(
+      new ConflictException('Book cannot be edited while generation is in progress'),
+    );
     const controller = new BooksController(booksService);
 
     await expect(controller.update(FAKE_USER, 'b-1', { title: 'X' })).rejects.toThrow(
@@ -163,10 +165,10 @@ describe('BooksController.retryGeneration', () => {
     expect(result).toBe(response);
   });
 
-  it('propagates ConflictException when the book is not in a failed state', async () => {
+  it('propagates ConflictException when the book cannot be regenerated', async () => {
     const booksService = createMockBooksService();
     booksService.retryGeneration.mockRejectedValue(
-      new ConflictException('Only failed books can be retried'),
+      new ConflictException('Only failed or complete books can be regenerated'),
     );
     const controller = new BooksController(booksService);
 
@@ -195,9 +197,11 @@ describe('BooksController.remove', () => {
     expect(booksService.remove).toHaveBeenCalledWith('b-1', 'u-1');
   });
 
-  it('propagates ConflictException when the book has advanced past created', async () => {
+  it('propagates ConflictException when the book is actively generating', async () => {
     const booksService = createMockBooksService();
-    booksService.remove.mockRejectedValue(new ConflictException('Only draft books can be deleted'));
+    booksService.remove.mockRejectedValue(
+      new ConflictException('Book cannot be deleted while generation is in progress'),
+    );
     const controller = new BooksController(booksService);
 
     await expect(controller.remove(FAKE_USER, 'b-1')).rejects.toThrow(ConflictException);

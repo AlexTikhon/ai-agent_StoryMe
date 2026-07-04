@@ -87,6 +87,7 @@ function generationStatusMessage(status: BookStatus): string {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface EditForm {
+  title: string;
   childName: string;
   childAge: number;
   language: SupportedLanguage;
@@ -95,6 +96,7 @@ interface EditForm {
 
 function formFromBook(book: BookDto): EditForm {
   return {
+    title: book.title ?? '',
     childName: book.childName ?? '',
     childAge: book.childAge ?? 4,
     language: book.language ?? SupportedLanguage.English,
@@ -103,6 +105,7 @@ function formFromBook(book: BookDto): EditForm {
 }
 
 function validateEdit(form: EditForm): string | null {
+  if (!form.title.trim()) return 'Title is required';
   if (!form.childName.trim()) return "Child's name is required";
   if (form.childAge < 1 || form.childAge > 12) return 'Age must be between 1 and 12';
   if (!form.theme.trim()) return 'Theme is required';
@@ -133,6 +136,7 @@ export default function BookDetailPage() {
 
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditForm>({
+    title: '',
     childName: '',
     childAge: 4,
     language: SupportedLanguage.English,
@@ -140,6 +144,7 @@ export default function BookDetailPage() {
   });
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [justEdited, setJustEdited] = useState(false);
 
   const [deleting, setDeleting] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -276,12 +281,12 @@ export default function BookDetailPage() {
     setSaving(true);
     setEditError(null);
     try {
-      const updated = await booksApi.update(id, {
-        title: `${editForm.childName.trim()}'s Story`,
-        ...editForm,
-      });
+      const updated = await booksApi.update(id, editForm);
       setBook(updated);
       setEditing(false);
+      if (updated.status !== BookStatus.Created) {
+        setJustEdited(true);
+      }
     } catch (err) {
       setEditError(err instanceof Error ? err.message : 'Failed to update book');
     } finally {
@@ -290,7 +295,7 @@ export default function BookDetailPage() {
   };
 
   const handleDelete = async () => {
-    if (!window.confirm('Delete this draft? This cannot be undone.')) return;
+    if (!window.confirm('Delete this book? This cannot be undone.')) return;
     setDeleting(true);
     try {
       await booksApi.remove(id);
@@ -314,14 +319,20 @@ export default function BookDetailPage() {
     }
   };
 
-  const handleRetry = async () => {
+  const handleRegenerate = async () => {
+    const confirmMessage =
+      book?.status === BookStatus.Complete
+        ? 'Regenerate this book? This will replace the current story, images, and PDF.'
+        : 'Retry generation? This will replace the current story, images, and PDF.';
+    if (!window.confirm(confirmMessage)) return;
     setRetrying(true);
     setRetryError(null);
     try {
       const response = await booksApi.retryGeneration(id);
       setBook(response.book);
+      setJustEdited(false);
     } catch (err) {
-      setRetryError(err instanceof Error ? err.message : 'Failed to retry generation');
+      setRetryError(err instanceof Error ? err.message : 'Failed to start regeneration');
     } finally {
       setRetrying(false);
     }
@@ -406,11 +417,12 @@ export default function BookDetailPage() {
                   refreshing={refreshing}
                   diagnostics={diagnostics}
                   diagnosticsError={diagnosticsError}
-                  onRetry={() => {
-                    void handleRetry();
+                  onRegenerate={() => {
+                    void handleRegenerate();
                   }}
                   retrying={retrying}
                   retryError={retryError}
+                  justEdited={justEdited}
                 />
               )}
             </div>
@@ -435,9 +447,10 @@ interface BookDetailViewProps {
   refreshing: boolean;
   diagnostics: GenerationDiagnosticsDto | null;
   diagnosticsError: string | null;
-  onRetry: () => void;
+  onRegenerate: () => void;
   retrying: boolean;
   retryError: string | null;
+  justEdited: boolean;
 }
 
 function BookDetailView({
@@ -452,13 +465,16 @@ function BookDetailView({
   refreshing,
   diagnostics,
   diagnosticsError,
-  onRetry,
+  onRegenerate,
   retrying,
   retryError,
+  justEdited,
 }: BookDetailViewProps) {
   const isDraft = book.status === BookStatus.Created;
   const missingFields = getMissingDraftFields(book);
   const canGenerate = isDraft && missingFields.length === 0;
+  const canEditOrDelete = !isGeneratingBookStatus(book.status);
+  const canRegenerate = book.status === BookStatus.Failed || book.status === BookStatus.Complete;
   const storyPlan = book.storyPlan ?? null;
   const pages: PagePlan[] | undefined =
     storyPlan?.pages && storyPlan.pages.length > 0 ? storyPlan.pages : undefined;
@@ -536,14 +552,27 @@ function BookDetailView({
         <GenerationDiagnosticsPanel diagnostics={diagnostics} diagnosticsError={diagnosticsError} />
       )}
 
-      {book.status === BookStatus.Failed && (
+      {justEdited && canRegenerate && (
+        <div className="mb-6 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Changes saved. Regenerate the book to update the story, images, and PDF with these
+          changes.
+        </div>
+      )}
+
+      {canRegenerate && (
         <div className="mb-6">
           <button
-            onClick={onRetry}
+            onClick={onRegenerate}
             disabled={retrying}
             className="w-full rounded-xl bg-violet-600 py-2 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500 disabled:opacity-60"
           >
-            {retrying ? 'Retrying…' : 'Retry generation'}
+            {book.status === BookStatus.Complete
+              ? retrying
+                ? 'Regenerating…'
+                : 'Regenerate book'
+              : retrying
+                ? 'Retrying…'
+                : 'Retry generation'}
           </button>
           {retryError && (
             <p
@@ -683,33 +712,33 @@ function BookDetailView({
       )}
 
       {isDraft && (
-        <>
-          <div className="mb-3 flex gap-3">
-            <button
-              onClick={onGenerate}
-              disabled={!canGenerate || generating}
-              className="flex-1 rounded-xl bg-violet-600 py-2 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500 disabled:opacity-60"
-            >
-              {generating ? 'Generating…' : 'Generate Story'}
-            </button>
-          </div>
+        <div className="mb-3 flex gap-3">
+          <button
+            onClick={onGenerate}
+            disabled={!canGenerate || generating}
+            className="flex-1 rounded-xl bg-violet-600 py-2 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500 disabled:opacity-60"
+          >
+            {generating ? 'Generating…' : 'Generate Story'}
+          </button>
+        </div>
+      )}
 
-          <div className="flex gap-3">
-            <button
-              onClick={onEdit}
-              className="flex-1 rounded-xl border border-border-default py-2 text-sm font-semibold text-text-secondary transition-all hover:bg-stone-100"
-            >
-              Edit
-            </button>
-            <button
-              onClick={onDelete}
-              disabled={deleting}
-              className="flex-1 rounded-xl border border-danger-base/20 bg-danger-light py-2 text-sm font-semibold text-danger-base transition-all hover:bg-red-100 disabled:opacity-60"
-            >
-              {deleting ? '…' : 'Delete'}
-            </button>
-          </div>
-        </>
+      {canEditOrDelete && (
+        <div className="flex gap-3">
+          <button
+            onClick={onEdit}
+            className="flex-1 rounded-xl border border-border-default py-2 text-sm font-semibold text-text-secondary transition-all hover:bg-stone-100"
+          >
+            Edit
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={deleting}
+            className="flex-1 rounded-xl border border-danger-base/20 bg-danger-light py-2 text-sm font-semibold text-danger-base transition-all hover:bg-red-100 disabled:opacity-60"
+          >
+            {deleting ? '…' : 'Delete'}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -1095,6 +1124,22 @@ function EditFormFields({ values, onChange, submitting, onCancel }: EditFormFiel
   return (
     <>
       <div className="grid gap-4 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5 sm:col-span-2">
+          <span className="text-sm font-medium text-text-secondary">
+            Title{' '}
+            <span className="text-danger-base" aria-hidden="true">
+              *
+            </span>
+          </span>
+          <input
+            value={values.title}
+            onChange={(e) => set({ title: e.target.value })}
+            placeholder="Book title"
+            maxLength={120}
+            className={inputCls}
+          />
+        </label>
+
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-text-secondary">
             Child&apos;s name{' '}
