@@ -1,10 +1,20 @@
 'use client';
 
 import { useAuth } from '@/lib/auth/auth-context';
+import { getApiBase } from '@/lib/api/config';
+
+function getApiHealthStatus(): { url: string | null; error: string | null } {
+  try {
+    return { url: `${getApiBase()}/health`, error: null };
+  } catch (err) {
+    return { url: null, error: err instanceof Error ? err.message : 'API URL is not configured.' };
+  }
+}
 
 export default function HomePage() {
   const { status } = useAuth();
   const primaryHref = status === 'authed' ? '/dashboard' : '/register';
+  const apiHealth = getApiHealthStatus();
 
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center bg-bg-base px-4">
@@ -78,9 +88,13 @@ export default function HomePage() {
             </a>
             {' · '}
             API:{' '}
-            <code className="rounded bg-stone-200 px-1 py-0.5 font-mono text-xs">
-              localhost:4000/api/health
-            </code>
+            {apiHealth.url ? (
+              <code className="rounded bg-stone-200 px-1 py-0.5 font-mono text-xs">
+                {apiHealth.url}
+              </code>
+            ) : (
+              <span className="font-medium text-red-600">{apiHealth.error}</span>
+            )}
           </p>
         </div>
       </div>

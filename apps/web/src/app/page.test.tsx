@@ -25,6 +25,7 @@ describe('HomePage', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('renders the StoryMe heading', () => {
@@ -73,5 +74,25 @@ describe('HomePage', () => {
     mockAuth('authed');
     render(<HomePage />);
     expect(screen.queryByRole('link', { name: /sign in/i })).toBeNull();
+  });
+
+  it('displays the configured API health URL', () => {
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://api.example.com/api');
+    render(<HomePage />);
+    expect(screen.getByText('https://api.example.com/api/health')).toBeDefined();
+  });
+
+  it('falls back to the localhost API health URL outside production', () => {
+    vi.stubEnv('NEXT_PUBLIC_API_URL', '');
+    vi.stubEnv('NODE_ENV', 'test');
+    render(<HomePage />);
+    expect(screen.getByText('http://localhost:4000/api/health')).toBeDefined();
+  });
+
+  it('shows a config error instead of falling back to localhost when NEXT_PUBLIC_API_URL is missing in production', () => {
+    vi.stubEnv('NEXT_PUBLIC_API_URL', '');
+    vi.stubEnv('NODE_ENV', 'production');
+    render(<HomePage />);
+    expect(screen.getByText(/NEXT_PUBLIC_API_URL is not set/)).toBeDefined();
   });
 });

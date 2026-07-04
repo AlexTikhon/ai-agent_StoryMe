@@ -1,7 +1,8 @@
 import type { UserDto } from '@book/types';
 import { ApiError, parseApiError } from './api-error';
+import { getApiBase } from './config';
 
-const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000/api';
+const API_BASE = getApiBase();
 
 export interface AuthResponse {
   accessToken: string;

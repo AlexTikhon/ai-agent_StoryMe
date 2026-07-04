@@ -7,8 +7,9 @@ import type {
   UpdateBookInput,
 } from '@book/types';
 import { apiFetch, apiFetchBlob } from './client';
+import { getApiBase } from './config';
 
-const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000/api';
+const API_BASE = getApiBase();
 
 /** Returns the stable API endpoint URL for a book's preview PDF. */
 export function bookPdfPreviewUrl(bookId: string): string {

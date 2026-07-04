@@ -2,8 +2,9 @@ import { getAuthMode } from '../auth/mode';
 import { getAccessToken, setAccessToken } from '../auth/token-store';
 import { ApiError, parseApiError } from './api-error';
 import { authApi } from './auth';
+import { getApiBase } from './config';
 
-const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000/api';
+const API_BASE = getApiBase();
 const DEV_EMAIL = 'dev@storyme.local';
 const DEV_NAME = 'Dev User';
 
