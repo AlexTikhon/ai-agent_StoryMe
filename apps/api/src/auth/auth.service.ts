@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -38,6 +39,8 @@ export interface AuthResult {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly usersService: UsersService,
@@ -76,28 +79,47 @@ export class AuthService {
   }
 
   async login(email: string, password: string): Promise<AuthResult> {
-    const user = await this.usersService.findByEmail(email);
+    try {
+      const user = await this.usersService.findByEmail(email);
 
-    // Generic message in every branch, including deactivated — do not reveal
-    // whether the email exists or the account's deactivation state.
-    if (
-      !user ||
-      user.deactivatedAt ||
-      !user.passwordHash ||
-      !(await bcrypt.compare(password, user.passwordHash))
-    ) {
-      throw new UnauthorizedException('Invalid email or password');
+      // Temporary diagnostics for production auth debugging — never logs the
+      // password or any token, only existence/shape of the looked-up record.
+      this.logger.log(
+        `Login attempt: userFound=${!!user} hasPasswordHash=${!!user?.passwordHash}`,
+      );
+
+      // Generic message in every branch, including deactivated — do not reveal
+      // whether the email exists or the account's deactivation state.
+      if (
+        !user ||
+        user.deactivatedAt ||
+        !user.passwordHash ||
+        !(await bcrypt.compare(password, user.passwordHash))
+      ) {
+        throw new UnauthorizedException('Invalid email or password');
+      }
+
+      if (!user.emailVerified) {
+        throw new UnauthorizedException({
+          error: 'Email is not verified',
+          message: 'Email is not verified',
+          code: 'EMAIL_NOT_VERIFIED',
+        });
+      }
+
+      return await this.issueTokenPair(user);
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      // Anything else here is unexpected (DB/connection error, missing
+      // migration, bcrypt failure, etc.) — log its exact type so it's
+      // diagnosable in Railway logs, then rethrow unchanged so the global
+      // exception filter still returns a generic 500 (no internals leaked
+      // to the client).
+      this.logger.error(`Unexpected error during login: ${this.describeError(error)}`);
+      throw error;
     }
-
-    if (!user.emailVerified) {
-      throw new UnauthorizedException({
-        error: 'Email is not verified',
-        message: 'Email is not verified',
-        code: 'EMAIL_NOT_VERIFIED',
-      });
-    }
-
-    return this.issueTokenPair(user);
   }
 
   /** Rejects invalid/expired tokens; clears the token hash so it cannot be replayed after success. */
@@ -308,6 +330,15 @@ export class AuthService {
       refreshToken: refresh.raw,
       refreshTokenExpiresAt: refresh.expiresAt,
     };
+  }
+
+  /** Formats an unknown caught error as `Name (code): message` for logs — never includes stack/PII. */
+  private describeError(error: unknown): string {
+    if (error instanceof Error) {
+      const code = (error as { code?: unknown }).code;
+      return typeof code === 'string' ? `${error.name} (${code}): ${error.message}` : `${error.name}: ${error.message}`;
+    }
+    return String(error);
   }
 
   private buildVerificationUrl(token: string): string {
