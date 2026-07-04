@@ -140,5 +140,118 @@ describe('MockStoryGenerationProvider', () => {
         expect(image.id.startsWith('book-42')).toBe(true);
       }
     });
+
+    // ── QA: language must be respected (Book Output QA phase) ────────────────
+
+    describe('language handling', () => {
+      const CYRILLIC = /[а-яА-ЯёЁ]/;
+
+      it('generates Russian story content when language is "ru"', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ language: 'ru' }));
+
+        expect(result.storyPlan.title).toMatch(CYRILLIC);
+        expect(result.storyPlan.educationalMessage).toMatch(CYRILLIC);
+        expect(result.bookPreview.backCover.message).toMatch(CYRILLIC);
+        for (const page of result.storyPlan.pages) {
+          expect(page.storyText).toMatch(CYRILLIC);
+        }
+      });
+
+      it('generates English story content (no Cyrillic) when language is "en"', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ language: 'en' }));
+
+        expect(result.storyPlan.title).not.toMatch(CYRILLIC);
+        for (const page of result.storyPlan.pages) {
+          expect(page.storyText).not.toMatch(CYRILLIC);
+        }
+      });
+
+      it('falls back to English for an unrecognized language code rather than mixing languages', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ language: 'xx' }));
+
+        expect(result.storyPlan.title).not.toMatch(CYRILLIC);
+      });
+    });
+
+    // ── QA: child name capitalization must be preserved (Book Output QA phase) ──
+
+    describe('child name capitalization', () => {
+      it('never lowercases the leading letter of a capitalized childName in English story text', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ childName: 'Maya' }));
+
+        for (const page of result.storyPlan.pages) {
+          expect(page.storyText).not.toContain(' maya');
+          expect(page.narration).not.toContain(' maya');
+          expect(page.sceneDescription.startsWith('maya')).toBe(false);
+        }
+        expect(result.bookPreview.cover.childName).toBe('Maya');
+      });
+
+      it('preserves capitalization in Russian story text too', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(
+          makeInput({ childName: 'Maya', language: 'ru' }),
+        );
+
+        for (const page of result.storyPlan.pages) {
+          expect(page.storyText).not.toContain(' maya');
+        }
+      });
+    });
+
+    // ── QA: fallback story must have a real beginning/middle/end, and the
+    // moral must not repeat on every page (Book Output QA phase) ────────────
+
+    describe('narrative structure', () => {
+      it('only appends the moral/learningGoal sentence on the final page, not every page', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ pageCount: 6 }));
+        const pages = result.storyPlan.pages;
+        const learningGoal = result.storyPlan.educationalMessage;
+
+        const pagesContainingMoral = pages.filter((p) => p.storyText.includes(learningGoal));
+        expect(pagesContainingMoral).toHaveLength(1);
+        expect(pagesContainingMoral[0]?.pageNumber).toBe(pages[pages.length - 1]?.pageNumber);
+      });
+
+      it('does not repeat the exact same middle-page filler sentence on every page', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ pageCount: 8 }));
+        const middlePages = result.storyPlan.pages.slice(1, -1);
+        const middleTexts = middlePages.map((p) => p.storyText);
+
+        expect(new Set(middleTexts).size).toBeGreaterThan(1);
+      });
+
+      it('the first page opens with the story opening hook', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput());
+
+        expect(result.storyPlan.pages[0]?.storyText.startsWith(result.storyPlan.openingHook)).toBe(
+          true,
+        );
+      });
+
+      it('the last page includes the story resolution', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput());
+        const pages = result.storyPlan.pages;
+
+        expect(pages[pages.length - 1]?.storyText).toContain(result.storyPlan.resolution);
+      });
+    });
   });
 });

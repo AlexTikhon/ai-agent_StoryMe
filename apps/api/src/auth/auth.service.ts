@@ -84,9 +84,7 @@ export class AuthService {
 
       // Temporary diagnostics for production auth debugging — never logs the
       // password or any token, only existence/shape of the looked-up record.
-      this.logger.log(
-        `Login attempt: userFound=${!!user} hasPasswordHash=${!!user?.passwordHash}`,
-      );
+      this.logger.log(`Login attempt: userFound=${!!user} hasPasswordHash=${!!user?.passwordHash}`);
 
       // Generic message in every branch, including deactivated — do not reveal
       // whether the email exists or the account's deactivation state.
@@ -336,7 +334,9 @@ export class AuthService {
   private describeError(error: unknown): string {
     if (error instanceof Error) {
       const code = (error as { code?: unknown }).code;
-      return typeof code === 'string' ? `${error.name} (${code}): ${error.message}` : `${error.name}: ${error.message}`;
+      return typeof code === 'string'
+        ? `${error.name} (${code}): ${error.message}`
+        : `${error.name}: ${error.message}`;
     }
     return String(error);
   }

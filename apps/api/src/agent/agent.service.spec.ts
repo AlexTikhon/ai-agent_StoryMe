@@ -1382,5 +1382,121 @@ describe('AgentService', () => {
         expect(storyEntry?.model).toBe('gpt-4o-mini');
       });
     });
+
+    // ── QA: Book Output QA & Renderer Stabilization phase ─────────────────────
+
+    describe('language handling end-to-end', () => {
+      it('produces a Russian bookLayout when the book language is "ru"', async () => {
+        const book = makeBook({
+          childName: 'Mia',
+          theme: 'friendship',
+          language: 'ru' as Book['language'],
+        });
+        setupMocks();
+
+        await service.startBookGeneration(book);
+
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
+        const entries = layout.entries as Array<Record<string, unknown>>;
+        const pageEntry = entries.find((e) => e.kind === 'page');
+        const textBlock = pageEntry?.textBlock as Record<string, unknown>;
+        expect(textBlock?.text as string).toMatch(/[а-яА-ЯёЁ]/);
+      });
+    });
+
+    describe('child name capitalization end-to-end', () => {
+      it('never lowercases the leading letter of a capitalized childName in the rendered layout text', async () => {
+        const book = makeBook({ childName: 'Maya', theme: 'friendship' });
+        setupMocks();
+
+        await service.startBookGeneration(book);
+
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
+        const entries = layout.entries as Array<Record<string, unknown>>;
+        for (const entry of entries) {
+          const textBlock = entry.textBlock as Record<string, unknown> | undefined;
+          if (textBlock) {
+            expect(textBlock.text as string).not.toContain(' maya');
+          }
+        }
+      });
+    });
+
+    describe('layout template safety (no text/image overlap)', () => {
+      function boxesOverlap(
+        a: { x: number; y: number; width: number; height: number },
+        b: { x: number; y: number; width: number; height: number },
+      ): boolean {
+        return (
+          a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
+        );
+      }
+
+      it('no interior page entry has an overlapping imageBlock and textBlock box', async () => {
+        // Cover/back-cover entries intentionally overlay title/summary text on
+        // top of a full-bleed image (the "full-page cover" template) — that
+        // overlap is by design. Interior pages use side-by-side/stacked
+        // templates where the image and text regions must never intersect.
+        const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: 12 });
+        setupMocks();
+
+        await service.startBookGeneration(book);
+
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
+        const entries = layout.entries as Array<
+          Record<string, unknown> & {
+            kind: string;
+            imageBlock?: { box: { x: number; y: number; width: number; height: number } };
+            textBlock?: { box: { x: number; y: number; width: number; height: number } };
+          }
+        >;
+        const pageEntries = entries.filter((e) => e.kind === 'page');
+        expect(pageEntries.length).toBeGreaterThan(0);
+        for (const entry of pageEntries) {
+          if (entry.imageBlock && entry.textBlock) {
+            expect(boxesOverlap(entry.imageBlock.box, entry.textBlock.box)).toBe(false);
+          }
+        }
+      });
+
+      it('falls back to the text_only template (no imageBlock) when a page has no matching image', async () => {
+        const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: 4 });
+        setupMocks();
+        const noImageForPage2Provider: StoryGenerationProvider = {
+          async generateStory(input) {
+            const result = await new MockStoryGenerationProvider().generateStory(input);
+            return {
+              ...result,
+              imageGenerationResult: {
+                ...result.imageGenerationResult,
+                images: result.imageGenerationResult.images.filter(
+                  (img) => !(img.kind === 'page' && img.pageNumber === 2),
+                ),
+              },
+            };
+          },
+        };
+        const serviceWithGap = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          noImageForPage2Provider,
+          new MockImageGenerationProvider(),
+        );
+
+        await serviceWithGap.startBookGeneration(book);
+
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
+        const entries = layout.entries as Array<Record<string, unknown>>;
+        const page2Entry = entries.find((e) => e.kind === 'page' && e.pageNumber === 2);
+        expect(page2Entry?.template).toBe('text_only');
+        expect(page2Entry?.imageBlock).toBeUndefined();
+        expect(page2Entry?.textBlock).toBeDefined();
+      });
+    });
   });
 });

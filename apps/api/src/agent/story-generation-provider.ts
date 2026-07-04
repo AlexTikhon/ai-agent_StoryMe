@@ -88,12 +88,27 @@ function buildCharacterCard(name: string, age: number): CharacterCard {
 const PAGES_PER_CHAPTER = 2;
 
 /**
+ * Local/fallback generation currently ships full localized templates for
+ * English and Russian only — the two languages this pipeline is required to
+ * support correctly today. Any other `language` value (e.g. 'pl') falls back
+ * to English rather than silently mixing in untranslated content; extend
+ * CHAPTER_TEMPLATES_BY_LANGUAGE and STRINGS_BY_LANGUAGE together to add a
+ * new language.
+ */
+export type TemplateLanguage = 'en' | 'ru';
+
+export function resolveTemplateLanguage(language: string): TemplateLanguage {
+  return language === 'ru' ? 'ru' : 'en';
+}
+
+/**
  * Chapter shape templates, one per possible chapter slot. Sized to cover
  * MAX_BOOK_PAGE_COUNT / PAGES_PER_CHAPTER (12 / 2 = 6) chapters — the most
- * buildStoryPlan will ever need. The first three preserve the exact template
- * text this provider produced before Phase 4A's pageCount input existed.
+ * buildStoryPlan will ever need.
  */
-const CHAPTER_TEMPLATES: Array<(name: string, theme: string) => ChapterOutline> = [
+type ChapterTemplateBuilder = (name: string, theme: string) => ChapterOutline;
+
+const CHAPTER_TEMPLATES_EN: ChapterTemplateBuilder[] = [
   (name) => ({
     chapterNumber: 1,
     title: 'A Magical Discovery',
@@ -153,32 +168,169 @@ const CHAPTER_TEMPLATES: Array<(name: string, theme: string) => ChapterOutline> 
   }),
 ];
 
+/**
+ * Russian mirror of CHAPTER_TEMPLATES_EN, same shape/order. The mock
+ * character is hardcoded to Pronouns.SheHer (see buildCharacterCard), so verb
+ * forms here consistently use feminine agreement.
+ */
+const CHAPTER_TEMPLATES_RU: ChapterTemplateBuilder[] = [
+  (name) => ({
+    chapterNumber: 1,
+    title: 'Волшебное открытие',
+    summary: `${name} находит что-то неожиданное и решает это разузнать.`,
+    setting: 'Сад за домом',
+    emotionalArc: 'любопытство сменяется восторгом',
+    keyEvents: [`${name} замечает мерцающий свет`, 'Появляется дружелюбное существо'],
+    illustrableScenes: [`${name} находит мерцающий свет в саду`],
+  }),
+  (name) => ({
+    chapterNumber: 2,
+    title: 'Начало пути',
+    summary: `${name} отправляется в путешествие и смело встречает первое испытание.`,
+    setting: 'Волшебный лес',
+    emotionalArc: 'волнение сменяется смелостью',
+    keyEvents: [`${name} и друг входят в лес`, 'Они преодолевают небольшое препятствие'],
+    illustrableScenes: [`${name} и друг идут через разноцветные грибы`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 3,
+    title: 'Снова дома',
+    summary: `${name} возвращается домой, узнав кое-что важное о ${theme}.`,
+    setting: 'Дом',
+    emotionalArc: 'гордость и радость',
+    keyEvents: [`${name} делится историей с семьёй`, 'Последний волшебный момент'],
+    illustrableScenes: [`${name} обнимает семью с широкой улыбкой`],
+  }),
+  (name) => ({
+    chapterNumber: 4,
+    title: 'Новый друг',
+    summary: `${name} знакомится с новым другом и учится работать сообща.`,
+    setting: 'Солнечный луг',
+    emotionalArc: 'застенчивость сменяется дружбой',
+    keyEvents: [`${name} делится чем-то добрым`, 'Рождается доверие'],
+    illustrableScenes: [`${name} угощает нового друга на лугу`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 5,
+    title: 'Большое испытание',
+    summary: `${name} сталкивается с более серьёзным испытанием, связанным с ${theme}, и не сдаётся.`,
+    setting: 'Извилистая река',
+    emotionalArc: 'тревога сменяется решимостью',
+    keyEvents: [`${name} встречает препятствие`, `${name} пробует снова и добивается успеха`],
+    illustrableScenes: [`${name} переходит реку с решимостью`],
+  }),
+  (name) => ({
+    chapterNumber: 6,
+    title: 'Радостный праздник',
+    summary: `${name} празднует приключение вместе со всеми, кто помогал в пути.`,
+    setting: 'Праздник под звёздами',
+    emotionalArc: 'благодарность и радость',
+    keyEvents: [`${name} благодарит новых друзей`, 'Все вместе празднуют'],
+    illustrableScenes: [`${name} празднует под мерцающими звёздами вместе с друзьями`],
+  }),
+];
+
+function chapterTemplatesFor(lang: TemplateLanguage): ChapterTemplateBuilder[] {
+  return lang === 'ru' ? CHAPTER_TEMPLATES_RU : CHAPTER_TEMPLATES_EN;
+}
+
+interface LocalizedStrings {
+  title: (name: string, titleTheme: string) => string;
+  subtitle: (theme: string, name: string) => string;
+  educationalMessageDefault: (theme: string) => string;
+  openingHook: (name: string) => string;
+  resolution: (name: string) => string;
+  backCoverMessage: (name: string) => string;
+  pageTitle: (chapterTitle: string, partNumber: number) => string;
+  /** Lead-in sentence for the first page of a chapter. Never case-folds `scene` — it commonly starts with the child's name and must keep its capitalization. */
+  pageLeadFirstInChapter: (chapterSummary: string, scene: string) => string;
+  pageLeadOtherInChapter: (emotionalArc: string) => string;
+  /** Only ever appended on the story's final page — the moral must not repeat on every page. */
+  moralSentence: (name: string, learningGoal: string) => string;
+  /** Cycled by page index for non-first, non-last pages so consecutive pages don't open with an identical filler sentence. */
+  middleConnectors: Array<(name: string) => string>;
+}
+
+const STRINGS_BY_LANGUAGE: Record<TemplateLanguage, LocalizedStrings> = {
+  en: {
+    title: (name, titleTheme) => `${name}'s ${titleTheme} Adventure`,
+    subtitle: (theme, name) => `A ${theme} story for ${name}`,
+    educationalMessageDefault: (theme) =>
+      `Through ${theme}, we learn the importance of courage, kindness, and believing in ourselves.`,
+    openingHook: (name) =>
+      `One sunny morning, ${name} discovered something magical that would change everything.`,
+    resolution: (name) =>
+      `${name} returned home with a heart full of joy, knowing that every adventure begins with a single brave step.`,
+    backCoverMessage: (name) =>
+      `The End! We hope ${name} enjoyed this adventure. Keep exploring, keep dreaming!`,
+    pageTitle: (chapterTitle, partNumber) => `${chapterTitle} — Part ${partNumber}`,
+    pageLeadFirstInChapter: (summary, scene) => `${summary} It all began right here: ${scene}.`,
+    pageLeadOtherInChapter: (emotionalArc) =>
+      `The story continued as ${emotionalArc} filled the air.`,
+    moralSentence: (name, learningGoal) => `${name} knew deep down: ${learningGoal}`,
+    middleConnectors: [
+      (name) => `Along the way, ${name} felt a spark of curiosity.`,
+      (name) => `Just then, something new caught ${name}'s eye.`,
+      (name) => `With a steady heart, ${name} kept going.`,
+      () => `Step by step, the adventure kept unfolding.`,
+    ],
+  },
+  ru: {
+    title: (name, titleTheme) => `Приключение ${name}: ${titleTheme}`,
+    subtitle: (theme, name) => `История о ${theme} для ${name}`,
+    educationalMessageDefault: (theme) =>
+      `Через ${theme} мы учимся смелости, доброте и вере в себя.`,
+    openingHook: (name) =>
+      `Одним солнечным утром ${name} обнаружила нечто волшебное, что изменило всё.`,
+    resolution: (name) =>
+      `${name} вернулась домой с сердцем, полным радости, зная, что каждое приключение начинается с одного смелого шага.`,
+    backCoverMessage: (name) =>
+      `Конец! Мы надеемся, что тебе понравилось это приключение, ${name}. Продолжай исследовать, продолжай мечтать!`,
+    pageTitle: (chapterTitle, partNumber) => `${chapterTitle} — Часть ${partNumber}`,
+    pageLeadFirstInChapter: (summary, scene) => `${summary} Всё началось именно здесь: ${scene}.`,
+    pageLeadOtherInChapter: (emotionalArc) => `История продолжалась: ${emotionalArc}.`,
+    moralSentence: (name, learningGoal) => `В глубине души ${name} знала: ${learningGoal}`,
+    middleConnectors: [
+      (name) => `По пути ${name} почувствовала лёгкое любопытство.`,
+      (name) => `Именно тогда ${name} заметила кое-что новое.`,
+      (name) => `Не теряя присутствия духа, ${name} продолжала путь.`,
+      () => `Шаг за шагом приключение продолжало раскрываться.`,
+    ],
+  },
+};
+
 function buildStoryPlan(
   name: string,
   theme: string,
   pageCount: number,
+  lang: TemplateLanguage,
   educationalMessage?: string,
 ): StoryPlan {
+  const strings = STRINGS_BY_LANGUAGE[lang];
   const titleTheme = theme.split(' ')[0] ?? theme;
-  const chapterCount = Math.min(CHAPTER_TEMPLATES.length, Math.ceil(pageCount / PAGES_PER_CHAPTER));
-  const chapters = CHAPTER_TEMPLATES.slice(0, chapterCount).map((build, index) => ({
+  const chapterTemplates = chapterTemplatesFor(lang);
+  const chapterCount = Math.min(chapterTemplates.length, Math.ceil(pageCount / PAGES_PER_CHAPTER));
+  const chapters = chapterTemplates.slice(0, chapterCount).map((build, index) => ({
     ...build(name, theme),
     chapterNumber: index + 1,
   }));
 
   return {
-    title: `${name}'s ${titleTheme} Adventure`,
+    title: strings.title(name, titleTheme),
     theme,
-    educationalMessage:
-      educationalMessage ??
-      `Through ${theme}, we learn the importance of courage, kindness, and believing in ourselves.`,
-    openingHook: `One sunny morning, ${name} discovered something magical that would change everything.`,
-    resolution: `${name} returned home with a heart full of joy, knowing that every adventure begins with a single brave step.`,
+    educationalMessage: educationalMessage ?? strings.educationalMessageDefault(theme),
+    openingHook: strings.openingHook(name),
+    resolution: strings.resolution(name),
     chapters,
   };
 }
 
-function buildPagePlan(storyPlan: StoryPlan, pageCount: number): PagePlan[] {
+function buildPagePlan(
+  storyPlan: StoryPlan,
+  pageCount: number,
+  lang: TemplateLanguage,
+): PagePlan[] {
+  const strings = STRINGS_BY_LANGUAGE[lang];
   const pages: PagePlan[] = [];
   let pageNumber = 1;
 
@@ -193,12 +345,15 @@ function buildPagePlan(storyPlan: StoryPlan, pageCount: number): PagePlan[] {
       pages.push({
         pageNumber: pageNumber++,
         chapterIndex,
-        title: `${chapter.title} — Part ${pageInChapter}`,
+        title: strings.pageTitle(chapter.title, pageInChapter),
         sceneDescription: scene,
         narration:
           pageInChapter === 1
-            ? `${chapter.summary} It all began with ${scene.charAt(0).toLowerCase() + scene.slice(1)}.`
-            : `The story continued as ${chapter.emotionalArc} filled the air.`,
+            ? strings.pageLeadFirstInChapter(chapter.summary, scene)
+            : strings.pageLeadOtherInChapter(chapter.emotionalArc),
+        // Illustration prompts stay in English regardless of story language —
+        // they are internal metadata for a future image-generation model, not
+        // reader-facing story text (see buildIllustrationPlan below).
         illustrationPrompt: `Children's book illustration: ${scene}, ${chapter.setting}, bright and colorful, watercolor style`,
         learningGoal: storyPlan.educationalMessage,
       });
@@ -211,16 +366,32 @@ function buildPagePlan(storyPlan: StoryPlan, pageCount: number): PagePlan[] {
 function buildStoryDraft(
   characterCard: CharacterCard,
   storyPlanWithPages: StoryPlan & { pages: PagePlan[] },
+  lang: TemplateLanguage,
 ): StoryPlan & { pages: Array<PagePlan & { storyText: string }> } {
+  const strings = STRINGS_BY_LANGUAGE[lang];
   const name = characterCard.name;
-  const { theme, openingHook } = storyPlanWithPages;
+  const { openingHook, resolution } = storyPlanWithPages;
+  const totalPages = storyPlanWithPages.pages.length;
 
   const pages = storyPlanWithPages.pages.map((page, pageIndex) => {
-    const lead =
-      pageIndex === 0
-        ? openingHook
-        : `${name} thought about ${theme} and took another brave step forward.`;
-    const storyText = `${lead} ${page.narration} ${name} knew deep down: ${page.learningGoal}`;
+    const isFirst = pageIndex === 0;
+    const isLast = pageIndex === totalPages - 1;
+
+    let storyText: string;
+    if (isFirst) {
+      // Beginning: opening hook + this page's scene-setting lead-in.
+      storyText = `${openingHook} ${page.narration}`;
+    } else if (isLast) {
+      // End: this page's narration + the story's resolution, with the moral
+      // appearing here only — not repeated on every page.
+      storyText = `${page.narration} ${resolution} ${strings.moralSentence(name, page.learningGoal)}`;
+    } else {
+      // Middle: a varied connector (cycled by position, not repeated
+      // verbatim on every page) plus this page's own plot-advancing narration.
+      const connector =
+        strings.middleConnectors[pageIndex % strings.middleConnectors.length]!(name);
+      storyText = `${connector} ${page.narration}`;
+    }
     return { ...page, storyText };
   });
 
@@ -264,8 +435,9 @@ export function buildBookPreview(
   },
 ): BookPreview {
   const { childName, childAge, language } = childProfile;
+  const strings = STRINGS_BY_LANGUAGE[resolveTemplateLanguage(language)];
   const { title, theme, educationalMessage } = storyPlanFinal;
-  const subtitle = storyPlanFinal.subtitle ?? `A ${theme} story for ${childName}`;
+  const subtitle = storyPlanFinal.subtitle ?? strings.subtitle(theme, childName);
 
   const pages = storyPlanFinal.pages.map((page, index) => ({
     pageNumber: page.pageNumber,
@@ -287,7 +459,7 @@ export function buildBookPreview(
     },
     pages,
     backCover: {
-      message: `The End! We hope ${childName} enjoyed this adventure. Keep exploring, keep dreaming!`,
+      message: strings.backCoverMessage(childName),
       educationalSummary: educationalMessage,
     },
     metadata: {
@@ -369,11 +541,12 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
     const { bookId, childName, childAge, theme, language, educationalMessage } = input;
     const pageCount = resolveTargetPageCount(input.pageCount);
+    const lang = resolveTemplateLanguage(language);
 
     const characterCard = buildCharacterCard(childName, childAge);
-    const storyPlan = buildStoryPlan(childName, theme, pageCount, educationalMessage);
-    const pages = buildPagePlan(storyPlan, pageCount);
-    const storyPlanWithDraft = buildStoryDraft(characterCard, { ...storyPlan, pages });
+    const storyPlan = buildStoryPlan(childName, theme, pageCount, lang, educationalMessage);
+    const pages = buildPagePlan(storyPlan, pageCount, lang);
+    const storyPlanWithDraft = buildStoryDraft(characterCard, { ...storyPlan, pages }, lang);
     const storyPlanFinal = buildIllustrationPlan(characterCard, storyPlanWithDraft);
     const bookPreview = buildBookPreview(
       { childName, childAge, language },

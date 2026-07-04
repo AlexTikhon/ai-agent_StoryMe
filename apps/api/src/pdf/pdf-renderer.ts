@@ -32,22 +32,90 @@ function resolveFont(fontFamily: string, isDisplay: boolean): string {
   return isDisplay ? 'Helvetica-Bold' : 'Helvetica';
 }
 
+/** Font size is never shrunk below this ratio of the layout's requested size. */
+const MIN_FONT_SIZE_RATIO = 0.6;
+/** Absolute floor, regardless of the requested font size — keeps shrunk text legible. */
+const ABSOLUTE_MIN_FONT_SIZE = 9;
+const FONT_SIZE_STEP = 1;
+
+function computeLineGap(fontSize: number, lineHeight: number): number {
+  return Math.max((lineHeight - 1) * fontSize, 0);
+}
+
+/**
+ * Finds the largest font size (at or below `requestedFontSize`) at which
+ * `text` fits within `height` when wrapped to `width`, using PDFKit's own
+ * `heightOfString` measurement (so it agrees with what `.text()` will
+ * actually draw). Requires `doc`'s font to already be set. Falls back to the
+ * floor size if even the floor doesn't fit — the caller then relies on
+ * clipping (see renderTextBlock) rather than font size alone to guarantee no
+ * overflow outside the box.
+ */
+export function computeFittedFontSize(
+  doc: PDFKit.PDFDocument,
+  text: string,
+  width: number,
+  height: number,
+  requestedFontSize: number,
+  lineHeight: number,
+): number {
+  const minFontSize = Math.max(
+    ABSOLUTE_MIN_FONT_SIZE,
+    Math.floor(requestedFontSize * MIN_FONT_SIZE_RATIO),
+  );
+
+  for (let size = requestedFontSize; size >= minFontSize; size -= FONT_SIZE_STEP) {
+    doc.fontSize(size);
+    const measured = doc.heightOfString(text, { width, lineGap: computeLineGap(size, lineHeight) });
+    if (measured <= height) return size;
+  }
+  return minFontSize;
+}
+
+function resolveVerticalOffset(
+  verticalAlign: LayoutTextBlock['verticalAlign'],
+  boxHeight: number,
+  contentHeight: number,
+): number {
+  const remaining = Math.max(boxHeight - contentHeight, 0);
+  if (verticalAlign === 'bottom') return remaining;
+  if (verticalAlign === 'middle') return remaining / 2;
+  return 0;
+}
+
+/**
+ * Renders a text block, guaranteeing it never visibly overflows its box (and
+ * therefore never bleeds into a neighboring image/text block): font size is
+ * shrunk to fit first, then the drawing region is clipped to the box as a
+ * hard backstop, with `ellipsis` truncating any content that still doesn't
+ * fit at the minimum font size.
+ */
 function renderTextBlock(doc: PDFKit.PDFDocument, tb: LayoutTextBlock, isDisplay: boolean): void {
   const x = pt(tb.box.x);
   const y = pt(tb.box.y);
   const w = Math.max(pt(tb.box.width), 1);
   const h = Math.max(pt(tb.box.height), 1);
 
+  doc.font(resolveFont(tb.fontFamily, isDisplay));
+
+  const fontSize = computeFittedFontSize(doc, tb.text, w, h, tb.fontSize, tb.lineHeight);
+  const lineGap = computeLineGap(fontSize, tb.lineHeight);
+  const contentHeight = Math.min(doc.heightOfString(tb.text, { width: w, lineGap }), h);
+  const yOffset = resolveVerticalOffset(tb.verticalAlign, h, contentHeight);
+
+  doc.save();
+  doc.rect(x, y, w, h).clip();
   doc
-    .font(resolveFont(tb.fontFamily, isDisplay))
-    .fontSize(tb.fontSize)
+    .fontSize(fontSize)
     .fillColor(tb.color)
-    .text(tb.text, x, y, {
+    .text(tb.text, x, y + yOffset, {
       width: w,
-      height: h,
+      height: h - yOffset,
       align: tb.align as 'left' | 'center' | 'right',
-      lineGap: Math.max((tb.lineHeight - 1) * tb.fontSize, 0),
+      lineGap,
+      ellipsis: true,
     });
+  doc.restore();
 }
 
 /**
@@ -182,8 +250,12 @@ function renderPage(
  *
  * Text line wrapping is delegated entirely to PDFKit's built-in `.text()`
  * (via the width/height/align/lineGap options in renderTextBlock) — there is
- * no separate line-wrapping helper in this codebase. See docs/pdf-rendering.md
- * for current text/font behavior and known limitations.
+ * no separate line-wrapping helper in this codebase. Before drawing, each text
+ * block's font size is shrunk (down to a floor) to fit its box, and the draw
+ * region is clipped to the box as a hard backstop against overflow into a
+ * neighboring image/text block — see computeFittedFontSize and
+ * renderTextBlock. See docs/pdf-rendering.md for current text/font behavior
+ * and known limitations.
  */
 export function renderStorybookPdf(
   layout: BookLayout,

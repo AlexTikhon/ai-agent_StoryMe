@@ -39,7 +39,9 @@ export class ConsoleEmailService implements EmailService {
     if (this.logLinks) {
       this.logger.log(`Verification email for ${payload.to}: ${payload.verificationUrl}`);
     } else {
-      this.logger.warn(`Verification email not delivered (no email provider configured) to=${payload.to}`);
+      this.logger.warn(
+        `Verification email not delivered (no email provider configured) to=${payload.to}`,
+      );
     }
     await Promise.resolve();
   }
@@ -49,7 +51,9 @@ export class ConsoleEmailService implements EmailService {
     if (this.logLinks) {
       this.logger.log(`Password reset email for ${payload.to}: ${payload.resetUrl}`);
     } else {
-      this.logger.warn(`Password reset email not delivered (no email provider configured) to=${payload.to}`);
+      this.logger.warn(
+        `Password reset email not delivered (no email provider configured) to=${payload.to}`,
+      );
     }
     await Promise.resolve();
   }

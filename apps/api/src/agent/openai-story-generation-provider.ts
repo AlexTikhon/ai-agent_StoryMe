@@ -36,6 +36,17 @@ const MAX_PAGE_COUNT = MAX_BOOK_PAGE_COUNT;
 const PAGES_PER_CHAPTER = 2;
 const MAX_STORY_TEXT_LENGTH = 1000;
 
+/** Human-readable names for the languages this pipeline is known to support; unknown codes fall back to the raw code itself. */
+const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
+  en: 'English',
+  ru: 'Russian',
+  pl: 'Polish',
+};
+
+function resolveLanguageDisplayName(languageCode: string): string {
+  return LANGUAGE_DISPLAY_NAMES[languageCode.trim().toLowerCase()] ?? languageCode;
+}
+
 export class StoryGenerationProviderError extends Error {
   constructor(
     message: string,
@@ -108,7 +119,7 @@ export function buildStoryGenerationPrompt(
     `  "pages": [ { "pageNumber": number, "title": string, "sceneDescription": string, "storyText": string, "illustrationPrompt": string, "learningGoal": string }, ... exactly ${targetPageCount} entries, pageNumber starting at 1 ]`,
     '}',
     '',
-    `Write every story field (title, storyText, learningGoal, etc.) in this language: ${input.language}.`,
+    `Write every story field (title, storyText, learningGoal, etc.) entirely in ${resolveLanguageDisplayName(input.language)} (language code: ${input.language}). Do not fall back to English or any other language unless the requested language code is "en".`,
     ...(input.educationalMessage
       ? [
           `Make the story's "educationalMessage" field reflect the desired educational message/lesson above.`,

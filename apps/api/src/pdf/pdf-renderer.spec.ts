@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderStorybookPdf } from './pdf-renderer';
+import PDFDocument from 'pdfkit';
+import { renderStorybookPdf, computeFittedFontSize } from './pdf-renderer';
 import type { BookLayout, BookLayoutEntry } from '@book/types';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -371,5 +372,69 @@ describe('renderStorybookPdf image embedding', () => {
       renderStorybookPdf(layout, { resolveImageBuffer: () => VALID_PNG }),
     ]);
     expect(a.length).toBe(b.length);
+  });
+});
+
+// ── QA: text must never overflow its box (Book Output QA phase) ──────────────
+// computeFittedFontSize is the mechanism renderTextBlock uses to guarantee a
+// text block never bleeds into a neighboring image/text block: it shrinks the
+// font size (down to a floor) until PDFKit's own heightOfString measurement
+// says the text fits within the box height.
+
+describe('computeFittedFontSize', () => {
+  function newMeasuringDoc(): PDFKit.PDFDocument {
+    const doc = new PDFDocument({ autoFirstPage: false });
+    doc.addPage();
+    doc.font('Helvetica');
+    return doc;
+  }
+
+  it('keeps the requested font size when the text comfortably fits', () => {
+    const doc = newMeasuringDoc();
+    const fitted = computeFittedFontSize(doc, 'Short text.', 400, 400, 18, 1.5);
+    expect(fitted).toBe(18);
+  });
+
+  it('shrinks the font size when the text is too long for the box', () => {
+    const doc = newMeasuringDoc();
+    const longText = 'overflow '.repeat(200).trim();
+    const fitted = computeFittedFontSize(doc, longText, 200, 40, 18, 1.5);
+    expect(fitted).toBeLessThan(18);
+  });
+
+  it('never shrinks below the absolute floor even for extreme overflow', () => {
+    const doc = newMeasuringDoc();
+    const longText = 'overflow '.repeat(500).trim();
+    const fitted = computeFittedFontSize(doc, longText, 50, 10, 18, 1.5);
+    expect(fitted).toBeGreaterThanOrEqual(9);
+  });
+
+  it('the fitted size actually fits within the box height when shrinking is enough', () => {
+    const doc = newMeasuringDoc();
+    const text = 'A moderately long sentence that needs a bit more room to wrap nicely.';
+    const width = 300;
+    const height = 60;
+    const fitted = computeFittedFontSize(doc, text, width, height, 18, 1.5);
+
+    doc.fontSize(fitted);
+    const measured = doc.heightOfString(text, { width, lineGap: Math.max((1.5 - 1) * fitted, 0) });
+    expect(measured).toBeLessThanOrEqual(height);
+  });
+});
+
+describe('renderStorybookPdf overflow clipping', () => {
+  it('clips overflowing text to its box rather than letting it bleed into the rest of the page', async () => {
+    const layout = makeLayout([makePageEntry(1)]);
+    // A box far too small for this much text, even at the minimum font size.
+    layout.entries[0].textBlock!.text = 'overflow '.repeat(300).trim();
+    layout.entries[0].textBlock!.box = { x: 180, y: 1420, width: 200, height: 20 };
+
+    const buf = await renderStorybookPdf(layout);
+
+    expect(buf.slice(0, 5).toString('ascii')).toBe('%PDF-');
+    // A clip region ("W n") must be present in the content stream guarding
+    // the text draw — this is the hard backstop against visual overflow.
+    const raw = buf.toString('latin1');
+    expect(raw).toContain('W n');
   });
 });

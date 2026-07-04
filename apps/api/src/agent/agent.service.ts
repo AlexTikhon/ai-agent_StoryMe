@@ -86,6 +86,36 @@ function buildBookLayout(
     const pageImage = imageResult.images.find(
       (img) => img.kind === 'page' && img.pageNumber === page.pageNumber,
     );
+
+    if (!pageImage) {
+      // No image available for this page (e.g. a gap in image generation) —
+      // use the dedicated text-only template so the full safe area is used
+      // for text instead of leaving an empty gap where an image block would
+      // have been.
+      entries.push({
+        id: `${bookId}-layout-page-${page.pageNumber}`,
+        kind: 'page',
+        pageNumber: page.pageNumber,
+        template: 'text_only',
+        trimSize: 'square_8x8',
+        canvas: LAYOUT_CANVAS,
+        safeArea: LAYOUT_SAFE_AREA,
+        bleed: LAYOUT_BLEED,
+        textBlock: {
+          box: { x: 180, y: 180, width: 2040, height: 2040 },
+          text: page.text,
+          fontFamily: LAYOUT_BODY_FONT,
+          fontSize: 20,
+          lineHeight: 1.6,
+          align: 'left',
+          verticalAlign: 'top',
+          color: '#1C1917',
+        },
+        notes: ['Template: text_only (no image available for this page)'],
+      });
+      continue;
+    }
+
     const template = LAYOUT_PAGE_TEMPLATES[(page.pageNumber - 1) % LAYOUT_PAGE_TEMPLATES.length]!;
 
     let imageBox: { x: number; y: number; width: number; height: number };

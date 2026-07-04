@@ -223,6 +223,7 @@ export type BookPageLayoutTemplate =
   | 'image_top_text_bottom'
   | 'text_left_image_right'
   | 'image_left_text_right'
+  | 'text_only'
   | 'back_cover_summary';
 
 export interface LayoutBox {

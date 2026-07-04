@@ -82,7 +82,9 @@ describe('createEmailService', () => {
       const service = createEmailService({
         NODE_ENV: 'production',
       } as unknown as NodeJS.ProcessEnv) as ConsoleEmailService;
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/EMAIL_PROVIDER is not configured/));
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/EMAIL_PROVIDER is not configured/),
+      );
 
       await service.sendVerificationEmail({
         to: 'alice@example.com',
@@ -92,7 +94,9 @@ describe('createEmailService', () => {
 
       // In-memory record is still kept for inspection; only the log line is suppressed.
       expect(service.getLastVerificationEmail('alice@example.com')?.token).toBe('raw-token');
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/not delivered.*alice@example\.com/));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/not delivered.*alice@example\.com/),
+      );
       expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('raw-token'));
     });
 
