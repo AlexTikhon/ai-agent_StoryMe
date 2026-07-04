@@ -104,6 +104,16 @@ Copy `.env.example` to `apps/api/.env` and adjust as needed — see
 minimal setup. The web app needs no `.env` for local use; set
 `NEXT_PUBLIC_API_URL` in `apps/web/.env.local` only if the API runs elsewhere.
 
+`pnpm --filter @book/web dev` needs none of this — it falls back to
+`http://localhost:4000/api`. `pnpm --filter @book/web build` always runs in
+production mode, though, and this app refuses to fall back to localhost
+there (`apps/web/src/lib/api/config.ts`) — a `check-build-env.js` prebuild
+step fails fast with one clear message if `NEXT_PUBLIC_API_URL` is unset,
+rather than letting `next build` error once per static page. To build
+locally: `NEXT_PUBLIC_API_URL="http://localhost:4000/api" pnpm --filter
+@book/web build`. Vercel/Railway/CI must set it as a real build-time env var
+(see [docs/private-demo-deploy.md §10](docs/private-demo-deploy.md#10-vercel--railway-concrete-deployment-configuration)).
+
 ## Deployment readiness
 
 See **[docs/deployment-readiness.md](docs/deployment-readiness.md)** for a

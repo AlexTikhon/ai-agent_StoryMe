@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3000",
-    "build": "next build",
+    "build": "node scripts/check-build-env.js && next build",
     "start": "next start",
     "lint": "eslint src --max-warnings 0",
     "typecheck": "tsc --noEmit",
