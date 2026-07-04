@@ -1,5 +1,24 @@
 import PDFDocument from 'pdfkit';
+import path from 'path';
 import type { BookLayout, BookLayoutEntry, LayoutImageBlock, LayoutTextBlock } from '@book/types';
+
+/**
+ * Embedded Unicode font (Noto Sans, SIL Open Font License 1.1 — see
+ * assets/fonts/OFL.txt) covering Latin, Cyrillic, and Greek scripts, so
+ * Russian/Polish text renders as real glyphs instead of blank boxes or
+ * mojibake. Registered once per document under these names — see
+ * `registerFonts` and docs/pdf-rendering.md.
+ */
+const FONT_REGULAR_NAME = 'NotoSans';
+const FONT_BOLD_NAME = 'NotoSans-Bold';
+const FONT_REGULAR_PATH = path.join(__dirname, '..', '..', 'assets', 'fonts', 'NotoSans-Regular.ttf');
+const FONT_BOLD_PATH = path.join(__dirname, '..', '..', 'assets', 'fonts', 'NotoSans-Bold.ttf');
+
+/** Registers the embedded Unicode fonts on a document; call once before drawing any text. */
+function registerFonts(doc: PDFKit.PDFDocument): void {
+  doc.registerFont(FONT_REGULAR_NAME, FONT_REGULAR_PATH);
+  doc.registerFont(FONT_BOLD_NAME, FONT_BOLD_PATH);
+}
 
 /** PDF page size for square_8x8 trim (8 in × 72 pt/in) */
 const PAGE_PT = 576;
@@ -12,24 +31,16 @@ function pt(px: number): number {
 }
 
 /**
- * Maps layout font families to built-in PDFKit fonts.
- * Display fonts (Fraunces/serif) → Times; body fonts → Helvetica.
+ * Maps layout font families to the registered embedded Unicode font.
  *
- * LIMITATION: PDFKit's built-in Helvetica/Times fonts only support the
- * WinAnsi (Latin-1-ish) encoding. Non-Latin and many extended Unicode
- * characters (e.g. CJK, Cyrillic, emoji) will render blank. Fixing this
- * requires embedding a real Unicode-capable TTF/OTF font via
- * `doc.registerFont(name, fontFilePathOrBuffer)` and returning its name
- * here instead of a built-in name — see docs/pdf-rendering.md for the
- * planned future-phase boundary. Do not add font files or network font
- * downloads to close this gap without an explicit phase for it.
+ * All layout font families (serif display fonts included) resolve to the
+ * same embedded Noto Sans family — PDFKit's built-in Helvetica/Times fonts
+ * only support the WinAnsi (Latin-1-ish) encoding and cannot render
+ * Cyrillic/other non-Latin text at all, so they are never used for
+ * user-visible story text. See docs/pdf-rendering.md.
  */
-function resolveFont(fontFamily: string, isDisplay: boolean): string {
-  const f = fontFamily.toLowerCase();
-  const isSerif =
-    f.includes('fraunces') || f.includes('lora') || f.includes('georgia') || f.includes('serif');
-  if (isSerif) return isDisplay ? 'Times-Bold' : 'Times-Roman';
-  return isDisplay ? 'Helvetica-Bold' : 'Helvetica';
+function resolveFont(_fontFamily: string, isDisplay: boolean): string {
+  return isDisplay ? FONT_BOLD_NAME : FONT_REGULAR_NAME;
 }
 
 /** Font size is never shrunk below this ratio of the layout's requested size. */
@@ -158,7 +169,7 @@ function renderImagePlaceholder(
 
   doc
     .fillColor('#6B5344')
-    .font('Helvetica')
+    .font(FONT_REGULAR_NAME)
     .fontSize(7)
     .text(label, x + 4, y + h / 2 - 5, {
       width: Math.max(w - 8, 1),
@@ -227,7 +238,7 @@ function renderPage(
   // Page number footer for interior pages
   if (entry.kind === 'page' && entry.pageNumber != null) {
     doc
-      .font('Helvetica')
+      .font(FONT_REGULAR_NAME)
       .fontSize(6)
       .fillColor('#A0A0A0')
       .text(String(entry.pageNumber), pt(180), PAGE_PT - pt(120), {
@@ -286,6 +297,8 @@ export function renderStorybookPdf(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
+    registerFonts(doc);
+
     for (const entry of layout.entries) {
       doc.addPage({ size: [PAGE_PT, PAGE_PT] });
       try {
@@ -297,7 +310,7 @@ export function renderStorybookPdf(
         );
         doc
           .fillColor('#CC0000')
-          .font('Helvetica')
+          .font(FONT_REGULAR_NAME)
           .fontSize(8)
           .text(`[Render error: entry ${entry.id}]`, 10, 10, { width: PAGE_PT - 20 });
       }

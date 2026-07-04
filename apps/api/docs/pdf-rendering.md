@@ -17,62 +17,42 @@ line-count budgeting before layout, or custom hyphenation), reintroduce a
 small pure helper and wire it into `renderTextBlock` deliberately, with
 tests — don't let it sit unused again.
 
-## Font / Unicode limitation
+## Font / Unicode support
 
-`resolveFont` maps layout font families to PDFKit's built-in fonts only:
-`Helvetica`, `Helvetica-Bold`, `Times-Roman`, `Times-Bold`. These built-in
-fonts only support the **WinAnsi encoding** (roughly Latin-1). Characters
-outside that range — CJK, Cyrillic, Arabic, Hebrew, many accented Latin
-characters, emoji — will render blank or as missing glyphs.
+`resolveFont` maps every layout font family to one embedded Unicode font,
+**Noto Sans** (regular + bold), instead of PDFKit's built-in
+`Helvetica`/`Times-Roman` fonts. The built-ins only support the **WinAnsi
+encoding** (roughly Latin-1) — Cyrillic, Greek, and Latin-Extended
+(diacritics) all fall outside that range and previously rendered as blank
+glyphs or mojibake. Noto Sans covers Latin, Cyrillic, and Greek, so `en`,
+`ru`, and `pl` book text (`SupportedLanguage` in
+`packages/types/src/book.types.ts`) all render correctly today.
 
-This is a known, accepted limitation for the current phase. Book text
-containing such characters currently passes DTO validation and layout, but
-will render incorrectly in the final PDF.
+### Font asset & licensing
 
-### BACKLOG: `ru`/`pl` PDF output is not production-ready
-
-`SupportedLanguage` (`packages/types/src/book.types.ts`) offers `en` | `ru` |
-`pl` in the book-creation form, and story generation (mock and OpenAI) both
-produce correct `ru`/`pl` text — this limitation is PDF-rendering-only.
-Concretely, for a book created with:
-
-- `ru` (Russian) — Cyrillic is entirely outside WinAnsi. Every character in
-  the story text renders as a blank/missing glyph. The PDF is effectively
-  unreadable.
-- `pl` (Polish) — mostly Latin, but the diacritic letters (`ą ć ę ł ń ó ś ź
-  ż`, upper and lower case) fall outside WinAnsi and will render blank while
-  surrounding ASCII text renders fine — visibly broken rather than fully
-  unreadable, but still wrong.
-
-**Do not ship `ru`/`pl` as a real feature (marketing, public launch) until
-this is fixed** — today it's a silent per-glyph rendering gap, not a hard
-error, so nothing currently blocks a user from generating and downloading a
-broken PDF. Treat this the same as the other public-production blockers in
-`docs/deployment-readiness.md` (rate limiting, email verification, password
-reset): known, documented, not yet scheduled.
-
-Not fixed in this pass deliberately — embedding a Unicode-capable font
-requires picking and vendoring a specific font file, which is a licensing
-decision (redistribution rights, font file size in the repo/image) that
-shouldn't be made silently as a side effect of an unrelated change. See
-"Future Unicode font phase" below for the actual implementation plan once
-that decision is made.
-
-## Future Unicode font phase (not implemented)
-
-To support non-Latin text, a future phase should:
-
-1. Embed one or more real Unicode-capable TTF/OTF fonts as project assets
-   (properly licensed for embedding/redistribution).
-2. Register them once per render via `doc.registerFont(name, fontPathOrBuffer)`.
-3. Extend `resolveFont` (or a small font-registry seam next to it) to select
-   an embedded font instead of a built-in name when the layout requires it.
-4. Add rendering tests that assert non-Latin text no longer produces blank
-   glyphs (e.g. via extracted PDF text streams, not full binary snapshots).
-
-Do not attempt this by downloading fonts at runtime or depending on fonts
-installed on the host system — rendering must stay deterministic and
-network-free.
+- Files: `apps/api/assets/fonts/NotoSans-Regular.ttf`,
+  `NotoSans-Bold.ttf`, and `OFL.txt` (the license text).
+- Source: [notofonts/noto-fonts](https://github.com/notofonts/noto-fonts),
+  `hinted/ttf/NotoSans/`.
+- License: SIL Open Font License 1.1 — free to embed and redistribute
+  (including in a PDF's font program) without a separate license purchase;
+  see `apps/api/assets/fonts/OFL.txt` for the full text.
+- Registration: `registerFonts(doc)` in `pdf-renderer.ts` calls
+  `doc.registerFont(name, fontPath)` once per document, for both weights,
+  before any page is drawn. `resolveFont` then returns `'NotoSans'` or
+  `'NotoSans-Bold'` for every layout font family — there is no per-family
+  built-in-font mapping anymore.
+- Paths are resolved via `path.join(__dirname, '..', '..', 'assets', 'fonts', ...)`,
+  which lands on `apps/api/assets/fonts/` whether running compiled
+  (`dist/pdf/pdf-renderer.js`) or via `ts-node` (`src/pdf/pdf-renderer.ts`) —
+  both sit two directories below `apps/api/`. This is a repo-relative path,
+  not an OS font path, so it works identically in local dev and in the
+  Railway/Docker production runtime (the `assets/` directory is explicitly
+  `COPY`'d into the runtime image in `apps/api/Dockerfile`, alongside
+  `dist/`, `node_modules/`, and `prisma/`).
+- Do not add other fonts, download fonts at runtime, or depend on fonts
+  installed on the host system — rendering must stay deterministic and
+  network-free.
 
 ## Images
 

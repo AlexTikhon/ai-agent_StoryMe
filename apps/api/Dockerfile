@@ -75,6 +75,9 @@ COPY --from=builder --chown=nestjs:nodejs /app/packages/types/package.json ./pac
 COPY --from=builder --chown=nestjs:nodejs /app/apps/api/dist ./apps/api/dist
 COPY --from=builder --chown=nestjs:nodejs /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=builder --chown=nestjs:nodejs /app/apps/api/prisma ./apps/api/prisma
+# Embedded Unicode fonts (Noto Sans) used by the PDF renderer for Cyrillic/
+# non-Latin text — resolved at runtime relative to dist/, not an OS font path.
+COPY --from=builder --chown=nestjs:nodejs /app/apps/api/assets ./apps/api/assets
 
 WORKDIR /app/apps/api
 

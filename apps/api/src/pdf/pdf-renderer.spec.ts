@@ -422,6 +422,76 @@ describe('computeFittedFontSize', () => {
   });
 });
 
+// ── Unicode / Cyrillic font embedding (Book Output QA follow-up) ────────────
+// PDFKit's built-in Helvetica/Times fonts only support WinAnsi and cannot
+// render Cyrillic at all (blank glyphs) or safely round-trip through some
+// PDF viewers as mojibake. The renderer embeds Noto Sans (registered via
+// doc.registerFont in registerFonts) for all text instead — these tests
+// assert the embedded font is actually used and that non-Latin text renders
+// without crashing.
+
+describe('renderStorybookPdf Cyrillic / Unicode text', () => {
+  it('renders a Russian cover and page without throwing', async () => {
+    const layout = makeLayout([
+      makeCoverEntry({
+        textBlock: {
+          box: { x: 180, y: 1620, width: 2040, height: 600 },
+          text: 'Приключение Майи',
+          fontFamily: 'Fraunces',
+          fontSize: 32,
+          lineHeight: 1.2,
+          align: 'center',
+          verticalAlign: 'bottom',
+          color: '#FFFFFF',
+        },
+      }),
+      { ...makePageEntry(1), textBlock: { ...makePageEntry(1).textBlock!, text: 'Майя нашла волшебный лес и подружилась с лисой.' } },
+    ]);
+
+    const buf = await renderStorybookPdf(layout);
+
+    expect(buf.slice(0, 5).toString('ascii')).toBe('%PDF-');
+    const tail = buf.slice(-10).toString('ascii');
+    expect(tail).toContain('%%EOF');
+  });
+
+  it('embeds the Noto Sans Unicode font (not a built-in WinAnsi-only font)', async () => {
+    const layout = makeLayout([
+      makeCoverEntry({
+        textBlock: {
+          box: { x: 180, y: 1620, width: 2040, height: 600 },
+          text: 'Приключение Майи',
+          fontFamily: 'Fraunces',
+          fontSize: 32,
+          lineHeight: 1.2,
+          align: 'center',
+          verticalAlign: 'bottom',
+          color: '#FFFFFF',
+        },
+      }),
+    ]);
+
+    const buf = await renderStorybookPdf(layout);
+    const raw = buf.toString('latin1');
+
+    // The embedded TrueType font program and its family name must be present...
+    expect(raw).toContain('FontFile2');
+    expect(raw).toContain('NotoSans');
+    // ...and none of PDFKit's built-in WinAnsi-only fonts should be used anymore.
+    expect(raw).not.toContain('/BaseFont /Helvetica');
+    expect(raw).not.toContain('/BaseFont /Times-Roman');
+  });
+
+  it('does not crash on Polish diacritics either', async () => {
+    const layout = makeLayout([
+      { ...makePageEntry(1), textBlock: { ...makePageEntry(1).textBlock!, text: 'Zając and źrebię: ąćęłńóśźż ĄĆĘŁŃÓŚŹŻ' } },
+    ]);
+
+    const buf = await renderStorybookPdf(layout);
+    expect(buf.slice(0, 5).toString('ascii')).toBe('%PDF-');
+  });
+});
+
 describe('renderStorybookPdf overflow clipping', () => {
   it('clips overflowing text to its box rather than letting it bleed into the rest of the page', async () => {
     const layout = makeLayout([makePageEntry(1)]);
