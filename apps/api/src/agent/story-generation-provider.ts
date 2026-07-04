@@ -234,6 +234,23 @@ function chapterTemplatesFor(lang: TemplateLanguage): ChapterTemplateBuilder[] {
   return lang === 'ru' ? CHAPTER_TEMPLATES_RU : CHAPTER_TEMPLATES_EN;
 }
 
+/**
+ * Minimal, deterministic genitive-case declension for the feminine child
+ * names this pipeline generates (buildCharacterCard always uses
+ * Pronouns.SheHer). Not full Russian morphology — just the common feminine
+ * name-ending patterns needed for a natural title ("Приключение Майи", not
+ * the ungrammatical nominative "Приключение Майя"). Names that don't match
+ * a known feminine ending (e.g. non-Cyrillic input, or names already ending
+ * in a consonant) are returned unchanged rather than guessed at.
+ */
+function toGenitiveRuFemName(name: string): string {
+  if (/[а-яё]$/i.test(name) === false) return name;
+  if (/[жчшщгкх]а$/i.test(name)) return `${name.slice(0, -1)}и`;
+  if (/а$/i.test(name)) return `${name.slice(0, -1)}ы`;
+  if (/я$/i.test(name)) return `${name.slice(0, -1)}и`;
+  return name;
+}
+
 interface LocalizedStrings {
   title: (name: string, titleTheme: string) => string;
   subtitle: (theme: string, name: string) => string;
@@ -276,10 +293,14 @@ const STRINGS_BY_LANGUAGE: Record<TemplateLanguage, LocalizedStrings> = {
     ],
   },
   ru: {
-    title: (name, titleTheme) => `Приключение ${name}: ${titleTheme}`,
+    title: (name, titleTheme) => `Приключение ${toGenitiveRuFemName(name)}: ${titleTheme}`,
     subtitle: (theme, name) => `История о ${theme} для ${name}`,
-    educationalMessageDefault: (theme) =>
-      `Через ${theme} мы учимся смелости, доброте и вере в себя.`,
+    // Freeform user-entered `theme` text has unknown grammatical gender/case,
+    // so a template like "Через <theme> мы учимся..." (which needs `theme` in
+    // the accusative case) produces ungrammatical output for most input, e.g.
+    // "Через Поездка на море мы учимся...". This template never inflects
+    // `theme`, so it stays grammatical regardless of what the user typed.
+    educationalMessageDefault: () => `В этой истории мы учимся смелости, доброте и вере в себя.`,
     openingHook: (name) =>
       `Одним солнечным утром ${name} обнаружила нечто волшебное, что изменило всё.`,
     resolution: (name) =>

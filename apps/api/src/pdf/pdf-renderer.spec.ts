@@ -519,4 +519,49 @@ describe('renderStorybookPdf overflow clipping', () => {
     const raw = buf.toString('latin1');
     expect(raw).toContain('W n');
   });
+
+  // A square mock image dropped into a narrow/wide imageBox gets scaled up by
+  // PDFKit's `cover` option until it overhangs the box on one axis. Without a
+  // clip, that overhang bleeds into the neighboring textBox even though the
+  // layout boxes themselves never overlap (see pdf-renderer.ts renderImageBlock).
+  const SQUARE_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  );
+
+  it('clips cover images to imageBlock so square mock images cannot bleed into textBox', async () => {
+    const layout = makeLayout([
+      makeCoverEntry({
+        // Narrow, tall imageBox: a square source image under `cover` must be
+        // scaled well beyond this width to fill the height, so it would
+        // overhang left/right into the page without a clip.
+        imageBlock: {
+          box: { x: 200, y: 200, width: 400, height: 1600 },
+          imageUrl: '/mock-images/test/cover.svg',
+          altText: 'Cover illustration',
+          objectFit: 'cover',
+        },
+      }),
+    ]);
+
+    const buf = await renderStorybookPdf(layout, { resolveImageBuffer: () => SQUARE_PNG });
+    const raw = buf.toString('latin1');
+
+    expect(raw).toContain('/Subtype /Image');
+    // One clip region guards the image draw, another guards the text draw.
+    const clipCount = (raw.match(/W n/g) ?? []).length;
+    expect(clipCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('clips the placeholder label to imageBlock when no real image is available', async () => {
+    const layout = makeLayout([makeCoverEntry()]);
+
+    const buf = await renderStorybookPdf(layout);
+    const raw = buf.toString('latin1');
+
+    expect(raw).not.toContain('/Subtype /Image');
+    // One clip region guards the placeholder label, another guards the text draw.
+    const clipCount = (raw.match(/W n/g) ?? []).length;
+    expect(clipCount).toBeGreaterThanOrEqual(2);
+  });
 });

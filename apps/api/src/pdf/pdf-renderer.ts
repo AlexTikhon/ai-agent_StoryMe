@@ -174,6 +174,11 @@ function renderImagePlaceholder(
         ? `Image placeholder: page ${entry.pageNumber}`
         : `Image placeholder: ${entry.kind}`;
 
+  // Clip the label too: a long altText at a small box size can otherwise
+  // overflow the placeholder rectangle and bleed into the page's text block,
+  // the same class of bug fixed for real images below.
+  doc.save();
+  doc.rect(x, y, w, h).clip();
   doc
     .fillColor('#6B5344')
     .font(FONT_REGULAR_NAME)
@@ -182,6 +187,7 @@ function renderImagePlaceholder(
       width: Math.max(w - 8, 1),
       align: 'center',
     });
+  doc.restore();
 }
 
 /**
@@ -190,6 +196,16 @@ function renderImagePlaceholder(
  * rectangle. A failure here degrades only this image, not the whole page —
  * see the outer per-entry try/catch in renderStorybookPdf for structural
  * failures (e.g. a malformed box).
+ *
+ * PDFKit's `cover` option scales the source image to fill the requested
+ * rectangle *before* centering it, so a source image whose aspect ratio
+ * doesn't match the box (e.g. a square mock image dropped into a tall/narrow
+ * imageBox) is scaled up until it fills the box on one axis and overhangs it
+ * on the other — `fit` can overhang similarly if `align`/`valign` push it off
+ * center. PDFKit does not clip `.image()` draws to the target box itself, so
+ * without an explicit clip the overhang bleeds into whatever is drawn next
+ * (typically the neighboring textBlock). We therefore always clip to
+ * imageBlock.box before drawing, regardless of objectFit.
  */
 function renderImageBlock(
   doc: PDFKit.PDFDocument,
@@ -204,15 +220,19 @@ function renderImageBlock(
 
   const buffer = resolveImageBuffer?.(imageBlock, entry);
   if (buffer) {
+    doc.save();
     try {
+      doc.rect(x, y, w, h).clip();
       const dims: [number, number] = [w, h];
       doc.image(buffer, x, y, {
         ...(imageBlock.objectFit === 'cover' ? { cover: dims } : { fit: dims }),
         align: 'center',
         valign: 'center',
       });
+      doc.restore();
       return;
     } catch (err) {
+      doc.restore();
       const message = err instanceof Error ? err.message : String(err);
       console.warn(
         `[pdf-renderer] Failed to embed image for entry "${entry.id}" (${entry.kind}): ${message}`,

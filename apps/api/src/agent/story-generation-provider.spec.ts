@@ -253,5 +253,56 @@ describe('MockStoryGenerationProvider', () => {
         expect(pages[pages.length - 1]?.storyText).toContain(result.storyPlan.resolution);
       });
     });
+
+    // ── QA: Russian fallback grammar must be natural, not just Cyrillic
+    // (code review follow-up) ──────────────────────────────────────────────
+
+    describe('Russian fallback grammar', () => {
+      it('declines the child name to genitive case in the title ("Приключение Майи", not "Майя")', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(
+          makeInput({ childName: 'Майя', language: 'ru' }),
+        );
+
+        expect(result.storyPlan.title).toContain('Приключение Майи');
+        expect(result.storyPlan.title).not.toContain('Приключение Майя:');
+      });
+
+      it('declines other common feminine name endings to genitive case', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const anna = await provider.generateStory(makeInput({ childName: 'Анна', language: 'ru' }));
+        const olga = await provider.generateStory(
+          makeInput({ childName: 'Ольга', language: 'ru' }),
+        );
+
+        expect(anna.storyPlan.title).toContain('Приключение Анны');
+        expect(olga.storyPlan.title).toContain('Приключение Ольги');
+      });
+
+      it('leaves a non-declining name unchanged rather than guessing at morphology', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(
+          makeInput({ childName: 'Grace', language: 'ru' }),
+        );
+
+        expect(result.storyPlan.title).toContain('Приключение Grace');
+      });
+
+      it('uses a default educational message that never requires theme case agreement', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(
+          makeInput({ childName: 'Майя', theme: 'Поездка на море', language: 'ru' }),
+        );
+
+        expect(result.storyPlan.educationalMessage).toBe(
+          'В этой истории мы учимся смелости, доброте и вере в себя.',
+        );
+        expect(result.storyPlan.educationalMessage).not.toContain('Через Поездка на море');
+      });
+    });
   });
 });
