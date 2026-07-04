@@ -19,8 +19,30 @@ export function createEmailService(env: NodeJS.ProcessEnv = process.env): EmailS
   const raw = env['EMAIL_PROVIDER']?.trim().toLowerCase();
 
   if (!raw || raw === 'console') {
-    logger.log('Email provider selected: console');
-    return new ConsoleEmailService();
+    const isProduction = env['NODE_ENV'] === 'production';
+    const debugLogLinks = env['EMAIL_DEBUG_LOG_LINKS']?.trim().toLowerCase() === 'true';
+
+    if (isProduction && !debugLogLinks) {
+      // Not a thrown error: register/resend must keep responding normally
+      // (see AuthService.resendVerificationEmail's account-enumeration
+      // note), so this is a loud log rather than a failed request. Grep
+      // Railway logs for "EmailProviderFactory" to catch this at deploy time.
+      logger.error(
+        'EMAIL_PROVIDER is not configured for production — verification/reset ' +
+          'emails will NOT be delivered to users. Set EMAIL_PROVIDER=resend with ' +
+          'RESEND_API_KEY and EMAIL_FROM, or set EMAIL_DEBUG_LOG_LINKS=true for ' +
+          'temporary MVP testing (logs links instead of emailing them).',
+      );
+    } else if (isProduction && debugLogLinks) {
+      logger.warn(
+        'EMAIL_DEBUG_LOG_LINKS=true: verification/reset links are being logged ' +
+          'instead of emailed. Disable once EMAIL_PROVIDER=resend is configured.',
+      );
+    } else {
+      logger.log('Email provider selected: console');
+    }
+
+    return new ConsoleEmailService({ logLinks: !isProduction || debugLogLinks });
   }
 
   if (raw !== 'resend') {

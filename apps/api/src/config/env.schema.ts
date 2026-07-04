@@ -60,6 +60,15 @@ export const envSchema = z
     // Only required when EMAIL_PROVIDER=resend — see the superRefine below.
     EMAIL_FROM: z.string().optional(),
     EMAIL_REPLY_TO: z.string().optional(),
+    // MVP-testing fallback only — see email-provider.factory.ts. When the
+    // resolved provider is "console" (no real EMAIL_PROVIDER configured) and
+    // NODE_ENV=production, the factory normally suppresses the raw
+    // verification/reset link from logs (it contains a live token) and logs
+    // an error instead. Setting this to "true" re-enables logging the link
+    // (recipient email + URL only) so a link can still be retrieved from
+    // Railway logs while a real provider isn't wired up yet. Defaults to
+    // false; must be turned off again once EMAIL_PROVIDER=resend is set.
+    EMAIL_DEBUG_LOG_LINKS: z.enum(['true', 'false']).optional(),
 
     // AI Providers
     // ANTHROPIC_API_KEY and FAL_API_KEY are reserved for providers not wired up
