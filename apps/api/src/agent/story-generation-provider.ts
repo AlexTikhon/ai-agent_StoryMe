@@ -102,6 +102,22 @@ export function resolveTemplateLanguage(language: string): TemplateLanguage {
 }
 
 /**
+ * Recognized realistic theme categories that get their own themed chapter
+ * pack (concrete nouns like suitcase/train/beach) instead of the generic
+ * fantasy-forest chapters below, which otherwise get used for every theme
+ * regardless of how realistic/travel-based it is. Deliberately a small,
+ * explicit allowlist rather than general theme parsing — extend alongside a
+ * new CHAPTER_TEMPLATES_*_<CATEGORY> pair to add a category.
+ */
+export type ThemeCategory = 'sea_trip' | 'generic';
+
+const SEA_TRIP_THEME_PATTERN = /(море|пляж|побережь|\bsea\b|beach|ocean|coast)/i;
+
+export function resolveThemeCategory(theme: string): ThemeCategory {
+  return SEA_TRIP_THEME_PATTERN.test(theme) ? 'sea_trip' : 'generic';
+}
+
+/**
  * Chapter shape templates, one per possible chapter slot. Sized to cover
  * MAX_BOOK_PAGE_COUNT / PAGES_PER_CHAPTER (12 / 2 = 6) chapters — the most
  * buildStoryPlan will ever need.
@@ -230,7 +246,174 @@ const CHAPTER_TEMPLATES_RU: ChapterTemplateBuilder[] = [
   }),
 ];
 
-function chapterTemplatesFor(lang: TemplateLanguage): ChapterTemplateBuilder[] {
+/**
+ * Sea-trip themed chapter pack (English) — used instead of
+ * CHAPTER_TEMPLATES_EN when resolveThemeCategory detects a realistic
+ * beach/sea-travel theme, so a theme like "sea trip" gets suitcases, roads,
+ * trains, planes, and beaches instead of an enchanted forest.
+ */
+const CHAPTER_TEMPLATES_EN_SEA_TRIP: ChapterTemplateBuilder[] = [
+  (name) => ({
+    chapterNumber: 1,
+    title: 'Packing the Suitcase',
+    summary: `${name} packs a suitcase for the big trip to the sea and can hardly wait for the road ahead.`,
+    setting: 'At home, packing a suitcase for the trip',
+    emotionalArc: 'anticipation to excitement',
+    keyEvents: [
+      `${name} packs sandals, a sun hat, and a favorite shell-shaped bucket`,
+      'The family loads the suitcases into the car for the road to the sea',
+    ],
+    illustrableScenes: [`${name} zipping up a bright suitcase by the front door`],
+  }),
+  (name) => ({
+    chapterNumber: 2,
+    title: 'On the Road',
+    summary: `${name} travels toward the sea by car, train, and plane, watching the world roll by.`,
+    setting: 'On the road, on a train, and in the sky toward the coast',
+    emotionalArc: 'restlessness to wonder',
+    keyEvents: [
+      `${name} watches fields and towns pass by the car and train windows`,
+      'From the plane window, the first glimpse of blue water appears on the horizon',
+    ],
+    illustrableScenes: [`${name} pressed against the car window watching the road ahead`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 3,
+    title: 'First Steps on the Sand',
+    summary: `${name} arrives at last and takes the first barefoot steps onto warm sand, learning that ${theme} rewards a little courage.`,
+    setting: 'The beach at the moment of arrival',
+    emotionalArc: 'nervousness to delight',
+    keyEvents: [
+      `${name} feels warm sand between bare toes for the first time`,
+      'The sound of the waves washes away every worry',
+    ],
+    illustrableScenes: [`${name} standing at the edge of the waves, sand between the toes`],
+  }),
+  (name) => ({
+    chapterNumber: 4,
+    title: 'A Friend by the Shore',
+    summary: `${name} meets another child collecting shells and learns that kindness turns strangers into friends.`,
+    setting: 'The shoreline, among scattered shells',
+    emotionalArc: 'shyness to friendship',
+    keyEvents: [
+      `${name} shares a bucket of shells with a new friend`,
+      'Together they build a sandcastle right at the edge of the waves',
+    ],
+    illustrableScenes: [`${name} and a new friend sorting shells on the sand`],
+  }),
+  (name) => ({
+    chapterNumber: 5,
+    title: 'Braving the Waves',
+    summary: `${name} faces the biggest wave of the day and discovers just how brave ${name} can be.`,
+    setting: 'The water past the shallows',
+    emotionalArc: 'worry to determination',
+    keyEvents: [
+      `${name} hesitates at the edge of a big rolling wave`,
+      `${name} takes a breath and jumps in anyway`,
+    ],
+    illustrableScenes: [`${name} jumping bravely into a rolling wave`],
+  }),
+  (name) => ({
+    chapterNumber: 6,
+    title: 'Sunset on the Beach',
+    summary: `${name} watches the sunset with family and new friends, grateful for the whole seaside adventure.`,
+    setting: 'The beach at sunset',
+    emotionalArc: 'gratitude and joy',
+    keyEvents: [
+      `${name} collects one last shell as a keepsake`,
+      'Everyone watches the sun sink into the sea together',
+    ],
+    illustrableScenes: [`${name} watching a golden sunset over the waves with friends`],
+  }),
+];
+
+/**
+ * Russian mirror of CHAPTER_TEMPLATES_EN_SEA_TRIP, same shape/order/nouns.
+ * Feminine agreement throughout (buildCharacterCard always uses
+ * Pronouns.SheHer), matching CHAPTER_TEMPLATES_RU.
+ */
+const CHAPTER_TEMPLATES_RU_SEA_TRIP: ChapterTemplateBuilder[] = [
+  (name) => ({
+    chapterNumber: 1,
+    title: 'Сборы в дорогу',
+    summary: `${name} собирает чемодан для большой поездки к морю и еле сдерживает нетерпение.`,
+    setting: 'Дома, сборы чемодана перед поездкой',
+    emotionalArc: 'нетерпение сменяется восторгом',
+    keyEvents: [
+      `${name} укладывает в чемодан сандалии, панамку и любимое ведёрко в форме ракушки`,
+      'Семья грузит чемоданы в машину перед дорогой к морю',
+    ],
+    illustrableScenes: [`${name} застёгивает яркий чемодан у порога дома`],
+  }),
+  (name) => ({
+    chapterNumber: 2,
+    title: 'В пути',
+    summary: `${name} едет к морю на машине, поезде и самолёте, с любопытством разглядывая дорогу.`,
+    setting: 'В дороге — машина, поезд и самолёт по пути к побережью',
+    emotionalArc: 'нетерпение сменяется удивлением',
+    keyEvents: [
+      `${name} смотрит, как за окном машины и поезда мелькают поля и города`,
+      'Из окна самолёта вдалеке наконец появляется синяя полоска моря',
+    ],
+    illustrableScenes: [`${name} прижимается к окну машины, разглядывая дорогу впереди`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 3,
+    title: 'Первые шаги по песку',
+    summary: `${name} наконец добирается до моря и делает первые босые шаги по тёплому песку, узнавая, что ${theme} вознаграждает немного смелости.`,
+    setting: 'Пляж в момент прибытия',
+    emotionalArc: 'волнение сменяется восторгом',
+    keyEvents: [
+      `${name} впервые чувствует тёплый песок под босыми ногами`,
+      'Шум волн смывает все тревоги',
+    ],
+    illustrableScenes: [`${name} стоит у кромки волн, песок между пальцами ног`],
+  }),
+  (name) => ({
+    chapterNumber: 4,
+    title: 'Подруга на берегу',
+    summary: `${name} знакомится с другой девочкой, которая собирает ракушки, и убеждается, что доброта превращает незнакомцев в друзей.`,
+    setting: 'Берег моря среди рассыпанных ракушек',
+    emotionalArc: 'застенчивость сменяется дружбой',
+    keyEvents: [
+      `${name} делится ведёрком ракушек с новой подругой`,
+      'Вместе они строят замок из песка у самых волн',
+    ],
+    illustrableScenes: [`${name} и новая подруга перебирают ракушки на песке`],
+  }),
+  (name) => ({
+    chapterNumber: 5,
+    title: 'Навстречу волнам',
+    summary: `${name} встречает самую большую волну за весь день и понимает, насколько она смелая.`,
+    setting: 'Море за полосой прибоя',
+    emotionalArc: 'тревога сменяется решимостью',
+    keyEvents: [
+      `${name} на мгновение замирает перед большой волной`,
+      `${name} делает вдох и всё-таки прыгает навстречу волне`,
+    ],
+    illustrableScenes: [`${name} смело прыгает в набегающую волну`],
+  }),
+  (name) => ({
+    chapterNumber: 6,
+    title: 'Закат на пляже',
+    summary: `${name} встречает закат вместе с семьёй и новыми друзьями, благодарная за это морское приключение.`,
+    setting: 'Пляж на закате',
+    emotionalArc: 'благодарность и радость',
+    keyEvents: [
+      `${name} собирает последнюю ракушку на память`,
+      'Все вместе смотрят, как солнце садится в море',
+    ],
+    illustrableScenes: [`${name} любуется золотым закатом над волнами вместе с друзьями`],
+  }),
+];
+
+function chapterTemplatesFor(
+  lang: TemplateLanguage,
+  category: ThemeCategory,
+): ChapterTemplateBuilder[] {
+  if (category === 'sea_trip') {
+    return lang === 'ru' ? CHAPTER_TEMPLATES_RU_SEA_TRIP : CHAPTER_TEMPLATES_EN_SEA_TRIP;
+  }
   return lang === 'ru' ? CHAPTER_TEMPLATES_RU : CHAPTER_TEMPLATES_EN;
 }
 
@@ -259,8 +442,13 @@ interface LocalizedStrings {
   resolution: (name: string) => string;
   backCoverMessage: (name: string) => string;
   pageTitle: (chapterTitle: string, partNumber: number) => string;
-  /** Lead-in sentence for the first page of a chapter. Never case-folds `scene` — it commonly starts with the child's name and must keep its capitalization. */
-  pageLeadFirstInChapter: (chapterSummary: string, scene: string) => string;
+  /**
+   * Lead-in sentences for the first page of a chapter, cycled by chapter
+   * index (like middleConnectors) so consecutive chapters don't all open
+   * with the exact same transition phrase. Never case-folds `scene` — it
+   * commonly starts with the child's name and must keep its capitalization.
+   */
+  chapterOpeners: Array<(chapterSummary: string, scene: string) => string>;
   pageLeadOtherInChapter: (emotionalArc: string) => string;
   /** Only ever appended on the story's final page — the moral must not repeat on every page. */
   moralSentence: (name: string, learningGoal: string) => string;
@@ -281,7 +469,12 @@ const STRINGS_BY_LANGUAGE: Record<TemplateLanguage, LocalizedStrings> = {
     backCoverMessage: (name) =>
       `The End! We hope ${name} enjoyed this adventure. Keep exploring, keep dreaming!`,
     pageTitle: (chapterTitle, partNumber) => `${chapterTitle} — Part ${partNumber}`,
-    pageLeadFirstInChapter: (summary, scene) => `${summary} It all began right here: ${scene}.`,
+    chapterOpeners: [
+      (summary, scene) => `${summary} It all began right here: ${scene}.`,
+      (summary, scene) =>
+        `${summary} This is where the next part of the adventure unfolds: ${scene}.`,
+      (summary, scene) => `${summary} Right away, everything started to change: ${scene}.`,
+    ],
     pageLeadOtherInChapter: (emotionalArc) =>
       `The story continued as ${emotionalArc} filled the air.`,
     moralSentence: (name, learningGoal) => `${name} knew deep down: ${learningGoal}`,
@@ -308,7 +501,11 @@ const STRINGS_BY_LANGUAGE: Record<TemplateLanguage, LocalizedStrings> = {
     backCoverMessage: (name) =>
       `Конец! Мы надеемся, что тебе понравилось это приключение, ${name}. Продолжай исследовать, продолжай мечтать!`,
     pageTitle: (chapterTitle, partNumber) => `${chapterTitle} — Часть ${partNumber}`,
-    pageLeadFirstInChapter: (summary, scene) => `${summary} Всё началось именно здесь: ${scene}.`,
+    chapterOpeners: [
+      (summary, scene) => `${summary} Всё началось именно здесь: ${scene}.`,
+      (summary, scene) => `${summary} Именно тут начинается новая часть приключения: ${scene}.`,
+      (summary, scene) => `${summary} Вот с чего всё началось на этот раз: ${scene}.`,
+    ],
     pageLeadOtherInChapter: (emotionalArc) => `История продолжалась: ${emotionalArc}.`,
     moralSentence: (name, learningGoal) => `В глубине души ${name} знала: ${learningGoal}`,
     middleConnectors: [
@@ -329,7 +526,7 @@ function buildStoryPlan(
 ): StoryPlan {
   const strings = STRINGS_BY_LANGUAGE[lang];
   const titleTheme = theme.split(' ')[0] ?? theme;
-  const chapterTemplates = chapterTemplatesFor(lang);
+  const chapterTemplates = chapterTemplatesFor(lang, resolveThemeCategory(theme));
   const chapterCount = Math.min(chapterTemplates.length, Math.ceil(pageCount / PAGES_PER_CHAPTER));
   const chapters = chapterTemplates.slice(0, chapterCount).map((build, index) => ({
     ...build(name, theme),
@@ -370,7 +567,10 @@ function buildPagePlan(
         sceneDescription: scene,
         narration:
           pageInChapter === 1
-            ? strings.pageLeadFirstInChapter(chapter.summary, scene)
+            ? strings.chapterOpeners[chapterIndex % strings.chapterOpeners.length]!(
+                chapter.summary,
+                scene,
+              )
             : strings.pageLeadOtherInChapter(chapter.emotionalArc),
         // Illustration prompts stay in English regardless of story language —
         // they are internal metadata for a future image-generation model, not

@@ -310,6 +310,7 @@ export function renderStorybookPdf(
 
     const doc = new PDFDocument({
       size: [PAGE_PT, PAGE_PT],
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
       autoFirstPage: false,
       compress: false,
       info: {
@@ -327,7 +328,14 @@ export function renderStorybookPdf(
     registerFonts(doc);
 
     for (const entry of layout.entries) {
-      doc.addPage({ size: [PAGE_PT, PAGE_PT] });
+      // margins: 0 is required here (not just on the constructor): PDFKit
+      // resolves each new page's margins from these addPage options, and any
+      // text drawn without an explicit `height` (e.g. the page-number footer
+      // below) auto-page-breaks once its y-coordinate passes
+      // `page.height - margins.bottom` — with the default 72pt margin, the
+      // footer's y sits past that line and silently spills onto a blank new
+      // page instead of drawing on the current one.
+      doc.addPage({ size: [PAGE_PT, PAGE_PT], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
       try {
         renderPage(doc, entry, resolveImageBuffer);
       } catch (err) {

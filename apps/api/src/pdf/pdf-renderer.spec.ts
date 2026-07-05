@@ -91,6 +91,19 @@ function makeBackCoverEntry(): BookLayoutEntry {
   };
 }
 
+/**
+ * Counts actual PDF page objects (`/Type /Page`, not the `/Type /Pages` tree
+ * node) in an uncompressed (compress: false) PDF buffer. This is the
+ * user-facing signal for the page-number-footer regression below: a viewer
+ * opening the file sees exactly this many pages, so if PDFKit ever silently
+ * spills a footer draw onto a fresh blank page again, this count will exceed
+ * the number of layout entries.
+ */
+function countPdfPages(buf: Buffer): number {
+  const raw = buf.toString('latin1');
+  return (raw.match(/\/Type\s*\/Page(?!s)/g) ?? []).length;
+}
+
 function makeLayout(entries: BookLayoutEntry[]): BookLayout {
   return {
     status: 'complete',
@@ -563,5 +576,50 @@ describe('renderStorybookPdf overflow clipping', () => {
     // One clip region guards the placeholder label, another guards the text draw.
     const clipCount = (raw.match(/W n/g) ?? []).length;
     expect(clipCount).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ── regression: page-number footer must not spawn a blank standalone page ──
+// PDFKit auto-page-breaks text drawn without an explicit `height` once its
+// y-coordinate passes `page.height - margins.bottom`. The page-number footer
+// in renderPage draws without a height option, and its y sits past that line
+// under PDFKit's default 72pt margin — so every interior page used to spill
+// its footer digit onto a fresh, otherwise-empty page. Fixed by zeroing page
+// margins (this renderer already positions everything in absolute
+// px-to-point coordinates and never relies on the margin box).
+
+describe('renderStorybookPdf page-number footer regression', () => {
+  it('produces exactly one PDF page per layout entry, not extra blank pages', async () => {
+    const layout = makeLayout([
+      makeCoverEntry(),
+      makePageEntry(1),
+      makePageEntry(2),
+      makePageEntry(3),
+      makePageEntry(4),
+      makeBackCoverEntry(),
+    ]);
+
+    const buf = await renderStorybookPdf(layout);
+
+    expect(countPdfPages(buf)).toBe(layout.entries.length);
+  });
+
+  it('keeps page count stable across a range of page numbers, including multi-digit ones', async () => {
+    const layout = makeLayout(Array.from({ length: 12 }, (_, i) => makePageEntry(i + 1)));
+
+    const buf = await renderStorybookPdf(layout);
+
+    expect(countPdfPages(buf)).toBe(layout.entries.length);
+  });
+
+  it('draws the page-number footer on the same page as its story text and image, not a standalone page', async () => {
+    const layout = makeLayout([makePageEntry(5)]);
+
+    const buf = await renderStorybookPdf(layout);
+
+    // A single-entry layout must still yield exactly one PDF page: if the
+    // footer were spilling onto its own page (the original bug), this would
+    // be 2 — the story content page plus a near-empty "5" page.
+    expect(countPdfPages(buf)).toBe(1);
   });
 });

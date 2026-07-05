@@ -304,5 +304,79 @@ describe('MockStoryGenerationProvider', () => {
         expect(result.storyPlan.educationalMessage).not.toContain('Через Поездка на море');
       });
     });
+
+    // ── QA: the selected theme should be reflected in every chapter, not
+    // just the title/moral, and generic fantasy filler shouldn't leak into a
+    // realistic/travel-based theme (Pagination + Theme Consistency phase) ──
+
+    describe('theme consistency (sea trip)', () => {
+      it('reflects a realistic sea-trip theme with concrete travel/beach nouns in every chapter, not generic fantasy', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(
+          makeInput({ theme: 'Поездка на море', language: 'ru', pageCount: 12 }),
+        );
+
+        const settings = result.storyPlan.chapters.map((c) => c.setting);
+        const allText = settings.join(' ');
+        expect(allText).toMatch(/чемодан|дорог|поезд|самолёт|машин/i);
+        expect(allText).toMatch(/пляж|море|песок|волн/i);
+        // The generic fantasy pack's "enchanted forest" must not leak in.
+        expect(allText).not.toContain('лес');
+      });
+
+      it('reflects an English sea-trip theme with suitcase/road/train/car/plane and beach/waves/sand/shells nouns', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(
+          makeInput({ theme: 'sea trip', language: 'en', pageCount: 12 }),
+        );
+
+        const allText = result.storyPlan.chapters
+          .map((c) => `${c.setting} ${c.summary} ${c.keyEvents.join(' ')}`)
+          .join(' ');
+        expect(allText).toMatch(/suitcase|road|train|car|plane/i);
+        expect(allText).toMatch(/beach|waves|sand|shells/i);
+        expect(allText).not.toMatch(/enchanted forest/i);
+      });
+
+      it('does not reclassify an unrelated theme into the sea-trip pack', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ theme: 'friendship' }));
+
+        const allText = result.storyPlan.chapters.map((c) => c.setting).join(' ');
+        expect(allText).not.toMatch(/suitcase|beach/i);
+      });
+    });
+
+    // ── QA: chapter-opening transitions should vary instead of repeating
+    // the same literal phrase on every chapter (Pagination + Theme
+    // Consistency phase) ──────────────────────────────────────────────────
+
+    describe('chapter opener variety', () => {
+      it('does not open every chapter with the exact same transition sentence', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ pageCount: 12 }));
+        // First page of every chapter is at index 0, 2, 4, ... (PAGES_PER_CHAPTER=2)
+        const openerNarrations = result.storyPlan.pages
+          .filter((_, i) => i % 2 === 0)
+          .map((p) => p.narration);
+
+        expect(new Set(openerNarrations).size).toBeGreaterThan(1);
+      });
+
+      it('varies the Russian chapter-opening transition across chapters too', async () => {
+        const provider = new MockStoryGenerationProvider();
+
+        const result = await provider.generateStory(makeInput({ language: 'ru', pageCount: 12 }));
+        const openerNarrations = result.storyPlan.pages
+          .filter((_, i) => i % 2 === 0)
+          .map((p) => p.narration);
+
+        expect(new Set(openerNarrations).size).toBeGreaterThan(1);
+      });
+    });
   });
 });
