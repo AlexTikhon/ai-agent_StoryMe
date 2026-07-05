@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -17,7 +18,7 @@ import {
 } from '@book/types';
 import { PrismaService } from '../database/prisma.service';
 import { AgentService } from '../agent/agent.service';
-import { GenerationTaskRunner } from '../agent/generation-task-runner';
+import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { toBookDto } from './books.mapper';
@@ -51,7 +52,7 @@ export class BooksService {
     private readonly prisma: PrismaService,
     private readonly agentService: AgentService,
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
-    private readonly generationTaskRunner: GenerationTaskRunner,
+    private readonly generationQueueService: GenerationQueueService,
     private readonly generationJobService: GenerationJobService,
   ) {}
 
@@ -140,15 +141,12 @@ export class BooksService {
     if (book.status !== BookStatus.failed && book.status !== BookStatus.complete) {
       throw new ConflictException('Only failed or complete books can be regenerated');
     }
-    if (this.generationTaskRunner.isRunning(bookId)) {
-      throw new ConflictException('Generation is already in progress for this book');
-    }
     if (await this.generationJobService.findActive(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
     }
 
-    // The pre-checks above are best-effort — two concurrent regenerate calls
-    // can both pass them before either writes. `claimStatusTransition`'s
+    // The pre-check above is best-effort — two concurrent regenerate calls
+    // can both pass it before either writes. `claimStatusTransition`'s
     // conditional UPDATE (`where: { id, status: book.status }`) is the actual
     // guard: only one concurrent caller's UPDATE can match the still-current
     // row, so only one GenerationJob/pipeline ever gets scheduled per call.
@@ -173,16 +171,16 @@ export class BooksService {
       attempt: cleared.retryCount + 1,
     });
 
-    await this.scheduleOrThrow(cleared, job.id);
+    await this.enqueueOrThrow(cleared, job.id);
 
     return { book: toBookDto(cleared) };
   }
 
   /**
    * Validates and transitions a draft to a non-terminal generating state,
-   * then schedules AgentService's pipeline to run in the background — the
-   * HTTP response returns as soon as the status transition is persisted,
-   * not once generation finishes. See GenerationTaskRunner.
+   * then enqueues AgentService's pipeline to run on the durable generation
+   * queue — the HTTP response returns as soon as the status transition is
+   * persisted, not once generation finishes. See GenerationQueueService.
    */
   async startGeneration(userId: string, bookId: string): Promise<GenerateBookResponse> {
     const book = await this.findOwnedOrThrow(bookId, userId);
@@ -199,16 +197,13 @@ export class BooksService {
     if (book.status !== BookStatus.created) {
       throw new ConflictException('Generation already started or completed for this book');
     }
-    if (this.generationTaskRunner.isRunning(bookId)) {
-      throw new ConflictException('Generation is already in progress for this book');
-    }
     if (await this.generationJobService.findActive(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
     }
 
     // See the comment in retryGeneration — this conditional UPDATE is the
-    // real duplicate-generation guard; the checks above are just a nicer
-    // error message for the common (non-racing) case.
+    // real duplicate-generation guard; the check above is just a nicer error
+    // message for the common (non-racing) case.
     const started = await this.claimStatusTransition(
       bookId,
       BookStatus.created,
@@ -223,7 +218,7 @@ export class BooksService {
       attempt: 1,
     });
 
-    await this.scheduleOrThrow(started, job.id);
+    await this.enqueueOrThrow(started, job.id);
 
     return { book: toBookDto(started) };
   }
@@ -257,63 +252,66 @@ export class BooksService {
   }
 
   /**
-   * Schedules the pipeline via GenerationTaskRunner and handles a `false`
-   * return explicitly. This should be unreachable in practice — the caller
-   * just won the atomic status claim above, so no other request can also be
-   * mid-schedule for this book — but the runner's in-memory `running` set is
-   * a separate source of truth, so a mismatch is a real (if unlikely) bug
-   * surface, not a case to ignore. Rather than leave the book/job stuck in a
-   * non-terminal, un-runnable state forever, this marks both failed and
-   * surfaces a ConflictException to the caller.
+   * Enqueues the pipeline onto the durable generation queue
+   * (GenerationQueueService, BullMQ/Redis-backed — Phase 3K). If enqueueing
+   * itself fails (e.g. Redis unreachable), the book/job would otherwise be
+   * stuck in a non-terminal state forever since nothing else will ever move
+   * them — so this marks both failed with a safe message and surfaces a 500
+   * to the caller instead.
    */
-  private async scheduleOrThrow(book: Book, jobId: string): Promise<void> {
-    const scheduled = this.generationTaskRunner.run(book.id, () =>
-      this.runGenerationPipeline(book, jobId),
-    );
-    if (scheduled) return;
-
-    this.logger.error(
-      `GenerationTaskRunner rejected book ${book.id} immediately after an atomic status claim — marking the job failed instead of leaving it queued forever.`,
-    );
-    await this.markJob(
-      this.generationJobService.markFailed(jobId, {
-        errorMessage: 'Generation runner rejected this job (already running)',
-      }),
-      jobId,
-      book.id,
-      'failed',
-    );
-    await this.prisma.book
-      .update({
-        where: { id: book.id },
-        data: {
-          status: BookStatus.failed,
-          errorMessage: 'Could not start generation — please try again',
-        },
-      })
-      .catch((updateErr: unknown) => {
-        const message = updateErr instanceof Error ? updateErr.message : String(updateErr);
-        this.logger.error(
-          `Failed to mark book ${book.id} failed after a rejected schedule: ${message}`,
-        );
-      });
-    throw new ConflictException('Generation is already in progress for this book');
+  private async enqueueOrThrow(book: Book, jobId: string): Promise<void> {
+    try {
+      await this.generationQueueService.enqueue({ bookId: book.id, jobId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Failed to enqueue generation job ${jobId} for book ${book.id}: ${message}`,
+      );
+      await this.markJob(
+        this.generationJobService.markFailed(jobId, {
+          errorMessage: 'Could not schedule generation — please try again',
+        }),
+        jobId,
+        book.id,
+        'failed',
+      );
+      await this.prisma.book
+        .update({
+          where: { id: book.id },
+          data: {
+            status: BookStatus.failed,
+            errorMessage: 'Could not schedule generation — please try again',
+          },
+        })
+        .catch((updateErr: unknown) => {
+          const updateMessage = updateErr instanceof Error ? updateErr.message : String(updateErr);
+          this.logger.error(
+            `Failed to mark book ${book.id} failed after a failed enqueue: ${updateMessage}`,
+          );
+        });
+      throw new InternalServerErrorException('Could not schedule generation — please try again');
+    }
   }
 
   /**
-   * Runs AgentService's pipeline in the background and never throws — it's
-   * invoked from GenerationTaskRunner, outside any HTTP request. AgentService
-   * already marks the book failed for every failure it anticipates (story
-   * generation, image generation, PDF render); this catch only guards against
-   * a truly unexpected error escaping that handling, so the book never gets
-   * stuck in a non-terminal status forever. `jobId` is the GenerationJob
-   * (Phase 3I) created by startGeneration/retryGeneration — its lifecycle
-   * mirrors the book's, but a failure updating it never blocks the pipeline
-   * or the book's own status, since Book.status is the source of truth.
+   * Runs AgentService's pipeline for one queued GenerationJob and never
+   * throws — invoked by GenerationQueueProcessor (the BullMQ worker), outside
+   * any HTTP request. Reloads the book fresh from the database rather than
+   * trusting a caller-supplied object, since a durable queue job can run in a
+   * different process, or after a delay, from whenever it was enqueued.
+   * AgentService already marks the book failed for every failure it
+   * anticipates (story generation, image generation, PDF render); the catch
+   * here only guards against a truly unexpected error escaping that handling,
+   * so the book never gets stuck in a non-terminal status forever. `jobId` is
+   * the GenerationJob (Phase 3I) created by startGeneration/retryGeneration —
+   * its lifecycle mirrors the book's, but a failure updating it never blocks
+   * the pipeline or the book's own status, since Book.status is the source of
+   * truth.
    */
-  private async runGenerationPipeline(book: Book, jobId: string): Promise<void> {
-    await this.markJob(this.generationJobService.markRunning(jobId), jobId, book.id, 'running');
+  async runGenerationPipeline(bookId: string, jobId: string): Promise<void> {
+    await this.markJob(this.generationJobService.markRunning(jobId), jobId, bookId, 'running');
     try {
+      const book = await this.prisma.book.findUniqueOrThrow({ where: { id: bookId } });
       const result = await this.agentService.startBookGeneration(book);
       if (result.status === BookStatus.failed) {
         await this.markJob(
@@ -322,37 +320,37 @@ export class BooksService {
             failedStep: result.failedStep,
           }),
           jobId,
-          book.id,
+          bookId,
           'failed',
         );
       } else {
         await this.markJob(
           this.generationJobService.markCompleted(jobId),
           jobId,
-          book.id,
+          bookId,
           'completed',
         );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(
-        `Background generation pipeline threw unexpectedly for book ${book.id}: ${message}`,
+        `Background generation pipeline threw unexpectedly for book ${bookId}: ${message}`,
       );
       await this.prisma.book
         .update({
-          where: { id: book.id },
+          where: { id: bookId },
           data: { status: BookStatus.failed, errorMessage: message },
         })
         .catch((updateErr: unknown) => {
           const updateMessage = updateErr instanceof Error ? updateErr.message : String(updateErr);
           this.logger.error(
-            `Failed to mark book ${book.id} failed after an unexpected pipeline error: ${updateMessage}`,
+            `Failed to mark book ${bookId} failed after an unexpected pipeline error: ${updateMessage}`,
           );
         });
       await this.markJob(
         this.generationJobService.markFailed(jobId, { errorMessage: message }),
         jobId,
-        book.id,
+        bookId,
         'failed',
       );
     }

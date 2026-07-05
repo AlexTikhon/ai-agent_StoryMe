@@ -43,9 +43,10 @@ match between API and web** or every request 401s.
 
 - **No payments/credits enforcement.** `User.credits` and Stripe fields exist
   in the schema but nothing in the API charges credits or calls Stripe.
-- **No queue-backed generation.** Generation runs in-process
-  (`GenerationTaskRunner`), not on BullMQ/Redis; Redis is provisioned by
-  `docker compose` but isn't on the critical path yet. See
+- ~~No queue-backed generation.~~ Generation now runs on a durable
+  BullMQ/Redis-backed queue (`GenerationQueueService`/`GenerationQueueProcessor`),
+  not in-process — Redis is on the critical path for scheduling generation.
+  See "Durable generation queue (Phase 3K)" in
   `apps/api/docs/local-generation-pipeline.md`.
 - **No cancellation or partial-completion flow.** `BookStatus.Cancelled` and
   `BookStatus.Partial` exist in the schema/types as reserved states for
@@ -129,7 +130,6 @@ publicly.
 ## Known post-MVP TODOs
 
 - Wire credit deduction and Stripe billing.
-- Move generation onto the BullMQ/Redis queue instead of in-process execution.
 - Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial
   generation recovery, user-initiated cancellation) or should be dropped.
 - `prisma:seed` was removed as a package script (previously pointed at a

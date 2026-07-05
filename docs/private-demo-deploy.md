@@ -72,12 +72,15 @@ apps/web (Next.js, Vercel)  ──HTTPS, CORS──▶  apps/api (NestJS, Docker
 - **Storage**: S3-compatible bucket (Cloudflare R2 or AWS S3) for generated
   PDFs and images — both storage drivers are fully implemented
   (`CloudPdfStorage`, `CloudImageAssetStorage`).
-- **Generation**: current in-process runner (`GenerationTaskRunner`) — no
-  separate worker process, no queue infrastructure to stand up.
+- **Generation**: durable BullMQ/Redis-backed queue (Phase 3K,
+  `GenerationQueueService`/`GenerationQueueProcessor`) — the worker runs
+  embedded in the same API process, so no separate worker deploy is needed,
+  but Redis is now a hard runtime dependency (see [Is Redis
+  required?](#is-redis-required) below).
 - **Auth**: `JwtAuthGuard` (email/password + JWT + rotating refresh cookie),
   `AUTH_MODE=jwt` by default — see the warning above.
 - **Redis**: see [Is Redis required?](#is-redis-required) below — short
-  answer: **yes, to boot**, but not for its intended purpose yet.
+  answer: **yes, to boot and to generate books** (Phase 3K).
 
 ## 2. Recommended provider path
 
@@ -108,18 +111,19 @@ its intended purpose (queue-backed generation).**
   non-200 status) if it's unreachable — so a health-check-gated deploy
   (Docker `HEALTHCHECK`, a platform's readiness probe) will never go healthy
   without it.
-- **BullMQ queues are registered (`apps/api/src/queue/queue.module.ts`,
-  `QueueModule`) but nothing enqueues or processes jobs through them today.**
-  There is no `@InjectQueue`/`Processor` anywhere in the codebase that
-  consumes those queues. Generation runs fully in-process via
-  `GenerationTaskRunner`, not through Redis/BullMQ. Redis is provisioned
-  infrastructure for a queue that doesn't exist yet, not a runtime
-  dependency of the generation pipeline itself.
+- **BullMQ is on the critical path for generation (Phase 3K).** Every
+  `POST /:id/generate`/`retry-generation` call enqueues onto
+  `QUEUES.BOOK_GENERATION` (`apps/api/src/agent/generation-queue.service.ts`),
+  and `GenerationQueueProcessor` (a `@Processor` in the same process) is what
+  actually runs the pipeline. Redis being unreachable now means new
+  generations can't even be scheduled (the request fails with a 500, and the
+  book/job are marked failed — see
+  `apps/api/docs/local-generation-pipeline.md`'s "Durable generation queue
+  (Phase 3K)" section), not just a health-check symptom.
 
 Practically: provision the smallest/free tier of a managed Redis add-on and
-set `REDIS_URL` — don't try to remove the dependency to save a step, since
-doing so would require an env-schema and health-check code change (out of
-scope for this docs-only phase).
+set `REDIS_URL` — this is a hard runtime dependency, not optional
+infrastructure.
 
 ## 3. Environment variable matrix
 
@@ -457,16 +461,18 @@ restated for this private-demo scope:
   opt-in — a deployment that leaves it unset still only logs verification/
   reset links locally via `ConsoleEmailService`, which is a private-demo-
   scoped limitation, not a code limitation.
-- **In-process generation, no worker process.** `GenerationTaskRunner` runs
-  the generation pipeline in the same process as the HTTP server. This is
-  fine for a single always-on instance (what this runbook provisions) but
-  is not safe to scale horizontally — a second instance would run its own
-  independent recovery/polling with no shared coordination beyond the
-  database. Don't configure autoscaling/multiple replicas for the API on
-  whichever host you pick.
-- **Redis is a boot-time/health-check dependency today, not a queue backend
-  in use** — see [Is Redis required?](#is-redis-required). Don't skip
-  provisioning it, but also don't expect it to be doing meaningful work.
+- **Generation worker runs embedded in the API process, not as a separately
+  deployed process.** Since Phase 3K, generation itself is durable and safe
+  across multiple API instances (BullMQ distributes jobs) — but
+  `GenerationJobRecoveryService`'s startup sweep still runs independently on
+  every instance's boot (safe, but redundant), and the default `local`
+  storage drivers aren't shared across instances. This runbook still
+  provisions a single always-on instance; revisit before enabling
+  autoscaling/multiple replicas.
+- **Redis is a hard runtime dependency, not just boot-time/health-check
+  infrastructure** — see [Is Redis required?](#is-redis-required). It backs
+  both the durable generation queue (Phase 3K) and the health check; don't
+  skip provisioning it.
 - **No payments/credits enforcement** — `User.credits` and Stripe fields
   exist in the schema but nothing charges credits or calls Stripe. Not
   relevant to a private demo, but don't advertise it as a real limit.

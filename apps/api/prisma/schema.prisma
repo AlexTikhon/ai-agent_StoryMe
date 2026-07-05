@@ -576,8 +576,10 @@ model AgentLog {
 
 // Phase 3I: a typed, persisted record of one generation attempt (generate or
 // retry), tracked alongside — not instead of — Book.status, which remains the
-// source of truth for user-facing status. Runs in-process (GenerationTaskRunner),
-// not on a durable queue yet; see apps/api/docs/local-generation-pipeline.md.
+// source of truth for user-facing status. Since Phase 3K, scheduled on a
+// durable BullMQ/Redis-backed queue (GenerationQueueService/
+// GenerationQueueProcessor), not in-process; see
+// apps/api/docs/local-generation-pipeline.md.
 model GenerationJob {
   id           String              @id @default(uuid()) @db.Uuid
   bookId       String              @map("book_id") @db.Uuid

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.schema';
@@ -21,6 +21,8 @@ const DEFAULT_JOB_OPTIONS = {
   removeOnFail: { count: 5_000 },
 };
 
+/** Global so any feature module can @InjectQueue(...) without importing this module directly — mirrors CacheModule. */
+@Global()
 @Module({
   imports: [
     BullModule.forRootAsync({

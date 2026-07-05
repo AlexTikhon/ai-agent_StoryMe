@@ -10,11 +10,11 @@ import { PrismaService } from '../database/prisma.service';
 /**
  * Persisted record of one generation attempt (generate or retry) — tracked
  * alongside, not instead of, Book.status (which stays the source of truth
- * for user-facing status). The in-process GenerationTaskRunner still does
- * the actual scheduling/execution; this service only records job state so
- * generation attempts are inspectable and a future durable queue has a
- * typed model to migrate onto. See "Generation jobs (Phase 3I)" in
- * apps/api/docs/local-generation-pipeline.md.
+ * for user-facing status). GenerationQueueService/GenerationQueueProcessor
+ * (Phase 3K) do the actual scheduling/execution on a durable BullMQ queue;
+ * this service only records job state so generation attempts are inspectable.
+ * See "Generation jobs (Phase 3I)" and "Durable generation queue (Phase 3K)"
+ * in apps/api/docs/local-generation-pipeline.md.
  */
 @Injectable()
 export class GenerationJobService {

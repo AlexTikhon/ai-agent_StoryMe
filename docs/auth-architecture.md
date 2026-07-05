@@ -767,14 +767,15 @@ remain open (see §12.5).
 
 ### 13.2 Why in-memory, not Redis
 
-The app already provisions Redis (`REDIS_URL`, `CacheModule`), but nothing on
-the current critical path actually depends on it for correctness — it's
-health-checked and reserved for BullMQ, which itself isn't wired into the
-generation pipeline yet (`GenerationTaskRunner` runs in-process; see
-`docs/deployment-readiness.md`'s "In-process generation" known blocker).
-Adding a Redis-backed limiter now would mean the auth path's availability
-starts depending on Redis for the first time, for a feature whose current
-single-instance deploy target doesn't need it. `RateLimiterService`'s
+The app already provisions Redis (`REDIS_URL`, `CacheModule`) and, since
+Phase 3K, depends on it for the generation pipeline (BullMQ — see
+`apps/api/docs/local-generation-pipeline.md`'s "Durable generation queue
+(Phase 3K)" section) — but the *auth/rate-limiting* path is a separate
+concern and still doesn't need Redis for correctness. Adding a Redis-backed
+limiter now would mean the auth path's availability starts depending on
+Redis too, for a feature whose current single-instance deploy target doesn't
+need it — a different tradeoff than generation's, which already justifies
+the Redis dependency. `RateLimiterService`'s
 `consume()`/`reset()` shape is intentionally the entire surface a caller
 depends on, so a future `RedisRateLimiterService` implementing the same
 two methods is a drop-in swap when multi-instance deployment actually

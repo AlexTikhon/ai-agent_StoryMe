@@ -32,13 +32,16 @@ export function readGenerationJobStaleAfterMs(env: NodeJS.ProcessEnv = process.e
 
 /**
  * Runs once on app bootstrap to fail-safe any GenerationJob left `queued`/
- * `running` by a previous process that died or restarted. The in-process
- * GenerationTaskRunner (Phase 3H) has no memory of scheduled tasks across a
- * restart, so without this a book could stay stuck in a non-terminal
- * "generating" status forever. Recovery never resumes or re-runs generation
- * — it only marks the stale job/book `failed` so the user can retry via the
- * existing retry-generation flow (Phase 3G). See "Startup recovery
- * (Phase 3J)" in apps/api/docs/local-generation-pipeline.md.
+ * `running` by a previous process that died or restarted. Since Phase 3K,
+ * generation itself is durably queued (BullMQ/Redis), but a job whose worker
+ * died mid-run can still outlive BullMQ's own stalled-job detection window,
+ * or the whole app (including Redis connectivity) can go down together — so
+ * a book could otherwise stay stuck in a non-terminal "generating" status
+ * forever. Recovery never resumes or re-runs generation — it only marks the
+ * stale job/book `failed` so the user can retry via the existing
+ * retry-generation flow (Phase 3G). See "Startup recovery (Phase 3J)" and
+ * "Durable generation queue (Phase 3K)" in
+ * apps/api/docs/local-generation-pipeline.md.
  */
 @Injectable()
 export class GenerationJobRecoveryService implements OnApplicationBootstrap {

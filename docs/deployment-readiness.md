@@ -92,8 +92,7 @@ real transactional email provider are all done end-to-end.
 - **Wire `prisma migrate deploy` into an actual release pipeline** (CI job
   or platform release-phase hook) instead of running it by hand per this
   doc's [Migration command](#migration-command).
-- **Move generation to a real queue + worker** before running more than one
-  API instance — `GenerationTaskRunner` currently runs in-process; see
+- ~~Move generation to a real queue + worker~~ **Done (Phase 3K)** — see
   [Known blockers](#known-blockers) item 5.
 - **Consider a Redis-backed rate limiter** before running more than one API
   instance — `RateLimiterService` is in-memory/per-process today, correct
@@ -323,13 +322,19 @@ impersonate any user, dev-mode identity is not connected to any credential.
    `DevAuthGuard` remains only as an explicit, documented local/
    trusted-operator fallback (`AUTH_MODE=dev`) — see
    [Auth limitation](#auth-limitation) below.
-5. **In-process generation, no worker process.** `GenerationTaskRunner` runs
-   the generation pipeline in the same process as the HTTP server. BullMQ/Redis
-   are provisioned but unused for this. Acceptable for a single-instance
-   deploy; will need to move to an actual queue+worker before scaling to
-   multiple API instances (otherwise a redeploy mid-generation drops the job —
-   `GenerationJobRecoveryService` already detects and fails these stale jobs on
-   next boot, so this fails safely rather than silently, but the job is lost).
+5. ~~In-process generation, no worker process.~~ **Resolved in Phase 3K
+   (generation queue)**: generation is now scheduled on a durable
+   BullMQ/Redis-backed queue (`GenerationQueueService`/`GenerationQueueProcessor`,
+   see `apps/api/docs/local-generation-pipeline.md`'s "Durable generation
+   queue (Phase 3K)" section) instead of the old in-process
+   `GenerationTaskRunner`. Multiple API instances can now safely run behind a
+   load balancer — BullMQ distributes queued jobs across whichever instance's
+   worker claims each one, and a redeploy no longer silently drops an
+   in-flight job (it's durably queued in Redis, not held only in one
+   process's memory). The worker still runs embedded in the same process as
+   the HTTP server rather than as a separately deployed/scaled process;
+   `GenerationJobRecoveryService` remains as a second-layer fail-safe for
+   whatever BullMQ's own stalled-job detection doesn't catch.
 6. **`ru`/`pl` PDF output is not production-ready.** `SupportedLanguage`
    offers Russian and Polish, but the PDF renderer only has PDFKit's
    built-in WinAnsi-only fonts — Cyrillic renders as blank glyphs entirely,
@@ -591,10 +596,17 @@ A minimal, low-ops setup that fits the current single-process design:
   correct, see [Phase 5D: Web deployment readiness](#phase-5d-web) above for
   the full checklist.
 - **API**: `apps/api/Dockerfile` on a single-instance container host (e.g.
-  Fly.io, Render, Railway) — the in-process generation runner
-  (`GenerationTaskRunner`) means horizontal scaling is not yet safe (a second
-  instance would run its own independent recovery/polling with no shared
-  coordination beyond the DB).
+  Fly.io, Render, Railway) is still the recommended starting point, though
+  the generation pipeline itself is no longer the reason multi-instance is
+  unsafe — since Phase 3K (see [Known blockers](#known-blockers) item 5),
+  BullMQ distributes generation jobs across instances safely. What still
+  favors single-instance: the default `local` storage drivers
+  (`LocalPdfStorage`/`LocalImageAssetStorage`) write to the container's own
+  filesystem, not shared across instances (set `PDF_STORAGE_DRIVER`/
+  `IMAGE_STORAGE_DRIVER=s3`/`r2` before scaling out), and
+  `GenerationJobRecoveryService` still runs its own independent sweep on
+  every instance's boot (safe — each write is a plain last-write-wins
+  `update` — but redundant, not a shared distributed lock).
 - **Database**: managed Postgres (Neon, Supabase, RDS, etc.) — schema and
   migrations are already Postgres-specific and ready.
 - **Redis**: managed Redis (Upstash, Redis Cloud) — currently only used for

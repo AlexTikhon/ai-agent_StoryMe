@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { AgentService } from '../agent/agent.service';
-import { GenerationTaskRunner } from '../agent/generation-task-runner';
+import { GenerationQueueService } from '../agent/generation-queue.service';
+import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationJobRecoveryService } from '../agent/generation-job-recovery.service';
 import { BooksController } from './books.controller';
@@ -35,7 +36,8 @@ import { createStoryGenerationProvider } from '../agent/story-generation-provide
     },
     BooksService,
     AgentService,
-    GenerationTaskRunner,
+    GenerationQueueService,
+    GenerationQueueProcessor,
     GenerationJobService,
     GenerationJobRecoveryService,
   ],

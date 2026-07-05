@@ -19,26 +19,26 @@ calls, no external AI providers, no cloud dependency.
      every missing field.
    - Requires `status === created` — otherwise `ConflictException` (409)
      ("Generation already started or completed for this book").
-   - Requires the book not already be running in the in-process
-     `GenerationTaskRunner` — otherwise `ConflictException` (409,
-     "Generation is already in progress for this book").
+   - Requires no active (`queued`/`running`) `GenerationJob` already exists
+     for the book — otherwise `ConflictException` (409, "Generation is
+     already in progress for this book").
    - Transitions `status` to `char_build` (the first pipeline step) and
      returns immediately — it does **not** wait for generation to finish.
-     See "Background generation (Phase 3H)" below.
-4. **Generation** — `AgentService.startBookGeneration` (see below) runs in
-   the background, scheduled by `GenerationTaskRunner`, and eventually
-   updates the book to a terminal `complete` or `failed` status. The
-   frontend's existing status/diagnostics poll (see "Status transitions"
-   below) is how the caller observes that outcome — not the `generate`
-   response.
+     See "Durable generation queue (Phase 3K)" below.
+4. **Generation** — `AgentService.startBookGeneration` (see below) runs on a
+   durable BullMQ/Redis-backed queue worker, and eventually updates the book
+   to a terminal `complete` or `failed` status. The frontend's existing
+   status/diagnostics poll (see "Status transitions" below) is how the caller
+   observes that outcome — not the `generate` response.
 5. **Preview** — `GET /api/books/:id/pdf/preview`
    (`BooksService.getPreviewPdfBuffer` → `PdfStorage.getPreviewPdf`) streams
    the rendered PDF back as `application/pdf`.
 
-There is still no external queue/worker (no Redis, no BullMQ, despite
-`@nestjs/bullmq` being a dependency) — generation is scheduled in-process via
-`GenerationTaskRunner` (Phase 3H) and runs on the Node event loop after the
-HTTP response for `generate`/`retry-generation` has already been sent.
+Generation is scheduled onto a real BullMQ/Redis-backed queue (Phase 3K —
+`GenerationQueueService`/`GenerationQueueProcessor`) and runs on a worker in
+the same process, after the HTTP response for `generate`/`retry-generation`
+has already been sent. See "Durable generation queue (Phase 3K)" below for
+the full design and its remaining limitations.
 
 ## What `AgentService.startBookGeneration` does, in order
 
@@ -655,6 +655,14 @@ generation logic.
 
 ## Background generation (Phase 3H)
 
+> **Superseded by "Durable generation queue (Phase 3K)" below.** This section
+> is kept for history — `GenerationTaskRunner` and the in-process scheduling
+> it describes no longer exist in the code; `generationTaskRunner.run(...)`
+> below is the same call site now made through `GenerationQueueService`. The
+> request-lifecycle behavior (HTTP response returns as soon as the status
+> transition is persisted, pipeline runs after) is unchanged — only *what*
+> runs it changed.
+
 `POST /api/books/:id/generate` and `POST /api/books/:id/retry-generation`
 return as soon as the status transition is persisted — they no longer wait
 for the whole pipeline (including PDF render) to finish. The pipeline itself
@@ -777,19 +785,12 @@ without redesigning the pipeline.
     API process crashed or redeployed mid-generation is not automatically
     retried — see "Startup recovery (Phase 3J)" below for what *does* happen
     to it on the next boot (a fail-safe, not a resume).
-  - **Still in-process, still no cross-instance coordination.** `maxAttempts`
-    and `runnerId` are schema-only today — nothing reads or writes them yet.
-    Running two API instances behind a load balancer still has no shared
-    concurrency limit; the `findActive` check only guards against races
-    within one process's view of the database, not a real distributed lock.
-  - A future durable-queue phase would replace `GenerationTaskRunner.run`
-    with enqueueing a real job (BullMQ/Redis — `@nestjs/bullmq`/`bullmq` are
-    already dependencies but unused for this) and add a worker that claims
-    `queued` jobs via `runnerId`, plus a startup sweep that requeues jobs
-    stuck in `running`. `GenerationJobService`'s typed create/markRunning/
-    markCompleted/markFailed methods are written so that swap wouldn't
-    require changing `BooksService`'s calling code, only what's behind
-    `GenerationTaskRunner.run`.
+  - ~~Still in-process, still no cross-instance coordination.~~ **Done in
+    Phase 3K** — see "Durable generation queue (Phase 3K)" below.
+    `maxAttempts` and `runnerId` remain schema-only/unused; BullMQ's own
+    per-job `attempts`/backoff options are configured instead (see
+    `queue.module.ts`), and `runnerId` was never needed since BullMQ tracks
+    job ownership itself.
 
 ## Startup recovery (Phase 3J)
 
@@ -870,14 +871,119 @@ automatically re-run.
     once could both attempt to recover the same stale job; each write is a
     plain `update` (last write wins), not a `SELECT ... FOR UPDATE` or
     optimistic-lock pattern, so this is safe but not strictly exactly-once.
-  - **No durable external queue.** Recovery is a Nest lifecycle hook reading
-    Postgres directly, not a BullMQ/Redis worker — see "Known limitations"
-    under "Generation jobs (Phase 3I)" for what a future durable-queue phase
-    would replace this with.
-  - A job that goes stale *between* recovery runs (i.e., the API stays up
-    but the in-process `GenerationTaskRunner` task silently stops
-    progressing without throwing) is not detected until the next process
-    restart — recovery only runs on boot, not on an interval.
+  - ~~No durable external queue.~~ **Done in Phase 3K** — see below. This
+    recovery sweep still runs on every boot regardless, since it's the only
+    thing that catches a job BullMQ itself can't recover (e.g. the whole
+    process, including Redis connectivity, died in a way BullMQ's stalled-job
+    detection doesn't cover before the next restart).
+  - A job that goes stale *between* recovery runs (i.e., the API stays up but
+    the worker silently stops progressing without throwing or the process
+    crashing) is not detected until the next process restart — recovery only
+    runs on boot, not on an interval. BullMQ's own stalled-job detection (see
+    below) narrows this further but doesn't eliminate it.
+
+## Durable generation queue (Phase 3K)
+
+Closes the gap Phase 3I/3J both flagged as future work: `GenerationTaskRunner`
+(Phase 3H), the in-process, in-memory scheduler, is gone. Every
+`generate`/`retry-generation` call now enqueues its `GenerationJob` (Phase 3I)
+onto a real BullMQ queue backed by the same Redis instance the rest of the API
+already depends on (`RedisService`/`CacheModule`) — `@nestjs/bullmq`/`bullmq`
+had been dependencies since early on but were unused until now. Nothing about
+`Book.status`, the `GenerationJob` state model, the diagnostics/status
+endpoints, or `AgentService`'s pipeline changed — only what schedules and runs
+`BooksService.runGenerationPipeline` changed.
+
+- **Queue** — `apps/api/src/queue/queues.config.ts` adds `QUEUES.BOOK_GENERATION`
+  (`'book-generation'`) alongside the nine still-unused per-pipeline-step
+  queue names reserved for a future finer-grained architecture. This queue
+  carries one job per generation attempt — today's pipeline is still the
+  single monolithic `AgentService.startBookGeneration` call, so a single
+  whole-job queue matches the actual architecture instead of speculatively
+  splitting it into steps.
+- **`apps/api/src/queue/queue.module.ts`** is now `@Global()` (mirrors
+  `CacheModule`) so any feature module can `@InjectQueue(...)` without
+  importing it directly. Its existing `DEFAULT_JOB_OPTIONS` (3 attempts,
+  exponential backoff starting at 2s) still applies to this queue, though it
+  never actually triggers here — see the processor note below.
+- **Producer — `apps/api/src/agent/generation-queue.service.ts`**
+  (`GenerationQueueService`, registered in `books.module.ts`): `enqueue({
+  bookId, jobId })` adds one job (`queue.add('run-generation', data, { jobId
+  })`), using the `GenerationJob` row's own id as the BullMQ job id. Since
+  that id is already unique per attempt (a fresh `GenerationJob` is created by
+  `startGeneration`/`retryGeneration` every time), no separate
+  de-duplication logic is needed at the queue layer — `GenerationJobService.findActive`
+  (DB-backed, cross-instance) plus `BooksService`'s atomic status-claim UPDATE
+  are still what prevent two concurrent attempts for the same book (see
+  "Generation jobs (Phase 3I)" above), exactly as before.
+- **Worker — `apps/api/src/agent/generation-queue.processor.ts`**
+  (`GenerationQueueProcessor`, registered in `books.module.ts`): a
+  `@Processor(QUEUES.BOOK_GENERATION)`/`WorkerHost` that calls
+  `BooksService.runGenerationPipeline(bookId, jobId)` for each job. Runs in
+  the same process as the API today — nothing prevents splitting it into a
+  dedicated worker process later, since the producer/consumer contract is
+  already just `{ bookId, jobId }` over Redis.
+- **`BooksService.runGenerationPipeline`** changed signature from
+  `(book: Book, jobId: string)` to `(bookId: string, jobId: string)` and is
+  now `public` (called by `GenerationQueueProcessor`, not just scheduled via a
+  closure) — it reloads the book fresh via `prisma.book.findUniqueOrThrow`
+  instead of trusting a caller-supplied object, since a durable queue job can
+  run in a different process, or after a delay, from whenever it was
+  enqueued. Its own body (mark running → call `AgentService.startBookGeneration`
+  → mark completed/failed, catch-and-mark-failed on an unexpected throw) is
+  unchanged from Phase 3H/3I and still never throws.
+- **`BooksService.startGeneration`/`retryGeneration`** dropped the
+  `GenerationTaskRunner.isRunning(bookId)` pre-check entirely — it was never
+  the actual concurrency guard (the atomic status-claim UPDATE was, per the
+  existing code comments), and BullMQ's per-attempt unique job id makes an
+  equivalent in-memory check both impossible to implement meaningfully across
+  processes and unnecessary. The rejected-schedule fallback (previously
+  "`GenerationTaskRunner.run()` returned `false`") is now "the queue's
+  `enqueue()` call itself threw" (e.g. Redis unreachable) — same shape
+  (mark job + book `failed` with a safe message), but now throws
+  `InternalServerErrorException` (500) instead of `ConflictException` (409),
+  since a failed enqueue is an infrastructure fault, not a duplicate-request
+  conflict.
+- **Retries** — `BooksService.runGenerationPipeline` never throws, so
+  BullMQ's own `attempts`/backoff job-retry (`DEFAULT_JOB_OPTIONS`) never
+  actually triggers for this queue: from BullMQ's point of view every job
+  "succeeds" the moment `process()` resolves, regardless of whether the book
+  itself ended up `complete` or `failed`. Retrying a failed generation is
+  still exclusively the user-driven `POST /:id/retry-generation` flow
+  (Phase 3G) — BullMQ is durability infrastructure here, not a retry policy.
+- **What this actually buys**:
+  - **Durability across the API process restarting mid-schedule.** Before,
+    if the process died between the atomic status-claim UPDATE and the
+    (synchronous, in-memory) `GenerationTaskRunner.run()` call, the job was
+    silently lost — nothing would ever run it, and only `GenerationJobRecoveryService`'s
+    next-boot sweep (Phase 3J) would eventually notice and fail it out.
+    Now the job is durably enqueued in Redis the moment `enqueue()` resolves,
+    surviving an API restart; a fresh worker picks it up on the next boot.
+  - **Cross-instance work distribution.** Running multiple API instances
+    behind a load balancer now lets BullMQ distribute `book-generation` jobs
+    across whichever instance's worker claims each one, instead of every
+    instance's in-memory `running` `Set` only knowing about its own
+    schedules. The *request-time* duplicate-generation guard
+    (`GenerationJobService.findActive` + the atomic status-claim UPDATE) was
+    already cross-instance-safe via Postgres and is unchanged.
+  - **BullMQ's own stalled-job detection** as a second (partial) safety net
+    alongside `GenerationJobRecoveryService`: if a worker process dies mid-job,
+    BullMQ can reassign the job to another worker after a timeout. This
+    doesn't make `AgentService.startBookGeneration` resumable from where it
+    left off — a "stalled" retry just re-runs `runGenerationPipeline` from the
+    top against whatever the book's current DB row looks like — but it's a
+    tighter recovery window than waiting for the next full app boot.
+- **Known limitations**:
+  - **Still not a true resume.** A re-run (whether from a BullMQ stalled
+    retry or a fresh `retry-generation` call) always re-runs
+    `AgentService.startBookGeneration` from the top; there is still no
+    mid-pipeline checkpoint/resume.
+  - **`maxAttempts`/`runnerId`** on `GenerationJob` remain schema-only and
+    unused — BullMQ tracks its own job attempts/ownership internally, and
+    nothing in this phase needed to surface that back onto the `GenerationJob`
+    row.
+  - **Worker still runs in-process with the API**, not as a separately
+    deployed/scaled process — see "Worker" above.
 
 ## Book creation input contract (Phase 4A)
 
@@ -1045,8 +1151,8 @@ re-verified here — see "Test coverage" below.
 | `ConflictException` (409) | `update`/`remove` after `status !== created` | `PATCH /:id`, `DELETE /:id` |
 | `ConflictException` (409) | `generate` called when `status !== created` | `POST /:id/generate` |
 | `ConflictException` (409) | `retry-generation` called when `status !== failed` | `POST /:id/retry-generation` |
-| `ConflictException` (409) | `generate`/`retry-generation` called while `GenerationTaskRunner.isRunning(bookId)` | `POST /:id/generate`, `POST /:id/retry-generation` |
 | `ConflictException` (409) | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I) | `POST /:id/generate`, `POST /:id/retry-generation` |
+| `InternalServerErrorException` (500) | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K) | `POST /:id/generate`, `POST /:id/retry-generation` |
 | `ConflictException` (409) | preview requested before `previewPdfUrl` is set | `GET /:id/pdf/preview` |
 | `NotFoundException` (404) | book missing / not owned / soft-deleted | any `:id` route |
 | `NotFoundException` (404) | `previewPdfUrl` set but file missing from storage | `GET /:id/pdf/preview` |
@@ -1196,24 +1302,25 @@ re-verified here — see "Test coverage" below.
   concurrent `/generation-diagnostics` call alongside every `/books/:id`
   call/poll; existing tests were otherwise left as-is.)
 
-- `apps/api/src/agent/generation-task-runner.spec.ts` (Phase 3H) —
-  `GenerationTaskRunner` in isolation: `isRunning` reflects in-flight state
-  as soon as `run()` is called (before the task settles) through to after it
-  resolves or rejects; a second `run()` call for the same still-running id
-  returns `false` and never invokes the second task; the same id can be
-  scheduled again once the previous run finished; different ids are tracked
-  independently; a rejecting task is caught and logged without throwing out
-  of `run()`.
-- `apps/api/src/books/books.service.spec.ts` (Phase 3H) — `startGeneration`/
-  `retryGeneration`: the returned response carries `char_build` (not a
-  terminal status) and `AgentService.startBookGeneration` is not called
-  synchronously; `GenerationTaskRunner.run` is called with the book id and a
-  function; invoking that captured function calls
-  `AgentService.startBookGeneration` with the transitioned/cleared book;
-  invoking it when `AgentService.startBookGeneration` rejects marks the book
-  `failed` with the caught error's message instead of throwing; a
-  `ConflictException` is thrown (before any DB write or scheduling) when
-  `GenerationTaskRunner.isRunning` reports the book is already generating.
+- `apps/api/src/books/books.service.spec.ts` (Phase 3H, updated Phase 3K) —
+  `startGeneration`/`retryGeneration`: the returned response carries
+  `char_build` (not a terminal status) and `AgentService.startBookGeneration`
+  is not called synchronously; `generationQueueService.enqueue` is called
+  with `{ bookId, jobId }`; calling `service.runGenerationPipeline(bookId,
+  jobId)` directly (as `GenerationQueueProcessor` would) calls
+  `AgentService.startBookGeneration` with the freshly-reloaded book; invoking
+  it when `AgentService.startBookGeneration` rejects marks the book `failed`
+  with the caught error's message instead of throwing; an
+  `InternalServerErrorException` is thrown (after marking the job/book
+  failed) when `generationQueueService.enqueue` itself rejects right after
+  the atomic status claim.
+- `apps/api/src/agent/generation-queue.service.spec.ts` (Phase 3K) —
+  `GenerationQueueService` in isolation: `enqueue` adds one job to the
+  injected BullMQ `Queue` with `data.jobId` as the BullMQ job id; a rejection
+  from the underlying queue (e.g. Redis unreachable) propagates unchanged.
+- `apps/api/src/agent/generation-queue.processor.spec.ts` (Phase 3K) —
+  `GenerationQueueProcessor` in isolation: `process(job)` delegates to
+  `BooksService.runGenerationPipeline` with the job's `bookId`/`jobId`.
 
 - `apps/api/src/agent/generation-job.service.spec.ts` (Phase 3I) —
   `GenerationJobService` in isolation: `findActive` queries `queued`/`running`
@@ -1261,23 +1368,14 @@ alternatives instead).
   `ImageAssetStorage` (local disk under `tmp/images/`) to be embedded into
   the PDF; nothing serves them over HTTP, and the `/mock-images/...` URLs
   recorded on `GeneratedImageEntry.imageUrl` resolve to nothing.
-- **Async queues/workers** — Phase 3H made generation non-blocking, but only
-  via in-process scheduling (`GenerationTaskRunner`, see "Background
-  generation (Phase 3H)" above) — there's still no BullMQ job, Redis-backed
-  queue, or separate worker process (despite `@nestjs/bullmq` being a
-  dependency). Phase 3I added a persisted `GenerationJob` record per attempt
-  (see "Generation jobs (Phase 3I)" above), but that's job-state tracking,
-  not a queue: the runner is still the same in-process scheduler. This means:
-  no durability across a process restart (an in-flight generation is simply
-  lost if the API process crashes or redeploys — the book stays stuck in a
-  non-terminal status and its `GenerationJob` stays stuck in `running`, with
-  nothing to resume either), no cross-instance coordination (running two API
-  instances behind a load balancer could let both accept a `generate` call
-  for different books at the same time with no shared concurrency limit,
-  since `GenerationJob.findActive`/`GenerationTaskRunner.isRunning` only see
-  one process's view), and no retry/backoff at the scheduling level (only
-  `AgentService`'s own provider-level retries, see Phase 3D). A real queue is
-  the natural next step if any of these limitations become a problem.
+- ~~Async queues/workers~~ **Done in Phase 3K** — see "Durable generation
+  queue (Phase 3K)" above. Generation is now scheduled through a real
+  BullMQ/Redis-backed queue (`QUEUES.BOOK_GENERATION`), not in-process
+  scheduling — it survives an API process restart and BullMQ distributes jobs
+  across multiple API instances' workers. Still true: no mid-pipeline
+  resume (a re-run always restarts `AgentService.startBookGeneration` from
+  the top) and no scheduling-level retry/backoff beyond `AgentService`'s own
+  provider-level retries (Phase 3D) — see "Known limitations" under Phase 3K.
 - **Payments/auth** — `DevAuthGuard` stands in for real authentication;
   there's no payment gating on generation or preview access.
 

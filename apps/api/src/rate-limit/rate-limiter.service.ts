@@ -17,11 +17,10 @@ interface Bucket {
  * IP + route + identifier), this service only owns the counting.
  *
  * Single-process only: state is not shared across instances, so this is
- * only correct for a single-instance deploy (matches this app's current
- * in-process GenerationTaskRunner assumption — see
- * docs/deployment-readiness.md). A multi-instance deploy needs a shared
- * store (e.g. Redis, which this app already provisions for other purposes)
- * behind the same consume()/reset() shape.
+ * only correct for a single-instance deploy — see docs/deployment-readiness.md.
+ * A multi-instance deploy needs a shared store (e.g. Redis, which this app
+ * already provisions for other purposes, including the durable generation
+ * queue — see GenerationQueueService) behind the same consume()/reset() shape.
  */
 @Injectable()
 export class RateLimiterService {

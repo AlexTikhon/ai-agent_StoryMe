@@ -15,6 +15,15 @@ export const QUEUES = {
 
   /** Dead-letter queue for unrecoverable failures. */
   DLQ_FAILED: 'dlq-failed',
+
+  /**
+   * Whole-book generation, one job per generate/retry attempt (Phase 3K) —
+   * see GenerationQueueService/GenerationQueueProcessor in apps/api/src/agent.
+   * The nine queues above were reserved for a future per-pipeline-step
+   * architecture that was never built; this queue runs today's monolithic
+   * AgentService.startBookGeneration call as a single durable job instead.
+   */
+  BOOK_GENERATION: 'book-generation',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
