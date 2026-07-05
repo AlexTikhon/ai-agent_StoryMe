@@ -6,7 +6,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "nest start --watch",
+    "dev:worker": "nest start --watch --entryFile worker",
     "start": "node dist/main",
+    "start:api": "node dist/main",
+    "start:worker": "node dist/worker",
+    "start:prod:api": "node dist/main",
+    "start:prod:worker": "node dist/worker",
     "lint": "eslint src --max-warnings 0",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",

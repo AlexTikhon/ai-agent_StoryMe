@@ -11,6 +11,15 @@ export const envSchema = z
     PORT: z.coerce.number().int().positive().default(4000),
     ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
 
+    // Process topology — read directly from process.env in main.ts/worker.ts
+    // (before ConfigService exists) to decide whether GenerationQueueProcessor
+    // is registered at all; also declared here so a malformed value still
+    // fails loudly at boot instead of silently being treated as "false".
+    // main.ts never sets this (API never self-enables); worker.ts always
+    // passes `true` regardless of this var. See apps/api/docs/local-generation-pipeline.md
+    // ("Worker process separation").
+    ENABLE_GENERATION_WORKER: z.enum(['true', 'false']).default('false'),
+
     // Web app origin, used only to build links sent in transactional emails
     // (e.g. the email verification link: `${WEB_APP_URL}/verify-email?token=...`).
     // Defaults to the local web dev server.

@@ -8,9 +8,19 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    logger: ['error', 'warn', 'log', 'debug'],
-  });
+
+  // The API process never consumes generation jobs itself — set
+  // ENABLE_GENERATION_WORKER=true only for local single-process convenience;
+  // in every deployed environment the worker entrypoint (worker.ts) is a
+  // separate process/service. See "Worker process separation" in
+  // apps/api/docs/local-generation-pipeline.md.
+  const enableGenerationWorker = process.env['ENABLE_GENERATION_WORKER'] === 'true';
+  const app = await NestFactory.create<NestExpressApplication>(
+    AppModule.register({ enableGenerationWorker }),
+    {
+      logger: ['error', 'warn', 'log', 'debug'],
+    },
+  );
 
   // Trust the first hop's X-Forwarded-For entry as the client IP. Every
   // recommended deploy target (Render/Fly/Railway/Vercel) puts exactly one

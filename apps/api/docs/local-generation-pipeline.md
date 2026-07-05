@@ -917,12 +917,12 @@ endpoints, or `AgentService`'s pipeline changed — only what schedules and runs
   are still what prevent two concurrent attempts for the same book (see
   "Generation jobs (Phase 3I)" above), exactly as before.
 - **Worker — `apps/api/src/agent/generation-queue.processor.ts`**
-  (`GenerationQueueProcessor`, registered in `books.module.ts`): a
-  `@Processor(QUEUES.BOOK_GENERATION)`/`WorkerHost` that calls
-  `BooksService.runGenerationPipeline(bookId, jobId)` for each job. Runs in
-  the same process as the API today — nothing prevents splitting it into a
-  dedicated worker process later, since the producer/consumer contract is
-  already just `{ bookId, jobId }` over Redis.
+  (`GenerationQueueProcessor`, conditionally registered in `books.module.ts`):
+  a `@Processor(QUEUES.BOOK_GENERATION)`/`WorkerHost` that calls
+  `BooksService.runGenerationPipeline(bookId, jobId)` for each job. Originally
+  ran embedded in the API process; since "Worker process separation" below it
+  runs in a dedicated `apps/api/src/worker.ts` process instead, since the
+  producer/consumer contract was always just `{ bookId, jobId }` over Redis.
 - **`BooksService.runGenerationPipeline`** changed signature from
   `(book: Book, jobId: string)` to `(bookId: string, jobId: string)` and is
   now `public` (called by `GenerationQueueProcessor`, not just scheduled via a
@@ -982,8 +982,101 @@ endpoints, or `AgentService`'s pipeline changed — only what schedules and runs
     unused — BullMQ tracks its own job attempts/ownership internally, and
     nothing in this phase needed to surface that back onto the `GenerationJob`
     row.
-  - **Worker still runs in-process with the API**, not as a separately
-    deployed/scaled process — see "Worker" above.
+  - ~~Worker still runs in-process with the API.~~ **Done — see "Worker
+    process separation" below.**
+
+## Worker process separation
+
+Closes the last limitation Phase 3K flagged: `GenerationQueueProcessor` no
+longer runs embedded inside the API process. Nothing about the queue
+contract, `BooksService.runGenerationPipeline`, or `AgentService`'s pipeline
+changed — only which process registers the BullMQ worker.
+
+- **Previous limitation** — every API instance also ran the BullMQ worker
+  in-process (`@Processor(QUEUES.BOOK_GENERATION)` was an unconditional
+  provider in `books.module.ts`). That coupled HTTP request-handling capacity
+  to generation-worker capacity: you couldn't scale API replicas without also
+  multiplying workers (or vice versa), and a slow/stuck generation job shared
+  the same Node event loop as HTTP traffic.
+- **`AppModule`/`BooksModule` are now dynamic modules** —
+  `AppModule.register({ enableGenerationWorker })` /
+  `BooksModule.register({ enableGenerationWorker })` — instead of static
+  `@Module({...})` classes. `GenerationQueueProcessor` (whose `@Processor`
+  decorator opens a real BullMQ `Worker`/Redis connection the moment Nest
+  instantiates it) is only included in `BooksModule`'s `providers` array when
+  `enableGenerationWorker` is `true`. Every other provider/controller — the
+  entire rest of the app — is identical between the two modes, so there is no
+  duplicated business logic between API and worker.
+- **`apps/api/src/main.ts`** (API entrypoint, unchanged behavior otherwise):
+  calls `NestFactory.create(AppModule.register({ enableGenerationWorker }))`
+  where `enableGenerationWorker = process.env.ENABLE_GENERATION_WORKER ===
+  'true'`. **Defaults to `false`** — the API never registers the processor
+  unless that var is explicitly set, matching the "don't consume jobs unless
+  explicitly enabled" requirement. Still starts the HTTP server exactly as
+  before.
+- **`apps/api/src/worker.ts`** (new entrypoint) — boots
+  `AppModule.register({ enableGenerationWorker: true })` (always `true`,
+  regardless of `ENABLE_GENERATION_WORKER`) via
+  `NestFactory.createApplicationContext(...)`, **not**
+  `NestFactory.create(...)`: no HTTP adapter, no `app.listen()`, no port
+  opened, no `/api/*` routes reachable — a process that only holds a DI
+  container and whatever BullMQ workers/schedulers get instantiated inside
+  it. `app.enableShutdownHooks()` is still called so `SIGTERM`/`SIGINT` close
+  the Redis connection and let in-flight jobs finish (or get picked back up
+  by BullMQ's stalled-job detection) instead of being killed mid-write.
+- **`GenerationJobRecoveryService` is unaffected** — it's still an
+  unconditional `BooksModule` provider (`OnApplicationBootstrap`), so it runs
+  in *both* the API and the worker on their respective boots. This is
+  deliberately left as-is rather than pinned to one process: it's a
+  DB-only fail-safe sweep (see "Startup recovery (Phase 3J)" above), every
+  write is an idempotent last-write-wins `update`, and running it twice on a
+  simultaneous API+worker cold start is harmless — strictly safer than
+  picking one process and having recovery silently not run if that process
+  happens to be down. Removing it, or narrowing it to one process, was not
+  attempted since neither is required and BullMQ's stalled-job handling still
+  doesn't fully replace it (see Phase 3J's "Known limitations").
+- **`apps/api/nest-cli.json`**: `compilerOptions.deleteOutDir` changed from
+  `true` to `false`. `nest start --watch` for the API and the worker both
+  compile into the same `apps/api/dist/`; with `deleteOutDir: true`, starting
+  one while the other is already running would wipe the other's freshly
+  built output out from under it. `false` is safe for both single- and
+  dual-process local dev.
+- **Package scripts** (`apps/api/package.json`):
+  - `dev:worker` — `nest start --watch --entryFile worker`, the worker
+    equivalent of the existing `dev` script (`nest start --watch`, entry file
+    `main` by default).
+  - `start:api` / `start:worker` — `node dist/main` / `node dist/worker`,
+    for running a built image directly (`start:api` is identical to the
+    pre-existing `start`, kept for backward compatibility).
+  - `start:prod:api` / `start:prod:worker` — same commands again, named
+    explicitly for use as each Railway service's start command (see
+    `docs/deployment-readiness.md`'s "Recommended deployment architecture").
+  - `build` (`tsc -p tsconfig.build.json`) was already unchanged: it compiles
+    every file under `src/`, so `dist/worker.js` is produced automatically
+    alongside `dist/main.js` with no build-script changes needed.
+- **Tests** — `apps/api/src/books/books.module.spec.ts` and
+  `apps/api/src/app.module.spec.ts` assert on the `DynamicModule` metadata
+  `BooksModule.register(...)`/`AppModule.register(...)` produce (whether
+  `GenerationQueueProcessor` is in the resulting `providers` array), rather
+  than booting a real Nest application — a real boot needs live
+  Postgres/Redis (`DatabaseModule`/`QueueModule` connect eagerly), which
+  normal tests must not depend on. This is enough to prove the API and
+  worker entrypoints genuinely produce different module graphs.
+- **Known limitations**:
+  - Not verified against a live Postgres/Redis in this environment (no Docker
+    daemon available when this phase was implemented) — verified via
+    typecheck/lint/tests/build only. Before relying on this in a real
+    deployment, run `pnpm --filter @book/api dev` and
+    `pnpm --filter @book/api dev:worker` side by side against
+    `docker-compose.yml`'s Postgres/Redis and confirm a real
+    `generate`/`retry-generation` call is picked up by the worker process's
+    logs, not the API process's.
+  - `GenerationJobRecoveryService` still runs redundantly in both processes
+    on every cold start (see above) — harmless, but not eliminated.
+  - No independent horizontal scaling guidance beyond "run more worker
+    replicas" — BullMQ already distributes jobs across however many worker
+    processes are running (Phase 3K), so this phase doesn't need to add
+    anything there.
 
 ## Book creation input contract (Phase 4A)
 

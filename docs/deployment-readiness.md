@@ -589,29 +589,45 @@ still pass unchanged.
 
 ## Recommended deployment architecture
 
-A minimal, low-ops setup that fits the current single-process design:
+Since "Worker process separation" in
+[`apps/api/docs/local-generation-pipeline.md`](../apps/api/docs/local-generation-pipeline.md),
+the API and the BullMQ generation worker are two independently deployable
+processes built from the same image — this is now a **four-service**
+topology, not three:
 
 - **Web**: `apps/web` on Vercel (or any Node host) — no Docker needed, `next
   build` / `next start`. Confirmed in Phase 5D: build/env assumptions already
   correct, see [Phase 5D: Web deployment readiness](#phase-5d-web) above for
   the full checklist.
-- **API**: `apps/api/Dockerfile` on a single-instance container host (e.g.
-  Fly.io, Render, Railway) is still the recommended starting point, though
-  the generation pipeline itself is no longer the reason multi-instance is
-  unsafe — since Phase 3K (see [Known blockers](#known-blockers) item 5),
-  BullMQ distributes generation jobs across instances safely. What still
-  favors single-instance: the default `local` storage drivers
-  (`LocalPdfStorage`/`LocalImageAssetStorage`) write to the container's own
-  filesystem, not shared across instances (set `PDF_STORAGE_DRIVER`/
-  `IMAGE_STORAGE_DRIVER=s3`/`r2` before scaling out), and
-  `GenerationJobRecoveryService` still runs its own independent sweep on
-  every instance's boot (safe — each write is a plain last-write-wins
-  `update` — but redundant, not a shared distributed lock).
+- **API**: `apps/api/Dockerfile`, start command `node dist/main`
+  (`pnpm --filter @book/api start:prod:api`) — serves `/api/*` only, and by
+  default (`ENABLE_GENERATION_WORKER` unset/`false`) never registers the
+  BullMQ generation processor. Since Phase 3K (see
+  [Known blockers](#known-blockers) item 5), BullMQ already distributes
+  generation jobs safely across instances, so the API tier can now scale
+  horizontally on request load alone, independent of generation throughput.
+  What still favors care before scaling out: the default `local` storage
+  drivers (`LocalPdfStorage`/`LocalImageAssetStorage`) write to the
+  container's own filesystem, not shared across instances (set
+  `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER=s3`/`r2` before scaling out).
+- **Worker**: same `apps/api/Dockerfile`/image, start command
+  `node dist/worker` (`pnpm --filter @book/api start:prod:worker`) instead of
+  the API's `node dist/main` — a Railway/Fly/Render service pointed at the
+  identical build but with its start command overridden, no separate
+  Dockerfile needed. Consumes `book-generation` BullMQ jobs; exposes no HTTP
+  port at all (do **not** point a load balancer or healthcheck path at it —
+  see [Build/run commands](#build-run-commands) below for a process-level
+  health check instead). `GenerationJobRecoveryService` runs its own
+  independent sweep on every boot of **both** the API and the worker (safe —
+  each write is a plain last-write-wins `update` — but redundant, not a
+  shared distributed lock).
 - **Database**: managed Postgres (Neon, Supabase, RDS, etc.) — schema and
-  migrations are already Postgres-specific and ready.
-- **Redis**: managed Redis (Upstash, Redis Cloud) — currently only used for
-  cache/health-check plumbing (BullMQ is installed but not on the critical
-  path), so a small instance is enough for now.
+  migrations are already Postgres-specific and ready. Shared by the API and
+  worker services (both need `DATABASE_URL`).
+- **Redis**: managed Redis (Upstash, Redis Cloud) — now on the critical path
+  (BullMQ), shared by the API (producer: `GenerationQueueService.enqueue`)
+  and worker (consumer: `GenerationQueueProcessor`) services; both need the
+  same `REDIS_URL`.
 - **PDF storage**: Cloudflare R2 via `PDF_STORAGE_DRIVER=r2` — already fully
   implemented, see [Storage decision note](#storage-decision).
 - **Image storage**: Cloudflare R2 via `IMAGE_STORAGE_DRIVER=r2`, reusing the
@@ -625,14 +641,27 @@ A minimal, low-ops setup that fits the current single-process design:
 - Object storage bucket (S3 or R2) — shared by both PDF previews
   (`PDF_STORAGE_DRIVER=s3|r2`) and generated images
   (`IMAGE_STORAGE_DRIVER=s3|r2`) under different key prefixes.
+- Both the **api** and **worker** services (see
+  [Recommended deployment architecture](#recommended-deployment-architecture)
+  above) — two separate deployed processes from the same image.
 
 ## Required env vars (production)
 
 See `.env.example` for the full annotated list. Vars that matter for a real
 deploy (beyond local dev defaults):
 
+- `ENABLE_GENERATION_WORKER` — process-topology switch (see "Worker process
+  separation" in
+  [`apps/api/docs/local-generation-pipeline.md`](../apps/api/docs/local-generation-pipeline.md)):
+  - **api service**: leave unset (defaults to `false`) — the API must not
+    also consume generation jobs.
+  - **worker service**: not read by `worker.ts` at all — it always enables
+    the processor regardless of this var. Setting it has no effect on the
+    worker service; it only matters for the api service.
 - `DATABASE_URL`, `REDIS_URL` — point at managed services, not
-  `docker-compose` containers.
+  `docker-compose` containers. Required by **both** the api and worker
+  services (Redis is now on the critical path for the worker, not just
+  cache/health-check plumbing).
 - `JWT_SECRET`, `JWT_REFRESH_SECRET` — generate real 32+ char secrets
   (`openssl rand -hex 32`); unused by any code path today but validated at
   startup ahead of the real-auth phase.
@@ -666,12 +695,35 @@ pnpm --filter @book/types build
 pnpm --filter @book/api prisma:generate
 pnpm build   # turbo run build across all apps/packages
 
-# API
-pnpm --filter @book/api start        # node dist/main
+# API (HTTP server only — does not consume generation jobs)
+pnpm --filter @book/api start:api        # node dist/main
+
+# Worker (consumes generation jobs — no HTTP server)
+pnpm --filter @book/api start:worker     # node dist/worker
 
 # Web
 pnpm --filter @book/web start        # or deploy to Vercel
 ```
+
+For local development with hot-reload, run the API and worker as two
+separate terminal processes (both need `docker-compose.yml`'s Postgres/Redis
+running):
+
+```
+# Terminal 1 — API + web
+pnpm --filter @book/api dev            # nest start --watch (main.ts)
+pnpm --filter @book/web dev
+
+# Terminal 2 — worker
+pnpm --filter @book/api dev:worker     # nest start --watch --entryFile worker
+```
+
+A single-process local setup (no separate worker terminal) is still possible
+by setting `ENABLE_GENERATION_WORKER=true` in `apps/api/.env` before running
+`pnpm --filter @book/api dev` — this restores the pre-worker-separation
+behavior for a quick local check, but should not be used in any deployed
+environment (see "Worker process separation" in
+`apps/api/docs/local-generation-pipeline.md`).
 
 ### Docker (API only — verified working end-to-end in Phase 5C)
 
@@ -711,6 +763,38 @@ The image does **not** run migrations automatically — run the migration
 command below against the target database before starting the container
 (first boot against an unmigrated database will fail `/api/health`'s DB
 check, not crash the process).
+
+### Docker (worker)
+
+Same image as above — only the container's start command differs, so no
+second Dockerfile or build step is needed. On Railway (or any host that lets
+you override a service's start command against a shared build), point the
+**worker** service at the same repo/Dockerfile as the **api** service, then
+set its start command to:
+
+```
+node dist/worker
+```
+
+instead of the api service's default `node dist/main` (the Dockerfile's
+`CMD`). Locally, the equivalent is:
+
+```
+docker run -d --name storyme-worker \
+  -e DATABASE_URL="postgresql://<user>:<pass>@<host>:5432/<db>" \
+  -e REDIS_URL="redis://<host>:6379" \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
+  -e JWT_REFRESH_SECRET="$(openssl rand -hex 32)" \
+  storyme-api:local \
+  node dist/worker
+```
+
+The worker opens no HTTP port, so it has no `/api/health` to curl and no
+`EXPOSE`/`HEALTHCHECK` to reuse from the Dockerfile — verify it's alive via
+`docker logs storyme-worker` (expect `Generation worker started — consuming
+book-generation jobs (no HTTP server).`) or a process-level check
+(`docker inspect --format='{{.State.Running}}' storyme-worker`), not an HTTP
+healthcheck.
 
 ## Migration command
 
