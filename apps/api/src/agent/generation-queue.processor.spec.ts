@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import { GenerationQueueProcessor } from './generation-queue.processor';
 import type { BooksService } from '../books/books.service';
@@ -32,5 +33,52 @@ describe('GenerationQueueProcessor', () => {
     await expect(processor.process(makeJob({ bookId: 'b-1', jobId: 'job-1' }))).rejects.toThrow(
       'unexpected',
     );
+  });
+
+  it('logs the BullMQ job id, bookId, and generationJobId when picking up a job', async () => {
+    const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const booksService = createMockBooksService();
+    const processor = new GenerationQueueProcessor(booksService as never);
+    const job = {
+      ...makeJob({ bookId: 'b-1', jobId: 'job-1' }),
+      id: 'bullmq-42',
+    } as Job<GenerationQueueJobData>;
+
+    await processor.process(job);
+
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('bullmqJobId=bullmq-42 bookId=b-1 generationJobId=job-1'),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('logs on the completed worker event', () => {
+    const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const booksService = createMockBooksService();
+    const processor = new GenerationQueueProcessor(booksService as never);
+    const job = {
+      ...makeJob({ bookId: 'b-1', jobId: 'job-1' }),
+      id: 'bullmq-42',
+    } as Job<GenerationQueueJobData>;
+
+    processor.onCompleted(job);
+
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('bullmqJobId=bullmq-42 bookId=b-1 generationJobId=job-1'),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('logs a safe error message on the failed worker event without throwing on an undefined job', () => {
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const booksService = createMockBooksService();
+    const processor = new GenerationQueueProcessor(booksService as never);
+
+    processor.onFailed(undefined, new Error('Redis connection refused'));
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('error=Redis connection refused'),
+    );
+    errorSpy.mockRestore();
   });
 });

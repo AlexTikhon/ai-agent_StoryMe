@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { QUEUES } from '../queue/queues.config';
 import { BooksService } from '../books/books.service';
@@ -28,7 +28,23 @@ export class GenerationQueueProcessor extends WorkerHost {
   }
 
   async process(job: Job<GenerationQueueJobData>): Promise<void> {
-    this.logger.log(`Processing generation job ${job.data.jobId} for book ${job.data.bookId}`);
+    this.logger.log(
+      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} generationJobId=${job.data.jobId}`,
+    );
     await this.booksService.runGenerationPipeline(job.data.bookId, job.data.jobId);
+  }
+
+  @OnWorkerEvent('completed')
+  onCompleted(job: Job<GenerationQueueJobData>): void {
+    this.logger.log(
+      `Job completed — bullmqJobId=${job.id} bookId=${job.data.bookId} generationJobId=${job.data.jobId}`,
+    );
+  }
+
+  @OnWorkerEvent('failed')
+  onFailed(job: Job<GenerationQueueJobData> | undefined, error: Error): void {
+    this.logger.error(
+      `Job failed — bullmqJobId=${job?.id} bookId=${job?.data.bookId} generationJobId=${job?.data.jobId} error=${error.message}`,
+    );
   }
 }

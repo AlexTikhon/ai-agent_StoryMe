@@ -77,6 +77,7 @@ function toGenerationJobSummary(job: GenerationJob): GenerationJobSummary {
     status: job.status as unknown as GenerationJobSummary['status'],
     attempt: job.attempt,
     createdAt: job.createdAt.toISOString(),
+    updatedAt: job.updatedAt.toISOString(),
     ...(job.startedAt && { startedAt: job.startedAt.toISOString() }),
     ...(job.completedAt && { completedAt: job.completedAt.toISOString() }),
     ...(job.failedAt && { failedAt: job.failedAt.toISOString() }),

@@ -258,6 +258,7 @@ describe('buildGenerationDiagnostics', () => {
       status: 'failed',
       attempt: 2,
       createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
       startedAt: '2026-01-01T00:00:01.000Z',
       failedAt: '2026-01-01T00:00:05.000Z',
       failedStep: 'image_gen',

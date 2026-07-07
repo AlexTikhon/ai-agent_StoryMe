@@ -164,6 +164,7 @@ export interface GenerationJobSummary {
   status: GenerationJobStatus;
   attempt: number;
   createdAt: string;
+  updatedAt: string;
   startedAt?: string;
   completedAt?: string;
   failedAt?: string;

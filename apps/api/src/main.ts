@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { envPresent, logStartup } from './common/startup-log';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -15,6 +16,12 @@ async function bootstrap(): Promise<void> {
   // separate process/service. See "Worker process separation" in
   // apps/api/docs/local-generation-pipeline.md.
   const enableGenerationWorker = process.env['ENABLE_GENERATION_WORKER'] === 'true';
+  logStartup(logger, {
+    mode: 'api',
+    workerEnabled: enableGenerationWorker,
+    redisUrlPresent: envPresent(process.env['REDIS_URL']),
+    databaseUrlPresent: envPresent(process.env['DATABASE_URL']),
+  });
   const app = await NestFactory.create<NestExpressApplication>(
     AppModule.register({ enableGenerationWorker }),
     {

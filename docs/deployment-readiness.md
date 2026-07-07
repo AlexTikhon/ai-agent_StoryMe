@@ -796,6 +796,59 @@ book-generation jobs (no HTTP server).`) or a process-level check
 (`docker inspect --format='{{.State.Running}}' storyme-worker`), not an HTTP
 healthcheck.
 
+## Troubleshooting: a book stuck in `char_build`/`queued` {#troubleshooting-stuck-queued}
+
+Symptom: `GET /api/books/:id/generation-diagnostics` shows the book's status
+stuck at a non-terminal value (e.g. `char_build`), `latestJob.status` stuck at
+`queued` (never advancing to `running`), and
+`generationMetadata.storyProvider`/`imageProvider` both `unknown` (they're
+only ever populated once an `AgentLog` row exists for that book — i.e. once
+the worker actually starts running the pipeline). This means the API
+successfully enqueued the job (`GenerationQueueService.enqueue` resolved,
+`GenerationJob` row created) but **no worker process ever picked it up**.
+
+Check, in order:
+
+1. **Is the worker service actually running `node dist/worker`, not
+   `node dist/main`?** This is the most common misconfiguration on Railway
+   (or any host where the worker shares the api's Dockerfile with an
+   overridden start command): the Dockerfile's own `CMD` is `node dist/main`
+   (see `apps/api/Dockerfile`) — if a service's custom start command was
+   never set, or got reset by a redeploy/rebuild, that "worker" service is
+   silently running as a second API instance instead, and nothing is
+   consuming `book-generation` jobs. Since this phase, both entrypoints log a
+   one-line startup banner (`Bootstrap`/`Worker` logger) — check the actual
+   deployed service's boot logs for `mode=api` vs. `mode=worker`, not just
+   the Railway dashboard's configured start command:
+   - API: `mode=api | worker enabled=false | REDIS_URL set=true | DATABASE_URL set=true`
+   - Worker: `mode=worker | worker enabled=true | queue=book-generation | processor registered=true | REDIS_URL set=true | DATABASE_URL set=true`
+
+   If the worker service's logs show `mode=api`, its start command is wrong —
+   fix it in the platform's service settings (see
+   [Worker start command](#build-run-commands) above) and redeploy.
+2. **Do the api and worker services point at the same Redis/Postgres?**
+   `REDIS_URL set=`/`DATABASE_URL set=` in the startup log only confirms the
+   var is non-empty, not that it's the *same* value in both services — a
+   worker pointed at a different (e.g. leftover local/staging) Redis instance
+   will boot cleanly and log `processor registered=true`, but will never see
+   jobs enqueued against the api's Redis. Compare the two services' env vars
+   directly in the platform dashboard.
+3. **Did the worker crash after boot?** A clean `mode=worker` boot log
+   doesn't guarantee the process stayed up — check for a crash loop
+   (`restartPolicyMaxRetries` in `railway.json` only covers the api service;
+   a worker service needs its own restart policy configured). BullMQ job
+   pickup is logged per-job (`GenerationQueueProcessor`): `Picked up job —
+   bullmqJobId=... bookId=... generationJobId=...` on pickup, `Job completed
+   — ...` or `Job failed — ... error=...` on the two terminal outcomes — a
+   worker that boots but never logs any of these for a genuinely queued job
+   has either crashed, lost its Redis connection, or (per point 1) isn't
+   really running worker mode.
+4. **Was the job enqueued at all?** If `latestJob` is `null` (not `queued`),
+   the enqueue call itself never happened or never persisted a
+   `GenerationJob` row — that's an api-side issue (`BooksService.startGeneration`/
+   `retryGeneration`), not a worker problem; check the api service's own logs
+   for `Failed to enqueue generation job ...` (`BooksService.enqueueOrThrow`).
+
 ## Migration command
 
 ```
