@@ -300,6 +300,12 @@ export interface GeneratedImageEntry {
   pageNumber?: number;
   prompt: string;
   negativePrompt?: string;
+  /**
+   * Always `'local_mock'` — describes the image *plan* built at story-generation
+   * time (placeholder `/mock-images/...` URL scheme), not which provider later
+   * renders the actual image bytes. See `ImageGenerationResult.imageByteProvider`
+   * for that.
+   */
   provider: 'local_mock';
   status: 'complete';
   imageUrl: string;
@@ -310,10 +316,13 @@ export interface GeneratedImageEntry {
 }
 
 export interface ImageGenerationResult {
+  /** @deprecated Always `'local_mock'`; describes the plan, not the byte provider. See {@link imageByteProvider}. */
   provider: 'local_mock';
   status: 'complete';
   images: GeneratedImageEntry[];
   createdAt: string;
+  /** Provider that actually generated the image bytes (`ImageGenerationProvider.providerName`, e.g. `'mock'` | `'openai'`); null for books generated before this field existed. */
+  imageByteProvider?: string | null;
 }
 
 // ─── Book request (wizard output / API input) ─────────────────────────────────
@@ -393,7 +402,7 @@ export interface BookDto {
   bookPreview?: BookPreview | null;
   imageGenerationResult?: ImageGenerationResult | null;
   bookLayout?: BookLayout | null;
-  /** Local URL served at /files/books/<bookId>/storybook.pdf (Phase 2J+). null until pdf_render completes. */
+  /** Fetched via GET /api/books/:id/pdf/preview (auth required). null until pdf_render completes. */
   previewPdfUrl?: string | null;
   createdAt: string;
   updatedAt: string;

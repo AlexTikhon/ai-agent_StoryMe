@@ -29,13 +29,12 @@ const DEFAULT_JOB_OPTIONS = {
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>) => {
-        const redisUrl = config.get('REDIS_URL');
-        const url = new URL(redisUrl);
         return {
+          // BullMQ forwards `url` straight to `new Redis(url, rest)`, so ioredis's own
+          // parser handles rediss:// TLS, username, password, and db-in-path — unlike
+          // manually picking apart the URL, which silently drops all of those.
           connection: {
-            host: url.hostname,
-            port: Number(url.port) || 6379,
-            password: url.password || undefined,
+            url: config.get('REDIS_URL'),
             maxRetriesPerRequest: null,
             enableReadyCheck: false,
           },

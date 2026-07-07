@@ -98,7 +98,7 @@ real transactional email provider are all done end-to-end.
   instance — `RateLimiterService` is in-memory/per-process today, correct
   only for a single-instance deploy (see
   [§13.2](auth-architecture.md#132-why-in-memory-not-redis)).
-- **Embed real fonts before shipping `ru`/`pl` output** — see
+- ~~Embed real fonts before shipping `ru`/`pl` output~~ **Done** — see
   [Known blockers](#known-blockers) item 6.
 
 ### Future enhancements (not required for MVP)
@@ -331,18 +331,16 @@ impersonate any user, dev-mode identity is not connected to any credential.
    load balancer — BullMQ distributes queued jobs across whichever instance's
    worker claims each one, and a redeploy no longer silently drops an
    in-flight job (it's durably queued in Redis, not held only in one
-   process's memory). The worker still runs embedded in the same process as
-   the HTTP server rather than as a separately deployed/scaled process;
+   process's memory). The worker now runs as its own entrypoint
+   (`apps/api/src/worker.ts`, `ENABLE_GENERATION_WORKER=true`) separate from
+   the HTTP server — see "Worker process separation" in
+   `apps/api/docs/local-generation-pipeline.md`.
    `GenerationJobRecoveryService` remains as a second-layer fail-safe for
    whatever BullMQ's own stalled-job detection doesn't catch.
-6. **`ru`/`pl` PDF output is not production-ready.** `SupportedLanguage`
-   offers Russian and Polish, but the PDF renderer only has PDFKit's
-   built-in WinAnsi-only fonts — Cyrillic renders as blank glyphs entirely,
-   Polish diacritics are missing. Story generation and layout are unaffected;
-   only the exported PDF is wrong. No fonts were embedded in this pass
-   pending an explicit licensing decision — see
-   `apps/api/docs/pdf-rendering.md#backlog-rupl-pdf-output-is-not-production-ready`
-   for the concrete gap and the implementation plan once a font is chosen.
+6. ~~`ru`/`pl` PDF output is not production-ready.~~ **Resolved** —
+   `apps/api/src/pdf/pdf-renderer.ts` embeds Noto Sans (OFL-licensed,
+   Latin/Cyrillic/Greek coverage), so `ru`/`pl` books render correctly. See
+   "Font / Unicode support" in `apps/api/docs/pdf-rendering.md`.
 
 ## Things already in good shape (no fix needed)
 

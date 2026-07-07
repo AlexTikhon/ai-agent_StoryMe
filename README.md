@@ -51,15 +51,10 @@ match between API and web** or every request 401s.
 - **No cancellation or partial-completion flow.** `BookStatus.Cancelled` and
   `BookStatus.Partial` exist in the schema/types as reserved states for
   future work but no code path currently produces them.
-- **Russian/Polish PDF output is not production-ready.** `SupportedLanguage`
-  offers `ru` and `pl` in the book-creation form, but the PDF renderer only
-  uses PDFKit's built-in fonts (WinAnsi/Latin-1 encoding) — Cyrillic (`ru`)
-  renders as blank glyphs entirely, and Polish diacritics (ą ć ę ł ń ó ś ź ż)
-  are missing too. Books created in those languages generate successfully
-  and the story text is correct, but the exported PDF will have missing
-  characters. See `apps/api/docs/pdf-rendering.md#font--unicode-limitation`
-  for the fix (embedding licensed Unicode fonts) — deliberately not done in
-  this pass; no font was added without an explicit licensing decision.
+- ~~Russian/Polish PDF output is not production-ready.~~ The PDF renderer
+  now embeds Noto Sans (OFL-licensed, Latin/Cyrillic/Greek coverage), so
+  `ru` and `pl` books render correctly. See "Font / Unicode support" in
+  `apps/api/docs/pdf-rendering.md`.
 
 ## Mock vs. real (OpenAI) generation
 

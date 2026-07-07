@@ -6,11 +6,12 @@ import { BooksService } from '../books/books.service';
 import type { GenerationQueueJobData } from './generation-queue.service';
 
 /**
- * Worker side of the durable generation queue (Phase 3K) — runs in the same
- * process as the API today (BullMQ's Worker is created by the `@Processor`
- * base class as soon as this provider is instantiated). A future phase could
- * move this into a dedicated worker process without changing
- * GenerationQueueService's producer contract.
+ * Worker side of the durable generation queue (Phase 3K). BullMQ's Worker is
+ * created by the `@Processor` base class as soon as this provider is
+ * instantiated, so it only runs where `BooksModule.register` wires it in —
+ * the dedicated worker process (`worker.ts`, `ENABLE_GENERATION_WORKER=true`),
+ * not the API process. See "Worker process separation" in
+ * `apps/api/docs/local-generation-pipeline.md`.
  *
  * `BooksService.runGenerationPipeline` never throws (see its own doc
  * comment) — this process() method is expected to always resolve, so

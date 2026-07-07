@@ -103,6 +103,7 @@ function makeImageGenerationResult(bookId = 'book-1'): ImageGenerationResult {
     status: 'complete',
     images: [coverEntry, page1Entry, page2Entry, backCoverEntry],
     createdAt: '1970-01-01T00:00:00.000Z',
+    imageByteProvider: 'mock',
   };
 }
 
@@ -427,6 +428,67 @@ describe('BookDetailPage', () => {
     expect(patchCall).toBeDefined();
     const [, init] = patchCall as [unknown, RequestInit];
     expect(JSON.parse(init.body as string)).toMatchObject({ title: "Emma's New Title" });
+  });
+
+  it('pre-fills pageCount and educationalMessage from the book and includes them in the PATCH payload', async () => {
+    const user = userEvent.setup();
+    const bookWithMessage: BookDto = {
+      ...MOCK_BOOK,
+      educationalMessage: 'Sharing is caring.',
+      pageCount: 8,
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(bookWithMessage))
+      .mockResolvedValueOnce(mockOk(bookWithMessage));
+
+    render(<BookDetailPage />);
+    await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+
+    expect(screen.getByDisplayValue('Sharing is caring.')).toBeDefined();
+    const pageCountSelect = screen.getByLabelText(/number of pages/i) as HTMLSelectElement;
+    expect(pageCountSelect.value).toBe('8');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: /edit book/i })).toBeNull();
+    });
+
+    const patchCall = fetchMock.fetchFn.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    const [, init] = patchCall as [unknown, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      pageCount: 8,
+      educationalMessage: 'Sharing is caring.',
+    });
+  });
+
+  it('omits educationalMessage from the PATCH payload when left blank', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK))
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK));
+
+    render(<BookDetailPage />);
+    await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: /edit book/i })).toBeNull();
+    });
+
+    const patchCall = fetchMock.fetchFn.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    const [, init] = patchCall as [unknown, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.educationalMessage).toBeUndefined();
+    expect(body.pageCount).toBe(6);
   });
 
   it('shows a validation error when saving with an empty title', async () => {
@@ -1250,7 +1312,7 @@ describe('BookDetailPage', () => {
     });
   });
 
-  it('renders provider label in the image generation section', async () => {
+  it('renders the image byte provider label in the image generation section', async () => {
     const imageGenerationResult = makeImageGenerationResult();
     const bookWithImages = {
       ...MOCK_BOOK,
@@ -1263,7 +1325,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText('local_mock')).toBeDefined();
+      expect(screen.getByText('mock')).toBeDefined();
     });
   });
 

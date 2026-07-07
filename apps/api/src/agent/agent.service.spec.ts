@@ -530,6 +530,17 @@ describe('AgentService', () => {
       expect(result.status).toBe('complete');
     });
 
+    it('imageGenerationResult.imageByteProvider reflects the injected ImageGenerationProvider, not the plan provider', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      await service.startBookGeneration(book);
+
+      const updateArg = prisma.book.update.mock.calls[0]?.[0];
+      const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+      expect(result.imageByteProvider).toBe('mock');
+    });
+
     it('imageGenerationResult includes a cover image', async () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
@@ -838,6 +849,13 @@ describe('AgentService', () => {
           expect(result.status).not.toBe('failed');
           expect(realProvider.generateImage).toHaveBeenCalledTimes(2);
           expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(2);
+
+          const updateArg = prisma.book.update.mock.calls[0]?.[0];
+          const imageGenerationResult = updateArg?.data?.imageGenerationResult as Record<
+            string,
+            unknown
+          >;
+          expect(imageGenerationResult.imageByteProvider).toBe('openai');
         });
       });
 

@@ -401,6 +401,8 @@ export class AgentService {
       return failed;
     }
 
+    imageGenerationResult.imageByteProvider = imageProviderName;
+
     const imageDurationMs = Date.now() - imageStartedAt;
     const layoutStartedAt = Date.now();
     const bookLayout = buildBookLayout(book.id, bookPreview, imageGenerationResult);

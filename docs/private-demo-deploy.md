@@ -73,10 +73,10 @@ apps/web (Next.js, Vercel)  ──HTTPS, CORS──▶  apps/api (NestJS, Docker
   PDFs and images — both storage drivers are fully implemented
   (`CloudPdfStorage`, `CloudImageAssetStorage`).
 - **Generation**: durable BullMQ/Redis-backed queue (Phase 3K,
-  `GenerationQueueService`/`GenerationQueueProcessor`) — the worker runs
-  embedded in the same API process, so no separate worker deploy is needed,
-  but Redis is now a hard runtime dependency (see [Is Redis
-  required?](#is-redis-required) below).
+  `GenerationQueueService`/`GenerationQueueProcessor`) — the worker runs as
+  its own entrypoint (`apps/api/src/worker.ts`, `ENABLE_GENERATION_WORKER=true`),
+  a separate deploy from the API process, and Redis is a hard runtime
+  dependency for both (see [Is Redis required?](#is-redis-required) below).
 - **Auth**: `JwtAuthGuard` (email/password + JWT + rotating refresh cookie),
   `AUTH_MODE=jwt` by default — see the warning above.
 - **Redis**: see [Is Redis required?](#is-redis-required) below — short
@@ -213,8 +213,6 @@ tell at a glance which tier a given var falls in.
 - [ ] `prisma migrate deploy` wired into an actual release pipeline instead
       of being run by hand — see
       [§5 Migration and release order](#5-migration-and-release-order).
-- [ ] Real fonts embedded for `ru`/`pl` PDF output (currently blank
-      Cyrillic glyphs / missing Polish diacritics) if serving those locales.
 
 ## 4. Setup order
 
@@ -461,13 +459,14 @@ restated for this private-demo scope:
   opt-in — a deployment that leaves it unset still only logs verification/
   reset links locally via `ConsoleEmailService`, which is a private-demo-
   scoped limitation, not a code limitation.
-- **Generation worker runs embedded in the API process, not as a separately
-  deployed process.** Since Phase 3K, generation itself is durable and safe
-  across multiple API instances (BullMQ distributes jobs) — but
+- **Generation worker is its own deployable process** (`apps/api/src/worker.ts`,
+  `ENABLE_GENERATION_WORKER=true`), separate from the API's `main.ts`. Since
+  Phase 3K, generation itself is durable and safe across multiple instances
+  of either process (BullMQ distributes jobs) — but
   `GenerationJobRecoveryService`'s startup sweep still runs independently on
   every instance's boot (safe, but redundant), and the default `local`
   storage drivers aren't shared across instances. This runbook still
-  provisions a single always-on instance; revisit before enabling
+  provisions a single always-on instance of each; revisit before enabling
   autoscaling/multiple replicas.
 - **Redis is a hard runtime dependency, not just boot-time/health-check
   infrastructure** — see [Is Redis required?](#is-redis-required). It backs

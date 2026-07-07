@@ -39,6 +39,13 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid or expired access token');
     }
 
+    // Deliberately does not check user.emailVerified. AuthService.register()
+    // auto-signs the caller in before verification (preserves the existing
+    // "register -> land straight in /dashboard" UX), so an unverified
+    // account's session must keep working here; AuthService.login() is the
+    // only verification gate, and only for a fresh login. See
+    // docs/auth-architecture.md §14.5 "Login policy" for the full rationale.
+
     request.user = user;
     return true;
   }
