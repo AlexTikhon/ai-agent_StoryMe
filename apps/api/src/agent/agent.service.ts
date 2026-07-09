@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
-import { renderStorybookPdf } from '../pdf/pdf-renderer';
+import { renderStorybookPdf, type ImageBufferResolver } from '../pdf/pdf-renderer';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import {
   buildImageBufferResolver,
@@ -36,11 +36,17 @@ const LAYOUT_SAFE_AREA = { x: 180, y: 180, width: 2040, height: 2040 };
 const LAYOUT_BLEED = 90;
 const LAYOUT_DISPLAY_FONT = 'Fraunces';
 const LAYOUT_BODY_FONT = 'Plus Jakarta Sans';
-const LAYOUT_PAGE_TEMPLATES = [
-  'image_top_text_bottom',
-  'text_left_image_right',
-  'image_left_text_right',
-] as const;
+
+/**
+ * Every story page uses this single stable template: image on top, story
+ * text below, consistent margins/font sizes. Previously pages cycled through
+ * three templates (including two narrow side-by-side columns), which meant
+ * any page whose image didn't resolve at render time was still squeezed into
+ * a narrow text column. One template for every page removes that failure
+ * mode entirely.
+ */
+const PAGE_IMAGE_BOX = { x: 180, y: 180, width: 2040, height: 1210 };
+const PAGE_TEXT_BOX = { x: 180, y: 1420, width: 2040, height: 800 };
 
 function buildBookLayout(
   bookId: string,
@@ -82,7 +88,7 @@ function buildBookLayout(
     notes: ['Full-bleed cover image; title overlaid at bottom within safe area'],
   });
 
-  // Interior pages — cycle through three templates deterministically
+  // Interior pages — all use the single stable image_top_text_bottom template
   for (const page of bookPreview.pages) {
     const pageImage = imageResult.images.find(
       (img) => img.kind === 'page' && img.pageNumber === page.pageNumber,
@@ -117,27 +123,11 @@ function buildBookLayout(
       continue;
     }
 
-    const template = LAYOUT_PAGE_TEMPLATES[(page.pageNumber - 1) % LAYOUT_PAGE_TEMPLATES.length]!;
-
-    let imageBox: { x: number; y: number; width: number; height: number };
-    let textBox: { x: number; y: number; width: number; height: number };
-
-    if (template === 'image_top_text_bottom') {
-      imageBox = { x: 180, y: 180, width: 2040, height: 1210 };
-      textBox = { x: 180, y: 1420, width: 2040, height: 800 };
-    } else if (template === 'text_left_image_right') {
-      textBox = { x: 180, y: 180, width: 855, height: 2040 };
-      imageBox = { x: 1065, y: 180, width: 1155, height: 2040 };
-    } else {
-      imageBox = { x: 180, y: 180, width: 1230, height: 2040 };
-      textBox = { x: 1440, y: 180, width: 780, height: 2040 };
-    }
-
     entries.push({
       id: `${bookId}-layout-page-${page.pageNumber}`,
       kind: 'page',
       pageNumber: page.pageNumber,
-      template,
+      template: 'image_top_text_bottom',
       trimSize: 'square_8x8',
       canvas: LAYOUT_CANVAS,
       safeArea: LAYOUT_SAFE_AREA,
@@ -145,7 +135,7 @@ function buildBookLayout(
       ...(pageImage
         ? {
             imageBlock: {
-              box: imageBox,
+              box: PAGE_IMAGE_BOX,
               imageUrl: pageImage.imageUrl,
               altText: pageImage.altText,
               objectFit: 'cover' as const,
@@ -153,7 +143,7 @@ function buildBookLayout(
           }
         : {}),
       textBlock: {
-        box: textBox,
+        box: PAGE_TEXT_BOX,
         text: page.text,
         fontFamily: LAYOUT_BODY_FONT,
         fontSize: 18,
@@ -162,7 +152,7 @@ function buildBookLayout(
         verticalAlign: 'top',
         color: '#1C1917',
       },
-      notes: [`Template: ${template}`],
+      notes: ['Template: image_top_text_bottom'],
     });
   }
 
@@ -212,6 +202,57 @@ function buildBookLayout(
   };
 }
 
+/** Human-readable label for a layout entry, used in logs and error messages. */
+function describeEntry(entry: BookLayoutEntry): string {
+  return entry.kind === 'page' && entry.pageNumber != null
+    ? `page ${entry.pageNumber}`
+    : entry.kind;
+}
+
+/**
+ * Guards against ever rendering a placeholder in place of a real illustration.
+ *
+ * Every layout entry that was planned to have an image (entry.imageBlock is
+ * set) must have real, resolvable bytes in ImageAssetStorage before we hand
+ * the layout to the PDF renderer. If any are missing — whether because
+ * MAX_GENERATED_IMAGES_PER_BOOK capped that entry, the real provider failed
+ * for it, or the save to ImageAssetStorage failed — this throws a single
+ * clear error naming every affected page instead of silently falling through
+ * to the renderer's placeholder-rectangle fallback.
+ */
+function assertAllImagesResolved(
+  logger: Logger,
+  bookId: string,
+  layout: BookLayout,
+  resolveImageBuffer: ImageBufferResolver,
+): void {
+  const missing: string[] = [];
+
+  for (const entry of layout.entries) {
+    if (!entry.imageBlock) continue;
+    const label = describeEntry(entry);
+    const buffer = resolveImageBuffer(entry.imageBlock, entry);
+    if (!buffer) {
+      logger.error(
+        `Missing generated illustration for ${label} (entry ${entry.id}, book ${bookId}) — no bytes found in image storage.`,
+      );
+      missing.push(label);
+    } else {
+      logger.log(
+        `Resolved illustration for ${label} (entry ${entry.id}, book ${bookId}): ${entry.imageBlock.imageUrl}, ${buffer.length} bytes.`,
+      );
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Cannot render PDF for book ${bookId}: missing generated illustration(s) for ${missing.join(', ')}. ` +
+        'Check the image_gen step logs above for provider/storage errors, or raise MAX_GENERATED_IMAGES_PER_BOOK ' +
+        'if the real image provider is capping generation for this book.',
+    );
+  }
+}
+
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
@@ -239,23 +280,24 @@ export class AgentService {
    * injected ImageGenerationProvider, then saves them via ImageAssetStorage,
    * keyed to match buildImageBufferResolver's lookup (imageAssetKey).
    *
-   * Never throws: both a provider.generateImage failure (e.g. a real API
-   * outage) and an ImageAssetStorage.saveImageAsset failure for one entry
-   * are caught, logged, and counted individually — that entry simply has no
-   * saved bytes, so the renderer falls back to a placeholder for it (see
-   * docs/pdf-rendering.md) instead of failing the whole book. This holds even
-   * if every entry fails (e.g. an outage): the book still reaches `complete`
-   * with every page rendered as a placeholder, and the caller surfaces
-   * generatedCount/failedCount/lastError via
+   * Does not throw here: both a provider.generateImage failure (e.g. a real
+   * API outage) and an ImageAssetStorage.saveImageAsset failure for one entry
+   * are caught, logged, and counted individually so the rest of the batch can
+   * keep going. The caller surfaces generatedCount/failedCount/lastError via
    * ImageGenerationResult.generatedImageCount/failedImageCount/lastImageError
-   * for diagnostics.
+   * for diagnostics — but any entry left without saved bytes here causes
+   * assertAllImagesResolved to throw before the PDF is rendered (see
+   * startBookGeneration's Phase 2), failing the book with a clear error
+   * instead of silently rendering a placeholder for it.
    *
    * Before any of that, real (paid) generation is capped to the first
    * MAX_GENERATED_IMAGES_PER_BOOK entries (default 3, see
    * resolveMaxGeneratedImagesPerBook) when the injected provider is the real
    * one — entries beyond the cap never reach the provider at all, so they
-   * cost nothing and simply render as placeholders. The free mock provider
-   * is never capped.
+   * cost nothing but also have no bytes, which means a book with more planned
+   * illustrations than the cap will now fail at the PDF-render step. Raise
+   * MAX_GENERATED_IMAGES_PER_BOOK to cover every page for a full real-image
+   * test run. The free mock provider is never capped.
    */
   private async generateAndSaveImageAssets(
     bookId: string,
@@ -268,7 +310,7 @@ export class AgentService {
 
     if (imagesToGenerate.length < images.length) {
       this.logger.log(
-        `Capping real illustration generation to ${imagesToGenerate.length}/${images.length} images for book ${bookId} (MAX_GENERATED_IMAGES_PER_BOOK); remaining pages keep the placeholder.`,
+        `Capping real illustration generation to ${imagesToGenerate.length}/${images.length} images for book ${bookId} (MAX_GENERATED_IMAGES_PER_BOOK); the remaining ${images.length - imagesToGenerate.length} page(s) will have no illustration and PDF rendering will fail unless the cap is raised.`,
       );
     }
 
@@ -371,6 +413,10 @@ export class AgentService {
       return failed;
     }
 
+    this.logger.log(
+      `Story generated for book ${book.id}: ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} illustrations planned (cover + pages + back cover).`,
+    );
+
     const storyDurationMs = Date.now() - startedAt;
     const imageStartedAt = Date.now();
 
@@ -378,6 +424,10 @@ export class AgentService {
       book.id,
       characterCard,
       imageGenerationResult.images,
+    );
+
+    this.logger.log(
+      `Image generation for book ${book.id}: ${generatedCount} generated, ${failedCount} failed, ${imageGenerationResult.images.length} planned.`,
     );
 
     imageGenerationResult.imageByteProvider = imageProviderName;
@@ -418,7 +468,12 @@ export class AgentService {
         book.id,
         bookLayout.entries,
       );
+      assertAllImagesResolved(this.logger, book.id, bookLayout, resolveImageBuffer);
+      this.logger.log(
+        `Rendering PDF for book ${book.id}: ${bookLayout.entries.length} pages — ${bookLayout.entries.map((e) => describeEntry(e)).join(', ')}.`,
+      );
       const buffer = await renderStorybookPdf(bookLayout, { resolveImageBuffer });
+      this.logger.log(`PDF rendered for book ${book.id}: ${buffer.length} bytes.`);
       const saved = await this.pdfStorage.savePreviewPdf(book.id, buffer);
       previewPdfUrl = saved.url;
     } catch (err) {
@@ -522,7 +577,7 @@ export class AgentService {
           model: imageModelName,
           durationMs: imageDurationMs,
           ...(failedCount > 0 && {
-            error: `${failedCount} of ${imageGenerationResult.images.length} image(s) failed to generate; placeholder used for those pages.`,
+            error: `${failedCount} of ${imageGenerationResult.images.length} image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
           }),
         },
         {

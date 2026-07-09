@@ -214,3 +214,16 @@ and falls back to the placeholder rectangle for that image only — it does not
 fail the whole page or PDF. A malformed layout box (a structural layout bug,
 not an image-bytes problem) still fails the whole page, as before, and is
 caught by the existing per-entry try/catch that renders a red error page.
+
+This renderer-level placeholder fallback is still exercised directly by
+`pdf-renderer.spec.ts` and by the standalone `pnpm render:pdf` sample script
+(neither goes through `AgentService`). **The real book-generation path no
+longer reaches it**: `AgentService.startBookGeneration` calls
+`assertAllImagesResolved` (in `agent.service.ts`) right before
+`renderStorybookPdf`, which resolves every layout entry's image bytes via the
+same `resolveImageBuffer` the renderer would use and throws a single clear
+error naming every page still missing bytes — whether that's because
+`MAX_GENERATED_IMAGES_PER_BOOK` capped it, the real provider failed for it, or
+the save to `ImageAssetStorage` failed. The book is then marked `failed` at
+the `pdf_render` step instead of silently completing with a placeholder
+rectangle labelled with the page's `altText` (e.g. "Page 2 illustration").

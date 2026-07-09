@@ -61,21 +61,25 @@ the full design and its remaining limitations.
   buffer, contentType)`. **This helper never throws.** Both a `generateImage`
   failure (e.g. a real provider's API outage) and a `saveImageAsset` failure
   for one entry are caught per-entry, logged (`Image generation/save failed
-  for entry "<id>" ...`), and counted — that entry simply has no saved bytes,
-  so it degrades to a placeholder rectangle at render time (see below), and
-  generation still proceeds to layout/PDF render. This holds even if every
-  entry fails: the book still reaches `complete` with every page as a
-  placeholder. The helper returns `{ generatedCount, failedCount, lastError }`,
+  for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
+  Unlike earlier phases, this no longer degrades quietly: `assertAllImagesResolved`
+  (Phase 2 below) requires every planned illustration to have real bytes, so
+  any entry left without saved bytes now fails the whole book at `pdf_render`
+  with a clear error naming the page, instead of rendering a placeholder for
+  it. The helper returns `{ generatedCount, failedCount, lastError }`,
   which `AgentService` writes onto `imageGenerationResult.generatedImageCount`/
   `failedImageCount`/`lastImageError` for diagnostics (see "Generation
   diagnostics" below), and folds `failedCount` into the final `image_gen`
-  `AgentLog` row's `error` field (status stays `success`) rather than ever
-  setting `failedStep: 'image_gen'`.
+  `AgentLog` row's `error` field (status stays `success`, since the failure is
+  only realized later at `pdf_render`) rather than ever setting
+  `failedStep: 'image_gen'`.
 - (c) `buildBookLayout` (private function in `agent.service.ts`) — builds the
   print-ready `BookLayout` (2400×2400px canvas, `square_8x8` trim),
-  referencing the same mock `imageUrl`s. This step stays in `AgentService`
-  rather than the story provider — it's print-layout logic over already-built
-  story/image data, not story content itself.
+  referencing the same mock `imageUrl`s. Every story page uses the single
+  stable `image_top_text_bottom` template (image on top, text below) — this
+  step stays in `AgentService` rather than the story provider — it's
+  print-layout logic over already-built story/image data, not story content
+  itself.
 
 Then, in three phases against the database:
 
@@ -86,11 +90,16 @@ Then, in three phases against the database:
   1. `buildImageBufferResolver(imageAssetStorage, bookId, layout.entries)`
      pre-resolves every layout entry's saved bytes (if any) from
      `ImageAssetStorage` into a synchronous lookup closure.
-  2. `renderStorybookPdf(bookLayout, { resolveImageBuffer })` renders one PDF
-     page per layout entry, embedding real bytes for any entry the resolver
-     has bytes for, and drawing a labelled placeholder rectangle for the
-     rest.
-  3. `pdfStorage.savePreviewPdf(bookId, buffer)` persists the PDF (default
+  2. `assertAllImagesResolved(logger, bookId, bookLayout, resolveImageBuffer)`
+     checks every layout entry that was planned to have an image actually
+     has resolvable bytes, logging each page's outcome; if any are missing it
+     throws one clear error naming every affected page (see
+     `apps/api/docs/pdf-rendering.md`), which the surrounding try/catch turns
+     into a `failed` book with `failedStep: 'pdf_render'`.
+  3. `renderStorybookPdf(bookLayout, { resolveImageBuffer })` renders one PDF
+     page per layout entry, embedding real bytes for every entry (the
+     validation above guarantees they're all present on this path).
+  4. `pdfStorage.savePreviewPdf(bookId, buffer)` persists the PDF (default
      `LocalPdfStorage`: `tmp/books/<bookId>/storybook.pdf`) and returns a
      `url`.
   - Any error in this phase (render or storage) is caught, logged, and
@@ -282,16 +291,17 @@ interface ImageGenerationProvider {
 - **Failure behavior** — a `generateImage` failure for one entry (e.g. a
   transient real-API error) and a `saveImageAsset` failure for one entry are
   handled identically by `AgentService.generateAndSaveImageAssets`: caught,
-  logged, and counted per-entry, never thrown. That entry has no saved bytes
-  and degrades to a placeholder rectangle at render time; generation still
-  proceeds to layout and PDF render, and the book still reaches `complete`.
-  This holds even if *every* entry fails (e.g. a full API outage) — the book
-  completes with every page as a placeholder rather than being marked
-  `failed`. The counts are surfaced via
-  `imageGenerationResult.generatedImageCount`/`failedImageCount`/
+  logged, and counted per-entry, never thrown from that helper. That entry
+  has no saved bytes, so `assertAllImagesResolved` fails the whole book at
+  the `pdf_render` step (see "Local mock/real image producer" above and
+  `apps/api/docs/pdf-rendering.md`) instead of degrading to a placeholder —
+  this holds even if *every* entry fails (e.g. a full API outage). The counts
+  are surfaced via `imageGenerationResult.generatedImageCount`/`failedImageCount`/
   `lastImageError` (see "Generation diagnostics" below) and folded into the
   final `image_gen` `AgentLog` row's `error` field when `failedCount > 0`
-  (`status` stays `success`) — `failedStep` is never set to `image_gen`.
+  (`status` stays `success` for that row — `failedStep` is set to
+  `pdf_render`, not `image_gen`, since the failure is only realized once the
+  renderer tries to use the missing bytes).
 
 To try real image generation locally: set `IMAGE_GENERATION_PROVIDER=openai`
 and `OPENAI_API_KEY` in `apps/api/.env`, then run `pnpm --filter @book/api dev`
@@ -348,10 +358,13 @@ unset/malformed) with a clear `ImageGenerationProviderError`, before making
 any network call. `cover`/`back_cover` entries are never capped. This only
 applies to the real provider — `MockImageGenerationProvider` is unchanged.
 `AgentService.generateAndSaveImageAssets` catches this per entry like any
-other `generateImage` failure (see "Failure behavior" above) — the page in
-question renders as a placeholder and the book still completes; this
-guardrail's actual effect is just to skip the network call for pages beyond
-the limit.
+other `generateImage` failure (see "Failure behavior" above) so the rest of
+the batch can keep going; this guardrail's actual effect is just to skip the
+network call for pages beyond the limit. **That page still has no saved
+bytes, so `assertAllImagesResolved` (see below and
+`apps/api/docs/pdf-rendering.md`) now fails the whole book at the
+`pdf_render` step instead of letting it complete with a placeholder** — raise
+`REAL_GENERATION_MAX_PAGES` if you need real illustrations past page 12.
 
 ### Per-book illustration budget — `MAX_GENERATED_IMAGES_PER_BOOK`
 
@@ -362,17 +375,21 @@ injected `ImageGenerationProvider.providerName === 'openai'`, only the first
 `resolveMaxGeneratedImagesPerBook` in `apps/api/src/images/image-generation-provider.ts`)
 of a book's `images` array (cover, then pages in order, then back cover) are
 actually sent to the provider. The remaining entries are skipped entirely —
-no network call, no cost — and render as the ordinary placeholder rectangle
-at PDF-render time, exactly like any entry `ImageAssetStorage` has no bytes
-for. `MockImageGenerationProvider` is never capped (`providerName === 'mock'`),
+no network call, no cost, and also no saved bytes for those entries.
+`MockImageGenerationProvider` is never capped (`providerName === 'mock'`),
 since it's free — every test/CI run, which always uses the mock provider,
 still gets one real (mock) image per entry, unaffected by this cap.
 
-This is deliberately independent of `REAL_GENERATION_MAX_PAGES` above: that
-guardrail rejects (hard error, fails the whole book) any single page request
-beyond a page-number threshold; this one silently limits the *count* of real
-illustrations per book to control cost on every real-provider book generation,
-regardless of page count, without ever failing generation.
+**Since `assertAllImagesResolved` requires every planned illustration to have
+real bytes before rendering (see `apps/api/docs/pdf-rendering.md`), capping
+below the book's total illustration count now makes the book fail at
+`pdf_render` instead of completing with placeholders for the capped pages.**
+Set `MAX_GENERATED_IMAGES_PER_BOOK` to at least the book's total image count
+(cover + pages + back cover) for a full real-image local test run — e.g. `9`
+for a 7-page book. This is still deliberately independent of
+`REAL_GENERATION_MAX_PAGES` above: that guardrail rejects any single page
+request beyond a page-number threshold; this one limits the *count* of real
+illustrations per book to control cost.
 
 ### Manual end-to-end smoke test
 
@@ -491,10 +508,12 @@ interface GenerationDiagnosticsDto {
   `Book.imageGenerationResult.generatedImageCount`/`failedImageCount` (set by
   `AgentService.generateAndSaveImageAssets` — see "Image generation provider
   boundary" above); both are absent for books generated before this field
-  existed. `failedImageCount > 0` means some pages render with a placeholder
-  instead of a real illustration even though the book is `complete` — check
-  `recentLogs`' `image_gen` row (or `Book.imageGenerationResult.lastImageError`)
-  for the most recent failure's safe error message.
+  existed. `failedImageCount > 0` now means the book is `failed` (at
+  `pdf_render`), not `complete` — a page missing its illustration is never
+  rendered with a placeholder; check `recentLogs`' `image_gen` row (or
+  `Book.imageGenerationResult.lastImageError`) for the most recent failure's
+  safe error message, and the `pdf_render` row's `error` for which page(s)
+  were missing.
 - `startedAt` is derived (`Book.updatedAt - Book.generationTimeMs`) since
   there's no dedicated start-timestamp column; `completedAt`/`failedAt` use
   `Book.updatedAt` when `status` is terminal.
@@ -1299,7 +1318,7 @@ re-verified here — see "Test coverage" below.
 | `BookStatus.failed` | PDF render or `pdfStorage.savePreviewPdf` throws | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H |
 | `BookStatus.failed` | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`) | observed via polling — see above |
 | `BookStatus.failed` | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`) | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H) |
-| per-image failure (non-fatal, never sets `BookStatus.failed`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them) | logged only; each affected entry renders as a placeholder, generation still completes; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError` via `GET /:id/generation-diagnostics` |
+| `BookStatus.failed` (`failedStep: 'pdf_render'`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them), or `MAX_GENERATED_IMAGES_PER_BOOK` capped an entry — `assertAllImagesResolved` then fails the book before rendering | observed via polling `GET /:id` or `GET /:id/generation-diagnostics`; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError`, and the `pdf_render` `AgentLog` row's `error` for which page(s) were missing |
 
 ## Test coverage
 
@@ -1316,10 +1335,13 @@ re-verified here — see "Test coverage" below.
   provider marks the book `failed` without saving images/building
   layout/rendering a PDF, and `AgentService` calls `generateStory` with the
   expected input) and the `ImageGenerationProvider` boundary (a provider
-  that fails for some or all entries never marks the book `failed` — it
-  still completes with placeholders for the failed entries, and
-  `generatedImageCount`/`failedImageCount`/`lastImageError` are set
-  accordingly).
+  that fails for some or all entries records `generatedImageCount`/
+  `failedImageCount`/`lastImageError` accordingly, but — since
+  `assertAllImagesResolved` requires every planned illustration to have
+  bytes — the book is then marked `failed` at `pdf_render` rather than
+  completing with placeholders for the failed entries; the `image_gen`
+  `AgentLog` row itself still stays `success` with a summary error, since the
+  failure is only realized at the later `pdf_render` step).
 - `apps/api/src/agent/story-generation-provider.spec.ts` —
   `MockStoryGenerationProvider` in isolation: deterministic output for the
   same input, varies with `childName`/`theme`/`bookId`, and every required
@@ -1564,7 +1586,11 @@ here touches Railway or any cloud storage; `PDF_STORAGE_DRIVER`/
    IMAGE_GENERATION_PROVIDER="openai"
    # OPENAI_STORY_MODEL="gpt-4o-mini"    # optional, this is the default
    # OPENAI_IMAGE_MODEL="gpt-image-1"    # optional, this is the default
-   MAX_GENERATED_IMAGES_PER_BOOK="2"     # keep this low locally — every image is a billed API call
+   # Must cover every illustration the book plans (cover + pages + back cover),
+   # or PDF rendering fails at the pdf_render step — see assertAllImagesResolved
+   # in agent.service.ts. For the default 6-page book that's 8 (1 cover + 6
+   # pages + 1 back cover); raise this if you pick a longer pageCount.
+   MAX_GENERATED_IMAGES_PER_BOOK="9"
    PDF_STORAGE_DRIVER="local"
    IMAGE_STORAGE_DRIVER="local"
    ```
@@ -1586,23 +1612,28 @@ here touches Railway or any cloud storage; `PDF_STORAGE_DRIVER`/
 4. **Run the web app**: `pnpm --filter @book/web dev`.
 5. **Generate a book** exactly as in "Local demo (frontend)" above — create a
    book, click **Generate Story**. Story text/prompts now come from
-   `OPENAI_STORY_MODEL` (a real OpenAI chat completion) and up to
-   `MAX_GENERATED_IMAGES_PER_BOOK` illustrations come from `OPENAI_IMAGE_MODEL`
-   (real OpenAI image generation); every other page renders with the existing
-   placeholder rectangle. The book still reaches `complete` and its PDF is
-   downloadable at `GET /api/books/:id/pdf/preview` even if some images failed
-   or were skipped by the cap — check the book detail page's diagnostics panel
-   (or `GET /api/books/:id/generation-diagnostics` directly) for
-   `generatedImageCount`/`failedImageCount`.
+   `OPENAI_STORY_MODEL` (a real OpenAI chat completion) and every illustration
+   (cover, every page, back cover) comes from `OPENAI_IMAGE_MODEL` (real
+   OpenAI image generation), as long as `MAX_GENERATED_IMAGES_PER_BOOK` covers
+   the book's total illustration count. If it doesn't, or any individual
+   image request fails, the book is marked `failed` at the `pdf_render` step
+   instead of completing with placeholder pages — check the book detail
+   page's diagnostics panel (or `GET /api/books/:id/generation-diagnostics`
+   directly) for `generatedImageCount`/`failedImageCount`, and the API logs
+   for the `Missing generated illustration for ...` line naming the page.
 6. **Alternative: the scripted smoke test** —
    `pnpm --filter @book/api smoke:real-generation` runs the same real pipeline
    once end-to-end without the web app, printing a diagnostics summary. See
    "Manual end-to-end smoke test" above; it makes real, billed API calls same
    as the UI flow.
 
-**Limiting image cost**: `MAX_GENERATED_IMAGES_PER_BOOK` (default `3`) caps
-how many illustrations are actually requested from OpenAI per book — set it
-to `1` or `2` while testing. `REAL_GENERATION_MAX_PAGES` (default `12`) is a
+**Controlling image cost**: `MAX_GENERATED_IMAGES_PER_BOOK` (default `3`) caps
+how many illustrations are actually requested from OpenAI per book. Since
+every planned illustration must have real bytes for the PDF to render (see
+above), set it to the book's total illustration count for a full test, or
+pick a shorter `pageCount` when creating the book to keep the total (and the
+bill) small — don't lower the cap below the book's total illustration count,
+or generation will fail. `REAL_GENERATION_MAX_PAGES` (default `12`) is a
 separate, higher hard limit on page number. Story generation is always
 exactly one chat-completion call per book regardless of page count.
 

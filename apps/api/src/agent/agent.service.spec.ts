@@ -80,14 +80,24 @@ describe('AgentService', () => {
     saveImageAsset: ReturnType<typeof vi.fn>;
     getImageAsset: ReturnType<typeof vi.fn>;
   };
+  // Backs mockImageAssetStorage so getImageAsset actually reflects what
+  // saveImageAsset stored, the same round-trip contract LocalImageAssetStorage
+  // and CloudImageAssetStorage provide in production. Without this, every test
+  // would see getImageAsset return undefined regardless of what was "saved",
+  // which used to make the missing-image validation impossible to test truthfully.
+  let savedAssets: Map<string, Buffer>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     prisma = createMockPrisma();
     mockPdfStorage = { savePreviewPdf: vi.fn() };
+    savedAssets = new Map<string, Buffer>();
     mockImageAssetStorage = {
-      saveImageAsset: vi.fn(),
-      getImageAsset: vi.fn().mockResolvedValue(undefined),
+      saveImageAsset: vi.fn(async (key: string, buffer: Buffer) => {
+        savedAssets.set(key, buffer);
+        return { key, path: key, contentType: 'image/png' as const };
+      }),
+      getImageAsset: vi.fn(async (key: string) => savedAssets.get(key)),
     };
     service = new AgentService(
       prisma as never,
@@ -702,15 +712,17 @@ describe('AgentService', () => {
       expect(saveOrder).toBeLessThan(renderOrder);
     });
 
-    it('still completes generation when a mock image save fails', async () => {
+    it('marks the book failed at the pdf_render step when a mock image save fails (that page would otherwise render without its illustration)', async () => {
       const book = makeBook();
       setupMocks();
       mockImageAssetStorage.saveImageAsset.mockRejectedValueOnce(new Error('disk full'));
 
-      const result = await service.startBookGeneration(book);
+      await service.startBookGeneration(book);
 
-      expect(result.status).toBe('complete');
-      expect(renderStorybookPdf).toHaveBeenCalledOnce();
+      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
+      expect(secondCallArg?.data?.status).toBe('failed');
+      expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+      expect(renderStorybookPdf).not.toHaveBeenCalled();
     });
 
     it('logs a warning and continues saving other images when one mock image save fails', async () => {
@@ -729,7 +741,11 @@ describe('AgentService', () => {
       warnSpy.mockRestore();
     });
 
-    // ── Phase 3C / partial-failure tolerance: ImageGenerationProvider boundary ─
+    // ── Phase 3C: ImageGenerationProvider boundary — per-image failures are
+    // tolerated and logged individually during generation, but any entry left
+    // without saved bytes now fails the book at the pdf_render step (see
+    // assertAllImagesResolved in agent.service.ts) instead of silently
+    // rendering a placeholder for it.
 
     describe('when the image generation provider fails for some or all images', () => {
       function makePartiallyFailingImageService(shouldFail: (entryId: string) => boolean) {
@@ -750,22 +766,24 @@ describe('AgentService', () => {
         );
       }
 
-      it('still completes generation and renders the PDF when every image fails', async () => {
+      it('marks the book failed at pdf_render (without ever calling the renderer) when every image fails', async () => {
         const book = makeBook();
         setupMocks();
         const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
         const failingService = makePartiallyFailingImageService(() => true);
 
-        const result = await failingService.startBookGeneration(book);
+        await failingService.startBookGeneration(book);
 
-        expect(result.status).toBe('complete');
-        expect(renderStorybookPdf).toHaveBeenCalledOnce();
-        expect(mockPdfStorage.savePreviewPdf).toHaveBeenCalledOnce();
+        const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
+        expect(secondCallArg?.data?.status).toBe('failed');
+        expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+        expect(renderStorybookPdf).not.toHaveBeenCalled();
+        expect(mockPdfStorage.savePreviewPdf).not.toHaveBeenCalled();
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
         warnSpy.mockRestore();
       });
 
-      it('saves bytes only for entries that succeeded, leaving the rest as placeholders', async () => {
+      it('saves bytes only for entries that succeeded, then fails the book at pdf_render because the cover illustration is missing', async () => {
         const book = makeBook();
         setupMocks();
         const failingService = makePartiallyFailingImageService((id) => id === 'b-1-cover');
@@ -781,6 +799,11 @@ describe('AgentService', () => {
           (call) => call[0] === 'b-1/page-1',
         );
         expect(pageOneCall).toBeDefined();
+
+        const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
+        expect(secondCallArg?.data?.status).toBe('failed');
+        expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+        expect(secondCallArg?.data?.errorMessage).toContain('cover');
       });
 
       it('records generatedImageCount/failedImageCount/lastImageError on imageGenerationResult', async () => {
@@ -798,14 +821,13 @@ describe('AgentService', () => {
         expect(result.lastImageError).toContain('b-1-cover');
       });
 
-      it('does not mark the book failed, and the image_gen AgentLog row stays status success with a safe summary error', async () => {
+      it('the image_gen AgentLog row itself stays status success with a safe summary error, even though the book ultimately fails at pdf_render', async () => {
         const book = makeBook();
         setupMocks();
         const failingService = makePartiallyFailingImageService(() => true);
 
-        const result = await failingService.startBookGeneration(book);
+        await failingService.startBookGeneration(book);
 
-        expect(result.status).not.toBe('failed');
         expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
         const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
           Record<string, unknown>
@@ -813,6 +835,9 @@ describe('AgentService', () => {
         const imageGenEntry = entries.find((e) => e.step === 'image_gen');
         expect(imageGenEntry?.status).toBe('success');
         expect(imageGenEntry?.error).toEqual(expect.stringContaining('failed to generate'));
+
+        const pdfEntry = entries.find((e) => e.step === 'pdf_render');
+        expect(pdfEntry?.status).toBe('error');
       });
     });
 
@@ -845,7 +870,7 @@ describe('AgentService', () => {
         }
       }
 
-      it('caps real generation calls to MAX_GENERATED_IMAGES_PER_BOOK and leaves the rest as placeholders', async () => {
+      it('caps real generation calls to MAX_GENERATED_IMAGES_PER_BOOK, then fails the book at pdf_render for the uncapped pages', async () => {
         await withMaxGeneratedImagesEnv('2', async () => {
           const book = makeBook();
           const realProvider = makeRealImageProvider();
@@ -858,9 +883,8 @@ describe('AgentService', () => {
           );
           setupMocks();
 
-          const result = await realService.startBookGeneration(book);
+          await realService.startBookGeneration(book);
 
-          expect(result.status).not.toBe('failed');
           expect(realProvider.generateImage).toHaveBeenCalledTimes(2);
           expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(2);
 
@@ -872,6 +896,13 @@ describe('AgentService', () => {
           expect(imageGenerationResult.imageByteProvider).toBe('openai');
           expect(imageGenerationResult.generatedImageCount).toBe(2);
           expect(imageGenerationResult.failedImageCount).toBe(0);
+
+          // The cap left more planned illustrations than were generated, so
+          // rendering must fail loudly rather than silently placeholder them.
+          const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
+          expect(secondCallArg?.data?.status).toBe('failed');
+          expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+          expect(renderStorybookPdf).not.toHaveBeenCalled();
         });
       });
 
@@ -1020,7 +1051,7 @@ describe('AgentService', () => {
       }
     });
 
-    it('page entries have deterministic templates cycling across three variants', async () => {
+    it('every page entry uses the single stable image_top_text_bottom template (no narrow side-by-side columns)', async () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
@@ -1030,13 +1061,14 @@ describe('AgentService', () => {
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
       const entries = layout.entries as Array<Record<string, unknown>>;
       const pageEntries = entries.filter((e) => e.kind === 'page');
-      const expectedTemplates = [
-        'image_top_text_bottom',
-        'text_left_image_right',
-        'image_left_text_right',
-      ];
-      for (let i = 0; i < pageEntries.length; i++) {
-        expect(pageEntries[i]?.template).toBe(expectedTemplates[i % expectedTemplates.length]);
+      expect(pageEntries.length).toBeGreaterThan(0);
+      for (const entry of pageEntries) {
+        expect(entry.template).toBe('image_top_text_bottom');
+        const imageBlock = entry.imageBlock as Record<string, unknown>;
+        const textBlock = entry.textBlock as Record<string, unknown>;
+        // Full safe-area width on both blocks — no narrow accidental column.
+        expect((imageBlock.box as Record<string, unknown>).width).toBe(2040);
+        expect((textBlock.box as Record<string, unknown>).width).toBe(2040);
       }
     });
 
