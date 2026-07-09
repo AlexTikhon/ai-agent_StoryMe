@@ -16,6 +16,8 @@ const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
  * never branch on which backend is active.
  */
 export interface PdfStorage {
+  /** Which driver this instance is — surfaced read-only for diagnostics (never a secret/path). */
+  readonly driver: 'local' | 's3' | 'r2';
   savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }>;
   getPreviewPdf(bookId: string): Promise<{
     buffer: Buffer;
@@ -45,6 +47,8 @@ function validateBookId(bookId: string): void {
  * it is not, and must not become, a fetchable HTTP route.
  */
 export class LocalPdfStorage implements PdfStorage {
+  readonly driver = 'local' as const;
+
   async savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }> {
     validateBookId(bookId);
     const dir = join(TMP_ROOT, 'books', bookId);
@@ -114,10 +118,12 @@ async function bodyToBuffer(body: unknown): Promise<Buffer> {
  * previews/<bookId>/storyme-preview-<bookId>.pdf
  */
 export class CloudPdfStorage implements PdfStorage {
+  readonly driver: 's3' | 'r2';
   private readonly client: S3Client;
   private readonly bucket: string;
 
   constructor(config: CloudPdfStorageConfig) {
+    this.driver = config.driver;
     this.bucket = config.bucket;
     this.client = new S3Client({
       region: config.region,
@@ -214,6 +220,33 @@ export function readCloudConfig(
     secretAccessKey: env['PDF_STORAGE_SECRET_ACCESS_KEY']!,
     forcePathStyle: forcePathStyleRaw ? forcePathStyleRaw === 'true' : Boolean(endpoint),
   };
+}
+
+/**
+ * Refuses to let the standalone generation-worker process (`apps/api/src/worker.ts`)
+ * boot in production with `PDF_STORAGE_DRIVER=local`. The worker and the API
+ * run as separate containers/processes on every recommended deploy target
+ * (see `docs/deployment-readiness.md`), so a PDF `LocalPdfStorage` writes to
+ * the worker's own filesystem is invisible to the API's — generation reports
+ * `complete` (the write succeeded, locally), but every subsequent
+ * preview/download request 404s with "PDF file not found in storage" because
+ * the API's container never had the file. Call this before booting the
+ * worker's Nest application context so the failure is a clear, immediate
+ * boot error instead of a silent per-book 404 discovered later.
+ */
+export function assertPdfStorageSupportsWorker(env: NodeJS.ProcessEnv = process.env): void {
+  const driver = env['PDF_STORAGE_DRIVER'] ?? 'local';
+  if (env['NODE_ENV'] === 'production' && driver === 'local') {
+    throw new Error(
+      'PDF_STORAGE_DRIVER=local cannot be used by the generation worker in production: ' +
+        'the worker and the API run as separate processes/containers on every recommended ' +
+        'deploy target, so a PDF the worker saves to its own local filesystem is never visible ' +
+        'to the API, and every preview/download request will 404. Set PDF_STORAGE_DRIVER=s3 or ' +
+        '=r2 (plus PDF_STORAGE_BUCKET, PDF_STORAGE_REGION, PDF_STORAGE_ACCESS_KEY_ID, ' +
+        'PDF_STORAGE_SECRET_ACCESS_KEY, and PDF_STORAGE_ENDPOINT for r2) on both the api and ' +
+        'worker services — see docs/deployment-readiness.md.',
+    );
+  }
 }
 
 /**

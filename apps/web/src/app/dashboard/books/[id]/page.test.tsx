@@ -180,6 +180,7 @@ function makeDiagnostics(
     },
     recentLogs: [],
     previewPdfUrl: null,
+    pdfStorage: { driver: 'local', keyPresent: false, previewAvailable: false },
     ...overrides,
   };
 }

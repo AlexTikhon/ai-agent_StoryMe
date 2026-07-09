@@ -6,6 +6,7 @@ import type {
   GenerationJobSummary,
   GenerationMetadata,
   GenerationProviderName,
+  PdfStorageDiagnostics,
 } from '@book/types';
 
 function toProviderName(raw: string | null | undefined): GenerationProviderName {
@@ -90,12 +91,16 @@ function toGenerationJobSummary(job: GenerationJob): GenerationJobSummary {
  * Composes the full GET /books/:id/generation-diagnostics response from a
  * Book row, its AgentLog rows, and (Phase 3I) its latest GenerationJob row.
  * `latestJob` is optional/nullable since a book may predate job tracking or
- * never have started generation.
+ * never have started generation. `pdfStorage` is optional purely so this
+ * pure function stays easy to unit test without a real PdfStorage — the real
+ * caller (BooksService.getGenerationDiagnostics) always computes and passes
+ * it (see pdf-storage.ts's `previewPdfExists`).
  */
 export function buildGenerationDiagnostics(
   book: Book,
   logs: AgentLog[],
   latestJob?: GenerationJob | null,
+  pdfStorage?: PdfStorageDiagnostics,
 ): GenerationDiagnosticsDto {
   return {
     bookId: book.id,
@@ -106,5 +111,10 @@ export function buildGenerationDiagnostics(
     recentLogs: logs.map(toAgentLogSummary),
     previewPdfUrl: book.previewPdfUrl,
     latestJob: latestJob ? toGenerationJobSummary(latestJob) : null,
+    pdfStorage: pdfStorage ?? {
+      driver: 'local',
+      keyPresent: book.previewPdfUrl != null,
+      previewAvailable: false,
+    },
   };
 }

@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { envPresent, logStartup } from './common/startup-log';
 import { QUEUES } from './queue/queues.config';
+import { assertPdfStorageSupportsWorker } from './pdf/pdf-storage';
 
 /**
  * Dedicated generation-worker process — consumes BullMQ book-generation jobs
@@ -13,6 +14,14 @@ import { QUEUES } from './queue/queues.config';
  */
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Worker');
+
+  // Fail fast, before opening any DB/Redis connection, if this process would
+  // generate PDFs no API instance could ever read back. See
+  // assertPdfStorageSupportsWorker's own doc comment (pdf-storage.ts) and
+  // "Troubleshooting: PDF ready but preview/download 404s" in
+  // apps/api/docs/local-generation-pipeline.md.
+  assertPdfStorageSupportsWorker(process.env);
+
   logStartup(logger, {
     mode: 'worker',
     workerEnabled: true,

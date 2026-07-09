@@ -81,7 +81,11 @@ real transactional email provider are all done end-to-end.
 
 - **Set `PDF_STORAGE_DRIVER` / `IMAGE_STORAGE_DRIVER` to `s3` or `r2`** —
   the default `local` driver writes to the container's filesystem, which is
-  ephemeral on every host recommended here. See
+  ephemeral (and, in the recommended two-service topology, not shared
+  between the api and worker containers at all) on every host recommended
+  here. **For `PDF_STORAGE_DRIVER` specifically, the standalone worker
+  process now refuses to boot in production with `local`** — see
+  [PDF storage: separate worker guard](#pdf-storage-worker-guard) below. See
   [Storage decision note](#storage-decision).
 - **Explicitly set `EMAIL_PROVIDER=resend` plus `RESEND_API_KEY` and
   `EMAIL_FROM`** for a deployment that needs real users to receive
@@ -295,6 +299,50 @@ impersonate any user, dev-mode identity is not connected to any credential.
    work cross-origin, and that `/dashboard` redirects to `/login` when
    signed out.
 
+## PDF storage: separate worker guard {#pdf-storage-worker-guard}
+
+Closes a real production incident: a book reached `status: 'complete'`
+("Your PDF is ready" in the UI), but `GET /api/books/:id/pdf/preview`
+returned `404 { "message": "PDF file not found in storage" }` on every
+attempt. Root cause was exactly the risk [Known blockers](#known-blockers)
+item 1 already flagged, but only as a recommendation, not an enforced
+guard: the deployed **worker** service (which renders and saves the PDF)
+and the **api** service (which serves it) run in separate containers with
+separate filesystems, and neither had `PDF_STORAGE_DRIVER` set — so both
+silently defaulted to `local`. The worker wrote `storybook.pdf` to *its own*
+container's `tmp/` directory; the API's container never had that file, so
+every preview/download request 404'd, even though generation itself
+reported success.
+
+`CloudPdfStorage` (s3/r2) already existed and needed no code changes — the
+gap was purely that nothing stopped a production deploy from running the
+separate-worker topology with the unsafe `local` driver. Two changes close
+it:
+
+- **`apps/api/src/pdf/pdf-storage.ts`** exports
+  `assertPdfStorageSupportsWorker(env)`: throws a clear, actionable error
+  (naming every required `PDF_STORAGE_*` var) when `NODE_ENV=production` and
+  `PDF_STORAGE_DRIVER` is `local` (the default when unset).
+  `apps/api/src/worker.ts` calls it as the very first thing in `bootstrap()`
+  — before any DB/Redis connection is opened — so a misconfigured worker
+  service crash-loops immediately with a readable error in its boot logs
+  instead of silently generating PDFs no API instance can ever serve. The
+  **api** entrypoint (`main.ts`) is intentionally not guarded the same way:
+  the local single-process dev convenience
+  (`ENABLE_GENERATION_WORKER=true` with `pnpm --filter @book/api dev`) is a
+  genuinely safe same-container case and must keep working unguarded.
+- **`GET /:id/generation-diagnostics`** now returns a `pdfStorage` field
+  (`{ driver, keyPresent, previewAvailable }`) so this failure mode is
+  visible per-book without needing container/log access — see "PDF storage
+  diagnostics (`pdfStorage`)" in
+  [`apps/api/docs/local-generation-pipeline.md`](../apps/api/docs/local-generation-pipeline.md).
+  `keyPresent: true, previewAvailable: false` is the specific signature of
+  this bug: the book claims a PDF was saved, but this process's configured
+  storage can't produce it.
+
+See "Troubleshooting: PDF ready but preview/download 404s" below for the
+step-by-step diagnosis procedure this incident led to.
+
 ## Known blockers
 
 1. **Local filesystem storage is the default and is not durable in most
@@ -306,7 +354,14 @@ impersonate any user, dev-mode identity is not connected to any credential.
    gap, not a code gap**: `CloudPdfStorage` and `CloudImageAssetStorage`
    (s3/r2) both exist (see below) — a production deploy just needs
    `PDF_STORAGE_DRIVER` / `IMAGE_STORAGE_DRIVER` set to `s3` or `r2` plus
-   credentials.
+   credentials. **For `PDF_STORAGE_DRIVER`, the standalone worker process
+   now refuses to boot in production with `local`** — see
+   [PDF storage: separate worker guard](#pdf-storage-worker-guard) above.
+   `IMAGE_STORAGE_DRIVER` has no equivalent boot guard yet — a production
+   deploy that forgets to set it will silently degrade generated images to
+   placeholder rectangles at PDF-render time rather than 404ing (see
+   "Images" in `apps/api/docs/pdf-rendering.md`), which is a real but
+   separate follow-up, not covered by this phase.
 2. **No `prisma migrate deploy` step in the container.** `apps/api/Dockerfile`
    builds and runs `node dist/main` only — it does not apply migrations.
    Migrations must be run as a separate deploy step (`pnpm --filter @book/api
@@ -675,7 +730,12 @@ deploy (beyond local dev defaults):
 - `PDF_STORAGE_DRIVER=r2` (or `s3`) plus `PDF_STORAGE_BUCKET`,
   `PDF_STORAGE_REGION`, `PDF_STORAGE_ACCESS_KEY_ID`,
   `PDF_STORAGE_SECRET_ACCESS_KEY`, and `PDF_STORAGE_ENDPOINT` (r2 only) — to
-  avoid the local-filesystem durability problem.
+  avoid the local-filesystem durability problem. **Required, not just
+  recommended, on the worker service**: `node dist/worker` now refuses to
+  boot when `NODE_ENV=production` and this is left at its `local` default —
+  see [PDF storage: separate worker guard](#pdf-storage-worker-guard).
+  Set it identically on the **api** service too — the api and worker must
+  agree on the same driver/bucket/credentials for previews to work at all.
 - `IMAGE_STORAGE_DRIVER=r2` (or `s3`) — same durability fix for generated
   images. No separate credentials needed; it reuses the `PDF_STORAGE_*` vars
   above.
@@ -846,6 +906,50 @@ Check, in order:
    `GenerationJob` row — that's an api-side issue (`BooksService.startGeneration`/
    `retryGeneration`), not a worker problem; check the api service's own logs
    for `Failed to enqueue generation job ...` (`BooksService.enqueueOrThrow`).
+
+## Troubleshooting: PDF ready but preview/download 404s {#troubleshooting-pdf-404}
+
+Symptom: a book reaches `status: 'complete'`, the UI shows "Your PDF is
+ready," but clicking **Open PDF**/**Download PDF**
+(`GET /api/books/:id/pdf/preview`) returns
+`404 { "error": "Not Found", "message": "PDF file not found in storage" }`.
+
+1. **Check `GET /:id/generation-diagnostics`'s new `pdfStorage` field first**
+   — it answers this without needing container/log access:
+   - `keyPresent: true, previewAvailable: false` — the book claims a PDF was
+     saved (`Book.previewPdfUrl` is set) but the **api** process's
+     configured `PdfStorage` genuinely cannot find it. This is almost always
+     the worker/API storage mismatch below, not a transient error.
+   - `keyPresent: false` — generation hasn't reached (or failed before) the
+     PDF-render step; the "PDF is ready" UI state shouldn't even be showing
+     yet. Check `failedStep`/`errorMessage` instead.
+2. **Do the api and worker services have the same `PDF_STORAGE_DRIVER` (and,
+   if `s3`/`r2`, the same bucket/credentials)?** This is the root cause this
+   phase was written for: `LocalPdfStorage` writes to *that container's own*
+   filesystem. If the api and worker are separate Railway services (the
+   [recommended deployment architecture](#recommended-deployment-architecture))
+   and either one is left on the `local` default, the worker's write is
+   invisible to the api's read (or vice versa if the api itself ever ran
+   generation) — every preview 404s even though generation reported success.
+   Compare `PDF_STORAGE_DRIVER`/`PDF_STORAGE_BUCKET`/`PDF_STORAGE_REGION`/
+   `PDF_STORAGE_ENDPOINT` across both services' env vars directly in the
+   platform dashboard. **Since this phase, the worker refuses to boot at all
+   in production with `PDF_STORAGE_DRIVER=local`** (see
+   [PDF storage: separate worker guard](#pdf-storage-worker-guard) above) —
+   if the worker is up and generating successfully, its driver is already
+   confirmed non-`local`; double-check the **api** service's value matches.
+3. **Was this book generated before the fix above was deployed?** A book
+   already `complete` with `previewPdfUrl` pointing at a PDF that only ever
+   existed in the worker's now-redeployed (and wiped) local container cannot
+   be recovered — the bytes are gone. Retry generation
+   (`POST /:id/retry-generation`) once both services agree on a shared
+   (`s3`/`r2`) driver; the fresh run will persist through the real backend.
+4. **If both services already agree on `s3`/`r2`** and `previewAvailable` is
+   still `false`, this is a genuine storage backend problem (wrong
+   bucket/region, expired credentials, an object actually deleted out of
+   band) rather than the worker/API mismatch — check
+   `PDF_STORAGE_BUCKET`/`PDF_STORAGE_REGION`/credentials against the actual
+   bucket, not just that both services' env vars match each other.
 
 ## Migration command
 

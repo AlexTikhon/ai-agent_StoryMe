@@ -467,6 +467,7 @@ interface GenerationDiagnosticsDto {
                                            // failedStep, errorMessage
   recentLogs: AgentLogSummary[];          // up to 20 most recent AgentLog rows, newest first
   previewPdfUrl?: string | null;
+  pdfStorage: PdfStorageDiagnostics;      // driver, keyPresent, previewAvailable — see below
 }
 ```
 
@@ -483,6 +484,38 @@ interface GenerationDiagnosticsDto {
 - `startedAt` is derived (`Book.updatedAt - Book.generationTimeMs`) since
   there's no dedicated start-timestamp column; `completedAt`/`failedAt` use
   `Book.updatedAt` when `status` is terminal.
+
+#### PDF storage diagnostics (`pdfStorage`)
+
+Added to close the gap where a book could show `status: 'complete'` with a
+`previewPdfUrl` set, yet `GET /:id/pdf/preview` still 404s — see
+"Troubleshooting: PDF ready but preview/download 404s" below for the
+production incident that motivated this.
+
+```ts
+interface PdfStorageDiagnostics {
+  driver: 'local' | 's3' | 'r2'; // the PdfStorage driver actually configured for this process
+  keyPresent: boolean;           // Book.previewPdfUrl is set — the pipeline believes a PDF was saved
+  previewAvailable: boolean;     // the storage backend was actually asked (PdfStorage.previewPdfExists)
+                                  // and confirmed it can produce bytes right now
+}
+```
+
+- `BooksService.getGenerationDiagnostics` computes this alongside the
+  existing `AgentLog`/`GenerationJob` queries: `keyPresent` is a plain
+  `Book.previewPdfUrl != null` check (no I/O); `previewAvailable` only calls
+  `PdfStorage.previewPdfExists(bookId)` when `keyPresent` is true (skipping an
+  unnecessary disk/network round-trip for every book that hasn't reached the
+  PDF step yet).
+- **Never exposed**: the local filesystem path or the cloud object key —
+  only the driver name and two booleans. Safe to show directly in a support
+  tool or admin view.
+- **How to read it**: `keyPresent: true, previewAvailable: false` is the
+  specific signature of the worker/API storage-mismatch bug — the pipeline
+  saved a PDF somewhere, but *this* process's configured `PdfStorage` can't
+  find it. `keyPresent: false` just means generation hasn't reached the PDF
+  step yet (or failed before it). `previewAvailable: true` means
+  `GET /:id/pdf/preview` should succeed right now.
 
 ### Reading diagnostics for a book
 

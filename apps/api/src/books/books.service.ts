@@ -392,15 +392,24 @@ export class BooksService {
     userId: string,
   ): Promise<GenerationDiagnosticsDto> {
     const book = await this.findOwnedOrThrow(bookId, userId);
-    const [logs, latestJob] = await Promise.all([
+    const keyPresent = book.previewPdfUrl != null;
+    const [logs, latestJob, previewAvailable] = await Promise.all([
       this.prisma.agentLog.findMany({
         where: { bookId },
         orderBy: { createdAt: 'desc' },
         take: 20,
       }),
       this.generationJobService.findLatest(bookId),
+      // Only worth checking the storage backend if the book even claims a
+      // PDF was saved — avoids a network/disk round-trip for every book that
+      // hasn't reached that step yet.
+      keyPresent ? this.pdfStorage.previewPdfExists(bookId) : Promise.resolve(false),
     ]);
-    return buildGenerationDiagnostics(book, logs, latestJob);
+    return buildGenerationDiagnostics(book, logs, latestJob, {
+      driver: this.pdfStorage.driver,
+      keyPresent,
+      previewAvailable: keyPresent && previewAvailable,
+    });
   }
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */

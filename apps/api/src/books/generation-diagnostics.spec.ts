@@ -267,4 +267,28 @@ describe('buildGenerationDiagnostics', () => {
     const serialized = JSON.stringify(diagnostics);
     expect(serialized).not.toContain('runner-secret-id');
   });
+
+  it('defaults pdfStorage to a safe local/not-available shape when no pdfStorage state is passed', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook({ previewPdfUrl: null }), []);
+
+    expect(diagnostics.pdfStorage).toEqual({
+      driver: 'local',
+      keyPresent: false,
+      previewAvailable: false,
+    });
+  });
+
+  it('passes through an explicitly provided pdfStorage state as-is', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [], null, {
+      driver: 's3',
+      keyPresent: true,
+      previewAvailable: false,
+    });
+
+    expect(diagnostics.pdfStorage).toEqual({
+      driver: 's3',
+      keyPresent: true,
+      previewAvailable: false,
+    });
+  });
 });

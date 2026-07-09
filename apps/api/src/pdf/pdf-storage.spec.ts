@@ -14,7 +14,12 @@ vi.mock('@aws-sdk/client-s3', () => ({
 }));
 
 import { PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { LocalPdfStorage, CloudPdfStorage, createPdfStorage } from './pdf-storage';
+import {
+  LocalPdfStorage,
+  CloudPdfStorage,
+  createPdfStorage,
+  assertPdfStorageSupportsWorker,
+} from './pdf-storage';
 
 const validCloudEnv = {
   PDF_STORAGE_BUCKET: 'test-bucket',
@@ -45,6 +50,10 @@ describe('LocalPdfStorage', () => {
     if (existsSync(TEST_DIR)) {
       await rm(TEST_DIR, { recursive: true });
     }
+  });
+
+  it('reports driver "local"', () => {
+    expect(storage.driver).toBe('local');
   });
 
   it('creates the output directory and writes a file', async () => {
@@ -192,6 +201,27 @@ describe('CloudPdfStorage', () => {
     expect(sendMock).not.toHaveBeenCalled();
   });
 
+  it('reports the configured driver (s3 or r2)', () => {
+    expect(new CloudPdfStorage(validCloudConfig).driver).toBe('s3');
+    expect(new CloudPdfStorage({ ...validCloudConfig, driver: 'r2' }).driver).toBe('r2');
+  });
+
+  it('a PDF saved by one instance (simulating the worker process) is readable by a separate instance (simulating the API process) against the same bucket', async () => {
+    const pdfBytes = Buffer.from('%PDF-1.4 cross-process test');
+    sendMock.mockResolvedValueOnce({}); // worker's PutObjectCommand
+    const workerStorage = new CloudPdfStorage(validCloudConfig);
+    await workerStorage.savePreviewPdf('book-shared', pdfBytes);
+
+    sendMock.mockResolvedValueOnce({
+      Body: { transformToByteArray: async () => new Uint8Array(pdfBytes) },
+    }); // api's GetObjectCommand
+    const apiStorage = new CloudPdfStorage(validCloudConfig);
+    const result = await apiStorage.getPreviewPdf('book-shared');
+
+    expect(result).not.toBeNull();
+    expect(result!.buffer.equals(pdfBytes)).toBe(true);
+  });
+
   it('savePreviewPdf sends PutObjectCommand with correct bucket, key, contentType, and body', async () => {
     sendMock.mockResolvedValueOnce({});
     const storage = new CloudPdfStorage(validCloudConfig);
@@ -321,5 +351,35 @@ describe('createPdfStorage', () => {
 
   it('error message names the unsupported driver', () => {
     expect(() => createPdfStorage('gcs')).toThrow(/gcs/);
+  });
+});
+
+describe('assertPdfStorageSupportsWorker', () => {
+  it('throws a clear, actionable error when NODE_ENV=production and PDF_STORAGE_DRIVER is local', () => {
+    expect(() =>
+      assertPdfStorageSupportsWorker({ NODE_ENV: 'production', PDF_STORAGE_DRIVER: 'local' }),
+    ).toThrow(/PDF_STORAGE_DRIVER=local cannot be used by the generation worker in production/);
+  });
+
+  it('throws when NODE_ENV=production and PDF_STORAGE_DRIVER is unset (defaults to local)', () => {
+    expect(() => assertPdfStorageSupportsWorker({ NODE_ENV: 'production' })).toThrow(
+      /PDF_STORAGE_DRIVER=local cannot be used/,
+    );
+  });
+
+  it('does not throw when NODE_ENV=production and PDF_STORAGE_DRIVER is s3 or r2', () => {
+    expect(() =>
+      assertPdfStorageSupportsWorker({ NODE_ENV: 'production', PDF_STORAGE_DRIVER: 's3' }),
+    ).not.toThrow();
+    expect(() =>
+      assertPdfStorageSupportsWorker({ NODE_ENV: 'production', PDF_STORAGE_DRIVER: 'r2' }),
+    ).not.toThrow();
+  });
+
+  it('does not throw outside production regardless of driver', () => {
+    expect(() =>
+      assertPdfStorageSupportsWorker({ NODE_ENV: 'development', PDF_STORAGE_DRIVER: 'local' }),
+    ).not.toThrow();
+    expect(() => assertPdfStorageSupportsWorker({})).not.toThrow();
   });
 });

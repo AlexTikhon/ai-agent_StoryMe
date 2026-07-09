@@ -24,9 +24,10 @@ function createMockAgentService(): jest.Mocked<AgentService> {
 
 function createMockPdfStorage(): jest.Mocked<PdfStorage> {
   return {
+    driver: 'local',
     savePreviewPdf: vi.fn(),
     getPreviewPdf: vi.fn(),
-    previewPdfExists: vi.fn(),
+    previewPdfExists: vi.fn().mockResolvedValue(false),
   } as unknown as jest.Mocked<PdfStorage>;
 }
 
@@ -1082,6 +1083,69 @@ describe('BooksService', () => {
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');
 
       expect(result.latestJob).toBeNull();
+    });
+
+    it('reports pdfStorage.keyPresent=false and previewAvailable=false without checking storage when previewPdfUrl is unset', async () => {
+      const book = makeBook({ status: STATUS_CHAR_BUILD, previewPdfUrl: null });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(pdfStorage.previewPdfExists).not.toHaveBeenCalled();
+      expect(result.pdfStorage).toEqual({
+        driver: 'local',
+        keyPresent: false,
+        previewAvailable: false,
+      });
+    });
+
+    it('reports pdfStorage.previewAvailable=true when previewPdfUrl is set and the storage backend confirms the object exists', async () => {
+      const book = makeBook({
+        status: STATUS_COMPLETE,
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+      pdfStorage.previewPdfExists.mockResolvedValue(true);
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(pdfStorage.previewPdfExists).toHaveBeenCalledWith('b-1');
+      expect(result.pdfStorage).toEqual({
+        driver: 'local',
+        keyPresent: true,
+        previewAvailable: true,
+      });
+    });
+
+    it('reports pdfStorage.previewAvailable=false when previewPdfUrl is set but the storage backend genuinely has no object (the worker/API storage mismatch bug)', async () => {
+      const book = makeBook({
+        status: STATUS_COMPLETE,
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+      pdfStorage.previewPdfExists.mockResolvedValue(false);
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(result.pdfStorage).toEqual({
+        driver: 'local',
+        keyPresent: true,
+        previewAvailable: false,
+      });
+    });
+
+    it('surfaces the configured driver name (s3/r2) as-is, never a filesystem path', async () => {
+      const book = makeBook({ status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+      (pdfStorage as unknown as { driver: string }).driver = 's3';
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(result.pdfStorage.driver).toBe('s3');
     });
   });
 });

@@ -437,6 +437,21 @@ export interface GenerateBookResponse {
 }
 
 /**
+ * Safe, non-secret view of PDF storage state for a book — lets the caller
+ * (support, ops, or the frontend) tell whether preview/download should
+ * actually work without exposing the storage driver's internal filesystem
+ * path or object key.
+ */
+export interface PdfStorageDiagnostics {
+  /** Which PdfStorage driver is configured for this process. */
+  driver: 'local' | 's3' | 'r2';
+  /** Whether the book row itself records that a PDF was saved (Book.previewPdfUrl is set). */
+  keyPresent: boolean;
+  /** Whether the storage backend actually has readable bytes for this book right now. */
+  previewAvailable: boolean;
+}
+
+/**
  * Response from GET /books/:id/generation-diagnostics — safe, non-secret
  * inspection data for debugging a book's generation run. Never includes
  * OPENAI_API_KEY, prompts, generated image bytes/base64, or raw provider
@@ -452,4 +467,5 @@ export interface GenerationDiagnosticsDto {
   previewPdfUrl?: string | null;
   /** Latest GenerationJob for this book (Phase 3I), or null if none exists yet. */
   latestJob?: GenerationJobSummary | null;
+  pdfStorage: PdfStorageDiagnostics;
 }
