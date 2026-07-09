@@ -21,14 +21,14 @@ function readMaxPages(env: NodeJS.ProcessEnv): number {
 /**
  * Selects the ImageGenerationProvider implementation from env. Defaults to
  * mock so local dev, tests, and CI never depend on a real API key unless
- * IMAGE_GENERATION_PROVIDER_TOKEN=openai is explicitly set. Takes an
+ * IMAGE_GENERATION_PROVIDER=openai is explicitly set. Takes an
  * explicit env map (defaulting to process.env) so provider selection is
  * unit-testable without mutating global state.
  */
 export function createImageGenerationProvider(
   env: NodeJS.ProcessEnv = process.env,
 ): ImageGenerationProvider {
-  const raw = env['IMAGE_GENERATION_PROVIDER_TOKEN']?.trim().toLowerCase();
+  const raw = env['IMAGE_GENERATION_PROVIDER']?.trim().toLowerCase();
 
   if (!raw || raw === 'mock') {
     logger.log('Image generation provider selected: mock');
@@ -36,14 +36,12 @@ export function createImageGenerationProvider(
   }
 
   if (raw !== 'openai') {
-    throw new Error(
-      `Unknown IMAGE_GENERATION_PROVIDER_TOKEN "${raw}" (expected "mock" or "openai")`,
-    );
+    throw new Error(`Unknown IMAGE_GENERATION_PROVIDER "${raw}" (expected "mock" or "openai")`);
   }
 
   const apiKey = env['OPENAI_API_KEY'];
   if (!apiKey) {
-    throw new Error('IMAGE_GENERATION_PROVIDER_TOKEN=openai requires OPENAI_API_KEY to be set');
+    throw new Error('IMAGE_GENERATION_PROVIDER=openai requires OPENAI_API_KEY to be set');
   }
 
   const model = env['OPENAI_IMAGE_MODEL'];

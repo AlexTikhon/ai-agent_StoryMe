@@ -721,9 +721,7 @@ describe('AgentService', () => {
 
       await service.startBookGeneration(book);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to save mock image asset'),
-      );
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Image generation/save failed'));
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
       const images = result.images as Array<Record<string, unknown>>;
@@ -731,12 +729,17 @@ describe('AgentService', () => {
       warnSpy.mockRestore();
     });
 
-    // ── Phase 3C: ImageGenerationProvider boundary ────────────────────────────
+    // ── Phase 3C / partial-failure tolerance: ImageGenerationProvider boundary ─
 
-    describe('when the image generation provider fails', () => {
-      function makeFailingImageService(errorMessage: string) {
+    describe('when the image generation provider fails for some or all images', () => {
+      function makePartiallyFailingImageService(shouldFail: (entryId: string) => boolean) {
         const failingImageProvider: ImageGenerationProvider = {
-          generateImage: vi.fn().mockRejectedValue(new Error(errorMessage)),
+          generateImage: vi.fn().mockImplementation(async ({ entry }) => {
+            if (shouldFail(entry.id)) {
+              throw new Error(`OpenAI image request failed for ${entry.id}`);
+            }
+            return { buffer: Buffer.from('fake-png'), contentType: 'image/png' as const };
+          }),
         };
         return new AgentService(
           prisma as never,
@@ -747,64 +750,75 @@ describe('AgentService', () => {
         );
       }
 
-      it('marks the book as failed with the provider error message and failedStep image_gen', async () => {
+      it('still completes generation and renders the PDF when every image fails', async () => {
         const book = makeBook();
-        const failedBook = makeBook({ status: 'failed' as Book['status'] });
-        prisma.book.update.mockResolvedValueOnce(failedBook);
-        prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
-        const failingService = makeFailingImageService('OpenAI image request failed');
+        setupMocks();
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const failingService = makePartiallyFailingImageService(() => true);
 
         const result = await failingService.startBookGeneration(book);
 
-        expect(result).toBe(failedBook);
-        expect(prisma.book.update).toHaveBeenCalledWith({
-          where: { id: 'b-1' },
-          data: {
-            status: 'failed',
-            errorMessage: 'OpenAI image request failed',
-            failedStep: 'image_gen',
-            generationTimeMs: expect.any(Number),
-            aiModelVersions: { story: 'mock', image: 'unknown' },
-          },
-        });
-      });
-
-      it('does not save image assets, build layout, or render a PDF', async () => {
-        const book = makeBook();
-        prisma.book.update.mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
-        prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
-        const failingService = makeFailingImageService('boom');
-
-        await failingService.startBookGeneration(book);
-
+        expect(result.status).toBe('complete');
+        expect(renderStorybookPdf).toHaveBeenCalledOnce();
+        expect(mockPdfStorage.savePreviewPdf).toHaveBeenCalledOnce();
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
-        expect(renderStorybookPdf).not.toHaveBeenCalled();
-        expect(mockPdfStorage.savePreviewPdf).not.toHaveBeenCalled();
-        expect(prisma.book.update).toHaveBeenCalledOnce();
+        warnSpy.mockRestore();
       });
 
-      it('writes a single image_gen AgentLog entry with status error', async () => {
+      it('saves bytes only for entries that succeeded, leaving the rest as placeholders', async () => {
         const book = makeBook();
-        prisma.book.update.mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
-        prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
-        const failingService = makeFailingImageService('bad request');
+        setupMocks();
+        const failingService = makePartiallyFailingImageService((id) => id === 'b-1-cover');
 
         await failingService.startBookGeneration(book);
 
+        expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
+          'b-1/cover',
+          expect.anything(),
+          expect.anything(),
+        );
+        const pageOneCall = mockImageAssetStorage.saveImageAsset.mock.calls.find(
+          (call) => call[0] === 'b-1/page-1',
+        );
+        expect(pageOneCall).toBeDefined();
+      });
+
+      it('records generatedImageCount/failedImageCount/lastImageError on imageGenerationResult', async () => {
+        const book = makeBook();
+        setupMocks();
+        const failingService = makePartiallyFailingImageService((id) => id === 'b-1-cover');
+
+        await failingService.startBookGeneration(book);
+
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+        const images = result.images as Array<Record<string, unknown>>;
+        expect(result.failedImageCount).toBe(1);
+        expect(result.generatedImageCount).toBe(images.length - 1);
+        expect(result.lastImageError).toContain('b-1-cover');
+      });
+
+      it('does not mark the book failed, and the image_gen AgentLog row stays status success with a safe summary error', async () => {
+        const book = makeBook();
+        setupMocks();
+        const failingService = makePartiallyFailingImageService(() => true);
+
+        const result = await failingService.startBookGeneration(book);
+
+        expect(result.status).not.toBe('failed');
         expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
         const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
           Record<string, unknown>
         >;
-        expect(entries).toHaveLength(1);
-        expect(entries[0]?.step).toBe('image_gen');
-        expect(entries[0]?.status).toBe('error');
-        expect(entries[0]?.error).toBe('bad request');
+        const imageGenEntry = entries.find((e) => e.step === 'image_gen');
+        expect(imageGenEntry?.status).toBe('success');
+        expect(imageGenEntry?.error).toEqual(expect.stringContaining('failed to generate'));
       });
     });
 
-    // ── MAX_ILLUSTRATIONS_PER_BOOK cost cap ───────────────────────────────────
+    // ── MAX_GENERATED_IMAGES_PER_BOOK cost cap ────────────────────────────────
 
-    describe('MAX_ILLUSTRATIONS_PER_BOOK cost cap (real provider only)', () => {
+    describe('MAX_GENERATED_IMAGES_PER_BOOK cost cap (real provider only)', () => {
       function makeRealImageProvider() {
         return {
           providerName: 'openai' as const,
@@ -816,23 +830,23 @@ describe('AgentService', () => {
         };
       }
 
-      async function withMaxIllustrationsEnv(
+      async function withMaxGeneratedImagesEnv(
         value: string | undefined,
         run: () => Promise<void>,
       ): Promise<void> {
-        const original = process.env.MAX_ILLUSTRATIONS_PER_BOOK;
-        if (value === undefined) delete process.env.MAX_ILLUSTRATIONS_PER_BOOK;
-        else process.env.MAX_ILLUSTRATIONS_PER_BOOK = value;
+        const original = process.env.MAX_GENERATED_IMAGES_PER_BOOK;
+        if (value === undefined) delete process.env.MAX_GENERATED_IMAGES_PER_BOOK;
+        else process.env.MAX_GENERATED_IMAGES_PER_BOOK = value;
         try {
           await run();
         } finally {
-          if (original === undefined) delete process.env.MAX_ILLUSTRATIONS_PER_BOOK;
-          else process.env.MAX_ILLUSTRATIONS_PER_BOOK = original;
+          if (original === undefined) delete process.env.MAX_GENERATED_IMAGES_PER_BOOK;
+          else process.env.MAX_GENERATED_IMAGES_PER_BOOK = original;
         }
       }
 
-      it('caps real generation calls to MAX_ILLUSTRATIONS_PER_BOOK and leaves the rest as placeholders', async () => {
-        await withMaxIllustrationsEnv('2', async () => {
+      it('caps real generation calls to MAX_GENERATED_IMAGES_PER_BOOK and leaves the rest as placeholders', async () => {
+        await withMaxGeneratedImagesEnv('2', async () => {
           const book = makeBook();
           const realProvider = makeRealImageProvider();
           const realService = new AgentService(
@@ -856,11 +870,13 @@ describe('AgentService', () => {
             unknown
           >;
           expect(imageGenerationResult.imageByteProvider).toBe('openai');
+          expect(imageGenerationResult.generatedImageCount).toBe(2);
+          expect(imageGenerationResult.failedImageCount).toBe(0);
         });
       });
 
       it('does not cap the free mock provider', async () => {
-        await withMaxIllustrationsEnv('2', async () => {
+        await withMaxGeneratedImagesEnv('2', async () => {
           const book = makeBook();
           setupMocks();
 
@@ -874,8 +890,8 @@ describe('AgentService', () => {
         });
       });
 
-      it('defaults to 3 real images when MAX_ILLUSTRATIONS_PER_BOOK is unset', async () => {
-        await withMaxIllustrationsEnv(undefined, async () => {
+      it('defaults to 3 real images when MAX_GENERATED_IMAGES_PER_BOOK is unset', async () => {
+        await withMaxGeneratedImagesEnv(undefined, async () => {
           const book = makeBook();
           const realProvider = makeRealImageProvider();
           const realService = new AgentService(

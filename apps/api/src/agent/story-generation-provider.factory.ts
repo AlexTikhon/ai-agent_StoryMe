@@ -36,7 +36,7 @@ export function createStoryGenerationProvider(
     throw new Error('STORY_GENERATION_PROVIDER=openai requires OPENAI_API_KEY to be set');
   }
 
-  const model = env['OPENAI_MODEL'];
+  const model = env['OPENAI_STORY_MODEL'];
   const { timeoutMs, maxRetries } = readOpenAIRetryConfig(env);
   logger.log(
     `Story generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries}`,

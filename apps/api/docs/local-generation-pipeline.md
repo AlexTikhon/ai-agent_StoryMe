@@ -52,23 +52,25 @@ the full design and its remaining limitations.
   `AgentLog` row with `status: 'error'`, and returns immediately — none of
   the steps below run.
 - (b) `generateAndSaveImageAssets` (private helper) — for every
-  `GeneratedImageEntry` in the provider's `imageGenerationResult`, calls the
+  `GeneratedImageEntry` in the provider's `imageGenerationResult` (up to the
+  `MAX_GENERATED_IMAGES_PER_BOOK` cap for the real provider), calls the
   injected `ImageGenerationProvider.generateImage({ bookId, entry,
   characterCard })` (see "Image generation provider boundary" below) to get
   real image bytes, then saves them through
   `ImageAssetStorage.saveImageAsset(imageAssetKey(bookId, kind, pageNumber),
-  buffer, contentType)`. This step has two separate failure domains:
-  - If any `generateImage` call throws (e.g. a real provider's API outage),
-    the whole call rejects. `AgentService` catches it before Phase 1 runs,
-    marks the book `failed` (`failedStep: 'image_gen'`, `errorMessage` from
-    the caught error), writes a single `image_gen` `AgentLog` row with
-    `status: 'error'`, and returns immediately — no layout is built, no PDF
-    is rendered.
-  - Once an image's bytes exist, saving them runs in parallel with the
-    others; a failure on any one `saveImageAsset` call is caught, logged
-    (`Failed to save mock image asset for entry "<id>": ...`), and skipped —
-    it does **not** fail generation. A skipped image just degrades to a
-    placeholder rectangle at render time (see below).
+  buffer, contentType)`. **This helper never throws.** Both a `generateImage`
+  failure (e.g. a real provider's API outage) and a `saveImageAsset` failure
+  for one entry are caught per-entry, logged (`Image generation/save failed
+  for entry "<id>" ...`), and counted — that entry simply has no saved bytes,
+  so it degrades to a placeholder rectangle at render time (see below), and
+  generation still proceeds to layout/PDF render. This holds even if every
+  entry fails: the book still reaches `complete` with every page as a
+  placeholder. The helper returns `{ generatedCount, failedCount, lastError }`,
+  which `AgentService` writes onto `imageGenerationResult.generatedImageCount`/
+  `failedImageCount`/`lastImageError` for diagnostics (see "Generation
+  diagnostics" below), and folds `failedCount` into the final `image_gen`
+  `AgentLog` row's `error` field (status stays `success`) rather than ever
+  setting `failedStep: 'image_gen'`.
 - (c) `buildBookLayout` (private function in `agent.service.ts`) — builds the
   print-ready `BookLayout` (2400×2400px canvas, `square_8x8` trim),
   referencing the same mock `imageUrl`s. This step stays in `AgentService`
@@ -175,7 +177,7 @@ still use `MockStoryGenerationProvider` with zero network calls.
   - `STORY_GENERATION_PROVIDER=openai` → `OpenAIStoryGenerationProvider`,
     constructed with `OPENAI_API_KEY` (required — throws a clear
     `Error` at provider-construction time if missing) and optional
-    `OPENAI_MODEL` (defaults to `gpt-4o-mini`).
+    `OPENAI_STORY_MODEL` (defaults to `gpt-4o-mini`).
   - Any other value throws a clear `Error` naming the invalid value.
 - **Prompt** — `buildStoryGenerationPrompt(input, targetPageCount)` is a pure
   function (no network) returning `{ system, user }` messages. It embeds
@@ -246,7 +248,7 @@ interface ImageGenerationProvider {
 }
 ```
 
-- Registered via `IMAGE_GENERATION_PROVIDER_TOKEN` in `books.module.ts`,
+- Registered via `IMAGE_GENERATION_PROVIDER` in `books.module.ts`,
   injected into `AgentService`'s constructor exactly like
   `STORY_GENERATION_PROVIDER_TOKEN`.
 - `MockImageGenerationProvider` is a thin wrapper around
@@ -269,27 +271,29 @@ interface ImageGenerationProvider {
   explicit no-text/no-caption/no-watermark/no-logo instruction.
 - **Provider selection** — `apps/api/src/images/image-generation-provider.factory.ts`
   exports `createImageGenerationProvider(env = process.env)`, wired into
-  `books.module.ts`'s `useFactory` for `IMAGE_GENERATION_PROVIDER_TOKEN`:
-  - `IMAGE_GENERATION_PROVIDER_TOKEN` unset, empty, or `"mock"` →
+  `books.module.ts`'s `useFactory` for `IMAGE_GENERATION_PROVIDER`:
+  - `IMAGE_GENERATION_PROVIDER` unset, empty, or `"mock"` →
     `MockImageGenerationProvider`.
-  - `IMAGE_GENERATION_PROVIDER_TOKEN=openai` → `OpenAIImageGenerationProvider`,
+  - `IMAGE_GENERATION_PROVIDER=openai` → `OpenAIImageGenerationProvider`,
     constructed with `OPENAI_API_KEY` (required — throws a clear `Error` at
     provider-construction time if missing) and optional `OPENAI_IMAGE_MODEL`
     (defaults to `gpt-image-1`).
   - Any other value throws a clear `Error` naming the invalid value.
-- **Failure behavior** — if any `generateImage` call throws,
-  `AgentService.generateAndSaveImageAssets` rejects before any bytes are
-  saved. `AgentService` catches it before Phase 1 runs, marks the book
-  `failed` (`failedStep: 'image_gen'`, `errorMessage` from the caught
-  error's message), writes one `image_gen` `AgentLog` row with `status:
-  'error'`, and returns — no layout is built, no PDF is rendered or stored.
-  This is deliberately stricter than the `ImageAssetStorage.saveImageAsset`
-  per-image swallow-and-continue behavior below it: a generation-provider
-  failure (e.g. a real API outage) is systemic and affects every image,
-  while a storage-save failure is a one-off, recoverable-with-a-placeholder
-  problem.
+- **Failure behavior** — a `generateImage` failure for one entry (e.g. a
+  transient real-API error) and a `saveImageAsset` failure for one entry are
+  handled identically by `AgentService.generateAndSaveImageAssets`: caught,
+  logged, and counted per-entry, never thrown. That entry has no saved bytes
+  and degrades to a placeholder rectangle at render time; generation still
+  proceeds to layout and PDF render, and the book still reaches `complete`.
+  This holds even if *every* entry fails (e.g. a full API outage) — the book
+  completes with every page as a placeholder rather than being marked
+  `failed`. The counts are surfaced via
+  `imageGenerationResult.generatedImageCount`/`failedImageCount`/
+  `lastImageError` (see "Generation diagnostics" below) and folded into the
+  final `image_gen` `AgentLog` row's `error` field when `failedCount > 0`
+  (`status` stays `success`) — `failedStep` is never set to `image_gen`.
 
-To try real image generation locally: set `IMAGE_GENERATION_PROVIDER_TOKEN=openai`
+To try real image generation locally: set `IMAGE_GENERATION_PROVIDER=openai`
 and `OPENAI_API_KEY` in `apps/api/.env`, then run `pnpm --filter @book/api dev`
 and generate a book as usual. **CI and the test suite never do this** — they
 always run with the default mock provider.
@@ -343,18 +347,19 @@ whose `pageNumber` exceeds `REAL_GENERATION_MAX_PAGES` (default `12` if
 unset/malformed) with a clear `ImageGenerationProviderError`, before making
 any network call. `cover`/`back_cover` entries are never capped. This only
 applies to the real provider — `MockImageGenerationProvider` is unchanged.
-Since `AgentService.generateAndSaveImageAssets` fails the whole book
-(`failedStep: 'image_gen'`) if any single `generateImage` call throws, this
-effectively caps real (paid) generation to books with at most
-`REAL_GENERATION_MAX_PAGES` story pages.
+`AgentService.generateAndSaveImageAssets` catches this per entry like any
+other `generateImage` failure (see "Failure behavior" above) — the page in
+question renders as a placeholder and the book still completes; this
+guardrail's actual effect is just to skip the network call for pages beyond
+the limit.
 
-### Per-book illustration budget — `MAX_ILLUSTRATIONS_PER_BOOK`
+### Per-book illustration budget — `MAX_GENERATED_IMAGES_PER_BOOK`
 
 A second, tighter cost guardrail lives in `AgentService.generateAndSaveImageAssets`
 itself (`apps/api/src/agent/agent.service.ts`), not the provider: when the
 injected `ImageGenerationProvider.providerName === 'openai'`, only the first
-`MAX_ILLUSTRATIONS_PER_BOOK` entries (default `3` if unset/malformed — see
-`resolveMaxIllustrationsPerBook` in `apps/api/src/images/image-generation-provider.ts`)
+`MAX_GENERATED_IMAGES_PER_BOOK` entries (default `3` if unset/malformed — see
+`resolveMaxGeneratedImagesPerBook` in `apps/api/src/images/image-generation-provider.ts`)
 of a book's `images` array (cover, then pages in order, then back cover) are
 actually sent to the provider. The remaining entries are skipped entirely —
 no network call, no cost — and render as the ordinary placeholder rectangle
@@ -377,7 +382,7 @@ once, end-to-end, against the real OpenAI API:
 
 - Fails fast with a clear message (no network calls, no Nest bootstrap) if
   `OPENAI_API_KEY` is missing or if `STORY_GENERATION_PROVIDER` /
-  `IMAGE_GENERATION_PROVIDER_TOKEN` aren't both set to `openai` — the
+  `IMAGE_GENERATION_PROVIDER` aren't both set to `openai` — the
   precondition check lives in `smoke-real-generation-helpers.ts` and is unit
   tested directly (`smoke-real-generation.spec.ts`) without ever importing
   the main script, so normal test runs never invoke `main()` or touch the
@@ -463,6 +468,7 @@ interface GenerationDiagnosticsDto {
   errorMessage?: string | null;
   generationMetadata: GenerationMetadata; // storyProvider, imageProvider, storyModel,
                                            // imageModel, requestedPages, generatedPages,
+                                           // generatedImageCount, failedImageCount,
                                            // startedAt, completedAt, failedAt, durationMs,
                                            // failedStep, errorMessage
   recentLogs: AgentLogSummary[];          // up to 20 most recent AgentLog rows, newest first
@@ -481,6 +487,14 @@ interface GenerationDiagnosticsDto {
   unpopulated Phase 1A column — the draft-creation form doesn't collect a
   page count today, so this is usually absent; see "Known limitations"
   below).
+- `generatedImageCount`/`failedImageCount` come from
+  `Book.imageGenerationResult.generatedImageCount`/`failedImageCount` (set by
+  `AgentService.generateAndSaveImageAssets` — see "Image generation provider
+  boundary" above); both are absent for books generated before this field
+  existed. `failedImageCount > 0` means some pages render with a placeholder
+  instead of a real illustration even though the book is `complete` — check
+  `recentLogs`' `image_gen` row (or `Book.imageGenerationResult.lastImageError`)
+  for the most recent failure's safe error message.
 - `startedAt` is derived (`Book.updatedAt - Book.generationTimeMs`) since
   there's no dedicated start-timestamp column; `completedAt`/`failedAt` use
   `Book.updatedAt` when `status` is terminal.
@@ -1284,9 +1298,8 @@ re-verified here — see "Test coverage" below.
 | `NotFoundException` (404) | `previewPdfUrl` set but file missing from storage | `GET /:id/pdf/preview` |
 | `BookStatus.failed` | PDF render or `pdfStorage.savePreviewPdf` throws | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H |
 | `BookStatus.failed` | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`) | observed via polling — see above |
-| `BookStatus.failed` | `imageGenerationProvider.generateImage` throws for any entry (`failedStep: 'image_gen'`) | observed via polling — see above |
 | `BookStatus.failed` | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`) | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H) |
-| per-image save failure (non-fatal) | one `ImageAssetStorage.saveImageAsset` call throws | logged only; that image renders as a placeholder |
+| per-image failure (non-fatal, never sets `BookStatus.failed`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them) | logged only; each affected entry renders as a placeholder, generation still completes; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError` via `GET /:id/generation-diagnostics` |
 
 ## Test coverage
 
@@ -1302,9 +1315,11 @@ re-verified here — see "Test coverage" below.
   dedicated coverage for the `StoryGenerationProvider` boundary (a failing
   provider marks the book `failed` without saving images/building
   layout/rendering a PDF, and `AgentService` calls `generateStory` with the
-  expected input) and the `ImageGenerationProvider` boundary (a failing
-  provider marks the book `failed` with `failedStep: 'image_gen'` without
-  saving images/building layout/rendering a PDF).
+  expected input) and the `ImageGenerationProvider` boundary (a provider
+  that fails for some or all entries never marks the book `failed` — it
+  still completes with placeholders for the failed entries, and
+  `generatedImageCount`/`failedImageCount`/`lastImageError` are set
+  accordingly).
 - `apps/api/src/agent/story-generation-provider.spec.ts` —
   `MockStoryGenerationProvider` in isolation: deterministic output for the
   same input, varies with `childName`/`theme`/`bookId`, and every required
@@ -1489,7 +1504,7 @@ alternatives instead).
   `generateMockImagePng`, which produces a solid-color 8×8 PNG swatch keyed
   by a deterministic hash of the entry's seed, not artwork from an image
   model. A real `OpenAIImageGenerationProvider` exists but is only used when
-  `IMAGE_GENERATION_PROVIDER_TOKEN=openai` is explicitly set.
+  `IMAGE_GENERATION_PROVIDER=openai` is explicitly set.
 - **Public image serving** — mock image bytes live only in
   `ImageAssetStorage` (local disk under `tmp/images/`) to be embedded into
   the PDF; nothing serves them over HTTP, and the `/mock-images/...` URLs
@@ -1533,11 +1548,84 @@ Everything shown — story text, illustration prompts, image URLs, the PDF
 itself — is mock/local per "What's intentionally not real yet" above; no
 external AI or network calls happen at any point in this flow.
 
+## Quick start: generating a real OpenAI book locally
+
+Everything below still runs entirely on your machine (Postgres/Redis/local
+disk) — the only thing that becomes "real" is the OpenAI API calls. Nothing
+here touches Railway or any cloud storage; `PDF_STORAGE_DRIVER`/
+`IMAGE_STORAGE_DRIVER` stay `local` (the default).
+
+1. **Set env vars** in `apps/api/.env` (see `.env.example` at the repo root
+   for the full annotated list):
+
+   ```sh
+   OPENAI_API_KEY="sk-..."
+   STORY_GENERATION_PROVIDER="openai"
+   IMAGE_GENERATION_PROVIDER="openai"
+   # OPENAI_STORY_MODEL="gpt-4o-mini"    # optional, this is the default
+   # OPENAI_IMAGE_MODEL="gpt-image-1"    # optional, this is the default
+   MAX_GENERATED_IMAGES_PER_BOOK="2"     # keep this low locally — every image is a billed API call
+   PDF_STORAGE_DRIVER="local"
+   IMAGE_STORAGE_DRIVER="local"
+   ```
+
+   Never commit `.env` or print `OPENAI_API_KEY` — it's already git-ignored.
+2. **Have local Postgres + Redis running** (same prerequisite as any other
+   local generation run — see the repo root README/`.env.example` for
+   connection strings).
+3. **Run the API and a worker.** The generation queue (Phase 3K) needs a
+   worker process actually consuming `book-generation` jobs, or a book will
+   sit in `char_build` forever:
+   - One-process option (simplest for local dev): set
+     `ENABLE_GENERATION_WORKER="true"` in `apps/api/.env`, then just run
+     `pnpm --filter @book/api dev` — the API process registers the worker too.
+   - Two-process option (matches the recommended production topology): run
+     `pnpm --filter @book/api dev` (API, `ENABLE_GENERATION_WORKER` unset/`false`)
+     and `pnpm --filter @book/api dev:worker` (dedicated worker) in separate
+     terminals.
+4. **Run the web app**: `pnpm --filter @book/web dev`.
+5. **Generate a book** exactly as in "Local demo (frontend)" above — create a
+   book, click **Generate Story**. Story text/prompts now come from
+   `OPENAI_STORY_MODEL` (a real OpenAI chat completion) and up to
+   `MAX_GENERATED_IMAGES_PER_BOOK` illustrations come from `OPENAI_IMAGE_MODEL`
+   (real OpenAI image generation); every other page renders with the existing
+   placeholder rectangle. The book still reaches `complete` and its PDF is
+   downloadable at `GET /api/books/:id/pdf/preview` even if some images failed
+   or were skipped by the cap — check the book detail page's diagnostics panel
+   (or `GET /api/books/:id/generation-diagnostics` directly) for
+   `generatedImageCount`/`failedImageCount`.
+6. **Alternative: the scripted smoke test** —
+   `pnpm --filter @book/api smoke:real-generation` runs the same real pipeline
+   once end-to-end without the web app, printing a diagnostics summary. See
+   "Manual end-to-end smoke test" above; it makes real, billed API calls same
+   as the UI flow.
+
+**Limiting image cost**: `MAX_GENERATED_IMAGES_PER_BOOK` (default `3`) caps
+how many illustrations are actually requested from OpenAI per book — set it
+to `1` or `2` while testing. `REAL_GENERATION_MAX_PAGES` (default `12`) is a
+separate, higher hard limit on page number. Story generation is always
+exactly one chat-completion call per book regardless of page count.
+
+**Where local files live**:
+
+- Generated PDFs: `apps/api/tmp/books/<bookId>/storybook.pdf`
+  (`LocalPdfStorage`).
+- Generated image bytes: `apps/api/tmp/images/<bookId>/*.png`
+  (`LocalImageAssetStorage`).
+
+**Cleaning up local generated files**: delete `apps/api/tmp/books/` and
+`apps/api/tmp/images/` (e.g. `rm -rf apps/api/tmp/books apps/api/tmp/images`
+from the repo root, or just `tmp/books`/`tmp/images` from inside `apps/api`).
+Both directories are re-created on demand the next time a book generates —
+nothing else on disk needs cleaning up. This only removes local files; it
+does not delete the `Book`/`AgentLog`/`GenerationJob` rows themselves (use
+the normal delete-book flow or a direct database query for that).
+
 ## How a future real-provider phase should slot in
 
 Both generation boundaries already have a real implementation, gated
 entirely behind explicit env selection (`STORY_GENERATION_PROVIDER=openai`,
-`IMAGE_GENERATION_PROVIDER_TOKEN=openai`) — the default and every test/CI
+`IMAGE_GENERATION_PROVIDER=openai`) — the default and every test/CI
 run still use the mock providers with zero network calls. Both real
 providers also have timeout/retry hardening, request logging, and a real
 image-generation cost guardrail (see "Real provider hardening (Phase 3D)"

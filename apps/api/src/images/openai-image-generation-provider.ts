@@ -71,7 +71,7 @@ export interface OpenAIImageGenerationProviderOptions {
  * AgentService and everything downstream (ImageAssetStorage, PDF renderer)
  * never see raw API response shapes. Selected via
  * createImageGenerationProvider (image-generation-provider.factory.ts);
- * never constructed unless IMAGE_GENERATION_PROVIDER_TOKEN=openai is
+ * never constructed unless IMAGE_GENERATION_PROVIDER=openai is
  * explicitly set.
  */
 export class OpenAIImageGenerationProvider implements ImageGenerationProvider {

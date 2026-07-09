@@ -13,7 +13,7 @@ describe('checkPreconditions', () => {
       OPENAI_API_KEY: 'sk-test',
     } as unknown as NodeJS.ProcessEnv);
     expect(message).toMatch(/STORY_GENERATION_PROVIDER/);
-    expect(message).toMatch(/IMAGE_GENERATION_PROVIDER_TOKEN/);
+    expect(message).toMatch(/IMAGE_GENERATION_PROVIDER/);
   });
 
   it('requires the image provider to be "openai" even if the story provider is', () => {
@@ -28,7 +28,7 @@ describe('checkPreconditions', () => {
     const message = checkPreconditions({
       OPENAI_API_KEY: 'sk-test',
       STORY_GENERATION_PROVIDER: 'openai',
-      IMAGE_GENERATION_PROVIDER_TOKEN: 'openai',
+      IMAGE_GENERATION_PROVIDER: 'openai',
     } as unknown as NodeJS.ProcessEnv);
     expect(message).toBeNull();
   });

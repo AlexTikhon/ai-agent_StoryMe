@@ -14,7 +14,7 @@
  * Required env vars:
  *   OPENAI_API_KEY
  *   STORY_GENERATION_PROVIDER=openai
- *   IMAGE_GENERATION_PROVIDER_TOKEN=openai
+ *   IMAGE_GENERATION_PROVIDER=openai
  *
  * Also boots the real Nest application context, so it needs a running local
  * Postgres + Redis matching apps/api/.env — the same stack

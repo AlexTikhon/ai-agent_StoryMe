@@ -46,15 +46,16 @@ export const envSchema = z
     AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
     AUTH_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
 
-    // Story/image generation provider selection. Kept as loose optional
-    // strings (not a z.enum) so this schema can't diverge from the
-    // case-insensitive parsing in story-generation-provider.factory.ts /
+    // Story/image generation provider selection (STORY_GENERATION_PROVIDER /
+    // IMAGE_GENERATION_PROVIDER). Kept as loose optional strings (not a
+    // z.enum) so this schema can't diverge from the case-insensitive parsing
+    // in story-generation-provider.factory.ts /
     // image-generation-provider.factory.ts — those factories still own
     // validating the value itself (they throw "Unknown ..." for anything
     // other than "mock"/"openai") and run during Nest module init, so an
     // invalid value is still caught at boot, just one layer down from here.
     STORY_GENERATION_PROVIDER: z.string().optional(),
-    IMAGE_GENERATION_PROVIDER_TOKEN: z.string().optional(),
+    IMAGE_GENERATION_PROVIDER: z.string().optional(),
 
     // Transactional email provider selection. Loose optional string (not a
     // z.enum) for the same reason as STORY_GENERATION_PROVIDER above — the
@@ -83,7 +84,7 @@ export const envSchema = z
     // ANTHROPIC_API_KEY and FAL_API_KEY are reserved for providers not wired up
     // yet (no code path reads them) — optional so deploys aren't blocked on
     // credentials for unbuilt features. OPENAI_API_KEY is only required when
-    // STORY_GENERATION_PROVIDER or IMAGE_GENERATION_PROVIDER_TOKEN is set to
+    // STORY_GENERATION_PROVIDER or IMAGE_GENERATION_PROVIDER is set to
     // "openai" — see the superRefine below. Mock mode (the default for both)
     // must be able to boot with no OpenAI credentials at all.
     ANTHROPIC_API_KEY: z.string().optional(),
@@ -128,12 +129,12 @@ export const envSchema = z
     const isOpenAI = (value: string | undefined) => value?.trim().toLowerCase() === 'openai';
     if (
       !env.OPENAI_API_KEY &&
-      (isOpenAI(env.STORY_GENERATION_PROVIDER) || isOpenAI(env.IMAGE_GENERATION_PROVIDER_TOKEN))
+      (isOpenAI(env.STORY_GENERATION_PROVIDER) || isOpenAI(env.IMAGE_GENERATION_PROVIDER))
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          'OPENAI_API_KEY is required when STORY_GENERATION_PROVIDER=openai or IMAGE_GENERATION_PROVIDER_TOKEN=openai',
+          'OPENAI_API_KEY is required when STORY_GENERATION_PROVIDER=openai or IMAGE_GENERATION_PROVIDER=openai',
         path: ['OPENAI_API_KEY'],
       });
     }

@@ -143,6 +143,28 @@ describe('buildGenerationMetadata', () => {
     expect(metadata.generatedPages).toBe(2);
   });
 
+  it('derives generatedImageCount/failedImageCount from imageGenerationResult when present', () => {
+    const metadata = buildGenerationMetadata(
+      makeBook({
+        imageGenerationResult: {
+          generatedImageCount: 2,
+          failedImageCount: 1,
+        } as unknown as Book['imageGenerationResult'],
+      }),
+      [],
+    );
+
+    expect(metadata.generatedImageCount).toBe(2);
+    expect(metadata.failedImageCount).toBe(1);
+  });
+
+  it('omits generatedImageCount/failedImageCount when imageGenerationResult has no counts (older books)', () => {
+    const metadata = buildGenerationMetadata(makeBook({ imageGenerationResult: null }), []);
+
+    expect(metadata.generatedImageCount).toBeUndefined();
+    expect(metadata.failedImageCount).toBeUndefined();
+  });
+
   it('derives durationMs from Book.generationTimeMs and startedAt from updatedAt - durationMs', () => {
     const book = makeBook();
 

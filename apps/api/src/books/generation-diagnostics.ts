@@ -18,6 +18,24 @@ function generatedPageCount(bookPreview: Book['bookPreview']): number | undefine
   return Array.isArray(pages) ? pages.length : undefined;
 }
 
+function imageCounts(imageGenerationResult: Book['imageGenerationResult']): {
+  generatedImageCount?: number;
+  failedImageCount?: number;
+} {
+  const result = imageGenerationResult as {
+    generatedImageCount?: unknown;
+    failedImageCount?: unknown;
+  } | null;
+  return {
+    ...(typeof result?.generatedImageCount === 'number' && {
+      generatedImageCount: result.generatedImageCount,
+    }),
+    ...(typeof result?.failedImageCount === 'number' && {
+      failedImageCount: result.failedImageCount,
+    }),
+  };
+}
+
 /**
  * Builds the safe, non-secret GenerationMetadata view for a book from
  * already-persisted columns (Book.generationTimeMs/aiModelVersions/
@@ -39,6 +57,7 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
   const storyModel = aiModelVersions?.story ?? storyLog?.model ?? undefined;
   const imageModel = aiModelVersions?.image ?? imageLog?.model ?? undefined;
   const generatedPages = generatedPageCount(book.bookPreview);
+  const { generatedImageCount, failedImageCount } = imageCounts(book.imageGenerationResult);
 
   return {
     storyProvider: toProviderName(storyLog?.provider),
@@ -47,6 +66,8 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
     ...(imageModel && { imageModel }),
     ...(book.pageCount != null && { requestedPages: book.pageCount }),
     ...(generatedPages !== undefined && { generatedPages }),
+    ...(generatedImageCount !== undefined && { generatedImageCount }),
+    ...(failedImageCount !== undefined && { failedImageCount }),
     ...(startedAt && { startedAt }),
     ...(book.status === 'complete' && terminalAt && { completedAt: terminalAt }),
     ...(book.status === 'failed' && terminalAt && { failedAt: terminalAt }),

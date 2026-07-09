@@ -323,6 +323,12 @@ export interface ImageGenerationResult {
   createdAt: string;
   /** Provider that actually generated the image bytes (`ImageGenerationProvider.providerName`, e.g. `'mock'` | `'openai'`); null for books generated before this field existed. */
   imageByteProvider?: string | null;
+  /** Count of entries whose real bytes were generated+saved this run (excludes entries skipped by MAX_GENERATED_IMAGES_PER_BOOK). Undefined for books generated before this field existed. */
+  generatedImageCount?: number;
+  /** Count of entries whose ImageGenerationProvider.generateImage or ImageAssetStorage.saveImageAsset call failed this run; each falls back to a placeholder at PDF-render time instead of failing the whole book. */
+  failedImageCount?: number;
+  /** Safe (no secrets/prompts) message from the most recent per-image failure this run, if any. */
+  lastImageError?: string;
 }
 
 // ─── Book request (wizard output / API input) ─────────────────────────────────

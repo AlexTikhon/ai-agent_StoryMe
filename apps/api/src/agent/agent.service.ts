@@ -10,7 +10,7 @@ import {
 } from '../images/image-asset-storage';
 import {
   IMAGE_GENERATION_PROVIDER_TOKEN,
-  resolveMaxIllustrationsPerBook,
+  resolveMaxGeneratedImagesPerBook,
   type ImageGenerationProvider,
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
@@ -239,18 +239,20 @@ export class AgentService {
    * injected ImageGenerationProvider, then saves them via ImageAssetStorage,
    * keyed to match buildImageBufferResolver's lookup (imageAssetKey).
    *
-   * Generation and saving are two separate failure domains:
-   * - A provider.generateImage failure (e.g. a real API outage) rejects this
-   *   whole call — the caller treats it like the story-generation failure
-   *   path (book marked failed, failedStep: 'image_gen').
-   * - A storage save failure for one already-generated image is logged and
-   *   skipped — it must not fail book generation; the renderer already falls
-   *   back to a placeholder for any entry whose bytes are missing (see
-   *   docs/pdf-rendering.md).
+   * Never throws: both a provider.generateImage failure (e.g. a real API
+   * outage) and an ImageAssetStorage.saveImageAsset failure for one entry
+   * are caught, logged, and counted individually — that entry simply has no
+   * saved bytes, so the renderer falls back to a placeholder for it (see
+   * docs/pdf-rendering.md) instead of failing the whole book. This holds even
+   * if every entry fails (e.g. an outage): the book still reaches `complete`
+   * with every page rendered as a placeholder, and the caller surfaces
+   * generatedCount/failedCount/lastError via
+   * ImageGenerationResult.generatedImageCount/failedImageCount/lastImageError
+   * for diagnostics.
    *
-   * Before either of those, real (paid) generation is capped to the first
-   * MAX_ILLUSTRATIONS_PER_BOOK entries (default 3, see
-   * resolveMaxIllustrationsPerBook) when the injected provider is the real
+   * Before any of that, real (paid) generation is capped to the first
+   * MAX_GENERATED_IMAGES_PER_BOOK entries (default 3, see
+   * resolveMaxGeneratedImagesPerBook) when the injected provider is the real
    * one — entries beyond the cap never reach the provider at all, so they
    * cost nothing and simply render as placeholders. The free mock provider
    * is never capped.
@@ -259,39 +261,44 @@ export class AgentService {
     bookId: string,
     characterCard: CharacterCard,
     images: GeneratedImageEntry[],
-  ): Promise<void> {
+  ): Promise<{ generatedCount: number; failedCount: number; lastError?: string }> {
     const isRealProvider = this.imageGenerationProvider.providerName === 'openai';
-    const limit = isRealProvider ? resolveMaxIllustrationsPerBook() : images.length;
+    const limit = isRealProvider ? resolveMaxGeneratedImagesPerBook() : images.length;
     const imagesToGenerate = images.slice(0, limit);
 
     if (imagesToGenerate.length < images.length) {
       this.logger.log(
-        `Capping real illustration generation to ${imagesToGenerate.length}/${images.length} images for book ${bookId} (MAX_ILLUSTRATIONS_PER_BOOK); remaining pages keep the placeholder.`,
+        `Capping real illustration generation to ${imagesToGenerate.length}/${images.length} images for book ${bookId} (MAX_GENERATED_IMAGES_PER_BOOK); remaining pages keep the placeholder.`,
       );
     }
 
-    const generated = await Promise.all(
-      imagesToGenerate.map(async (image) => {
-        const { buffer, contentType } = await this.imageGenerationProvider.generateImage({
-          bookId,
-          entry: image,
-          characterCard,
-        });
-        return { image, buffer, contentType };
-      }),
-    );
+    let generatedCount = 0;
+    let failedCount = 0;
+    let lastError: string | undefined;
 
     await Promise.all(
-      generated.map(async ({ image, buffer, contentType }) => {
+      imagesToGenerate.map(async (image) => {
         try {
+          const { buffer, contentType } = await this.imageGenerationProvider.generateImage({
+            bookId,
+            entry: image,
+            characterCard,
+          });
           const key = imageAssetKey(bookId, image.kind, image.pageNumber);
           await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+          generatedCount++;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`Failed to save mock image asset for entry "${image.id}": ${message}`);
+          this.logger.warn(
+            `Image generation/save failed for entry "${image.id}" (book ${bookId}): ${message}. Falling back to a placeholder for this entry.`,
+          );
+          failedCount++;
+          lastError = message;
         }
       }),
     );
+
+    return { generatedCount, failedCount, ...(lastError !== undefined && { lastError }) };
   }
 
   async startBookGeneration(book: Book): Promise<Book> {
@@ -367,41 +374,18 @@ export class AgentService {
     const storyDurationMs = Date.now() - startedAt;
     const imageStartedAt = Date.now();
 
-    try {
-      await this.generateAndSaveImageAssets(book.id, characterCard, imageGenerationResult.images);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Image generation failed for book ${book.id}: ${message}`);
-      const failed = await this.prisma.book.update({
-        where: { id: book.id },
-        data: {
-          status: BookStatus.failed,
-          errorMessage: message,
-          failedStep: AgentStep.image_gen,
-          generationTimeMs: Date.now() - startedAt,
-          aiModelVersions,
-        },
-      });
-      await this.prisma.agentLog.createMany({
-        data: [
-          {
-            bookId: book.id,
-            agent: 'LocalPipelineAgent',
-            step: AgentStep.image_gen,
-            status: AgentLogStatus.error,
-            attempt: 1,
-            traceId,
-            error: message,
-            provider: imageProviderName,
-            model: imageModelName,
-            durationMs: Date.now() - imageStartedAt,
-          },
-        ],
-      });
-      return failed;
-    }
+    const { generatedCount, failedCount, lastError } = await this.generateAndSaveImageAssets(
+      book.id,
+      characterCard,
+      imageGenerationResult.images,
+    );
 
     imageGenerationResult.imageByteProvider = imageProviderName;
+    imageGenerationResult.generatedImageCount = generatedCount;
+    imageGenerationResult.failedImageCount = failedCount;
+    if (lastError !== undefined) {
+      imageGenerationResult.lastImageError = lastError;
+    }
 
     const imageDurationMs = Date.now() - imageStartedAt;
     const layoutStartedAt = Date.now();
@@ -537,6 +521,9 @@ export class AgentService {
           provider: imageProviderName,
           model: imageModelName,
           durationMs: imageDurationMs,
+          ...(failedCount > 0 && {
+            error: `${failedCount} of ${imageGenerationResult.images.length} image(s) failed to generate; placeholder used for those pages.`,
+          }),
         },
         {
           bookId: book.id,

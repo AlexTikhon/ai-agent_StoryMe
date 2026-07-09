@@ -32,12 +32,12 @@ export function checkPreconditions(env: NodeJS.ProcessEnv): string | null {
   }
 
   const storyProvider = env['STORY_GENERATION_PROVIDER']?.trim().toLowerCase();
-  const imageProvider = env['IMAGE_GENERATION_PROVIDER_TOKEN']?.trim().toLowerCase();
+  const imageProvider = env['IMAGE_GENERATION_PROVIDER']?.trim().toLowerCase();
   if (storyProvider !== 'openai' || imageProvider !== 'openai') {
     return [
-      'STORY_GENERATION_PROVIDER and IMAGE_GENERATION_PROVIDER_TOKEN must both be "openai" to run this smoke test.',
+      'STORY_GENERATION_PROVIDER and IMAGE_GENERATION_PROVIDER must both be "openai" to run this smoke test.',
       `  STORY_GENERATION_PROVIDER=${storyProvider ?? '(unset)'}`,
-      `  IMAGE_GENERATION_PROVIDER_TOKEN=${imageProvider ?? '(unset)'}`,
+      `  IMAGE_GENERATION_PROVIDER=${imageProvider ?? '(unset)'}`,
       'Set both to "openai" and re-run. This script never runs against mock providers — that path is already covered by the normal test suite.',
     ].join('\n');
   }

@@ -46,7 +46,7 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
   }
 }
 
-const DEFAULT_MAX_ILLUSTRATIONS_PER_BOOK = 3;
+const DEFAULT_MAX_GENERATED_IMAGES_PER_BOOK = 3;
 
 /**
  * Cost guardrail for real (paid) image generation: caps how many of a book's
@@ -59,8 +59,8 @@ const DEFAULT_MAX_ILLUSTRATIONS_PER_BOOK = 3;
  * when the real provider is selected; MockImageGenerationProvider is free, so
  * AgentService never caps it.
  */
-export function resolveMaxIllustrationsPerBook(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env['MAX_ILLUSTRATIONS_PER_BOOK'];
+export function resolveMaxGeneratedImagesPerBook(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env['MAX_GENERATED_IMAGES_PER_BOOK'];
   const n = raw ? Number(raw) : NaN;
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_ILLUSTRATIONS_PER_BOOK;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_GENERATED_IMAGES_PER_BOOK;
 }

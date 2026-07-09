@@ -122,6 +122,8 @@ export interface GenerationMetadata {
   imageModel?: string;
   requestedPages?: number;
   generatedPages?: number;
+  generatedImageCount?: number;
+  failedImageCount?: number;
   startedAt?: string;
   completedAt?: string;
   failedAt?: string;

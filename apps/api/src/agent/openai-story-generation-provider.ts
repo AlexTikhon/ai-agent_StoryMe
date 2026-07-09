@@ -119,14 +119,15 @@ export function buildStoryGenerationPrompt(
     `  "pages": [ { "pageNumber": number, "title": string, "sceneDescription": string, "storyText": string, "illustrationPrompt": string, "learningGoal": string }, ... exactly ${targetPageCount} entries, pageNumber starting at 1 ]`,
     '}',
     '',
-    `Write every story field (title, storyText, learningGoal, etc.) entirely in ${resolveLanguageDisplayName(input.language)} (language code: ${input.language}). Do not fall back to English or any other language unless the requested language code is "en".`,
+    `Write every story field (title, storyText, learningGoal, etc.) entirely in ${resolveLanguageDisplayName(input.language)} (language code: ${input.language}). Do not fall back to English or any other language unless the requested language code is "en". Never mix two languages in the same book.`,
     ...(input.educationalMessage
       ? [
           `Make the story's "educationalMessage" field reflect the desired educational message/lesson above.`,
         ]
       : []),
-    'Keep each page\'s "storyText" short (2-4 sentences) and appropriate for a young child listening or reading along.',
-    'Each "illustrationPrompt" should describe a single illustration scene — setting, action, mood — suitable for a future image-generation model. Do not reference real people, brands, or copyrighted/trademarked characters, and keep every scene non-violent and non-scary.',
+    'Keep each page\'s "storyText" short (2-4 sentences) and appropriate for a young child listening or reading along. Avoid generic, repetitive filler phrases — vary sentence openings across pages.',
+    `Give the story a clear arc across its pages: an inviting beginning, a small age-appropriate challenge, an emotional turning point, a satisfying resolution, and a clear learning moment tied to "educationalMessage". Every page's "storyText" and "sceneDescription" should clearly connect back to the theme ("${input.theme}") rather than feeling generic or interchangeable with a different theme.`,
+    'Each "illustrationPrompt" should describe a single illustration scene — setting, action, emotion, and visual style — suitable for a future image-generation model. Do not reference real people, brands, or copyrighted/trademarked characters, and keep every scene non-violent, non-scary, and free of romance.',
   ].join('\n');
 
   return { system, user };
