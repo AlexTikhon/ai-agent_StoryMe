@@ -7,6 +7,7 @@ import type {
   GenerationMetadata,
   GenerationProviderName,
   PdfStorageDiagnostics,
+  QueueDiagnostics,
 } from '@book/types';
 
 function toProviderName(raw: string | null | undefined): GenerationProviderName {
@@ -117,12 +118,20 @@ function toGenerationJobSummary(job: GenerationJob): GenerationJobSummary {
  * caller (BooksService.getGenerationDiagnostics) always computes and passes
  * it (see pdf-storage.ts's `previewPdfExists`).
  */
+const ACTIVE_JOB_STATUSES = new Set(['queued', 'running']);
+
 export function buildGenerationDiagnostics(
   book: Book,
   logs: AgentLog[],
   latestJob?: GenerationJob | null,
   pdfStorage?: PdfStorageDiagnostics,
+  queue?: Omit<QueueDiagnostics, 'stalledNoWorker'>,
 ): GenerationDiagnosticsDto {
+  const resolvedQueue = queue ?? {
+    queueName: 'book-generation',
+    workerCount: 0,
+    counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
+  };
   return {
     bookId: book.id,
     status: book.status as unknown as GenerationDiagnosticsDto['status'],
@@ -136,6 +145,13 @@ export function buildGenerationDiagnostics(
       driver: 'local',
       keyPresent: book.previewPdfUrl != null,
       previewAvailable: false,
+    },
+    queue: {
+      ...resolvedQueue,
+      stalledNoWorker:
+        !!latestJob &&
+        ACTIVE_JOB_STATUSES.has(latestJob.status) &&
+        resolvedQueue.workerCount === 0,
     },
   };
 }

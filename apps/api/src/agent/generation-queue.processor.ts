@@ -29,8 +29,10 @@ export class GenerationQueueProcessor extends WorkerHost {
   }
 
   async process(job: Job<GenerationQueueJobData>): Promise<void> {
+    const attempt = job.attemptsMade + 1;
+    const maxAttempts = job.opts.attempts ?? 1;
     this.logger.log(
-      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} generationJobId=${job.data.jobId}`,
+      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} generationJobId=${job.data.jobId} attempt=${attempt}/${maxAttempts}`,
     );
     await this.booksService.runGenerationPipeline(job.data.bookId, job.data.jobId);
   }
@@ -45,7 +47,8 @@ export class GenerationQueueProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   onFailed(job: Job<GenerationQueueJobData> | undefined, error: Error): void {
     this.logger.error(
-      `Job failed — bullmqJobId=${job?.id} bookId=${job?.data.bookId} generationJobId=${job?.data.jobId} error=${error.message}`,
+      `Job failed — bullmqJobId=${job?.id} bookId=${job?.data.bookId} generationJobId=${job?.data.jobId} attemptsMade=${job?.attemptsMade} error=${error.name}: ${error.message}`,
+      error.stack,
     );
   }
 }

@@ -400,6 +400,7 @@ function GenerationDiagnosticsPanel({
     diagnostics.generationMetadata ??
     ({} as Partial<GenerationDiagnosticsDto['generationMetadata']>);
   const hasFailure = Boolean(diagnostics.failedStep ?? diagnostics.errorMessage);
+  const stalledNoWorker = diagnostics.queue?.stalledNoWorker ?? false;
 
   return (
     <div
@@ -461,6 +462,17 @@ function GenerationDiagnosticsPanel({
           {diagnostics.errorMessage && <p>{diagnostics.errorMessage}</p>}
           <p className="mt-1 text-text-muted">
             Try again later, or check diagnostics for more detail.
+          </p>
+        </div>
+      )}
+
+      {stalledNoWorker && (
+        <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <p className="font-medium">Generation job queued, but no worker is processing it.</p>
+          <p className="mt-1 text-text-muted">
+            The API isn&apos;t consuming generation jobs — set ENABLE_GENERATION_WORKER=true (local
+            single-process dev) or start the worker with{' '}
+            <code>pnpm --filter @book/api dev:worker</code>.
           </p>
         </div>
       )}

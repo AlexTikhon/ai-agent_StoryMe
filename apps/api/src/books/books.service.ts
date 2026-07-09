@@ -239,10 +239,12 @@ export class BooksService {
     conflictMessage: string,
   ): Promise<Book> {
     try {
-      return await this.prisma.book.update({
+      const updated = await this.prisma.book.update({
         where: { id: bookId, status: fromStatus },
         data,
       });
+      this.logger.log(`Book ${bookId} status ${fromStatus} -> ${updated.status}`);
+      return updated;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
         throw new ConflictException(conflictMessage);
@@ -309,10 +311,12 @@ export class BooksService {
    * truth.
    */
   async runGenerationPipeline(bookId: string, jobId: string): Promise<void> {
+    this.logger.log(`Starting generation pipeline — bookId=${bookId} jobId=${jobId}`);
     await this.markJob(this.generationJobService.markRunning(jobId), jobId, bookId, 'running');
     try {
       const book = await this.prisma.book.findUniqueOrThrow({ where: { id: bookId } });
       const result = await this.agentService.startBookGeneration(book);
+      this.logger.log(`Book ${bookId} status ${book.status} -> ${result.status}`);
       if (result.status === BookStatus.failed) {
         await this.markJob(
           this.generationJobService.markFailed(jobId, {
@@ -393,7 +397,7 @@ export class BooksService {
   ): Promise<GenerationDiagnosticsDto> {
     const book = await this.findOwnedOrThrow(bookId, userId);
     const keyPresent = book.previewPdfUrl != null;
-    const [logs, latestJob, previewAvailable] = await Promise.all([
+    const [logs, latestJob, previewAvailable, queue] = await Promise.all([
       this.prisma.agentLog.findMany({
         where: { bookId },
         orderBy: { createdAt: 'desc' },
@@ -404,12 +408,19 @@ export class BooksService {
       // PDF was saved — avoids a network/disk round-trip for every book that
       // hasn't reached that step yet.
       keyPresent ? this.pdfStorage.previewPdfExists(bookId) : Promise.resolve(false),
+      this.generationQueueService.getQueueDiagnostics(),
     ]);
-    return buildGenerationDiagnostics(book, logs, latestJob, {
-      driver: this.pdfStorage.driver,
-      keyPresent,
-      previewAvailable: keyPresent && previewAvailable,
-    });
+    return buildGenerationDiagnostics(
+      book,
+      logs,
+      latestJob,
+      {
+        driver: this.pdfStorage.driver,
+        keyPresent,
+        previewAvailable: keyPresent && previewAvailable,
+      },
+      queue,
+    );
   }
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */

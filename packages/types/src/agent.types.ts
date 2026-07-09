@@ -174,6 +174,28 @@ export interface GenerationJobSummary {
   errorMessage?: string;
 }
 
+/**
+ * Safe, non-secret view of the book-generation BullMQ queue's health,
+ * surfaced via GenerationDiagnosticsDto.queue — lets a stuck book (job
+ * queued/running with no worker consuming it) be diagnosed without shell
+ * access to Redis. See "Worker process separation" in
+ * apps/api/docs/local-generation-pipeline.md.
+ */
+export interface QueueDiagnostics {
+  queueName: string;
+  /** Number of BullMQ Worker processes currently connected to this queue (any process). */
+  workerCount: number;
+  counts: {
+    waiting: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+  };
+  /** True when this book's latestJob is queued/running but workerCount is 0 — the exact "queued forever" signature. */
+  stalledNoWorker: boolean;
+}
+
 /** WebSocket progress event shapes emitted during generation. */
 export type WsProgressEvent =
   | { type: 'book:progress'; step: AgentStep; percentComplete: number }

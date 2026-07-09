@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, type Book, type GenerationJob } from '@prisma/client';
@@ -34,6 +35,11 @@ function createMockPdfStorage(): jest.Mocked<PdfStorage> {
 function createMockGenerationQueueService(): jest.Mocked<GenerationQueueService> {
   return {
     enqueue: vi.fn().mockResolvedValue(undefined),
+    getQueueDiagnostics: vi.fn().mockResolvedValue({
+      queueName: 'book-generation',
+      workerCount: 1,
+      counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
+    }),
   } as unknown as jest.Mocked<GenerationQueueService>;
 }
 
@@ -482,6 +488,19 @@ describe('BooksService', () => {
       });
     });
 
+    it('logs the status transition from created to char_build', async () => {
+      const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      const book = makeBook({ status: STATUS_CREATED });
+      const started = makeBook({ status: STATUS_CHAR_BUILD });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(started);
+
+      await service.startGeneration('u-1', 'b-1');
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining(`${STATUS_CREATED} -> char_build`));
+      logSpy.mockRestore();
+    });
+
     it('runGenerationPipeline (invoked by the queue worker) calls AgentService.startBookGeneration with the freshly-loaded book', async () => {
       const book = makeBook({ status: STATUS_CREATED });
       const started = makeBook({ status: STATUS_CHAR_BUILD });
@@ -550,6 +569,18 @@ describe('BooksService', () => {
       expect(generationJobService.markRunning).toHaveBeenCalledWith('job-1');
       expect(generationJobService.markCompleted).toHaveBeenCalledWith('job-1');
       expect(generationJobService.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('runGenerationPipeline logs the book status transition (e.g. char_build -> complete)', async () => {
+      const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      const started = makeBook({ status: STATUS_CHAR_BUILD });
+      prisma.book.findUniqueOrThrow.mockResolvedValue(started);
+      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
+
+      await service.runGenerationPipeline('b-1', 'job-1');
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('char_build -> complete'));
+      logSpy.mockRestore();
     });
 
     it('runGenerationPipeline marks the job failed (with failedStep/errorMessage) when AgentService returns a failed book', async () => {
@@ -1146,6 +1177,61 @@ describe('BooksService', () => {
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');
 
       expect(result.pdfStorage.driver).toBe('s3');
+    });
+
+    it('includes queue diagnostics from GenerationQueueService.getQueueDiagnostics', async () => {
+      const book = makeBook({ status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+      generationQueueService.getQueueDiagnostics.mockResolvedValue({
+        queueName: 'book-generation',
+        workerCount: 2,
+        counts: { waiting: 1, active: 1, completed: 5, failed: 0, delayed: 0 },
+      });
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(result.queue).toMatchObject({
+        queueName: 'book-generation',
+        workerCount: 2,
+        counts: { waiting: 1, active: 1, completed: 5, failed: 0, delayed: 0 },
+      });
+    });
+
+    it('flags stalledNoWorker=true when the latest job is queued but no worker is connected (the "stuck in char_build" signature)', async () => {
+      const book = makeBook({ status: STATUS_CHAR_BUILD });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+      generationJobService.findLatest.mockResolvedValue(
+        makeGenerationJob({ status: 'queued' as GenerationJob['status'] }),
+      );
+      generationQueueService.getQueueDiagnostics.mockResolvedValue({
+        queueName: 'book-generation',
+        workerCount: 0,
+        counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 },
+      });
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(result.queue.stalledNoWorker).toBe(true);
+    });
+
+    it('flags stalledNoWorker=false when a worker is connected even if a job is still queued', async () => {
+      const book = makeBook({ status: STATUS_CHAR_BUILD });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+      generationJobService.findLatest.mockResolvedValue(
+        makeGenerationJob({ status: 'queued' as GenerationJob['status'] }),
+      );
+      generationQueueService.getQueueDiagnostics.mockResolvedValue({
+        queueName: 'book-generation',
+        workerCount: 1,
+        counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 },
+      });
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(result.queue.stalledNoWorker).toBe(false);
     });
   });
 });

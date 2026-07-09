@@ -12,7 +12,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
 }
 
 function makeJob(data: GenerationQueueJobData): Job<GenerationQueueJobData> {
-  return { data } as Job<GenerationQueueJobData>;
+  return { data, attemptsMade: 0, opts: { attempts: 3 } } as unknown as Job<GenerationQueueJobData>;
 }
 
 describe('GenerationQueueProcessor', () => {
@@ -47,7 +47,7 @@ describe('GenerationQueueProcessor', () => {
     await processor.process(job);
 
     expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining('bullmqJobId=bullmq-42 bookId=b-1 generationJobId=job-1'),
+      expect.stringContaining('bullmqJobId=bullmq-42 bookId=b-1 generationJobId=job-1 attempt=1/3'),
     );
     logSpy.mockRestore();
   });
@@ -77,7 +77,8 @@ describe('GenerationQueueProcessor', () => {
     processor.onFailed(undefined, new Error('Redis connection refused'));
 
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('error=Redis connection refused'),
+      expect.stringContaining('error=Error: Redis connection refused'),
+      expect.any(String),
     );
     errorSpy.mockRestore();
   });

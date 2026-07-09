@@ -313,4 +313,69 @@ describe('buildGenerationDiagnostics', () => {
       previewAvailable: false,
     });
   });
+
+  it('defaults queue to a safe zeroed shape when no queue state is passed', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook(), []);
+
+    expect(diagnostics.queue).toEqual({
+      queueName: 'book-generation',
+      workerCount: 0,
+      counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
+      stalledNoWorker: false,
+    });
+  });
+
+  it('passes through an explicitly provided queue state', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [], null, undefined, {
+      queueName: 'book-generation',
+      workerCount: 3,
+      counts: { waiting: 1, active: 1, completed: 20, failed: 2, delayed: 0 },
+    });
+
+    expect(diagnostics.queue).toMatchObject({
+      queueName: 'book-generation',
+      workerCount: 3,
+      counts: { waiting: 1, active: 1, completed: 20, failed: 2, delayed: 0 },
+    });
+  });
+
+  it('sets queue.stalledNoWorker=true when the latest job is queued/running and no worker is connected — the "stuck forever" signature', () => {
+    const queuedJob = makeGenerationJob({ status: 'queued' as GenerationJob['status'] });
+
+    const diagnostics = buildGenerationDiagnostics(
+      makeBook({ status: 'char_build' as Book['status'] }),
+      [],
+      queuedJob,
+      undefined,
+      { queueName: 'book-generation', workerCount: 0, counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 } },
+    );
+
+    expect(diagnostics.queue.stalledNoWorker).toBe(true);
+  });
+
+  it('sets queue.stalledNoWorker=false when a worker is connected, even with a queued job', () => {
+    const queuedJob = makeGenerationJob({ status: 'queued' as GenerationJob['status'] });
+
+    const diagnostics = buildGenerationDiagnostics(
+      makeBook({ status: 'char_build' as Book['status'] }),
+      [],
+      queuedJob,
+      undefined,
+      { queueName: 'book-generation', workerCount: 1, counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 } },
+    );
+
+    expect(diagnostics.queue.stalledNoWorker).toBe(false);
+  });
+
+  it('sets queue.stalledNoWorker=false when the latest job is already terminal (completed/failed), even with no worker connected', () => {
+    const completedJob = makeGenerationJob({ status: 'completed' as GenerationJob['status'] });
+
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [], completedJob, undefined, {
+      queueName: 'book-generation',
+      workerCount: 0,
+      counts: { waiting: 0, active: 0, completed: 1, failed: 0, delayed: 0 },
+    });
+
+    expect(diagnostics.queue.stalledNoWorker).toBe(false);
+  });
 });

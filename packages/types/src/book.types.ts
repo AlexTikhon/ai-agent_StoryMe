@@ -8,6 +8,7 @@ import type {
   IllustrationStyle,
   Pronouns,
   BookStatus,
+  QueueDiagnostics,
 } from './agent.types';
 
 // ─── Character ───────────────────────────────────────────────────────────────
@@ -474,4 +475,6 @@ export interface GenerationDiagnosticsDto {
   /** Latest GenerationJob for this book (Phase 3I), or null if none exists yet. */
   latestJob?: GenerationJobSummary | null;
   pdfStorage: PdfStorageDiagnostics;
+  /** BullMQ generation-queue health — see QueueDiagnostics. */
+  queue: QueueDiagnostics;
 }
