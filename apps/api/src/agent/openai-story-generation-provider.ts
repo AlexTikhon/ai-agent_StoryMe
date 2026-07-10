@@ -13,6 +13,7 @@ import {
 } from '@book/types';
 import {
   buildBookPreview,
+  buildCharacterConsistencyBlock,
   buildImageGenerationResult,
   resolveTargetPageCount,
   type ResolvedPagePlan,
@@ -159,19 +160,20 @@ function mapLlmResponseToResult(
     narrativeDescription: data.characterCard.narrativeDescription,
   };
 
+  const consistencyBlock = buildCharacterConsistencyBlock(input.characterProfile);
   const sortedPages = [...data.pages].sort((a, b) => a.pageNumber - b.pageNumber);
 
   const pages: ResolvedPagePlan[] = sortedPages.map((page) => {
     const chapterIndex = Math.floor((page.pageNumber - 1) / PAGES_PER_CHAPTER);
     const illustration: IllustrationPlan = {
-      prompt: `${characterCard.visualAnchor}, ${page.sceneDescription}. ${page.illustrationPrompt}`,
+      prompt: `${characterCard.visualAnchor}, ${page.sceneDescription}. ${page.illustrationPrompt} ${consistencyBlock}`,
       negativePrompt: 'blurry, distorted face, extra limbs, scary, violent, text, watermark',
-      style: 'warm children book illustration, soft colors, friendly character design',
+      style: input.characterProfile.illustrationStyle,
       aspectRatio: '4:3',
       characters: [characterCard.name],
       setting: page.sceneDescription,
       mood: 'joyful, child-friendly',
-      consistencyNotes: `Keep ${characterCard.name} visually consistent: ${characterCard.visualAnchor}. Use the same color palette and character design throughout.`,
+      consistencyNotes: `Keep ${characterCard.name} visually consistent: ${characterCard.visualAnchor}. ${consistencyBlock}`,
     };
 
     return {
@@ -217,10 +219,15 @@ function mapLlmResponseToResult(
   const bookPreview: BookPreview = buildBookPreview(
     { childName: input.childName, childAge: input.childAge, language: input.language },
     characterCard,
+    input.characterProfile,
     storyPlanFinal,
   );
 
-  const imageGenerationResult = buildImageGenerationResult(input.bookId, bookPreview);
+  const imageGenerationResult = buildImageGenerationResult(
+    input.bookId,
+    bookPreview,
+    input.characterProfile,
+  );
 
   return { characterCard, storyPlan: storyPlanFinal, bookPreview, imageGenerationResult };
 }

@@ -12,6 +12,7 @@ import type { AgentService } from '../agent/agent.service';
 import type { GenerationQueueService } from '../agent/generation-queue.service';
 import type { GenerationJobService } from '../agent/generation-job.service';
 import type { PdfStorage } from '../pdf/pdf-storage';
+import type { ImageAssetStorage } from '../images/image-asset-storage';
 import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { CreateBookDto } from './dto/create-book.dto';
@@ -30,6 +31,13 @@ function createMockPdfStorage(): jest.Mocked<PdfStorage> {
     getPreviewPdf: vi.fn(),
     previewPdfExists: vi.fn().mockResolvedValue(false),
   } as unknown as jest.Mocked<PdfStorage>;
+}
+
+function createMockImageAssetStorage(): jest.Mocked<ImageAssetStorage> {
+  return {
+    saveImageAsset: vi.fn().mockResolvedValue({ key: 'k', path: 'p', contentType: 'image/png' }),
+    getImageAsset: vi.fn().mockResolvedValue(undefined),
+  } as unknown as jest.Mocked<ImageAssetStorage>;
 }
 
 function createMockGenerationQueueService(): jest.Mocked<GenerationQueueService> {
@@ -116,6 +124,10 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     bookPreview: null,
     imageGenerationResult: null,
     bookLayout: null,
+    childPhotoAssetKey: null,
+    childPhotoContentType: null,
+    characterProfile: null,
+    characterSheetAssetKey: null,
     chapters: null,
     imagePrompts: null,
     qualityReport: null,
@@ -151,6 +163,7 @@ describe('BooksService', () => {
   let prisma: MockPrisma;
   let agentService: ReturnType<typeof createMockAgentService>;
   let pdfStorage: ReturnType<typeof createMockPdfStorage>;
+  let imageAssetStorage: ReturnType<typeof createMockImageAssetStorage>;
   let generationQueueService: ReturnType<typeof createMockGenerationQueueService>;
   let generationJobService: ReturnType<typeof createMockGenerationJobService>;
 
@@ -158,12 +171,14 @@ describe('BooksService', () => {
     prisma = createMockPrisma();
     agentService = createMockAgentService();
     pdfStorage = createMockPdfStorage();
+    imageAssetStorage = createMockImageAssetStorage();
     generationQueueService = createMockGenerationQueueService();
     generationJobService = createMockGenerationJobService();
     service = new BooksService(
       prisma as never,
       agentService as never,
       pdfStorage as never,
+      imageAssetStorage as never,
       generationQueueService as never,
       generationJobService as never,
     );
@@ -252,6 +267,98 @@ describe('BooksService', () => {
       expect(prisma.book.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ educationalMessage: null }),
       });
+    });
+  });
+
+  // ─── uploadChildPhoto ────────────────────────────────────────────────────────
+
+  describe('uploadChildPhoto', () => {
+    function makeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
+      return {
+        fieldname: 'photo',
+        originalname: 'child.jpg',
+        encoding: '7bit',
+        mimetype: 'image/jpeg',
+        size: 1024,
+        buffer: Buffer.from('fake-jpeg-bytes'),
+        stream: undefined as never,
+        destination: '',
+        filename: '',
+        path: '',
+        ...overrides,
+      };
+    }
+
+    it('saves the file via ImageAssetStorage and persists the asset key + content type', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      const updated = makeBook({
+        status: STATUS_CREATED,
+        childPhotoAssetKey: 'b-1/child-photo',
+        childPhotoContentType: 'image/jpeg',
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(updated);
+
+      const result = await service.uploadChildPhoto('u-1', 'b-1', makeFile());
+
+      expect(imageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
+        'b-1/child-photo',
+        expect.any(Buffer),
+        'image/jpeg',
+      );
+      expect(prisma.book.update).toHaveBeenCalledWith({
+        where: { id: 'b-1' },
+        data: { childPhotoAssetKey: 'b-1/child-photo', childPhotoContentType: 'image/jpeg' },
+      });
+      expect(result.characterProfile).toBeNull();
+    });
+
+    it('accepts png and webp mimetypes', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(book);
+
+      await service.uploadChildPhoto('u-1', 'b-1', makeFile({ mimetype: 'image/png' }));
+      await service.uploadChildPhoto('u-1', 'b-1', makeFile({ mimetype: 'image/webp' }));
+
+      expect(imageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws BadRequestException when no file is provided (multer rejected it)', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      prisma.book.findFirst.mockResolvedValue(book);
+
+      await expect(service.uploadChildPhoto('u-1', 'b-1', undefined)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(imageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
+    });
+
+    it('throws ConflictException when generation is already in progress', async () => {
+      const book = makeBook({ status: STATUS_IN_PROGRESS });
+      prisma.book.findFirst.mockResolvedValue(book);
+
+      await expect(service.uploadChildPhoto('u-1', 'b-1', makeFile())).rejects.toThrow(
+        ConflictException,
+      );
+      expect(imageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
+    });
+
+    it('allows re-uploading a photo for a complete book ahead of a regenerate', async () => {
+      const book = makeBook({ status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(book);
+
+      await expect(service.uploadChildPhoto('u-1', 'b-1', makeFile())).resolves.toBeDefined();
+    });
+
+    it('throws NotFoundException when the book does not exist or belongs to another user', async () => {
+      prisma.book.findFirst.mockResolvedValue(null);
+
+      await expect(service.uploadChildPhoto('u-other', 'b-1', makeFile())).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(imageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
     });
   });
 

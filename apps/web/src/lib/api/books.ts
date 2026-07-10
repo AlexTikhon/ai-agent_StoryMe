@@ -6,7 +6,7 @@ import type {
   GenerationDiagnosticsDto,
   UpdateBookInput,
 } from '@book/types';
-import { apiFetch, apiFetchBlob } from './client';
+import { apiFetch, apiFetchBlob, apiFetchForm } from './client';
 import { getApiBase } from './config';
 
 const API_BASE = getApiBase();
@@ -24,6 +24,13 @@ export const booksApi = {
 
   create: (data: CreateBookInput): Promise<BookDto> =>
     apiFetch('/books', { method: 'POST', body: JSON.stringify(data) }),
+
+  /** Uploads an optional child reference photo for a still-editable (pre-generation) book. */
+  uploadChildPhoto: (id: string, file: File): Promise<BookDto> => {
+    const formData = new FormData();
+    formData.append('photo', file);
+    return apiFetchForm(`/books/${id}/child-photo`, formData);
+  },
 
   update: (id: string, data: UpdateBookInput): Promise<BookDto> =>
     apiFetch(`/books/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),

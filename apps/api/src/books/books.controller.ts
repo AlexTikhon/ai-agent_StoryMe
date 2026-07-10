@@ -13,8 +13,12 @@ import {
   Query,
   Res,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import type { Response } from 'express';
 import type { User } from '@prisma/client';
 import type {
@@ -28,6 +32,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { BooksService } from './books.service';
 import { CreateBookDto } from './dto/create-book.dto';
 import { UpdateBookDto } from './dto/update-book.dto';
+import { isAllowedChildPhotoMimeType, MAX_CHILD_PHOTO_BYTES } from './child-photo.constants';
 
 @UseGuards(AuthModeGuard)
 @Controller('books')
@@ -60,6 +65,32 @@ export class BooksController {
     @Body() dto: UpdateBookDto,
   ): Promise<BookDto> {
     return this.booksService.update(id, user.id, dto);
+  }
+
+  /**
+   * Optional child reference photo (jpg/png/webp, up to MAX_CHILD_PHOTO_BYTES),
+   * uploaded separately from book creation so the JSON create-book contract
+   * stays unchanged. multer buffers in memory (never touches local disk) and
+   * BooksService.uploadChildPhoto persists it via ImageAssetStorage — see
+   * child-photo.constants.ts for limits.
+   */
+  @Post(':id/child-photo')
+  @HttpCode(200)
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      storage: memoryStorage(),
+      limits: { fileSize: MAX_CHILD_PHOTO_BYTES },
+      fileFilter: (_req, file, callback) => {
+        callback(null, isAllowedChildPhotoMimeType(file.mimetype));
+      },
+    }),
+  )
+  uploadChildPhoto(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<BookDto> {
+    return this.booksService.uploadChildPhoto(user.id, id, file);
   }
 
   @Get(':id/pdf/preview')

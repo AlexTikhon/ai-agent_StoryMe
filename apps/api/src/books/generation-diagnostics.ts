@@ -2,6 +2,7 @@ import type { AgentLog, Book, GenerationJob } from '@prisma/client';
 import type {
   AgentLogSummary,
   AgentStep,
+  CharacterPersonalizationDiagnostics,
   GenerationDiagnosticsDto,
   GenerationJobSummary,
   GenerationMetadata,
@@ -9,6 +10,7 @@ import type {
   PdfStorageDiagnostics,
   QueueDiagnostics,
 } from '@book/types';
+import { PRESERVE_APPEARANCE_INSTRUCTION } from '../agent/story-generation-provider';
 
 function toProviderName(raw: string | null | undefined): GenerationProviderName {
   return raw === 'mock' || raw === 'openai' ? raw : 'unknown';
@@ -75,6 +77,35 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
     ...(durationMs !== undefined && { durationMs }),
     ...(book.failedStep && { failedStep: book.failedStep as unknown as AgentStep }),
     ...(book.errorMessage && { errorMessage: book.errorMessage }),
+  };
+}
+
+/**
+ * Builds the safe, non-secret personalized-character diagnostics view (item
+ * 9 of the personalization feature): whether a reference photo exists,
+ * whether a CharacterProfile was created, whether a character-sheet
+ * reference image was generated, and — verified by construction rather than
+ * just inferred from characterProfile's presence — whether every planned
+ * page's illustration prompt actually includes the character-consistency
+ * instructions built in story-generation-provider.ts.
+ */
+export function buildCharacterPersonalizationDiagnostics(
+  book: Book,
+): CharacterPersonalizationDiagnostics {
+  const pages = (book.bookPreview as { pages?: unknown[] } | null)?.pages;
+  const pagePromptsIncludeConsistencyData =
+    Array.isArray(pages) &&
+    pages.length > 0 &&
+    pages.every((page) => {
+      const prompt = (page as { illustrationPrompt?: unknown } | null)?.illustrationPrompt;
+      return typeof prompt === 'string' && prompt.includes(PRESERVE_APPEARANCE_INSTRUCTION);
+    });
+
+  return {
+    hasReferencePhoto: book.childPhotoAssetKey != null,
+    characterProfileCreated: book.characterProfile != null,
+    characterSheetGenerated: book.characterSheetAssetKey != null,
+    pagePromptsIncludeConsistencyData,
   };
 }
 
@@ -153,5 +184,6 @@ export function buildGenerationDiagnostics(
         ACTIVE_JOB_STATUSES.has(latestJob.status) &&
         resolvedQueue.workerCount === 0,
     },
+    characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
   };
 }

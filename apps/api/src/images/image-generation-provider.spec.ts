@@ -4,7 +4,25 @@ import {
   resolveMaxGeneratedImagesPerBook,
   type ImageGenerationInput,
 } from './image-generation-provider';
-import { Pronouns, type CharacterCard, type GeneratedImageEntry } from '@book/types';
+import { Pronouns, type CharacterCard, type CharacterProfile, type GeneratedImageEntry } from '@book/types';
+
+function makeCharacterProfile(overrides: Partial<CharacterProfile> = {}): CharacterProfile {
+  return {
+    childName: 'Mia',
+    age: 5,
+    visualDescription: 'a cheerful child with a round friendly face',
+    faceDescription: 'a round, friendly face with a warm smile',
+    hairDescription: 'short wavy brown hair',
+    outfitDescription: 'a bright yellow overall with sneakers',
+    personalitySummary: 'curious, brave, and kind',
+    illustrationStyle: 'warm children book illustration, soft colors, friendly character design',
+    consistencyPrompt:
+      "Mia, a stylized 5-year-old children's-book character with a round, friendly face with a warm smile, short wavy brown hair, wearing a bright yellow overall with sneakers",
+    hasReferencePhoto: false,
+    hasCharacterSheet: false,
+    ...overrides,
+  };
+}
 
 function makeCharacterCard(overrides: Partial<CharacterCard> = {}): CharacterCard {
   return {
@@ -84,6 +102,36 @@ describe('MockImageGenerationProvider', () => {
     );
 
     expect(cover.buffer.equals(page.buffer)).toBe(false);
+  });
+
+  describe('generateCharacterSheet', () => {
+    it('returns a PNG buffer and contentType', async () => {
+      const provider = new MockImageGenerationProvider();
+      const result = await provider.generateCharacterSheet({
+        bookId: 'b-1',
+        characterProfile: makeCharacterProfile(),
+      });
+
+      expect(Buffer.isBuffer(result.buffer)).toBe(true);
+      expect(result.buffer.length).toBeGreaterThan(0);
+      expect(result.contentType).toBe('image/png');
+    });
+
+    it('is deterministic per bookId and differs from a page/cover image for the same book', async () => {
+      const provider = new MockImageGenerationProvider();
+      const first = await provider.generateCharacterSheet({
+        bookId: 'b-1',
+        characterProfile: makeCharacterProfile(),
+      });
+      const second = await provider.generateCharacterSheet({
+        bookId: 'b-1',
+        characterProfile: makeCharacterProfile(),
+      });
+      const cover = await provider.generateImage(makeInput());
+
+      expect(first.buffer.equals(second.buffer)).toBe(true);
+      expect(first.buffer.equals(cover.buffer)).toBe(false);
+    });
   });
 });
 

@@ -9,6 +9,7 @@ import { LocalImageAssetStorage } from '../images/image-asset-storage';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import { MockStoryGenerationProvider } from './story-generation-provider';
 import { MockImageGenerationProvider } from '../images/image-generation-provider';
+import { MockCharacterProfileProvider } from './character-profile-provider';
 
 // This file deliberately does NOT mock '../pdf/pdf-renderer' or
 // '../images/image-asset-storage' — it drives AgentService.startBookGeneration
@@ -40,6 +41,10 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     bookPreview: null,
     imageGenerationResult: null,
     bookLayout: null,
+    childPhotoAssetKey: null,
+    childPhotoContentType: null,
+    characterProfile: null,
+    characterSheetAssetKey: null,
     chapters: null,
     imagePrompts: null,
     qualityReport: null,
@@ -101,6 +106,7 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
       new LocalImageAssetStorage(),
       new MockStoryGenerationProvider(),
       new MockImageGenerationProvider(),
+      new MockCharacterProfileProvider(),
     );
 
     const book = makeBook();

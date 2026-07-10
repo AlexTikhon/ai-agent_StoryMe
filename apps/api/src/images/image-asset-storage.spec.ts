@@ -245,7 +245,8 @@ describe('CloudImageAssetStorage', () => {
     sendMock.mockRejectedValue(Object.assign(new Error('missing'), { name: 'NoSuchKey' }));
     const storage = new CloudImageAssetStorage(validCloudConfig);
     await expect(storage.getImageAsset('book-1/never-saved')).resolves.toBeUndefined();
-    expect(sendMock).toHaveBeenCalledTimes(3);
+    // One probe per supported extension: png, jpg, svg, webp.
+    expect(sendMock).toHaveBeenCalledTimes(4);
   });
 
   it('getImageAsset rethrows non-404 errors immediately without probing further extensions', async () => {

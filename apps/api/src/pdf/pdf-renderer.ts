@@ -243,6 +243,26 @@ function renderImageBlock(
   renderImagePlaceholder(doc, entry, imageBlock, x, y, w, h);
 }
 
+/**
+ * Draws a semi-opaque dark backdrop behind a cover/back-cover text block
+ * before the text itself is drawn, so light text stays readable over a busy
+ * illustration instead of sitting directly on it. Cover/back-cover text is
+ * always white (see agent.service.ts buildBookLayout) and always overlays a
+ * full-bleed illustration, so this scrim is unconditional for those two
+ * entry kinds — never drawn for interior pages, whose dark text already sits
+ * on a plain background.
+ */
+function renderTextScrim(doc: PDFKit.PDFDocument, tb: LayoutTextBlock): void {
+  const x = pt(tb.box.x);
+  const y = pt(tb.box.y);
+  const w = Math.max(pt(tb.box.width), 1);
+  const h = Math.max(pt(tb.box.height), 1);
+
+  doc.save();
+  doc.rect(x, y, w, h).fillOpacity(0.45).fill('#000000');
+  doc.restore();
+}
+
 function renderPage(
   doc: PDFKit.PDFDocument,
   entry: BookLayoutEntry,
@@ -259,6 +279,9 @@ function renderPage(
   // Text block
   if (entry.textBlock) {
     const isDisplay = entry.kind === 'cover' || entry.kind === 'back_cover';
+    if (isDisplay) {
+      renderTextScrim(doc, entry.textBlock);
+    }
     renderTextBlock(doc, entry.textBlock, isDisplay);
   }
 

@@ -39,6 +39,20 @@ export const characterCardSchema = z.object({
   narrativeDescription: z.string(),
 });
 
+export const characterProfileSchema = z.object({
+  childName: z.string(),
+  age: z.number(),
+  visualDescription: z.string(),
+  faceDescription: z.string(),
+  hairDescription: z.string(),
+  outfitDescription: z.string(),
+  personalitySummary: z.string(),
+  illustrationStyle: z.string(),
+  consistencyPrompt: z.string(),
+  hasReferencePhoto: z.boolean(),
+  hasCharacterSheet: z.boolean(),
+});
+
 const chapterOutlineSchema = z.object({
   chapterNumber: z.number(),
   title: z.string(),

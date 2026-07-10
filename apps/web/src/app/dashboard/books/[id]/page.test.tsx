@@ -187,6 +187,12 @@ function makeDiagnostics(
       counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
       stalledNoWorker: false,
     },
+    characterPersonalization: {
+      hasReferencePhoto: false,
+      characterProfileCreated: false,
+      characterSheetGenerated: false,
+      pagePromptsIncludeConsistencyData: false,
+    },
     ...overrides,
   };
 }
@@ -2315,6 +2321,38 @@ describe('BookDetailPage', () => {
         ).toBeDefined();
         expect(panel.getByText('Image provider returned an error after 3 attempts.')).toBeDefined();
         expect(panel.getByText(/try again later, or check diagnostics/i)).toBeDefined();
+      });
+    });
+
+    it('shows character personalization diagnostics from the API', async () => {
+      const book: BookDto = { ...MOCK_BOOK, status: BookStatus.Complete };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(book));
+      queueDiagnostics(
+        mockOk(
+          makeDiagnostics({
+            status: BookStatus.Complete,
+            characterPersonalization: {
+              hasReferencePhoto: true,
+              characterProfileCreated: true,
+              characterSheetGenerated: false,
+              pagePromptsIncludeConsistencyData: true,
+            },
+          }),
+        ),
+      );
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        const panel = within(screen.getByTestId('generation-diagnostics'));
+        expect(panel.getByText(/character personalization/i)).toBeDefined();
+        expect(panel.getByText('Reference photo:')).toBeDefined();
+        expect(panel.getByText('Character profile:')).toBeDefined();
+        expect(panel.getByText('Character sheet:')).toBeDefined();
+        expect(panel.getByText('Consistent prompts:')).toBeDefined();
+        // 3 of the 4 flags are true (✓), 1 is false (—).
+        expect(panel.getAllByText('✓')).toHaveLength(3);
+        expect(panel.getAllByText('—').length).toBeGreaterThanOrEqual(1);
       });
     });
 

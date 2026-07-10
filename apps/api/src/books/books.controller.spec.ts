@@ -26,6 +26,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     remove: vi.fn(),
     getPreviewPdfBuffer: vi.fn(),
     getGenerationDiagnostics: vi.fn(),
+    uploadChildPhoto: vi.fn(),
   } as unknown as jest.Mocked<BooksService>;
 }
 
@@ -205,6 +206,58 @@ describe('BooksController.remove', () => {
     const controller = new BooksController(booksService);
 
     await expect(controller.remove(FAKE_USER, 'b-1')).rejects.toThrow(ConflictException);
+  });
+});
+
+describe('BooksController.uploadChildPhoto', () => {
+  function makeFile(): Express.Multer.File {
+    return {
+      fieldname: 'photo',
+      originalname: 'child.jpg',
+      encoding: '7bit',
+      mimetype: 'image/jpeg',
+      size: 1024,
+      buffer: Buffer.from('fake-jpeg-bytes'),
+      stream: undefined as never,
+      destination: '',
+      filename: '',
+      path: '',
+    };
+  }
+
+  it('delegates to booksService.uploadChildPhoto with the current user, book id, and file', async () => {
+    const booksService = createMockBooksService();
+    booksService.uploadChildPhoto.mockResolvedValue(BOOK_DTO);
+    const controller = new BooksController(booksService);
+    const file = makeFile();
+
+    const result = await controller.uploadChildPhoto(FAKE_USER, 'b-1', file);
+
+    expect(booksService.uploadChildPhoto).toHaveBeenCalledWith('u-1', 'b-1', file);
+    expect(result).toBe(BOOK_DTO);
+  });
+
+  it('passes through undefined when multer rejected the upload (no file on the request)', async () => {
+    const booksService = createMockBooksService();
+    booksService.uploadChildPhoto.mockRejectedValue(new BadRequestException('No photo file provided'));
+    const controller = new BooksController(booksService);
+
+    await expect(controller.uploadChildPhoto(FAKE_USER, 'b-1', undefined)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(booksService.uploadChildPhoto).toHaveBeenCalledWith('u-1', 'b-1', undefined);
+  });
+
+  it('propagates ConflictException when generation is already in progress', async () => {
+    const booksService = createMockBooksService();
+    booksService.uploadChildPhoto.mockRejectedValue(
+      new ConflictException('Child photo cannot be uploaded while generation is in progress'),
+    );
+    const controller = new BooksController(booksService);
+
+    await expect(controller.uploadChildPhoto(FAKE_USER, 'b-1', makeFile())).rejects.toThrow(
+      ConflictException,
+    );
   });
 });
 

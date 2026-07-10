@@ -1,10 +1,26 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { CharacterProfile } from '@book/types';
 import {
   OpenAIStoryGenerationProvider,
   StoryGenerationProviderError,
   buildStoryGenerationPrompt,
 } from './openai-story-generation-provider';
 import type { StoryGenerationInput } from './story-generation-provider';
+
+const DEFAULT_CHARACTER_PROFILE: CharacterProfile = {
+  childName: 'Mia',
+  age: 5,
+  visualDescription: 'a cheerful child with a round friendly face',
+  faceDescription: 'a round, friendly face with a warm smile',
+  hairDescription: 'short wavy brown hair',
+  outfitDescription: 'a bright yellow overall with sneakers',
+  personalitySummary: 'curious, brave, and kind',
+  illustrationStyle: 'warm children book illustration, soft colors, friendly character design',
+  consistencyPrompt:
+    "Mia, a stylized 5-year-old children's-book character with a round, friendly face with a warm smile, short wavy brown hair, wearing a bright yellow overall with sneakers",
+  hasReferencePhoto: false,
+  hasCharacterSheet: false,
+};
 
 function makeInput(overrides: Partial<StoryGenerationInput> = {}): StoryGenerationInput {
   return {
@@ -13,6 +29,7 @@ function makeInput(overrides: Partial<StoryGenerationInput> = {}): StoryGenerati
     childAge: 5,
     theme: 'friendship',
     language: 'en',
+    characterProfile: DEFAULT_CHARACTER_PROFILE,
     ...overrides,
   };
 }

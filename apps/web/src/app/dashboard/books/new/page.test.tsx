@@ -322,6 +322,100 @@ describe('NewBookPage wizard', () => {
     expect(screen.getByRole('button', { name: /creating/i })).toBeDefined();
   });
 
+  // ── Child photo upload ─────────────────────────────────────────────────────
+
+  it('uploads the selected child photo to POST /books/:id/child-photo after creating the book', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK, 201))
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK));
+
+    render(<NewBookPage />);
+
+    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
+    const file = new File(['fake-bytes'], 'oliver.jpg', { type: 'image/jpeg' });
+    const fileInput = screen.getByLabelText(/child's photo/i);
+    await user.upload(fileInput, file);
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/dashboard/books/book-1'));
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const [uploadUrl, uploadInit] = vi.mocked(fetch).mock.calls[1] as [string, RequestInit];
+    expect(uploadUrl).toContain('/books/book-1/child-photo');
+    expect(uploadInit.method).toBe('POST');
+    expect(uploadInit.body).toBeInstanceOf(FormData);
+    expect((uploadInit.body as FormData).get('photo')).toBe(file);
+  });
+
+  it('rejects an oversized or wrong-type photo client-side without calling the upload endpoint', async () => {
+    // applyAccept:false — a real browser's file picker mostly filters by the
+    // input's accept attribute, but drag-and-drop (and some pickers) can
+    // still deliver a mismatched file, which is exactly what the component's
+    // own validation must catch.
+    const user = userEvent.setup({ applyAccept: false });
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
+
+    render(<NewBookPage />);
+
+    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
+    const badFile = new File(['not-an-image'], 'notes.txt', { type: 'text/plain' });
+    const fileInput = screen.getByLabelText(/child's photo/i);
+    await user.upload(fileInput, badFile);
+
+    expect(screen.getByRole('alert').textContent).toMatch(/jpg, png, or webp/i);
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalled());
+    // Only the create call — the rejected file was never attached, so no upload call.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('still navigates to the book detail page when creating without a photo (no upload call at all)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
+
+    render(<NewBookPage />);
+
+    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/dashboard/books/book-1'));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('still navigates to the book detail page even when the photo upload call fails', async () => {
+    const user = userEvent.setup();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK, 201))
+      .mockResolvedValueOnce(mockError(500, 'Server error'));
+
+    render(<NewBookPage />);
+
+    await user.type(screen.getByPlaceholderText(/e\.g\. emma/i), 'Oliver');
+    const file = new File(['fake-bytes'], 'oliver.jpg', { type: 'image/jpeg' });
+    await user.upload(screen.getByLabelText(/child's photo/i), file);
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/dashboard/books/book-1'));
+    errorSpy.mockRestore();
+  });
+
   it('shows an error alert when the API call fails', async () => {
     const user = userEvent.setup();
     vi.mocked(fetch).mockResolvedValueOnce(mockError(500, 'Server error'));

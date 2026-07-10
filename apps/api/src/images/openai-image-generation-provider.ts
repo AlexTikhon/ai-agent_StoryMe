@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
-import type { CharacterCard, GeneratedImageEntry } from '@book/types';
+import type { CharacterCard, CharacterProfile, GeneratedImageEntry } from '@book/types';
 import type {
+  CharacterSheetInput,
   ImageGenerationInput,
   ImageGenerationOutput,
   ImageGenerationProvider,
@@ -46,6 +47,27 @@ export function buildImagePrompt(
     'No text, no captions, no letters, no watermarks, no logos.',
   ].join(' ');
 }
+
+/**
+ * Builds the prompt for a book's standalone character-sheet reference image:
+ * full-body front view, the exact outfit to reuse throughout the book, a
+ * clean plain background, and an explicit stylized/non-photorealistic
+ * instruction — this is the one illustration meant purely as a consistency
+ * aid, never printed as its own PDF page.
+ */
+export function buildCharacterSheetPrompt(characterProfile: CharacterProfile): string {
+  return [
+    "Full-body, front-view children's book character reference sheet.",
+    `Character: ${characterProfile.consistencyPrompt}.`,
+    `Outfit: ${characterProfile.outfitDescription}. This exact outfit must be used consistently throughout the entire book.`,
+    `Illustration style: ${characterProfile.illustrationStyle}.`,
+    'Clean plain background, neutral even lighting, character centered and fully visible head to toe.',
+    'This is a stylized, warm, child-safe illustrated caricature — not a realistic photographic portrait.',
+    'No text, no captions, no letters, no watermarks, no logos.',
+  ].join(' ');
+}
+
+const CHARACTER_SHEET_SIZE = '1024x1536';
 
 function sizeForEntry(entry: Pick<GeneratedImageEntry, 'width' | 'height'>): string {
   if (entry.width > entry.height) return '1536x1024';
@@ -114,7 +136,20 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     }
 
     const prompt = buildImagePrompt(input.characterCard, input.entry);
+    return this.requestImage(prompt, sizeForEntry(input.entry), 'Image generation');
+  }
 
+  async generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput> {
+    const prompt = buildCharacterSheetPrompt(input.characterProfile);
+    return this.requestImage(prompt, CHARACTER_SHEET_SIZE, 'Character sheet generation');
+  }
+
+  /** Shared OpenAI images/generations call for both generateImage and generateCharacterSheet. */
+  private async requestImage(
+    prompt: string,
+    size: string,
+    logLabel: string,
+  ): Promise<ImageGenerationOutput> {
     let response: Response;
     try {
       response = await fetchWithRetry({
@@ -130,18 +165,18 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
             model: this.model,
             prompt,
             n: 1,
-            size: sizeForEntry(input.entry),
+            size,
           }),
         },
         timeoutMs: this.timeoutMs,
         maxRetries: this.maxRetries,
         onAttempt: (attempt, maxAttempts) => {
           this.logger.log(
-            `Image generation request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
+            `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
           );
         },
         onRetry: (attempt, reason) => {
-          this.logger.warn(`Image generation attempt ${attempt} failed (${reason}); retrying`);
+          this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
         },
       });
     } catch (err) {
@@ -151,16 +186,14 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
           : err instanceof Error
             ? err.message
             : String(err);
-      this.logger.error(
-        `Image generation failed: provider=openai model=${this.model} reason=${message}`,
-      );
+      this.logger.error(`${logLabel} failed: provider=openai model=${this.model} reason=${message}`);
       throw new ImageGenerationProviderError(`OpenAI image request failed: ${message}`, err);
     }
 
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
       this.logger.error(
-        `Image generation failed: provider=openai model=${this.model} status=${response.status}`,
+        `${logLabel} failed: provider=openai model=${this.model} status=${response.status}`,
       );
       throw new ImageGenerationProviderError(
         `OpenAI image request failed with status ${response.status}: ${bodyText.slice(0, 500)}`,
@@ -179,7 +212,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       throw new ImageGenerationProviderError('OpenAI image response did not include b64_json data');
     }
 
-    this.logger.log(`Image generation succeeded: provider=openai model=${this.model}`);
+    this.logger.log(`${logLabel} succeeded: provider=openai model=${this.model}`);
     return { buffer: Buffer.from(b64, 'base64'), contentType: 'image/png' };
   }
 }

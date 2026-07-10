@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   apiFetch,
   apiFetchBlob,
+  apiFetchForm,
   AUTH_EXPIRED_EVENT,
   REFRESH_LOCK_KEY,
   REFRESH_RESULT_KEY,
@@ -260,6 +261,40 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
       const headers = init.headers as Record<string, string>;
       expect(headers['Authorization']).toBe('Bearer access-token-123');
       expect(result).toBe(blob);
+    });
+  });
+
+  describe('apiFetchForm', () => {
+    it('sends the FormData body without a Content-Type header and attaches Authorization', async () => {
+      setAccessToken('access-token-123');
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk({ id: 'book-1' }));
+      const formData = new FormData();
+      formData.append('photo', new File(['bytes'], 'child.jpg', { type: 'image/jpeg' }));
+
+      const result = await apiFetchForm('/books/book-1/child-photo', formData);
+
+      const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      const headers = init.headers as Record<string, string>;
+      expect(init.body).toBe(formData);
+      expect(headers['Content-Type']).toBeUndefined();
+      expect(headers['Authorization']).toBe('Bearer access-token-123');
+      expect(result).toEqual({ id: 'book-1' });
+    });
+
+    it('retries exactly once after a silent refresh on 401', async () => {
+      setAccessToken('expired-token');
+      const formData = new FormData();
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockUnauthorized())
+        .mockResolvedValueOnce(
+          mockOk({ accessToken: 'new-token', user: { id: 'u1', email: 'a@b.com' } }),
+        )
+        .mockResolvedValueOnce(mockOk({ id: 'book-1' }));
+
+      const result = await apiFetchForm('/books/book-1/child-photo', formData);
+
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(result).toEqual({ id: 'book-1' });
     });
   });
 });

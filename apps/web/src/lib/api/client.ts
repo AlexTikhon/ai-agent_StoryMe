@@ -209,6 +209,35 @@ export async function apiFetch<T>(path: string, init?: RequestInit, isRetry = fa
   return res.json() as Promise<T>;
 }
 
+/**
+ * Like apiFetch, but for multipart/form-data uploads (e.g. the child photo
+ * upload). Passes `formData` as the body with no Content-Type header — the
+ * browser sets `multipart/form-data; boundary=...` itself, which apiFetch's
+ * hardcoded `application/json` header would otherwise override incorrectly.
+ */
+export async function apiFetchForm<T>(
+  path: string,
+  formData: FormData,
+  init?: Omit<RequestInit, 'body'>,
+  isRetry = false,
+): Promise<T> {
+  const res = await rawFetch(path, { ...init, method: init?.method ?? 'POST', body: formData }, {});
+
+  if (res.status === 401 && !isRetry && getAuthMode() === 'jwt') {
+    const newToken = await refreshOnce();
+    if (newToken) {
+      return apiFetchForm<T>(path, formData, init, true);
+    }
+  }
+
+  if (!res.ok) {
+    const { message, code } = await parseApiError(res);
+    throw new ApiError(res.status, message, code);
+  }
+
+  return res.json() as Promise<T>;
+}
+
 /** Like apiFetch, but for endpoints that return a binary body (e.g. PDF downloads). */
 export async function apiFetchBlob(
   path: string,

@@ -6,6 +6,7 @@ import {
   bookLayoutSchema,
   bookPreviewSchema,
   characterCardSchema,
+  characterProfileSchema,
   imageGenerationResultSchema,
   storyPlanSchema,
 } from './books.schemas';
@@ -57,6 +58,12 @@ export function toBookDto(book: Book): BookDto {
       book.id,
     ),
     bookLayout: parseJsonField(bookLayoutSchema, book.bookLayout, 'bookLayout', book.id),
+    characterProfile: parseJsonField(
+      characterProfileSchema,
+      book.characterProfile,
+      'characterProfile',
+      book.id,
+    ),
     previewPdfUrl: book.previewPdfUrl,
     createdAt: book.createdAt.toISOString(),
     updatedAt: book.updatedAt.toISOString(),

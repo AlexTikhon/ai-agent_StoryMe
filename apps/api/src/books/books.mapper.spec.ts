@@ -25,6 +25,10 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     bookPreview: null,
     imageGenerationResult: null,
     bookLayout: null,
+    childPhotoAssetKey: null,
+    childPhotoContentType: null,
+    characterProfile: null,
+    characterSheetAssetKey: null,
     chapters: null,
     imagePrompts: null,
     qualityReport: null,
@@ -77,6 +81,20 @@ const VALID_CHARACTER_CARD = {
   narrativeDescription: 'Mia loves adventures.',
 };
 
+const VALID_CHARACTER_PROFILE = {
+  childName: 'Mia',
+  age: 5,
+  visualDescription: 'a cheerful child with a round friendly face',
+  faceDescription: 'a round, friendly face with a warm smile',
+  hairDescription: 'short wavy brown hair',
+  outfitDescription: 'a bright yellow overall with sneakers',
+  personalitySummary: 'curious, brave, and kind',
+  illustrationStyle: 'warm children book illustration, soft colors, friendly character design',
+  consistencyPrompt: "Mia, a stylized 5-year-old children's-book character",
+  hasReferencePhoto: false,
+  hasCharacterSheet: false,
+};
+
 describe('toBookDto', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -90,6 +108,26 @@ describe('toBookDto', () => {
     expect(dto.bookPreview).toBeNull();
     expect(dto.imageGenerationResult).toBeNull();
     expect(dto.bookLayout).toBeNull();
+    expect(dto.characterProfile).toBeNull();
+  });
+
+  it('passes through a characterProfile that matches the expected shape', () => {
+    const book = makeBook({
+      characterProfile: VALID_CHARACTER_PROFILE as unknown as Book['characterProfile'],
+    });
+
+    const dto = toBookDto(book);
+
+    expect(dto.characterProfile).toEqual(VALID_CHARACTER_PROFILE);
+  });
+
+  it('degrades a malformed characterProfile to null instead of throwing or leaking it', () => {
+    const malformed = { childName: 'Mia' } as unknown as Book['characterProfile'];
+    const book = makeBook({ characterProfile: malformed });
+
+    const dto = toBookDto(book);
+
+    expect(dto.characterProfile).toBeNull();
   });
 
   it('passes through a characterCard that matches the expected shape', () => {

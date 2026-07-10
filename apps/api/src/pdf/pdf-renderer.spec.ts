@@ -388,6 +388,34 @@ describe('renderStorybookPdf image embedding', () => {
   });
 });
 
+// ── Readability: cover/back-cover text needs a backdrop over busy images ─────
+
+describe('renderStorybookPdf cover/back-cover text readability', () => {
+  it('draws a translucent backdrop (ExtGState alpha) behind cover text', async () => {
+    const layout = makeLayout([makeCoverEntry()]);
+    const buf = await renderStorybookPdf(layout);
+
+    const raw = buf.toString('latin1');
+    expect(raw).toContain('/ExtGState');
+  });
+
+  it('draws a translucent backdrop behind back-cover text', async () => {
+    const layout = makeLayout([makeBackCoverEntry()]);
+    const buf = await renderStorybookPdf(layout);
+
+    const raw = buf.toString('latin1');
+    expect(raw).toContain('/ExtGState');
+  });
+
+  it('does not draw a backdrop behind interior page text', async () => {
+    const layout = makeLayout([makePageEntry(1)]);
+    const buf = await renderStorybookPdf(layout);
+
+    const raw = buf.toString('latin1');
+    expect(raw).not.toContain('/ExtGState');
+  });
+});
+
 // ── QA: text must never overflow its box (Book Output QA phase) ──────────────
 // computeFittedFontSize is the mechanism renderTextBlock uses to guarantee a
 // text block never bleeds into a neighboring image/text block: it shrinks the

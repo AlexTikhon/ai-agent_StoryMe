@@ -6,12 +6,31 @@ import {
   type BookPreview,
   type ChapterOutline,
   type CharacterCard,
+  type CharacterProfile,
   type GeneratedImageEntry,
   type IllustrationPlan,
   type ImageGenerationResult,
   type PagePlan,
   type StoryPlan,
 } from '@book/types';
+
+/** Literal instructions every page/cover/back-cover illustration prompt must include (item 6/7). */
+export const NO_TEXT_IN_IMAGE_INSTRUCTION = 'No text in image.';
+export const PRESERVE_APPEARANCE_INSTRUCTION = "Do not change the main character's appearance.";
+
+/** Builds the consistency block appended to every page/cover/back-cover illustration prompt from a book's CharacterProfile. */
+export function buildCharacterConsistencyBlock(characterProfile: CharacterProfile): string {
+  return [
+    characterProfile.consistencyPrompt,
+    `Hairstyle: ${characterProfile.hairDescription}.`,
+    `Face: ${characterProfile.faceDescription}.`,
+    `Outfit: ${characterProfile.outfitDescription}.`,
+    `Approximate age: ${characterProfile.age}.`,
+    `Illustration style: ${characterProfile.illustrationStyle}.`,
+    NO_TEXT_IN_IMAGE_INSTRUCTION,
+    PRESERVE_APPEARANCE_INSTRUCTION,
+  ].join(' ');
+}
 
 export interface StoryGenerationInput {
   bookId: string;
@@ -23,6 +42,8 @@ export interface StoryGenerationInput {
   pageCount?: number | undefined;
   /** User-supplied desired educational message/lesson. When omitted, providers generate a default from theme. */
   educationalMessage?: string | undefined;
+  /** Stylized character description (photo-informed or generic) folded into every page/cover/back-cover illustration prompt for visual consistency. AgentService always builds one before calling generateStory. */
+  characterProfile: CharacterProfile;
 }
 
 /** Clamps a requested page count into [MIN_BOOK_PAGE_COUNT, MAX_BOOK_PAGE_COUNT], defaulting when absent/invalid — the last line of defense behind CreateBookDto's own bounds. */
@@ -621,22 +642,25 @@ function buildStoryDraft(
 
 function buildIllustrationPlan(
   characterCard: CharacterCard,
+  characterProfile: CharacterProfile,
   storyPlanWithDraft: StoryPlan & { pages: Array<PagePlan & { storyText: string }> },
 ): StoryPlan & { pages: Array<PagePlan & { storyText: string; illustration: IllustrationPlan }> } {
+  const consistencyBlock = buildCharacterConsistencyBlock(characterProfile);
+
   const pages = storyPlanWithDraft.pages.map(
     (page): PagePlan & { storyText: string; illustration: IllustrationPlan } => {
       const chapter = storyPlanWithDraft.chapters[page.chapterIndex];
       const mood = chapter ? `${chapter.emotionalArc}, child-friendly` : 'joyful, child-friendly';
 
       const illustration: IllustrationPlan = {
-        prompt: `${characterCard.visualAnchor}, ${page.sceneDescription}. ${page.illustrationPrompt}`,
+        prompt: `${characterCard.visualAnchor}, ${page.sceneDescription}. ${page.illustrationPrompt} ${consistencyBlock}`,
         negativePrompt: 'blurry, distorted face, extra limbs, scary, violent, text, watermark',
-        style: 'warm children book illustration, soft colors, friendly character design',
+        style: characterProfile.illustrationStyle,
         aspectRatio: '4:3',
         characters: [characterCard.name],
         setting: page.sceneDescription,
         mood,
-        consistencyNotes: `Keep ${characterCard.name} visually consistent: ${characterCard.visualAnchor}. Use the same color palette and character design throughout.`,
+        consistencyNotes: `Keep ${characterCard.name} visually consistent: ${characterCard.visualAnchor}. ${consistencyBlock}`,
       };
 
       return { ...page, storyText: page.storyText as string, illustration };
@@ -651,6 +675,7 @@ const PAGE_LAYOUTS = ['image_top_text_bottom', 'text_left_image_right'] as const
 export function buildBookPreview(
   childProfile: { childName: string; childAge: number; language: string },
   characterCard: CharacterCard,
+  characterProfile: CharacterProfile,
   storyPlanFinal: StoryPlan & {
     pages: Array<PagePlan & { storyText: string; illustration: IllustrationPlan }>;
   },
@@ -659,6 +684,7 @@ export function buildBookPreview(
   const strings = STRINGS_BY_LANGUAGE[resolveTemplateLanguage(language)];
   const { title, theme, educationalMessage } = storyPlanFinal;
   const subtitle = storyPlanFinal.subtitle ?? strings.subtitle(theme, childName);
+  const consistencyBlock = buildCharacterConsistencyBlock(characterProfile);
 
   const pages = storyPlanFinal.pages.map((page, index) => ({
     pageNumber: page.pageNumber,
@@ -676,7 +702,11 @@ export function buildBookPreview(
       title,
       subtitle,
       childName,
-      illustrationPrompt: `${characterCard.visualAnchor}, standing on the cover of a children's book titled "${title}", warm and inviting, watercolor style`,
+      // Deliberately never quotes the book title here — asking an image
+      // model to render title text produces broken/cropped text inside the
+      // artwork. The PDF renderer overlays the real title as PDF text
+      // separately (see pdf-renderer.ts).
+      illustrationPrompt: `${characterCard.visualAnchor}, standing on the cover of a children's picture book, warm and inviting, watercolor style. ${consistencyBlock}`,
     },
     pages,
     backCover: {
@@ -696,6 +726,7 @@ export function buildBookPreview(
 export function buildImageGenerationResult(
   bookId: string,
   bookPreview: BookPreview,
+  characterProfile: CharacterProfile,
 ): ImageGenerationResult {
   const images: GeneratedImageEntry[] = [];
 
@@ -731,7 +762,10 @@ export function buildImageGenerationResult(
   images.push({
     id: `${bookId}-back-cover`,
     kind: 'back_cover',
-    prompt: `Back cover for "${bookPreview.title}", child-friendly decorative design`,
+    // Deliberately never quotes the book title — see the cover prompt
+    // comment in buildBookPreview above; the PDF renderer overlays real text
+    // separately.
+    prompt: `Decorative back-cover illustration for a children's picture book, warm and inviting themed background, no title or text. ${buildCharacterConsistencyBlock(characterProfile)}`,
     provider: 'local_mock',
     status: 'complete',
     imageUrl: `/mock-images/${bookId}/back-cover.svg`,
@@ -760,7 +794,8 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
   readonly providerName = 'mock' as const;
 
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
-    const { bookId, childName, childAge, theme, language, educationalMessage } = input;
+    const { bookId, childName, childAge, theme, language, educationalMessage, characterProfile } =
+      input;
     const pageCount = resolveTargetPageCount(input.pageCount);
     const lang = resolveTemplateLanguage(language);
 
@@ -768,13 +803,14 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
     const storyPlan = buildStoryPlan(childName, theme, pageCount, lang, educationalMessage);
     const pages = buildPagePlan(storyPlan, pageCount, lang);
     const storyPlanWithDraft = buildStoryDraft(characterCard, { ...storyPlan, pages }, lang);
-    const storyPlanFinal = buildIllustrationPlan(characterCard, storyPlanWithDraft);
+    const storyPlanFinal = buildIllustrationPlan(characterCard, characterProfile, storyPlanWithDraft);
     const bookPreview = buildBookPreview(
       { childName, childAge, language },
       characterCard,
+      characterProfile,
       storyPlanFinal,
     );
-    const imageGenerationResult = buildImageGenerationResult(bookId, bookPreview);
+    const imageGenerationResult = buildImageGenerationResult(bookId, bookPreview, characterProfile);
 
     return { characterCard, storyPlan: storyPlanFinal, bookPreview, imageGenerationResult };
   }

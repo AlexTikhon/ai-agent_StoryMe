@@ -1,4 +1,4 @@
-import type { CharacterCard, GeneratedImageEntry } from '@book/types';
+import type { CharacterCard, CharacterProfile, GeneratedImageEntry } from '@book/types';
 import { generateMockImagePng } from './mock-image-producer';
 import type { ImageAssetContentType } from './image-asset-storage';
 
@@ -13,12 +13,19 @@ export interface ImageGenerationOutput {
   contentType: ImageAssetContentType;
 }
 
+/** Input for generating a book's character-sheet reference image — not a GeneratedImageEntry, since it's never rendered as its own PDF page. */
+export interface CharacterSheetInput {
+  bookId: string;
+  characterProfile: CharacterProfile;
+}
+
 /**
  * Internal boundary for producing the actual image bytes for one generated
- * image entry (cover/page/back_cover). AgentService depends on this
- * interface rather than calling generateMockImagePng directly, so a future
- * real-image provider can implement it and return the same output shape
- * without touching AgentService, ImageAssetStorage, or the PDF renderer.
+ * image entry (cover/page/back_cover), and for the standalone character-sheet
+ * reference image. AgentService depends on this interface rather than
+ * calling generateMockImagePng directly, so a future real-image provider can
+ * implement it and return the same output shape without touching
+ * AgentService, ImageAssetStorage, or the PDF renderer.
  */
 export interface ImageGenerationProvider {
   /** 'mock' | 'openai' — surfaced only for generation diagnostics, never used for control flow. */
@@ -26,6 +33,7 @@ export interface ImageGenerationProvider {
   /** Underlying model identifier, if applicable (mock providers have none). */
   readonly modelName?: string;
   generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput>;
+  generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput>;
 }
 
 export const IMAGE_GENERATION_PROVIDER_TOKEN = 'IMAGE_GENERATION_PROVIDER';
@@ -41,6 +49,13 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
   async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {
     return {
       buffer: generateMockImagePng(input.entry.seed),
+      contentType: 'image/png',
+    };
+  }
+
+  async generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput> {
+    return {
+      buffer: generateMockImagePng(`${input.bookId}:character_sheet:0`),
       contentType: 'image/png',
     };
   }

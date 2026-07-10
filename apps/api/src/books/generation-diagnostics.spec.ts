@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { AgentLog, Book, GenerationJob } from '@prisma/client';
-import { buildGenerationDiagnostics, buildGenerationMetadata } from './generation-diagnostics';
+import {
+  buildCharacterPersonalizationDiagnostics,
+  buildGenerationDiagnostics,
+  buildGenerationMetadata,
+} from './generation-diagnostics';
+import { PRESERVE_APPEARANCE_INSTRUCTION } from '../agent/story-generation-provider';
 
 function makeGenerationJob(overrides: Partial<GenerationJob> = {}): GenerationJob {
   return {
@@ -45,6 +50,10 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     } as unknown as Book['bookPreview'],
     imageGenerationResult: null,
     bookLayout: null,
+    childPhotoAssetKey: null,
+    childPhotoContentType: null,
+    characterProfile: null,
+    characterSheetAssetKey: null,
     chapters: null,
     imagePrompts: null,
     qualityReport: null,
@@ -377,5 +386,73 @@ describe('buildGenerationDiagnostics', () => {
     });
 
     expect(diagnostics.queue.stalledNoWorker).toBe(false);
+  });
+
+  it('includes characterPersonalization diagnostics from the book row', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook(), []);
+    expect(diagnostics.characterPersonalization).toBeDefined();
+  });
+});
+
+describe('buildCharacterPersonalizationDiagnostics', () => {
+  it('is all-false when nothing personalization-related has happened yet', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({ bookPreview: null }),
+    );
+
+    expect(result).toEqual({
+      hasReferencePhoto: false,
+      characterProfileCreated: false,
+      characterSheetGenerated: false,
+      pagePromptsIncludeConsistencyData: false,
+    });
+  });
+
+  it('reflects hasReferencePhoto/characterProfileCreated/characterSheetGenerated from their respective columns', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({
+        bookPreview: null,
+        childPhotoAssetKey: 'b-1/child-photo',
+        characterProfile: { consistencyPrompt: 'Mia, ...' } as unknown as Book['characterProfile'],
+        characterSheetAssetKey: 'b-1/character-sheet',
+      }),
+    );
+
+    expect(result.hasReferencePhoto).toBe(true);
+    expect(result.characterProfileCreated).toBe(true);
+    expect(result.characterSheetGenerated).toBe(true);
+  });
+
+  it('sets pagePromptsIncludeConsistencyData=true only when every page prompt includes the marker phrase', () => {
+    const allIncluded = buildCharacterPersonalizationDiagnostics(
+      makeBook({
+        bookPreview: {
+          pages: [
+            { pageNumber: 1, illustrationPrompt: `Scene one. ${PRESERVE_APPEARANCE_INSTRUCTION}` },
+            { pageNumber: 2, illustrationPrompt: `Scene two. ${PRESERVE_APPEARANCE_INSTRUCTION}` },
+          ],
+        } as unknown as Book['bookPreview'],
+      }),
+    );
+    expect(allIncluded.pagePromptsIncludeConsistencyData).toBe(true);
+
+    const partiallyIncluded = buildCharacterPersonalizationDiagnostics(
+      makeBook({
+        bookPreview: {
+          pages: [
+            { pageNumber: 1, illustrationPrompt: `Scene one. ${PRESERVE_APPEARANCE_INSTRUCTION}` },
+            { pageNumber: 2, illustrationPrompt: 'Scene two, no consistency instructions.' },
+          ],
+        } as unknown as Book['bookPreview'],
+      }),
+    );
+    expect(partiallyIncluded.pagePromptsIncludeConsistencyData).toBe(false);
+  });
+
+  it('is false when bookPreview has no pages yet', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({ bookPreview: { pages: [] } as unknown as Book['bookPreview'] }),
+    );
+    expect(result.pagePromptsIncludeConsistencyData).toBe(false);
   });
 });

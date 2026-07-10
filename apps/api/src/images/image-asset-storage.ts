@@ -8,12 +8,13 @@ import { readCloudConfig, type CloudPdfStorageConfig } from '../pdf/pdf-storage'
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
-export type ImageAssetContentType = 'image/png' | 'image/jpeg' | 'image/svg+xml';
+export type ImageAssetContentType = 'image/png' | 'image/jpeg' | 'image/svg+xml' | 'image/webp';
 
 const CONTENT_TYPE_EXTENSIONS: Record<ImageAssetContentType, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/svg+xml': 'svg',
+  'image/webp': 'webp',
 };
 
 export interface ImageAssetRef {
@@ -230,6 +231,22 @@ export function imageAssetKey(
     return `${bookId}/page-${pageNumber}`;
   }
   return `${bookId}/${kind === 'back_cover' ? 'back-cover' : kind}`;
+}
+
+/**
+ * Stable image asset key for a book's uploaded child reference photo. Stored
+ * and read through the same local/cloud ImageAssetStorage driver as
+ * generated illustrations (local dev path: tmp/images/<bookId>/child-photo.*,
+ * never served over HTTP) — deliberately not a dedicated storage class, since
+ * "safe non-public storage path" is already satisfied by this driver.
+ */
+export function childPhotoAssetKey(bookId: string): string {
+  return `${bookId}/child-photo`;
+}
+
+/** Stable image asset key for a book's generated character-sheet reference image. Not part of BookLayoutEntry — never rendered as its own PDF page. */
+export function characterSheetAssetKey(bookId: string): string {
+  return `${bookId}/character-sheet`;
 }
 
 /**

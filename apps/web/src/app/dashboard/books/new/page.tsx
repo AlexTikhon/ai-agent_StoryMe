@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, type FormEvent } from 'react';
+import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   DEFAULT_BOOK_PAGE_COUNT,
@@ -22,6 +22,8 @@ interface WizardValues {
   theme: string;
   educationalMessage: string;
   pageCount: number;
+  /** Optional child reference photo — uploaded separately right after the book is created. */
+  childPhoto: File | null;
 }
 
 const DEFAULT_VALUES: WizardValues = {
@@ -31,7 +33,12 @@ const DEFAULT_VALUES: WizardValues = {
   theme: '',
   educationalMessage: '',
   pageCount: DEFAULT_BOOK_PAGE_COUNT,
+  childPhoto: null,
 };
+
+// Mirrors apps/api/src/books/child-photo.constants.ts.
+const MAX_CHILD_PHOTO_BYTES = 5 * 1024 * 1024;
+const ALLOWED_CHILD_PHOTO_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 const PAGE_COUNT_OPTIONS: number[] = Array.from(
   { length: MAX_BOOK_PAGE_COUNT - MIN_BOOK_PAGE_COUNT + 1 },
@@ -80,6 +87,16 @@ export default function NewBookPage() {
         ...(educationalMessage && { educationalMessage }),
         pageCount: values.pageCount,
       });
+      if (values.childPhoto) {
+        // Best-effort: the book itself was created successfully, so a photo
+        // upload failure must not block navigation — personalization is an
+        // enhancement, not a requirement for book creation to work.
+        try {
+          await booksApi.uploadChildPhoto(created.id, values.childPhoto);
+        } catch (err) {
+          console.error('Child photo upload failed', err);
+        }
+      }
       router.push(`/dashboard/books/${created.id}`);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to create book');
@@ -175,10 +192,44 @@ interface StepChildProps {
 }
 
 function StepChild({ values, onChange, onNext }: StepChildProps) {
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (!values.childName.trim()) return;
     onNext();
+  };
+
+  const handlePhotoChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = '';
+    if (!file) return;
+
+    if (!ALLOWED_CHILD_PHOTO_MIME_TYPES.includes(file.type)) {
+      setPhotoError('Please choose a JPG, PNG, or WEBP photo.');
+      return;
+    }
+    if (file.size > MAX_CHILD_PHOTO_BYTES) {
+      setPhotoError('Photo must be smaller than 5MB.');
+      return;
+    }
+
+    setPhotoError(null);
+    setPhotoPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+    onChange({ childPhoto: file });
+  };
+
+  const removePhoto = () => {
+    setPhotoPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setPhotoError(null);
+    onChange({ childPhoto: null });
   };
 
   return (
@@ -217,6 +268,44 @@ function StepChild({ values, onChange, onNext }: StepChildProps) {
             onChange={(e) => onChange({ childAge: Number(e.target.value) })}
             className={inputCls}
           />
+        </label>
+        <label className="flex flex-col gap-1.5 sm:col-span-2">
+          <span className="text-sm font-medium text-text-secondary">
+            Child&apos;s photo <span className="text-text-muted">(optional)</span>
+          </span>
+          <span className="text-xs text-text-muted">
+            Used only as inspiration for a stylized, illustrated storybook character — never
+            placed directly in the book. JPG, PNG, or WEBP, up to 5MB.
+          </span>
+          {photoPreviewUrl ? (
+            <div className="mt-1 flex items-center gap-3">
+              {/* eslint-disable-next-line @next/next/no-img-element -- ephemeral local object URL preview, not a served asset */}
+              <img
+                src={photoPreviewUrl}
+                alt="Selected child photo preview"
+                className="h-16 w-16 rounded-lg object-cover"
+              />
+              <button
+                type="button"
+                onClick={removePhoto}
+                className="text-sm font-medium text-danger-base underline"
+              >
+                Remove photo
+              </button>
+            </div>
+          ) : (
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={handlePhotoChange}
+              className="text-sm text-text-secondary"
+            />
+          )}
+          {photoError && (
+            <p role="alert" className="text-sm text-danger-base">
+              {photoError}
+            </p>
+          )}
         </label>
       </div>
       <div className="mt-6 flex justify-end">
@@ -366,6 +455,12 @@ function StepReview({ values, onBack, onSubmit, submitting, error }: StepReviewP
             {values.childName}, age {values.childAge}
           </dd>
         </div>
+        {values.childPhoto && (
+          <div className="flex justify-between py-2.5">
+            <dt className="font-medium text-text-muted">Photo</dt>
+            <dd className="text-text-primary">Attached</dd>
+          </div>
+        )}
         <div className="flex justify-between py-2.5">
           <dt className="font-medium text-text-muted">Language</dt>
           <dd className="text-text-primary">{langLabel(values.language)}</dd>

@@ -46,6 +46,30 @@ export interface CharacterCard {
   narrativeDescription: string;
 }
 
+// ─── Personalized character profile ───────────────────────────────────────────
+
+/**
+ * Stylized, child-safe character description built from the child's name/age
+ * and (optionally) an uploaded reference photo. Deliberately text-only and
+ * non-identifying — never a realistic portrait — so it's safe to expose on
+ * BookDto. `consistencyPrompt` is the canonical fragment folded into every
+ * page/cover/back-cover illustration prompt so the character stays visually
+ * consistent across the book. See CharacterProfileProvider.
+ */
+export interface CharacterProfile {
+  childName: string;
+  age: number;
+  visualDescription: string;
+  faceDescription: string;
+  hairDescription: string;
+  outfitDescription: string;
+  personalitySummary: string;
+  illustrationStyle: string;
+  consistencyPrompt: string;
+  hasReferencePhoto: boolean;
+  hasCharacterSheet: boolean;
+}
+
 // ─── Story ───────────────────────────────────────────────────────────────────
 
 export interface ChapterOutline {
@@ -409,6 +433,8 @@ export interface BookDto {
   bookPreview?: BookPreview | null;
   imageGenerationResult?: ImageGenerationResult | null;
   bookLayout?: BookLayout | null;
+  /** Stylized, non-identifying character description (Phase: personalized characters). Never includes photo bytes. */
+  characterProfile?: CharacterProfile | null;
   /** Fetched via GET /api/books/:id/pdf/preview (auth required). null until pdf_render completes. */
   previewPdfUrl?: string | null;
   createdAt: string;
@@ -459,6 +485,23 @@ export interface PdfStorageDiagnostics {
 }
 
 /**
+ * Safe, non-secret view of the personalized-character pipeline for a book —
+ * surfaced via GenerationDiagnosticsDto.characterPersonalization. Each flag
+ * answers one debugging question without exposing the photo, profile prose,
+ * or prompt text itself.
+ */
+export interface CharacterPersonalizationDiagnostics {
+  /** Whether a child reference photo was uploaded for this book. */
+  hasReferencePhoto: boolean;
+  /** Whether a CharacterProfile was built (from the photo and/or text inputs). */
+  characterProfileCreated: boolean;
+  /** Whether a character-sheet reference image was generated. */
+  characterSheetGenerated: boolean;
+  /** Whether every planned page's illustration prompt includes the character-consistency instructions. */
+  pagePromptsIncludeConsistencyData: boolean;
+}
+
+/**
  * Response from GET /books/:id/generation-diagnostics — safe, non-secret
  * inspection data for debugging a book's generation run. Never includes
  * OPENAI_API_KEY, prompts, generated image bytes/base64, or raw provider
@@ -477,4 +520,6 @@ export interface GenerationDiagnosticsDto {
   pdfStorage: PdfStorageDiagnostics;
   /** BullMQ generation-queue health — see QueueDiagnostics. */
   queue: QueueDiagnostics;
+  /** Personalized-character pipeline status — see CharacterPersonalizationDiagnostics. */
+  characterPersonalization: CharacterPersonalizationDiagnostics;
 }

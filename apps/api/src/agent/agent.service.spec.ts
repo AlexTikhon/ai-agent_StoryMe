@@ -13,6 +13,7 @@ import {
   MockImageGenerationProvider,
   type ImageGenerationProvider,
 } from '../images/image-generation-provider';
+import { MockCharacterProfileProvider } from './character-profile-provider';
 
 vi.mock('../pdf/pdf-renderer', () => ({
   renderStorybookPdf: vi.fn(),
@@ -42,6 +43,10 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     bookPreview: null,
     imageGenerationResult: null,
     bookLayout: null,
+    childPhotoAssetKey: null,
+    childPhotoContentType: null,
+    characterProfile: null,
+    characterSheetAssetKey: null,
     chapters: null,
     imagePrompts: null,
     qualityReport: null,
@@ -105,6 +110,7 @@ describe('AgentService', () => {
       mockImageAssetStorage as unknown as ImageAssetStorage,
       new MockStoryGenerationProvider(),
       new MockImageGenerationProvider(),
+      new MockCharacterProfileProvider(),
     );
     vi.mocked(renderStorybookPdf).mockResolvedValue(Buffer.from('%PDF-1.4 mock'));
     mockPdfStorage.savePreviewPdf.mockResolvedValue({
@@ -682,7 +688,8 @@ describe('AgentService', () => {
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
       const images = result.images as Array<Record<string, unknown>>;
-      expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length);
+      // +1 for the char_build character-sheet save.
+      expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length + 1);
     });
 
     it('saves each mock image asset with a non-empty PNG buffer under the matching key', async () => {
@@ -715,7 +722,16 @@ describe('AgentService', () => {
     it('marks the book failed at the pdf_render step when a mock image save fails (that page would otherwise render without its illustration)', async () => {
       const book = makeBook();
       setupMocks();
-      mockImageAssetStorage.saveImageAsset.mockRejectedValueOnce(new Error('disk full'));
+      // The character-sheet save (char_build) is always the first
+      // saveImageAsset call — let it succeed, then fail the next (first
+      // per-image) call.
+      mockImageAssetStorage.saveImageAsset
+        .mockResolvedValueOnce({
+          key: 'b-1/character-sheet',
+          path: 'b-1/character-sheet',
+          contentType: 'image/png' as const,
+        })
+        .mockRejectedValueOnce(new Error('disk full'));
 
       await service.startBookGeneration(book);
 
@@ -729,7 +745,16 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
       const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-      mockImageAssetStorage.saveImageAsset.mockRejectedValueOnce(new Error('disk full'));
+      // The character-sheet save (char_build) is always the first
+      // saveImageAsset call — let it succeed, then fail the next (first
+      // per-image) call.
+      mockImageAssetStorage.saveImageAsset
+        .mockResolvedValueOnce({
+          key: 'b-1/character-sheet',
+          path: 'b-1/character-sheet',
+          contentType: 'image/png' as const,
+        })
+        .mockRejectedValueOnce(new Error('disk full'));
 
       await service.startBookGeneration(book);
 
@@ -737,7 +762,8 @@ describe('AgentService', () => {
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
       const images = result.images as Array<Record<string, unknown>>;
-      expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length);
+      // +1 for the char_build character-sheet save.
+      expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length + 1);
       warnSpy.mockRestore();
     });
 
@@ -756,6 +782,10 @@ describe('AgentService', () => {
             }
             return { buffer: Buffer.from('fake-png'), contentType: 'image/png' as const };
           }),
+          generateCharacterSheet: vi.fn().mockResolvedValue({
+            buffer: Buffer.from('fake-png'),
+            contentType: 'image/png' as const,
+          }),
         };
         return new AgentService(
           prisma as never,
@@ -763,6 +793,7 @@ describe('AgentService', () => {
           mockImageAssetStorage as unknown as ImageAssetStorage,
           new MockStoryGenerationProvider(),
           failingImageProvider,
+          new MockCharacterProfileProvider(),
         );
       }
 
@@ -779,7 +810,14 @@ describe('AgentService', () => {
         expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
         expect(renderStorybookPdf).not.toHaveBeenCalled();
         expect(mockPdfStorage.savePreviewPdf).not.toHaveBeenCalled();
-        expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
+        // Only the char_build character-sheet save happens — per-page/cover
+        // illustration generation is what's failing here.
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(1);
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
+          'b-1/character-sheet',
+          expect.any(Buffer),
+          'image/png',
+        );
         warnSpy.mockRestore();
       });
 
@@ -852,6 +890,10 @@ describe('AgentService', () => {
             buffer: Buffer.from('fake-png'),
             contentType: 'image/png' as const,
           }),
+          generateCharacterSheet: vi.fn().mockResolvedValue({
+            buffer: Buffer.from('fake-png'),
+            contentType: 'image/png' as const,
+          }),
         };
       }
 
@@ -880,13 +922,15 @@ describe('AgentService', () => {
             mockImageAssetStorage as unknown as ImageAssetStorage,
             new MockStoryGenerationProvider(),
             realProvider,
+            new MockCharacterProfileProvider(),
           );
           setupMocks();
 
           await realService.startBookGeneration(book);
 
           expect(realProvider.generateImage).toHaveBeenCalledTimes(2);
-          expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(2);
+          // +1 for the char_build character-sheet save.
+          expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(3);
 
           const updateArg = prisma.book.update.mock.calls[0]?.[0];
           const imageGenerationResult = updateArg?.data?.imageGenerationResult as Record<
@@ -917,7 +961,8 @@ describe('AgentService', () => {
           const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
           const images = result.images as Array<Record<string, unknown>>;
           expect(images.length).toBeGreaterThan(2);
-          expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length);
+          // +1 for the char_build character-sheet save.
+          expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(images.length + 1);
         });
       });
 
@@ -931,6 +976,7 @@ describe('AgentService', () => {
             mockImageAssetStorage as unknown as ImageAssetStorage,
             new MockStoryGenerationProvider(),
             realProvider,
+            new MockCharacterProfileProvider(),
           );
           setupMocks();
 
@@ -1373,6 +1419,7 @@ describe('AgentService', () => {
           mockImageAssetStorage as unknown as ImageAssetStorage,
           failingProvider,
           new MockImageGenerationProvider(),
+          new MockCharacterProfileProvider(),
         );
       }
 
@@ -1394,11 +1441,13 @@ describe('AgentService', () => {
             failedStep: 'story_plan',
             generationTimeMs: expect.any(Number),
             aiModelVersions: { story: 'unknown', image: 'mock' },
+            characterProfile: expect.any(Object),
+            characterSheetAssetKey: expect.any(String),
           },
         });
       });
 
-      it('does not attempt to save image assets, build layout, or render a PDF', async () => {
+      it('does not attempt to save per-page/cover image assets, build layout, or render a PDF (the char_build character sheet still saves, independent of story generation)', async () => {
         const book = makeBook();
         prisma.book.update.mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
@@ -1406,13 +1455,18 @@ describe('AgentService', () => {
 
         await failingService.startBookGeneration(book);
 
-        expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(1);
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
+          'b-1/character-sheet',
+          expect.any(Buffer),
+          'image/png',
+        );
         expect(renderStorybookPdf).not.toHaveBeenCalled();
         expect(mockPdfStorage.savePreviewPdf).not.toHaveBeenCalled();
         expect(prisma.book.update).toHaveBeenCalledOnce();
       });
 
-      it('writes a single story_plan AgentLog entry with status error', async () => {
+      it('writes a char_build AgentLog entry plus a story_plan AgentLog entry with status error', async () => {
         const book = makeBook();
         prisma.book.update.mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
@@ -1424,10 +1478,12 @@ describe('AgentService', () => {
         const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
           Record<string, unknown>
         >;
-        expect(entries).toHaveLength(1);
-        expect(entries[0]?.step).toBe('story_plan');
-        expect(entries[0]?.status).toBe('error');
-        expect(entries[0]?.error).toBe('bad prompt');
+        expect(entries).toHaveLength(2);
+        const charBuildEntry = entries.find((e) => e.step === 'char_build');
+        expect(charBuildEntry?.status).toBe('success');
+        const storyPlanEntry = entries.find((e) => e.step === 'story_plan');
+        expect(storyPlanEntry?.status).toBe('error');
+        expect(storyPlanEntry?.error).toBe('bad prompt');
       });
     });
 
@@ -1444,6 +1500,7 @@ describe('AgentService', () => {
           mockImageAssetStorage as unknown as ImageAssetStorage,
           { generateStory },
           new MockImageGenerationProvider(),
+          new MockCharacterProfileProvider(),
         );
 
         await spyingService.startBookGeneration(book);
@@ -1454,6 +1511,7 @@ describe('AgentService', () => {
           childAge: 5,
           theme: 'friendship',
           language: 'en',
+          characterProfile: expect.any(Object),
         });
       });
     });
@@ -1516,6 +1574,7 @@ describe('AgentService', () => {
           mockImageAssetStorage as unknown as ImageAssetStorage,
           openaiStoryProvider,
           new MockImageGenerationProvider(),
+          new MockCharacterProfileProvider(),
         );
 
         await openaiService.startBookGeneration(book);
@@ -1636,6 +1695,7 @@ describe('AgentService', () => {
           mockImageAssetStorage as unknown as ImageAssetStorage,
           noImageForPage2Provider,
           new MockImageGenerationProvider(),
+          new MockCharacterProfileProvider(),
         );
 
         await serviceWithGap.startBookGeneration(book);

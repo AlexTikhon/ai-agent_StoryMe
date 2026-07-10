@@ -4,6 +4,7 @@ import { renderStorybookPdf, type ImageBufferResolver } from '../pdf/pdf-rendere
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import {
   buildImageBufferResolver,
+  characterSheetAssetKey,
   imageAssetKey,
   IMAGE_ASSET_STORAGE_TOKEN,
   type ImageAssetStorage,
@@ -20,6 +21,7 @@ import type {
   BookLayoutEntry,
   BookPreview,
   CharacterCard,
+  CharacterProfile,
   GeneratedImageEntry,
   ImageGenerationResult,
 } from '@book/types';
@@ -28,6 +30,11 @@ import {
   type StoryGenerationProvider,
   type StoryGenerationResult,
 } from './story-generation-provider';
+import {
+  CHARACTER_PROFILE_PROVIDER_TOKEN,
+  MockCharacterProfileProvider,
+  type CharacterProfileProvider,
+} from './character-profile-provider';
 
 // ── Layout engine constants ────────────────────────────────────────────────────
 
@@ -265,7 +272,107 @@ export class AgentService {
     private readonly storyGenerationProvider: StoryGenerationProvider,
     @Inject(IMAGE_GENERATION_PROVIDER_TOKEN)
     private readonly imageGenerationProvider: ImageGenerationProvider,
+    @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
+    private readonly characterProfileProvider: CharacterProfileProvider,
   ) {}
+
+  /** Safe fallback profile provider used when the injected (possibly real) CharacterProfileProvider throws — never blocks the pipeline on a flaky vision call. */
+  private readonly fallbackCharacterProfileProvider = new MockCharacterProfileProvider();
+
+  /**
+   * Builds the book's CharacterProfile (from name/age/theme and, if
+   * uploaded, the child's reference photo) and a character-sheet reference
+   * image — the actual work behind the AgentStep.char_build step. Never
+   * throws: a profile-provider failure falls back to a locally-built mock
+   * profile, and a character-sheet failure just leaves
+   * characterProfile.hasCharacterSheet = false, so neither can fail the
+   * whole book (matching the per-image failure tolerance elsewhere in this
+   * pipeline).
+   */
+  private async buildCharacterProfileAndSheet(book: Book): Promise<{
+    characterProfile: CharacterProfile;
+    characterSheetKey?: string;
+    providerName: string | null;
+    modelName: string | null;
+    durationMs: number;
+    error?: string;
+  }> {
+    const startedAt = Date.now();
+    const childName = book.childName ?? 'Alex';
+    const childAge = book.childAge ?? 6;
+    const theme = book.theme ?? 'adventure';
+    const language = (book.language as string) ?? 'en';
+
+    let photo: { base64: string; contentType: string } | undefined;
+    if (book.childPhotoAssetKey) {
+      const bytes = await this.imageAssetStorage.getImageAsset(book.childPhotoAssetKey);
+      if (bytes) {
+        photo = {
+          base64: bytes.toString('base64'),
+          contentType: book.childPhotoContentType ?? 'image/jpeg',
+        };
+      } else {
+        this.logger.warn(
+          `Book ${book.id} has childPhotoAssetKey "${book.childPhotoAssetKey}" but no bytes were found in image storage; building character profile without a photo.`,
+        );
+      }
+    }
+
+    let providerName = this.characterProfileProvider.providerName ?? null;
+    const modelName = this.characterProfileProvider.modelName ?? null;
+    let characterProfile: CharacterProfile;
+    let error: string | undefined;
+    try {
+      characterProfile = await this.characterProfileProvider.buildProfile({
+        bookId: book.id,
+        childName,
+        childAge,
+        theme,
+        language,
+        photo,
+      });
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Character profile provider failed for book ${book.id}: ${error}. Falling back to a generic profile.`,
+      );
+      characterProfile = await this.fallbackCharacterProfileProvider.buildProfile({
+        bookId: book.id,
+        childName,
+        childAge,
+        theme,
+        language,
+        photo,
+      });
+      providerName = 'mock';
+    }
+
+    let characterSheetKey: string | undefined;
+    try {
+      const { buffer, contentType } = await this.imageGenerationProvider.generateCharacterSheet({
+        bookId: book.id,
+        characterProfile,
+      });
+      const key = characterSheetAssetKey(book.id);
+      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      characterSheetKey = key;
+      characterProfile = { ...characterProfile, hasCharacterSheet: true };
+    } catch (err) {
+      const sheetError = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Character sheet generation/save failed for book ${book.id}: ${sheetError}. Continuing without a character sheet reference image.`,
+      );
+    }
+
+    return {
+      characterProfile,
+      ...(characterSheetKey !== undefined && { characterSheetKey }),
+      providerName,
+      modelName,
+      durationMs: Date.now() - startedAt,
+      ...(error !== undefined && { error }),
+    };
+  }
 
   /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
   private modelLabel(provider: {
@@ -362,6 +469,23 @@ export class AgentService {
       image: this.modelLabel(this.imageGenerationProvider),
     };
 
+    // char_build: build the CharacterProfile (+ character-sheet reference
+    // image) before the story itself, so every page/cover/back-cover prompt
+    // built below can be seeded with it. Persisted below alongside whichever
+    // update comes next (the failure-path update or Phase 1's layout
+    // update), rather than as its own extra write.
+    const charBuildResult = await this.buildCharacterProfileAndSheet(book);
+    const { characterProfile } = charBuildResult;
+    const characterProfileUpdateData: Prisma.BookUpdateInput = {
+      characterProfile: characterProfile as unknown as Prisma.InputJsonValue,
+      ...(charBuildResult.characterSheetKey !== undefined && {
+        characterSheetAssetKey: charBuildResult.characterSheetKey,
+      }),
+    };
+    this.logger.log(
+      `Character profile built for book ${book.id}: provider=${charBuildResult.providerName ?? 'unknown'} hasReferencePhoto=${characterProfile.hasReferencePhoto} hasCharacterSheet=${characterProfile.hasCharacterSheet}.`,
+    );
+
     let characterCard: StoryGenerationResult['characterCard'];
     let storyPlanFinal: StoryGenerationResult['storyPlan'];
     let bookPreview: BookPreview;
@@ -376,6 +500,7 @@ export class AgentService {
         language,
         pageCount,
         educationalMessage,
+        characterProfile,
       });
       characterCard = result.characterCard;
       storyPlanFinal = result.storyPlan;
@@ -392,10 +517,23 @@ export class AgentService {
           failedStep: AgentStep.story_plan,
           generationTimeMs: Date.now() - startedAt,
           aiModelVersions,
+          ...characterProfileUpdateData,
         },
       });
       await this.prisma.agentLog.createMany({
         data: [
+          {
+            bookId: book.id,
+            agent: 'LocalPipelineAgent',
+            step: AgentStep.char_build,
+            status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
+            attempt: 1,
+            traceId,
+            provider: charBuildResult.providerName,
+            model: charBuildResult.modelName,
+            durationMs: charBuildResult.durationMs,
+            ...(charBuildResult.error && { error: charBuildResult.error }),
+          },
           {
             bookId: book.id,
             agent: 'LocalPipelineAgent',
@@ -453,6 +591,7 @@ export class AgentService {
         bookPreview: bookPreview as unknown as Prisma.InputJsonValue,
         imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
         bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
+        ...characterProfileUpdateData,
       },
     });
 
@@ -509,11 +648,13 @@ export class AgentService {
           bookId: book.id,
           agent: 'LocalPipelineAgent',
           step: AgentStep.char_build,
-          status: AgentLogStatus.success,
+          status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
           attempt: 1,
           traceId,
-          provider: storyProviderName,
-          model: storyModelName,
+          provider: charBuildResult.providerName,
+          model: charBuildResult.modelName,
+          durationMs: charBuildResult.durationMs,
+          ...(charBuildResult.error && { error: charBuildResult.error }),
         },
         {
           bookId: book.id,

@@ -21,6 +21,12 @@ import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
+import {
+  childPhotoAssetKey,
+  IMAGE_ASSET_STORAGE_TOKEN,
+  type ImageAssetContentType,
+  type ImageAssetStorage,
+} from '../images/image-asset-storage';
 import { toBookDto } from './books.mapper';
 import { buildGenerationDiagnostics } from './generation-diagnostics';
 import type { CreateBookDto } from './dto/create-book.dto';
@@ -52,6 +58,7 @@ export class BooksService {
     private readonly prisma: PrismaService,
     private readonly agentService: AgentService,
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
+    @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageAssetStorage: ImageAssetStorage,
     private readonly generationQueueService: GenerationQueueService,
     private readonly generationJobService: GenerationJobService,
   ) {}
@@ -79,6 +86,47 @@ export class BooksService {
       },
     });
     return toBookDto(book);
+  }
+
+  /**
+   * Stores an optional child reference photo for a draft/editable book (jpg/
+   * png/webp, size/mimetype already enforced by the controller's multer
+   * config — `!file` here means multer's fileFilter rejected the upload).
+   * Saved via ImageAssetStorage under childPhotoAssetKey(bookId), the same
+   * local/cloud driver generated illustrations use — never a publicly served
+   * path. AgentService reads it back during char_build to build the
+   * CharacterProfile; re-uploading before generation starts simply overwrites
+   * the previous photo.
+   */
+  async uploadChildPhoto(
+    userId: string,
+    bookId: string,
+    file: Express.Multer.File | undefined,
+  ): Promise<BookDto> {
+    const book = await this.findOwnedOrThrow(bookId, userId);
+    if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
+      throw new ConflictException(
+        'Child photo cannot be uploaded while generation is in progress',
+      );
+    }
+    if (!file) {
+      throw new BadRequestException(
+        'No photo file provided, or the file was rejected — use jpg/png/webp under 5MB',
+      );
+    }
+
+    const key = childPhotoAssetKey(bookId);
+    await this.imageAssetStorage.saveImageAsset(
+      key,
+      file.buffer,
+      file.mimetype as ImageAssetContentType,
+    );
+
+    const updated = await this.prisma.book.update({
+      where: { id: bookId },
+      data: { childPhotoAssetKey: key, childPhotoContentType: file.mimetype },
+    });
+    return toBookDto(updated);
   }
 
   async findAllForUser(userId: string, page: number, limit: number): Promise<BooksPageDto> {

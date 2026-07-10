@@ -13,6 +13,8 @@ import { IMAGE_GENERATION_PROVIDER_TOKEN } from '../images/image-generation-prov
 import { createImageGenerationProvider } from '../images/image-generation-provider.factory';
 import { STORY_GENERATION_PROVIDER_TOKEN } from '../agent/story-generation-provider';
 import { createStoryGenerationProvider } from '../agent/story-generation-provider.factory';
+import { CHARACTER_PROFILE_PROVIDER_TOKEN } from '../agent/character-profile-provider';
+import { createCharacterProfileProvider } from '../agent/character-profile-provider.factory';
 
 export interface BooksModuleOptions {
   /** Whether to register GenerationQueueProcessor (see app.module.ts / worker.ts). */
@@ -34,6 +36,10 @@ export class BooksModule {
       {
         provide: STORY_GENERATION_PROVIDER_TOKEN,
         useFactory: () => createStoryGenerationProvider(),
+      },
+      {
+        provide: CHARACTER_PROFILE_PROVIDER_TOKEN,
+        useFactory: () => createCharacterProfileProvider(),
       },
       {
         provide: IMAGE_GENERATION_PROVIDER_TOKEN,

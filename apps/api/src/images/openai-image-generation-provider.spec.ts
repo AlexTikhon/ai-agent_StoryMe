@@ -3,9 +3,28 @@ import {
   OpenAIImageGenerationProvider,
   ImageGenerationProviderError,
   buildImagePrompt,
+  buildCharacterSheetPrompt,
 } from './openai-image-generation-provider';
 import type { ImageGenerationInput } from './image-generation-provider';
-import { Pronouns, type CharacterCard, type GeneratedImageEntry } from '@book/types';
+import { Pronouns, type CharacterCard, type CharacterProfile, type GeneratedImageEntry } from '@book/types';
+
+function makeCharacterProfile(overrides: Partial<CharacterProfile> = {}): CharacterProfile {
+  return {
+    childName: 'Mia',
+    age: 5,
+    visualDescription: 'a cheerful child with a round friendly face',
+    faceDescription: 'a round, friendly face with a warm smile',
+    hairDescription: 'short wavy brown hair',
+    outfitDescription: 'a bright yellow overall with sneakers',
+    personalitySummary: 'curious, brave, and kind',
+    illustrationStyle: 'warm children book illustration, soft colors, friendly character design',
+    consistencyPrompt:
+      "Mia, a stylized 5-year-old children's-book character with a round, friendly face with a warm smile, short wavy brown hair, wearing a bright yellow overall with sneakers",
+    hasReferencePhoto: false,
+    hasCharacterSheet: false,
+    ...overrides,
+  };
+}
 
 function makeCharacterCard(overrides: Partial<CharacterCard> = {}): CharacterCard {
   return {
@@ -89,6 +108,25 @@ describe('buildImagePrompt', () => {
 
     expect(prompt).toMatch(/no text/i);
     expect(prompt).toMatch(/watermark/i);
+  });
+});
+
+describe('buildCharacterSheetPrompt', () => {
+  it('includes full-body/front-view framing, the outfit, and the illustration style', () => {
+    const prompt = buildCharacterSheetPrompt(makeCharacterProfile());
+
+    expect(prompt).toMatch(/full-body/i);
+    expect(prompt).toMatch(/front-view/i);
+    expect(prompt).toContain('a bright yellow overall with sneakers');
+    expect(prompt).toContain('warm children book illustration, soft colors, friendly character design');
+  });
+
+  it('instructs no text and a stylized, non-photorealistic caricature', () => {
+    const prompt = buildCharacterSheetPrompt(makeCharacterProfile());
+
+    expect(prompt).toMatch(/no text/i);
+    expect(prompt).toMatch(/stylized/i);
+    expect(prompt).toMatch(/not a realistic photographic portrait/i);
   });
 });
 
@@ -318,6 +356,43 @@ describe('OpenAIImageGenerationProvider', () => {
       const message = err instanceof Error ? err.message : String(err);
       expect(message).not.toContain('sk-super-secret-key');
     }
+  });
+
+  describe('generateCharacterSheet', () => {
+    it('sends a portrait-sized request built from the character-sheet prompt', async () => {
+      const fetchImpl = makeFetchOk();
+      const provider = new OpenAIImageGenerationProvider({ apiKey: 'sk-test', fetchImpl });
+
+      const result = await provider.generateCharacterSheet({
+        bookId: 'b-1',
+        characterProfile: makeCharacterProfile(),
+      });
+
+      const body = JSON.parse(fetchImpl.mock.calls[0]![1].body as string);
+      expect(body.size).toBe('1024x1536');
+      expect(body.prompt).toMatch(/full-body/i);
+      expect(body.prompt).toContain('a bright yellow overall with sneakers');
+      expect(result.contentType).toBe('image/png');
+      expect(Buffer.isBuffer(result.buffer)).toBe(true);
+    });
+
+    it('throws a clear error when the HTTP response is not ok', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+        text: async () => 'server error',
+      });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxRetries: 0,
+      });
+
+      await expect(
+        provider.generateCharacterSheet({ bookId: 'b-1', characterProfile: makeCharacterProfile() }),
+      ).rejects.toThrow(/status 500/);
+    });
   });
 
   describe('REAL_GENERATION_MAX_PAGES guardrail', () => {

@@ -112,6 +112,33 @@ describe('booksApi', () => {
     });
   });
 
+  describe('uploadChildPhoto()', () => {
+    it('sends POST /books/:id/child-photo with FormData and no Content-Type header', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK));
+      const file = new File(['fake-bytes'], 'child.jpg', { type: 'image/jpeg' });
+
+      const result = await booksApi.uploadChildPhoto('book-1', file);
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/child-photo');
+      expect(init.method).toBe('POST');
+      expect(init.body).toBeInstanceOf(FormData);
+      expect((init.body as FormData).get('photo')).toBe(file);
+      expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+      expect(result).toEqual(MOCK_BOOK);
+    });
+
+    it('propagates a validation error from the API', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(mockError(400, 'No photo file provided'));
+      const file = new File(['fake-bytes'], 'child.jpg', { type: 'image/jpeg' });
+
+      await expect(booksApi.uploadChildPhoto('book-1', file)).rejects.toThrow(
+        'No photo file provided',
+      );
+    });
+  });
+
   describe('update()', () => {
     it('sends PATCH /books/:id with partial body', async () => {
       const updated = { ...MOCK_BOOK, theme: 'Adventure' };

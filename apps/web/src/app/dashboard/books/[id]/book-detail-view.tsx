@@ -452,6 +452,40 @@ function GenerationDiagnosticsPanel({
         )}
       </dl>
 
+      {diagnostics.characterPersonalization && (
+        <div className="mt-3 border-t border-border-subtle pt-3">
+          <h3 className="mb-2 font-display text-xs font-semibold text-text-secondary">
+            Character personalization
+          </h3>
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-text-muted">
+            <div>
+              <dt className="inline font-medium">Reference photo: </dt>
+              <dd className="inline text-text-secondary">
+                {diagnostics.characterPersonalization.hasReferencePhoto ? '✓' : '—'}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline font-medium">Character profile: </dt>
+              <dd className="inline text-text-secondary">
+                {diagnostics.characterPersonalization.characterProfileCreated ? '✓' : '—'}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline font-medium">Character sheet: </dt>
+              <dd className="inline text-text-secondary">
+                {diagnostics.characterPersonalization.characterSheetGenerated ? '✓' : '—'}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline font-medium">Consistent prompts: </dt>
+              <dd className="inline text-text-secondary">
+                {diagnostics.characterPersonalization.pagePromptsIncludeConsistencyData ? '✓' : '—'}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      )}
+
       {hasFailure && (
         <div className="mt-3 rounded-lg bg-danger-light px-3 py-2 text-xs text-danger-base">
           {diagnostics.failedStep && (

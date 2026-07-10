@@ -322,6 +322,17 @@ model Book {
   bookPreview           Json?       @map("book_preview")
   imageGenerationResult Json?       @map("image_generation_result")
   bookLayout            Json?       @map("book_layout")
+
+  // Personalized character generation: optional uploaded reference photo,
+  // the stylized CharacterProfile built from it (never a realistic
+  // portrait), and an optional generated character-sheet reference image.
+  // Both asset keys are ImageAssetStorage keys (see image-asset-storage.ts),
+  // not URLs — resolved through the same local/cloud storage driver as
+  // generated illustrations.
+  childPhotoAssetKey       String?  @map("child_photo_asset_key")
+  childPhotoContentType    String?  @map("child_photo_content_type")
+  characterProfile         Json?    @map("character_profile")
+  characterSheetAssetKey   String?  @map("character_sheet_asset_key")
   chapters              Json?
   imagePrompts     Json?       @map("image_prompts")
   qualityReport    Json?       @map("quality_report")
