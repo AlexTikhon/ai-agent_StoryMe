@@ -13,7 +13,10 @@ import {
   MockImageGenerationProvider,
   type ImageGenerationProvider,
 } from '../images/image-generation-provider';
-import { MockCharacterProfileProvider } from './character-profile-provider';
+import {
+  MockCharacterProfileProvider,
+  type CharacterProfileProvider,
+} from './character-profile-provider';
 
 vi.mock('../pdf/pdf-renderer', () => ({
   renderStorybookPdf: vi.fn(),
@@ -876,6 +879,102 @@ describe('AgentService', () => {
 
         const pdfEntry = entries.find((e) => e.step === 'pdf_render');
         expect(pdfEntry?.status).toBe('error');
+      });
+    });
+
+    // ── Character profile / character sheet fallback tolerance ────────────────
+
+    describe('when the character profile provider or character sheet generation fails', () => {
+      function makeFailingProfileProvider(): CharacterProfileProvider {
+        return {
+          providerName: 'openai',
+          buildProfile: vi.fn().mockRejectedValue(new Error('vision request failed')),
+        };
+      }
+
+      function makeSheetFailingImageProvider(): ImageGenerationProvider {
+        return {
+          generateImage: vi.fn().mockResolvedValue({
+            buffer: Buffer.from('fake-png'),
+            contentType: 'image/png' as const,
+          }),
+          generateCharacterSheet: vi
+            .fn()
+            .mockRejectedValue(new Error('character sheet request failed')),
+        };
+      }
+
+      it('falls back to a generic character profile and continues the rest of the pipeline when the character profile provider throws', async () => {
+        const book = makeBook();
+        setupMocks();
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const service = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          new MockImageGenerationProvider(),
+          makeFailingProfileProvider(),
+        );
+
+        await service.startBookGeneration(book);
+
+        // The pipeline is not aborted by a profile-provider failure — it still
+        // reaches PDF rendering using a locally-built fallback profile.
+        expect(renderStorybookPdf).toHaveBeenCalled();
+
+        const phase1UpdateArg = prisma.book.update.mock.calls[0]?.[0];
+        const persistedProfile = phase1UpdateArg?.data?.characterProfile as Record<string, unknown>;
+        expect(persistedProfile.childName).toBe('Mia');
+        expect(persistedProfile.consistencyPrompt).toBeTruthy();
+
+        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+          Record<string, unknown>
+        >;
+        const charBuildEntry = entries.find((e) => e.step === 'char_build');
+        expect(charBuildEntry?.status).toBe('error');
+        expect(charBuildEntry?.provider).toBe('mock');
+        expect(charBuildEntry?.error).toContain('vision request failed');
+        warnSpy.mockRestore();
+      });
+
+      it('continues without a character-sheet reference image when character-sheet generation fails, leaving hasCharacterSheet false', async () => {
+        const book = makeBook();
+        setupMocks();
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const service = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          makeSheetFailingImageProvider(),
+          new MockCharacterProfileProvider(),
+        );
+
+        await service.startBookGeneration(book);
+
+        expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
+          'b-1/character-sheet',
+          expect.anything(),
+          expect.anything(),
+        );
+        // Every page/cover illustration still generates normally — only the
+        // standalone character-sheet reference image is missing.
+        expect(renderStorybookPdf).toHaveBeenCalled();
+
+        const phase1UpdateArg = prisma.book.update.mock.calls[0]?.[0];
+        const persistedProfile = phase1UpdateArg?.data?.characterProfile as Record<string, unknown>;
+        expect(persistedProfile.hasCharacterSheet).toBe(false);
+        expect(phase1UpdateArg?.data?.characterSheetAssetKey).toBeUndefined();
+
+        // The profile step itself succeeded — only the sheet (a best-effort
+        // consistency aid) failed, so char_build is not marked errored.
+        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+          Record<string, unknown>
+        >;
+        const charBuildEntry = entries.find((e) => e.step === 'char_build');
+        expect(charBuildEntry?.status).toBe('success');
+        warnSpy.mockRestore();
       });
     });
 

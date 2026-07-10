@@ -16,10 +16,21 @@
  *   STORY_GENERATION_PROVIDER=openai
  *   IMAGE_GENERATION_PROVIDER=openai
  *
+ * Optional env vars (all have safe defaults — see resolveSmokeBookConfig):
+ *   SMOKE_CHILD_NAME, SMOKE_CHILD_AGE, SMOKE_LANGUAGE, SMOKE_THEME,
+ *   SMOKE_PAGE_COUNT, SMOKE_CHILD_PHOTO_PATH (local jpg/png/webp file path —
+ *   uploaded exactly like the wizard's child-photo upload before generation
+ *   starts, so the real CharacterProfileProvider analyzes it).
+ *   MAX_GENERATED_IMAGES_PER_BOOK (cost cap — see agent.service.ts) is
+ *   respected automatically; set it to at least the book's total image count
+ *   for a full real-image run, or leave the default for a cheap smoke test.
+ *
  * Also boots the real Nest application context, so it needs a running local
  * Postgres + Redis matching apps/api/.env — the same stack
  * `pnpm --filter @book/api dev` uses.
  */
+import { readFileSync } from 'node:fs';
+import { extname } from 'node:path';
 import { NestFactory } from '@nestjs/core';
 import { BookLanguage, BookStatus } from '@prisma/client';
 import { AppModule } from '../src/app.module';
@@ -29,13 +40,27 @@ import { AgentService } from '../src/agent/agent.service';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../src/pdf/pdf-storage';
 import {
   IMAGE_ASSET_STORAGE_TOKEN,
+  childPhotoAssetKey,
   imageAssetKey,
+  type ImageAssetContentType,
   type ImageAssetStorage,
 } from '../src/images/image-asset-storage';
-import { checkPreconditions, formatDiagnosticsSummary } from './smoke-real-generation-helpers';
+import { isAllowedChildPhotoMimeType } from '../src/books/child-photo.constants';
+import {
+  checkPreconditions,
+  formatDiagnosticsSummary,
+  resolveSmokeBookConfig,
+} from './smoke-real-generation-helpers';
 import { buildGenerationDiagnostics } from '../src/books/generation-diagnostics';
 
 const SMOKE_USER_EMAIL = 'smoke-real-generation@storyme.local';
+
+const CONTENT_TYPE_BY_EXTENSION: Record<string, ImageAssetContentType> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(`Assertion failed: ${message}`);
@@ -61,28 +86,54 @@ async function main(): Promise<void> {
     const pdfStorage = app.get<PdfStorage>(PDF_STORAGE_TOKEN);
     const imageAssetStorage = app.get<ImageAssetStorage>(IMAGE_ASSET_STORAGE_TOKEN);
 
-    console.log(`[1/4] Ensuring smoke-test user (${SMOKE_USER_EMAIL})...`);
+    const config = resolveSmokeBookConfig(process.env);
+
+    console.log(`[1/5] Ensuring smoke-test user (${SMOKE_USER_EMAIL})...`);
     const user = await usersService.findOrCreateByEmail(SMOKE_USER_EMAIL, 'Smoke Test');
 
-    console.log('[2/4] Creating a small test book (4 pages, theme=friendship)...');
-    const book = await prisma.book.create({
+    console.log(
+      `[2/5] Creating a test book (childAge=${config.childAge}, language=${config.language}, theme="${config.theme}"${config.pageCount ? `, pageCount=${config.pageCount}` : ''})...`,
+    );
+    let book = await prisma.book.create({
       data: {
         userId: user.id,
         title: 'Real Generation Smoke Test',
-        childName: 'Smoke',
-        childAge: 5,
-        language: BookLanguage.en,
-        theme: 'friendship',
+        childName: config.childName,
+        childAge: config.childAge,
+        language: config.language as BookLanguage,
+        theme: config.theme,
+        ...(config.pageCount !== undefined && { pageCount: config.pageCount }),
       },
     });
     console.log(`      Book id: ${book.id}`);
 
+    if (config.childPhotoPath) {
+      console.log(`[3/5] Uploading child reference photo from ${config.childPhotoPath}...`);
+      const ext = extname(config.childPhotoPath).toLowerCase();
+      const contentType = CONTENT_TYPE_BY_EXTENSION[ext];
+      if (!contentType || !isAllowedChildPhotoMimeType(contentType)) {
+        throw new Error(
+          `SMOKE_CHILD_PHOTO_PATH must point to a .jpg/.jpeg/.png/.webp file, got "${config.childPhotoPath}"`,
+        );
+      }
+      const photoBuffer = readFileSync(config.childPhotoPath);
+      const key = childPhotoAssetKey(book.id);
+      await imageAssetStorage.saveImageAsset(key, photoBuffer, contentType);
+      book = await prisma.book.update({
+        where: { id: book.id },
+        data: { childPhotoAssetKey: key, childPhotoContentType: contentType },
+      });
+      console.log(`      Photo saved (${photoBuffer.length} bytes) — never logged as raw bytes/base64.`);
+    } else {
+      console.log('[3/5] No SMOKE_CHILD_PHOTO_PATH set — generating without a reference photo.');
+    }
+
     console.log(
-      '[3/4] Running the real generation pipeline (calls the real OpenAI story + image APIs — costs money)...',
+      '[4/5] Running the real generation pipeline (calls the real OpenAI story + image APIs — costs money)...',
     );
     const result = await agentService.startBookGeneration(book);
 
-    console.log(`[4/4] Verifying results (final status: ${result.status})...`);
+    console.log(`[5/5] Verifying results (final status: ${result.status})...`);
     if (result.status !== BookStatus.complete) {
       throw new Error(
         `Expected book to reach status "complete", got "${result.status}" ` +

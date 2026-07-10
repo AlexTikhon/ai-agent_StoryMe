@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { GenerationDiagnosticsDto } from '@book/types';
-import { checkPreconditions, formatDiagnosticsSummary } from './smoke-real-generation-helpers';
+import {
+  checkPreconditions,
+  formatDiagnosticsSummary,
+  resolveSmokeBookConfig,
+} from './smoke-real-generation-helpers';
 
 describe('checkPreconditions', () => {
   it('requires OPENAI_API_KEY', () => {
@@ -52,6 +56,8 @@ describe('formatDiagnosticsSummary', () => {
         storyModel: 'gpt-4o-mini',
         imageModel: 'gpt-image-1',
         generatedPages: 6,
+        generatedImageCount: 8,
+        failedImageCount: 0,
         durationMs: 12_345,
       },
       recentLogs: [],
@@ -71,6 +77,14 @@ describe('formatDiagnosticsSummary', () => {
     expect(summary).toContain('6');
     expect(summary).toContain('12345ms');
     expect(summary).toContain('/files/books/b-1/storybook.pdf');
+  });
+
+  it('includes generated/failed image counts and the diagnostics URL', () => {
+    const summary = formatDiagnosticsSummary(makeDiagnostics());
+
+    expect(summary).toContain('Generated images:   8');
+    expect(summary).toContain('Failed images:      0');
+    expect(summary).toContain('/api/books/b-1/generation-diagnostics');
   });
 
   it('includes failedStep and errorMessage when the run failed', () => {
@@ -96,5 +110,48 @@ describe('formatDiagnosticsSummary', () => {
     expect(summary).not.toMatch(/sk-[A-Za-z0-9]/);
     expect(summary.toLowerCase()).not.toContain('b64_json');
     expect(summary.toLowerCase()).not.toContain('base64');
+  });
+});
+
+describe('resolveSmokeBookConfig', () => {
+  it('falls back to safe defaults when no SMOKE_* env vars are set', () => {
+    const config = resolveSmokeBookConfig({} as NodeJS.ProcessEnv);
+
+    expect(config).toEqual({
+      childName: 'Smoke',
+      childAge: 5,
+      language: 'en',
+      theme: 'friendship',
+    });
+  });
+
+  it('reads childName/age/language/theme/pageCount/photo path from env vars', () => {
+    const config = resolveSmokeBookConfig({
+      SMOKE_CHILD_NAME: 'Mia',
+      SMOKE_CHILD_AGE: '3',
+      SMOKE_LANGUAGE: 'ru',
+      SMOKE_THEME: 'a trip to the sea',
+      SMOKE_PAGE_COUNT: '8',
+      SMOKE_CHILD_PHOTO_PATH: '/tmp/mia.jpg',
+    } as unknown as NodeJS.ProcessEnv);
+
+    expect(config).toEqual({
+      childName: 'Mia',
+      childAge: 3,
+      language: 'ru',
+      theme: 'a trip to the sea',
+      pageCount: 8,
+      childPhotoPath: '/tmp/mia.jpg',
+    });
+  });
+
+  it('ignores a malformed SMOKE_CHILD_AGE/SMOKE_PAGE_COUNT and falls back to defaults', () => {
+    const config = resolveSmokeBookConfig({
+      SMOKE_CHILD_AGE: 'not-a-number',
+      SMOKE_PAGE_COUNT: '-3',
+    } as unknown as NodeJS.ProcessEnv);
+
+    expect(config.childAge).toBe(5);
+    expect(config.pageCount).toBeUndefined();
   });
 });

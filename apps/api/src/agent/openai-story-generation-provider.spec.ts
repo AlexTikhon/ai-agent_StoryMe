@@ -83,6 +83,51 @@ describe('buildStoryGenerationPrompt', () => {
     expect(system + user).toMatch(/copyrighted|trademarked/i);
     expect(system + user).toMatch(/violen|scary/i);
   });
+
+  it('requires every page to connect back to the theme', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput({ theme: 'a trip to the sea' }));
+    expect(user).toContain('a trip to the sea');
+    expect(user).toMatch(/connect to the theme|theme-specific/i);
+  });
+
+  it('requires a five-part arc: beginning, challenge, turning point, resolution, moral', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput());
+    expect(user).toMatch(/beginning/i);
+    expect(user).toMatch(/challenge/i);
+    expect(user).toMatch(/turning point/i);
+    expect(user).toMatch(/resolution/i);
+    expect(user).toMatch(/learning moment|moral/i);
+  });
+
+  it('bans weak filler phrases like "the adventure continued"', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput());
+    expect(user).toContain('the adventure continued');
+    expect(user).toMatch(/filler/i);
+  });
+
+  it('bans unrelated fantasy elements unless the theme calls for fantasy', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput());
+    expect(user).toMatch(/magical|fantastical/i);
+    expect(user).toMatch(/unless the theme/i);
+  });
+
+  it('ties vocabulary/sentence length to the requested child age', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput({ childAge: 3 }));
+    expect(user).toMatch(/3-year-old/);
+  });
+
+  it('requires natural, idiomatic phrasing rather than a literal translation', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput({ language: 'ru' }));
+    expect(user).toMatch(/natural, idiomatic/i);
+  });
+
+  it('asks each illustration prompt to cover setting, action, emotion, and lighting/mood', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput());
+    expect(user).toMatch(/setting/i);
+    expect(user).toMatch(/action/i);
+    expect(user).toMatch(/emotion/i);
+    expect(user).toMatch(/lighting/i);
+  });
 });
 
 describe('OpenAIStoryGenerationProvider', () => {

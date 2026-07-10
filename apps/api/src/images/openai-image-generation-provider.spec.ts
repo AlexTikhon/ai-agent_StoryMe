@@ -100,14 +100,40 @@ describe('buildImagePrompt', () => {
     expect(prompt).toContain('Leo exploring a spaceship');
   });
 
-  it('instructs no text, captions, or watermarks', () => {
+  it('instructs no text, letters, captions, or watermarks', () => {
     const prompt = buildImagePrompt(
       { visualAnchor: 'anchor', narrativeDescription: 'desc' },
       { prompt: 'scene' },
     );
 
     expect(prompt).toMatch(/no text/i);
+    expect(prompt).toMatch(/no letters/i);
+    expect(prompt).toMatch(/no captions/i);
     expect(prompt).toMatch(/watermark/i);
+  });
+
+  it('asks for environment, action, emotion, lighting, and composition', () => {
+    const prompt = buildImagePrompt(
+      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
+      { prompt: 'scene' },
+    );
+
+    expect(prompt).toMatch(/environment/i);
+    expect(prompt).toMatch(/action/i);
+    expect(prompt).toMatch(/emotion/i);
+    expect(prompt).toMatch(/lighting/i);
+    expect(prompt).toMatch(/composition/i);
+  });
+
+  it("instructs the character's age/face/hairstyle/outfit to stay identical across illustrations", () => {
+    const prompt = buildImagePrompt(
+      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
+      { prompt: 'scene' },
+    );
+
+    expect(prompt).toMatch(/age/i);
+    expect(prompt).toMatch(/hairstyle/i);
+    expect(prompt).toMatch(/identical/i);
   });
 });
 

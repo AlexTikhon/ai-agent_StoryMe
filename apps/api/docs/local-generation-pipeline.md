@@ -406,9 +406,8 @@ once, end-to-end, against the real OpenAI API:
   network.
 - Otherwise boots the real Nest application context (`AppModule`) — requires
   a running local Postgres + Redis, same as `pnpm --filter @book/api dev` —
-  finds-or-creates a fixed smoke-test user, creates one small 4-chapter/
-  6-page test book via `PrismaService`, and calls
-  `AgentService.startBookGeneration` directly.
+  finds-or-creates a fixed smoke-test user, creates one test book via
+  `PrismaService`, and calls `AgentService.startBookGeneration` directly.
   **Deliberately unchanged by Phase 3H**: this script still calls
   `AgentService.startBookGeneration` directly rather than going through
   `POST /:id/generate` + polling. It doesn't go through `BooksService` or
@@ -419,10 +418,27 @@ once, end-to-end, against the real OpenAI API:
   the actual async HTTP endpoints (with polling) is left to the mocked
   frontend/backend test suites, which already cover that path without a real
   network call.
+- **Configurable inputs (QA phase)** — `resolveSmokeBookConfig(process.env)`
+  (`smoke-real-generation-helpers.ts`, pure/unit-tested) reads optional env
+  vars, each with a safe default so the script still runs with none of them
+  set:
+  - `SMOKE_CHILD_NAME` (default `Smoke`)
+  - `SMOKE_CHILD_AGE` (default `5`)
+  - `SMOKE_LANGUAGE` (default `en`; also try `ru`)
+  - `SMOKE_THEME` (default `friendship`)
+  - `SMOKE_PAGE_COUNT` (default: provider's own default, currently 6)
+  - `SMOKE_CHILD_PHOTO_PATH` — optional local filesystem path to a
+    `.jpg`/`.jpeg`/`.png`/`.webp` reference photo. When set, the script
+    uploads it to `ImageAssetStorage` under `childPhotoAssetKey(bookId)` and
+    sets `Book.childPhotoAssetKey`/`childPhotoContentType` — the same state
+    `BooksService.uploadChildPhoto` produces — **before** calling
+    `startBookGeneration`, so the real `OpenAICharacterProfileProvider`
+    actually analyzes it. Malformed extensions fail fast with a clear error
+    before any upload happens.
 - Verifies the book reaches `BookStatus.complete`, that every generated image
   entry's bytes were actually saved to `ImageAssetStorage`, and that the
-  rendered PDF exists in `PdfStorage` — then prints the book id and PDF
-  preview URL.
+  rendered PDF exists in `PdfStorage` — then prints a safe summary (see
+  "Smoke test output" below).
 - Exits non-zero with a clear error on any failed check. Not part of
   `pnpm --filter @book/api test` or CI — matches the existing
   `smoke:pdf-storage` script's pattern (see
@@ -433,6 +449,121 @@ database `DATABASE_URL` points at (nothing is cleaned up afterward — same as
 manually creating a book through the API) and makes real, billed OpenAI API
 calls (one story completion + one image generation per page/cover/back
 cover). Run it deliberately, not routinely.
+
+### How to generate a local personalized book with a child photo (QA)
+
+1. In `apps/api/.env`, set:
+
+   ```env
+   OPENAI_API_KEY=sk-...
+   STORY_GENERATION_PROVIDER=openai
+   IMAGE_GENERATION_PROVIDER=openai
+   CHARACTER_PROFILE_PROVIDER=openai
+   MAX_GENERATED_IMAGES_PER_BOOK=2
+   ```
+
+   Start with `MAX_GENERATED_IMAGES_PER_BOOK=2` for the first real run — it
+   caps real (billed) image calls to just the first 2 planned illustrations
+   (cover, then pages, then back cover, in order) while still exercising the
+   full story + character-profile + PDF pipeline. **A book's total planned
+   illustration count is `2 + pageCount` (cover + pages + back cover)** — the
+   cap must cover every planned illustration or the book fails at
+   `pdf_render` (see "Per-book illustration budget" above). Raise it (e.g. to
+   `9` for a 7-page book) once you're ready to review a full, fully
+   illustrated book.
+2. Run (from `apps/api`, with a local Postgres + Redis up, e.g. via
+   `pnpm --filter @book/api dev`'s existing stack):
+
+   ```sh
+   SMOKE_CHILD_NAME="Mia" SMOKE_CHILD_AGE=3 SMOKE_LANGUAGE=ru \
+   SMOKE_THEME="a trip to the sea" SMOKE_PAGE_COUNT=6 \
+   SMOKE_CHILD_PHOTO_PATH="/path/to/local/photo.jpg" \
+   pnpm --filter @book/api smoke:real-generation
+   ```
+
+   Omit `SMOKE_CHILD_PHOTO_PATH` to test the no-photo (generic character
+   profile) path instead.
+3. **Where output lands**: with the default `LocalPdfStorage`/local
+   `ImageAssetStorage` drivers, the rendered PDF is at
+   `apps/api/tmp/books/<bookId>/storybook.pdf` and generated illustration
+   bytes are under `apps/api/tmp/images/` (exact layout is storage-driver
+   internal — always go through `imageAssetKey`/`GET
+   /api/books/:id/pdf/preview` rather than hardcoding paths). The console
+   summary prints the book id and PDF preview URL — see "Smoke test output"
+   below.
+4. **Safe diagnostics to check** — either read the script's printed summary,
+   or call `GET /api/books/:bookId/generation-diagnostics` directly (see
+   "Reading diagnostics for a book" below):
+   - `generationMetadata.storyProvider`/`imageProvider` — confirm both say
+     `openai`, not `mock`, for a real QA run.
+   - `generationMetadata.generatedImageCount`/`failedImageCount` — confirm
+     `failedImageCount` is `0` (any failure here means the book can't
+     complete — see "Failure behavior" above).
+   - `characterPersonalization.hasReferencePhoto` — should be `true` only
+     when `SMOKE_CHILD_PHOTO_PATH` was set.
+   - `characterPersonalization.characterProfileCreated` and
+     `.characterSheetGenerated` — confirm both `true` for a fully-successful
+     personalized run.
+   - `characterPersonalization.pagePromptsIncludeConsistencyData` — confirm
+     `true`; `false` means the character-consistency block didn't make it
+     into every page's illustration prompt (a regression, not expected).
+   - `pdfStorage.previewAvailable` — confirm `true` before trying
+     `GET /:id/pdf/preview`.
+   - `recentLogs` (in the raw diagnostics response) — the `char_build` row's
+     `status`/`provider`/`error` shows whether the character-profile call
+     succeeded or silently fell back to the generic mock profile (see
+     "Character consistency" below).
+5. **Cleaning up local files** — this script does not delete what it creates.
+   To reset: delete the smoke-test book's row(s) from `Book`/`AgentLog`/
+   `GenerationJob` (`childName`/`title` filter on `'Real Generation Smoke
+   Test'`, or `userId` of the `smoke-real-generation@storyme.local` user), and
+   delete `apps/api/tmp/books/<bookId>/` and any `apps/api/tmp/images/<bookId>*`
+   files for those book ids.
+6. **Cost warning**: every run with `IMAGE_GENERATION_PROVIDER=openai` and
+   `STORY_GENERATION_PROVIDER=openai` makes real, billed OpenAI API calls —
+   one chat-completion call for the story, one vision-capable chat-completion
+   call for the character profile (only if a photo is uploaded, otherwise
+   still one text-only call), one image-generation call for the character
+   sheet, and one image-generation call per illustration actually sent to the
+   provider (capped by `MAX_GENERATED_IMAGES_PER_BOOK`). Keep the cap low for
+   routine QA; only raise it when you specifically need to review a fully
+   illustrated book.
+
+### Character consistency: what's actually verified today
+
+- **Text-level consistency** (verified, always on): every page/cover/
+  back-cover illustration prompt embeds the same `CharacterProfile`-derived
+  consistency block (`buildCharacterConsistencyBlock` in
+  `story-generation-provider.ts` — face/hair/outfit/age/illustration style,
+  plus explicit "do not change the character's appearance" and "no text in
+  image" instructions), and `buildImagePrompt`
+  (`openai-image-generation-provider.ts`) repeats an explicit "keep the
+  protagonist visually identical across every illustration" instruction on
+  top of that. `characterPersonalization.pagePromptsIncludeConsistencyData`
+  in diagnostics confirms this held for every page of a given book.
+- **Character-sheet image** (generated, but not yet fed back as a visual
+  reference): `AgentService` generates one standalone character-sheet
+  reference image via `ImageGenerationProvider.generateCharacterSheet` and
+  saves it to `ImageAssetStorage` — but today it is **not** passed back into
+  the per-page `OpenAIImageGenerationProvider.generateImage` calls as an
+  actual reference image (those calls use OpenAI's text-to-image
+  `/images/generations` endpoint, not an image-edit/reference endpoint).
+  Practically: consistency across pages today comes entirely from repeating
+  the same *text* description on every prompt, not from the model seeing the
+  character-sheet pixels. Wiring true image-to-image reference generation
+  (e.g. via an images/edit-style endpoint) would be a larger architectural
+  change and is out of scope here.
+- **Fallback behavior** (verified in `agent.service.spec.ts`): if the
+  `CharacterProfileProvider` throws (e.g. a vision-API error), `AgentService`
+  catches it, logs a warning, and falls back to `MockCharacterProfileProvider`
+  — generation is never blocked by a profile failure, and the `char_build`
+  `AgentLog` row is written with `status: 'error'` and `provider: 'mock'` so
+  the fallback is visible in `recentLogs`. If only the character-sheet call
+  fails (profile itself succeeded), generation also continues — the book
+  simply has `characterProfile.hasCharacterSheet: false` and no
+  `characterSheetAssetKey`, with `char_build` staying `status: 'success'`
+  since the profile step (not the best-effort sheet) is what that status
+  reflects.
 
 ## Generation diagnostics (Phase 3E)
 
@@ -576,11 +707,14 @@ smoke test" above) now builds and prints a `GenerationDiagnosticsDto`
 summary after the pipeline finishes, via
 `formatDiagnosticsSummary` (`apps/api/scripts/smoke-real-generation-helpers.ts`):
 book id, status, story/image provider + model, generated page count,
-duration, PDF preview url, and (only on failure) `failedStep` and
-`errorMessage`. `formatDiagnosticsSummary` is a pure function — unit tested
-directly in `smoke-real-generation.spec.ts` without booting Nest or making
-a network call — and only ever prints fields already proven safe by
-`GenerationDiagnosticsDto`/`GenerationMetadata`.
+**generated/failed image counts**, duration, PDF preview url, **the
+`GET /:id/generation-diagnostics` URL for the book**, and (only on failure)
+`failedStep` and `errorMessage`. `formatDiagnosticsSummary` is a pure
+function — unit tested directly in `smoke-real-generation.spec.ts` without
+booting Nest or making a network call — and only ever prints fields already
+proven safe by `GenerationDiagnosticsDto`/`GenerationMetadata`. It never
+prints `OPENAI_API_KEY`, a raw prompt, or generated image bytes/base64 — see
+"What's intentionally not stored (safety)" below.
 
 ### What's intentionally not stored (safety)
 

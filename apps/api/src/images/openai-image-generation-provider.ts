@@ -43,8 +43,9 @@ export function buildImagePrompt(
     "Personalized children's storybook illustration, warm and child-safe, soft colors, friendly character design.",
     `Protagonist: ${characterCard.visualAnchor}. ${characterCard.narrativeDescription}`,
     `Scene: ${entry.prompt}`,
-    'Keep the protagonist visually consistent with the description above across every illustration.',
-    'No text, no captions, no letters, no watermarks, no logos.',
+    "The illustration must clearly depict: the environment/setting, the specific action the character is doing, the character's emotion/expression, and warm, storybook-appropriate lighting and composition (clear focal point, not cluttered).",
+    "Do not change the character's age, face shape, hairstyle, or outfit from the description above — keep the protagonist visually identical across every illustration in this book.",
+    'No text, no letters, no captions, no watermarks, no logos.',
   ].join(' ');
 }
 
