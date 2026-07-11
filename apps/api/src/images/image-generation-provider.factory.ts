@@ -5,6 +5,10 @@ import {
 } from './image-generation-provider';
 import { OpenAIImageGenerationProvider } from './openai-image-generation-provider';
 import { readOpenAIRetryConfig } from '../common/openai-request';
+import {
+  OpenAIImageRateLimiter,
+  readOpenAIImageRateLimiterConfig,
+} from './openai-image-rate-limiter';
 
 export type ImageGenerationProviderName = 'mock' | 'openai';
 
@@ -47,8 +51,13 @@ export function createImageGenerationProvider(
   const model = env['OPENAI_IMAGE_MODEL'];
   const { timeoutMs, maxRetries } = readOpenAIRetryConfig(env);
   const maxPages = readMaxPages(env);
+  const rateLimiterConfig = readOpenAIImageRateLimiterConfig(env);
+  // One limiter instance shared by every call this provider makes (character
+  // sheet, cover, pages, back cover) — see OpenAIImageRateLimiter's class doc.
+  const rateLimiter = new OpenAIImageRateLimiter(rateLimiterConfig);
   logger.log(
-    `Image generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries} maxPages=${maxPages}`,
+    `Image generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries} maxPages=${maxPages} ` +
+      `imageMinIntervalMs=${rateLimiterConfig.minIntervalMs} imageMaxRetries=${rateLimiterConfig.maxRetries} imageRetryBaseMs=${rateLimiterConfig.retryBaseMs} imageRetryMaxMs=${rateLimiterConfig.retryMaxMs}`,
   );
 
   return new OpenAIImageGenerationProvider({
@@ -57,5 +66,6 @@ export function createImageGenerationProvider(
     timeoutMs,
     maxRetries,
     maxPages,
+    rateLimiter,
   });
 }

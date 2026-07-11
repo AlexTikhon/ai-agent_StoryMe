@@ -8,6 +8,7 @@ import {
   buildCharacterSheetPrompt,
 } from './openai-image-generation-provider';
 import type { ImageGenerationInput, ImageReference } from './image-generation-provider';
+import { OpenAIImageRateLimiter } from './openai-image-rate-limiter';
 import {
   Pronouns,
   type CharacterCard,
@@ -365,10 +366,16 @@ describe('OpenAIImageGenerationProvider', () => {
         fetchImpl,
         maxRetries: 1,
         timeoutMs: 5000,
+        rateLimiter: new OpenAIImageRateLimiter({
+          minIntervalMs: 0,
+          maxRetries: 1,
+          retryBaseMs: 10,
+          retryMaxMs: 10,
+        }),
       });
 
       const promise = provider.generateImage(makeInput());
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(1000);
       const result = await promise;
 
       expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -376,6 +383,56 @@ describe('OpenAIImageGenerationProvider', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('falls back to the existing error/placeholder behavior once rate-limit retries are exhausted', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        json: async () => ({}),
+        text: async () => 'rate limited',
+      });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        rateLimiter: new OpenAIImageRateLimiter({
+          minIntervalMs: 0,
+          maxRetries: 2,
+          retryBaseMs: 10,
+          retryMaxMs: 10,
+        }),
+      });
+
+      const promise = provider.generateImage(makeInput());
+      const assertion = expect(promise).rejects.toThrow(/status 429/);
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+
+      expect(fetchImpl).toHaveBeenCalledTimes(3); // 1 initial attempt + 2 retries
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shares one rate limiter across character-sheet and page-image requests', async () => {
+    const fetchImpl = makeFetchOk();
+    const rateLimiter = new OpenAIImageRateLimiter({ minIntervalMs: 0 });
+    const scheduleSpy = vi.spyOn(rateLimiter, 'schedule');
+    const provider = new OpenAIImageGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl,
+      rateLimiter,
+    });
+
+    await provider.generateCharacterSheet({
+      bookId: 'b-1',
+      characterProfile: makeCharacterProfile(),
+    });
+    await provider.generateImage(makeInput());
+
+    expect(scheduleSpy).toHaveBeenCalledTimes(2);
   });
 
   it('retries on HTTP 500 and succeeds on the second attempt', async () => {

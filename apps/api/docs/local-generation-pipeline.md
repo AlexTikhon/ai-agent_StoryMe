@@ -326,7 +326,10 @@ directly:
   small fixed backoff (`250ms * 2^attempt`, capped at `2000ms`) on:
   - network errors (fetch itself rejects),
   - timeouts (the abort fires),
-  - HTTP `408`, `429`, `500`, `502`, `503`, `504`.
+  - HTTP `408`, `500`, `502`, `503`, `504` (and, for
+    `OpenAIStoryGenerationProvider`/`OpenAICharacterProfileProvider`, `429`
+    too — `OpenAIImageGenerationProvider` excludes `429` here since it's
+    handled by the shared rate limiter below instead).
 - **Never** retried: HTTP `400`/`401`/`403` (and any other non-retryable
   status), invalid/missing JSON, and zod schema-validation failures — these
   responses/errors are returned or thrown as-is on the first attempt.
@@ -338,6 +341,47 @@ directly:
   those provider-specific error types either way.
 - `readOpenAIRetryConfig(env)` (same file) parses `OPENAI_REQUEST_TIMEOUT_MS`
   / `OPENAI_MAX_RETRIES` from env, used by both provider factories.
+
+### Image rate limiter — `OpenAIImageRateLimiter`
+
+`gpt-image-1` organizations on the free/Tier-1-style quota can hit a very low
+images-per-minute limit (observed: 5/min). Since `AgentService.generateAndSaveImageAssets`
+fires every page's `generateImage` call concurrently via `Promise.all`
+(cover, pages, and back cover all dispatch at once — see that method in
+`apps/api/src/agent/agent.service.ts`), and the character sheet is one more
+request before that, a six-page book can easily submit 7-8 requests in the
+same minute. `apps/api/src/images/openai-image-rate-limiter.ts`
+adds one `OpenAIImageRateLimiter` instance, shared by every call this process
+makes through `OpenAIImageGenerationProvider` (character sheet, cover, every
+page, back cover — constructed once in `image-generation-provider.factory.ts`
+and injected into the provider, so it's effectively process-wide):
+
+- **Serializes** every request: calls queue on a promise chain, so only one
+  request (including its own retry waits) is in flight at a time — this is
+  what actually fixes the `Promise.all` burst, independent of the interval
+  below.
+- Enforces **`OPENAI_IMAGE_MIN_INTERVAL_MS`** (default `15000`) between the
+  start of successive requests.
+- On HTTP `429`, retries up to **`OPENAI_IMAGE_MAX_RETRIES`** (default `5`)
+  times: honors the `Retry-After` response header when present, otherwise
+  waits an exponential backoff (`OPENAI_IMAGE_RETRY_BASE_MS` default `12000`,
+  doubling per attempt, capped at `OPENAI_IMAGE_RETRY_MAX_MS` default
+  `60000`) plus up to 20% jitter. This is a separate, longer-running retry
+  axis from `OPENAI_MAX_RETRIES`/`fetchWithRetry` above, which still handles
+  network errors/timeouts/5xx for image requests with its own short backoff.
+- Network errors/timeouts are **not** retried again at this layer — those are
+  already handled by `fetchWithRetry` inside the dispatched request; a
+  thrown error propagates immediately, preserving the existing
+  fallback-to-placeholder behavior for that entry.
+- Testable without real waiting: `now`/`sleep`/`random` are all injectable
+  (see `OpenAIImageRateLimiter`'s constructor options and its spec file).
+- `getRateLimitDiagnostics()` on the provider (surfaced via the optional
+  `ImageGenerationProvider.getRateLimitDiagnostics` interface member) returns
+  a safe, cumulative-since-process-start snapshot — requests queued, total
+  wait ms, 429 count, retries used, and how many retries honored
+  `Retry-After` — folded into `AgentService`'s existing
+  `Image generation for book ...` log line. `MockImageGenerationProvider`
+  has no rate limiter and never waits.
 
 ### Logging
 

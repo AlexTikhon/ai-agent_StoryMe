@@ -123,6 +123,17 @@ describe('MockImageGenerationProvider', () => {
     expect(result.usedReference).toBeUndefined();
   });
 
+  it('never waits on any rate limiter (no getRateLimitDiagnostics, resolves without delay)', async () => {
+    const provider = new MockImageGenerationProvider();
+    expect(provider.getRateLimitDiagnostics).toBeUndefined();
+
+    const startedAt = Date.now();
+    await provider.generateImage(makeInput());
+    await provider.generateImage(makeInput());
+    await provider.generateImage(makeInput());
+    expect(Date.now() - startedAt).toBeLessThan(50);
+  });
+
   describe('generateCharacterSheet', () => {
     it('returns a PNG buffer and contentType', async () => {
       const provider = new MockImageGenerationProvider();

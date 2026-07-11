@@ -50,6 +50,14 @@ export interface ImageGenerationProvider {
   readonly modelName?: string;
   generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput>;
   generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput>;
+  /** Safe (no secrets/prompts/bytes) rate-limiter diagnostics snapshot, if this provider is rate-limited. Only OpenAIImageGenerationProvider implements this. */
+  getRateLimitDiagnostics?(): {
+    requestsQueued: number;
+    totalWaitMs: number;
+    rateLimitHits: number;
+    retriesUsed: number;
+    retryAfterHonoredCount: number;
+  };
 }
 
 export const IMAGE_GENERATION_PROVIDER_TOKEN = 'IMAGE_GENERATION_PROVIDER';

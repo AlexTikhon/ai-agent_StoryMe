@@ -46,6 +46,21 @@ describe('createImageGenerationProvider', () => {
     expect(provider).toBeInstanceOf(OpenAIImageGenerationProvider);
   });
 
+  it('wires a real shared rate limiter into the openai provider', () => {
+    const provider = createImageGenerationProvider({
+      IMAGE_GENERATION_PROVIDER: 'openai',
+      OPENAI_API_KEY: 'sk-test-key',
+    } as unknown as NodeJS.ProcessEnv) as OpenAIImageGenerationProvider;
+
+    expect(provider.getRateLimitDiagnostics()).toEqual({
+      requestsQueued: 0,
+      totalWaitMs: 0,
+      rateLimitHits: 0,
+      retriesUsed: 0,
+      retryAfterHonoredCount: 0,
+    });
+  });
+
   it('throws a clear error for an unknown provider name', () => {
     expect(() =>
       createImageGenerationProvider({

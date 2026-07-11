@@ -621,8 +621,12 @@ export class AgentService {
         characterReference,
       );
 
+    const rateLimitDiagnostics = this.imageGenerationProvider.getRateLimitDiagnostics?.();
+    const rateLimitSummary = rateLimitDiagnostics
+      ? ` rateLimit: requestsQueued=${rateLimitDiagnostics.requestsQueued} totalWaitMs=${rateLimitDiagnostics.totalWaitMs} rateLimitHits=${rateLimitDiagnostics.rateLimitHits} retriesUsed=${rateLimitDiagnostics.retriesUsed} retryAfterHonored=${rateLimitDiagnostics.retryAfterHonoredCount}.`
+      : '';
     this.logger.log(
-      `Image generation for book ${book.id}: ${generatedCount} generated, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.`,
+      `Image generation for book ${book.id}: ${generatedCount} generated, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.${rateLimitSummary}`,
     );
 
     imageGenerationResult.imageByteProvider = imageProviderName;

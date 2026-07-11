@@ -13,11 +13,24 @@ import {
   fetchWithRetry,
   OpenAIRequestError,
 } from '../common/openai-request';
+import {
+  OpenAIImageRateLimiter,
+  type OpenAIImageRateLimiterDiagnostics,
+} from './openai-image-rate-limiter';
 
 const DEFAULT_MODEL = 'gpt-image-1';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_SIZE = '1024x1024';
 const DEFAULT_MAX_PAGES = 12;
+
+/**
+ * 429 is deliberately excluded here: fetchWithRetry only retries the other
+ * transient statuses (network blips / 5xx) with its own small fixed backoff.
+ * 429 is returned on the first attempt and handled exclusively by the shared
+ * OpenAIImageRateLimiter, which coordinates spacing/backoff/Retry-After
+ * across every concurrent image request instead of retrying in isolation.
+ */
+const IMAGE_RETRYABLE_STATUS_CODES = new Set([408, 500, 502, 503, 504]);
 
 export class ImageGenerationProviderError extends Error {
   constructor(
@@ -115,6 +128,15 @@ export interface OpenAIImageGenerationProviderOptions {
   maxRetries?: number;
   /** Caps real (paid) image generation to this many story pages. See REAL_GENERATION_MAX_PAGES. */
   maxPages?: number;
+  /**
+   * Shared rate limiter every request from this provider instance is
+   * scheduled through (see OpenAIImageRateLimiter). Defaults to a
+   * minIntervalMs=0 instance — i.e. no artificial spacing — so constructing
+   * a provider directly (as most unit tests do) behaves exactly as before;
+   * the real process-wide, env-configured limiter is injected explicitly by
+   * image-generation-provider.factory.ts for the actual openai provider path.
+   */
+  rateLimiter?: OpenAIImageRateLimiter;
 }
 
 /**
@@ -137,6 +159,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly maxPages: number;
+  private readonly rateLimiter: OpenAIImageRateLimiter;
 
   constructor(options: OpenAIImageGenerationProviderOptions) {
     if (!options.apiKey) {
@@ -149,10 +172,16 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
     this.maxRetries = options.maxRetries ?? DEFAULT_OPENAI_MAX_RETRIES;
     this.maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+    this.rateLimiter = options.rateLimiter ?? new OpenAIImageRateLimiter({ minIntervalMs: 0 });
   }
 
   get modelName(): string {
     return this.model;
+  }
+
+  /** Safe (no secrets/prompts/bytes) snapshot of this provider's shared rate limiter — see AgentService's image-generation log line. */
+  getRateLimitDiagnostics(): OpenAIImageRateLimiterDiagnostics {
+    return this.rateLimiter.getDiagnostics();
   }
 
   async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {
@@ -265,21 +294,24 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
   ): Promise<ImageGenerationOutput> {
     let response: Response;
     try {
-      response = await fetchWithRetry({
-        fetchImpl: this.fetchImpl,
-        url,
-        init,
-        timeoutMs: this.timeoutMs,
-        maxRetries: this.maxRetries,
-        onAttempt: (attempt, maxAttempts) => {
-          this.logger.log(
-            `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
-          );
-        },
-        onRetry: (attempt, reason) => {
-          this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
-        },
-      });
+      response = await this.rateLimiter.schedule(logLabel, () =>
+        fetchWithRetry({
+          fetchImpl: this.fetchImpl,
+          url,
+          init,
+          timeoutMs: this.timeoutMs,
+          maxRetries: this.maxRetries,
+          retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
+          onAttempt: (attempt, maxAttempts) => {
+            this.logger.log(
+              `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
+            );
+          },
+          onRetry: (attempt, reason) => {
+            this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
+          },
+        }),
+      );
     } catch (err) {
       const message =
         err instanceof OpenAIRequestError

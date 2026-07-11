@@ -59,6 +59,15 @@ export interface FetchWithRetryOptions {
   maxRetries: number;
   onAttempt?: (attempt: number, maxAttempts: number) => void;
   onRetry?: (attempt: number, reason: string) => void;
+  /**
+   * Overrides which non-2xx statuses are retried internally; defaults to the
+   * standard transient set (408/429/500/502/503/504). OpenAIImageGenerationProvider
+   * passes a set without 429 so 429 is returned on the first attempt instead —
+   * OpenAIImageRateLimiter owns 429 retry/backoff/Retry-After handling for image
+   * requests, since it needs to coordinate across concurrent calls in a way this
+   * function (one request at a time) cannot.
+   */
+  retryableStatusCodes?: ReadonlySet<number>;
 }
 
 /**
@@ -69,7 +78,16 @@ export interface FetchWithRetryOptions {
  * response.ok/status themselves, so 400/401/403 never retry.
  */
 export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Response> {
-  const { fetchImpl, url, init, timeoutMs, maxRetries, onAttempt, onRetry } = options;
+  const {
+    fetchImpl,
+    url,
+    init,
+    timeoutMs,
+    maxRetries,
+    onAttempt,
+    onRetry,
+    retryableStatusCodes = RETRYABLE_STATUS_CODES,
+  } = options;
   const maxAttempts = maxRetries + 1;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -79,7 +97,7 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
 
     try {
       const response = await fetchImpl(url, { ...init, signal: controller.signal });
-      if (!response.ok && RETRYABLE_STATUS_CODES.has(response.status) && attempt < maxAttempts) {
+      if (!response.ok && retryableStatusCodes.has(response.status) && attempt < maxAttempts) {
         onRetry?.(attempt, `http_${response.status}`);
         await delay(backoffMs(attempt));
         continue;
