@@ -83,7 +83,10 @@ function makeBook(overrides: Partial<Book> = {}): Book {
 describe('AgentService', () => {
   let service: AgentService;
   let prisma: MockPrisma;
-  let mockPdfStorage: { savePreviewPdf: ReturnType<typeof vi.fn> };
+  let mockPdfStorage: {
+    savePreviewPdf: ReturnType<typeof vi.fn>;
+    previewPdfExists: ReturnType<typeof vi.fn>;
+  };
   let mockImageAssetStorage: {
     saveImageAsset: ReturnType<typeof vi.fn>;
     getImageAsset: ReturnType<typeof vi.fn>;
@@ -98,7 +101,10 @@ describe('AgentService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prisma = createMockPrisma();
-    mockPdfStorage = { savePreviewPdf: vi.fn() };
+    mockPdfStorage = {
+      savePreviewPdf: vi.fn(),
+      previewPdfExists: vi.fn().mockResolvedValue(false),
+    };
     savedAssets = new Map<string, Buffer>();
     mockImageAssetStorage = {
       saveImageAsset: vi.fn(async (key: string, buffer: Buffer) => {
@@ -1955,6 +1961,312 @@ describe('AgentService', () => {
         expect(page2Entry?.imageBlock).toBeUndefined();
         expect(page2Entry?.textBlock).toBeDefined();
       });
+    });
+  });
+
+  // ── Idempotent resume of a partially generated book ───────────────────────
+  describe('idempotent resume (retrying a book that already has some generated assets)', () => {
+    function makeSpyStoryProvider(): StoryGenerationProvider & {
+      generateStory: ReturnType<typeof vi.fn>;
+    } {
+      const real = new MockStoryGenerationProvider();
+      return {
+        providerName: real.providerName,
+        generateStory: vi.fn((input) => real.generateStory(input)),
+      };
+    }
+
+    function makeSpyCharacterProfileProvider(): CharacterProfileProvider & {
+      buildProfile: ReturnType<typeof vi.fn>;
+    } {
+      const real = new MockCharacterProfileProvider();
+      return {
+        providerName: real.providerName,
+        buildProfile: vi.fn((input) => real.buildProfile(input)),
+      };
+    }
+
+    function makeSpyImageProvider(): ImageGenerationProvider & {
+      generateImage: ReturnType<typeof vi.fn>;
+      generateCharacterSheet: ReturnType<typeof vi.fn>;
+    } {
+      const real = new MockImageGenerationProvider();
+      return {
+        providerName: real.providerName,
+        generateImage: vi.fn((input) => real.generateImage(input)),
+        generateCharacterSheet: vi.fn((input) => real.generateCharacterSheet(input)),
+      };
+    }
+
+    /** Runs one full fresh generation with spy-wrapped providers and returns the Phase 1 persisted payload (storyPlan/characterCard/bookPreview/imageGenerationResult/characterProfile/characterSheetAssetKey) — a realistic prior-run state to resume from. */
+    async function generateFreshBook(): Promise<Record<string, unknown>> {
+      const book = makeBook();
+      const layoutBook = makeBook({ status: 'layout' as Book['status'] });
+      const completedBook = makeBook({
+        status: 'complete' as Book['status'],
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      });
+      prisma.book.update.mockResolvedValueOnce(layoutBook).mockResolvedValueOnce(completedBook);
+      prisma.agentLog.createMany.mockResolvedValue({ count: 9 });
+
+      const freshService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        makeSpyImageProvider(),
+        makeSpyCharacterProfileProvider(),
+      );
+      await freshService.startBookGeneration(book);
+      return prisma.book.update.mock.calls[0]?.[0]?.data as Record<string, unknown>;
+    }
+
+    /** Builds a `failed` book row carrying the given prior-run state, as retryGeneration leaves it (storyPlan/characterCard/etc. are never cleared — see books.service.ts). */
+    function makeResumedBook(
+      persisted: Record<string, unknown>,
+      overrides: Partial<Book> = {},
+    ): Book {
+      return makeBook({
+        status: 'failed' as Book['status'],
+        failedStep: 'pdf_render' as Book['failedStep'],
+        errorMessage: 'Cannot render PDF: missing generated illustration(s) for back_cover.',
+        storyPlan: persisted.storyPlan as Book['storyPlan'],
+        characterCard: persisted.characterCard as Book['characterCard'],
+        bookPreview: persisted.bookPreview as Book['bookPreview'],
+        imageGenerationResult: persisted.imageGenerationResult as Book['imageGenerationResult'],
+        characterProfile: persisted.characterProfile as Book['characterProfile'],
+        characterSheetAssetKey: (persisted.characterSheetAssetKey as string | undefined) ?? null,
+        ...overrides,
+      });
+    }
+
+    function setupResumeMocks() {
+      const layoutBook = makeBook({ status: 'layout' as Book['status'] });
+      const completedBook = makeBook({
+        status: 'complete' as Book['status'],
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      });
+      prisma.book.update.mockReset();
+      prisma.book.update.mockResolvedValueOnce(layoutBook).mockResolvedValueOnce(completedBook);
+      prisma.agentLog.createMany.mockReset();
+      prisma.agentLog.createMany.mockResolvedValue({ count: 9 });
+      mockPdfStorage.savePreviewPdf.mockResolvedValue({
+        url: '/files/books/b-1/storybook.pdf',
+        path: '/api/tmp/books/b-1/storybook.pdf',
+      });
+      vi.mocked(renderStorybookPdf).mockResolvedValue(Buffer.from('%PDF-1.4 mock'));
+      // Clears call history left over from generateFreshBook() above (the
+      // savedAssets Map itself is untouched) so assertions in the resume
+      // phase only see calls made during the resume run.
+      mockImageAssetStorage.saveImageAsset.mockClear();
+      mockImageAssetStorage.getImageAsset.mockClear();
+    }
+
+    it('reuses the cover and all six page images, makes exactly one image-provider call for back_cover, renders the PDF, and completes', async () => {
+      const persisted = await generateFreshBook();
+      savedAssets.delete('b-1/back-cover');
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted);
+      const storyProvider = makeSpyStoryProvider();
+      const profileProvider = makeSpyCharacterProfileProvider();
+      const imageProvider = makeSpyImageProvider();
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        storyProvider,
+        imageProvider,
+        profileProvider,
+      );
+
+      const result = await resumeService.startBookGeneration(resumedBook);
+
+      expect(storyProvider.generateStory).not.toHaveBeenCalled();
+      expect(profileProvider.buildProfile).not.toHaveBeenCalled();
+      expect(imageProvider.generateCharacterSheet).not.toHaveBeenCalled();
+      expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
+      expect(imageProvider.generateImage).toHaveBeenCalledWith(
+        expect.objectContaining({ entry: expect.objectContaining({ kind: 'back_cover' }) }),
+      );
+      expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
+        'b-1/back-cover',
+        expect.any(Buffer),
+        expect.any(String),
+      );
+      expect(renderStorybookPdf).toHaveBeenCalled();
+      expect(result.status).toBe('complete');
+    });
+
+    it('folds resumeMode/reusedImageCount/regeneratedImageCount/skipped* diagnostics onto imageGenerationResult.resume', async () => {
+      const persisted = await generateFreshBook();
+      savedAssets.delete('b-1/back-cover');
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted);
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        makeSpyImageProvider(),
+        makeSpyCharacterProfileProvider(),
+      );
+
+      await resumeService.startBookGeneration(resumedBook);
+
+      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
+      const persistedResult = finalUpdateArg?.data?.imageGenerationResult as {
+        resume?: Record<string, unknown>;
+      };
+      const resume = persistedResult.resume;
+      expect(resume).toBeDefined();
+      expect(resume?.resumeMode).toBe(true);
+      expect(resume?.reusedImageCount).toBe(7);
+      expect(resume?.regeneratedImageCount).toBe(1);
+      expect(resume?.skippedStoryGeneration).toBe(true);
+      expect(resume?.skippedCharacterProfileGeneration).toBe(true);
+      expect(resume?.skippedCharacterSheetGeneration).toBe(true);
+      expect(resume?.skippedExistingImageGeneration).toBe(true);
+      expect(resume?.pdfRenderAttempted).toBe(true);
+      expect(resume?.pdfRenderSucceeded).toBe(true);
+      expect(resume?.finalBookStatus).toBe('complete');
+      // The prior run never reached a successful PDF render, so 'pdf' is
+      // also missing going into this retry (see resumedBook's overrides).
+      expect(resume?.missingAssetsBeforeRetry).toEqual(['back_cover', 'pdf']);
+      expect(resume?.missingAssetsAfterRetry).toEqual([]);
+    });
+
+    it('treats a database asset record whose local file is missing as invalid and regenerates it', async () => {
+      const persisted = await generateFreshBook();
+      savedAssets.delete('b-1/page-3');
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted, {
+        errorMessage: 'Cannot render PDF: missing generated illustration(s) for page 3.',
+      });
+      const imageProvider = makeSpyImageProvider();
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        imageProvider,
+        makeSpyCharacterProfileProvider(),
+      );
+
+      await resumeService.startBookGeneration(resumedBook);
+
+      expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
+      expect(imageProvider.generateImage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          entry: expect.objectContaining({ kind: 'page', pageNumber: 3 }),
+        }),
+      );
+    });
+
+    it('treats a zero-byte local file as invalid and regenerates it', async () => {
+      const persisted = await generateFreshBook();
+      savedAssets.set('b-1/page-5', Buffer.alloc(0));
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted, {
+        errorMessage: 'Cannot render PDF: missing generated illustration(s) for page 5.',
+      });
+      const imageProvider = makeSpyImageProvider();
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        imageProvider,
+        makeSpyCharacterProfileProvider(),
+      );
+
+      await resumeService.startBookGeneration(resumedBook);
+
+      expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
+      expect(imageProvider.generateImage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          entry: expect.objectContaining({ kind: 'page', pageNumber: 5 }),
+        }),
+      );
+    });
+
+    it('makes zero image-provider requests and no story/profile calls when retrying an already fully generated book', async () => {
+      const persisted = await generateFreshBook();
+      // Nothing deleted from savedAssets — every asset from the first run is still valid.
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted, {
+        status: 'complete' as Book['status'],
+        failedStep: null,
+        errorMessage: null,
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      });
+      const storyProvider = makeSpyStoryProvider();
+      const profileProvider = makeSpyCharacterProfileProvider();
+      const imageProvider = makeSpyImageProvider();
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        storyProvider,
+        imageProvider,
+        profileProvider,
+      );
+
+      const result = await resumeService.startBookGeneration(resumedBook);
+
+      expect(storyProvider.generateStory).not.toHaveBeenCalled();
+      expect(profileProvider.buildProfile).not.toHaveBeenCalled();
+      expect(imageProvider.generateCharacterSheet).not.toHaveBeenCalled();
+      expect(imageProvider.generateImage).not.toHaveBeenCalled();
+      expect(result.status).toBe('complete');
+    });
+
+    it('leaves valid existing assets untouched when the regenerated asset fails again', async () => {
+      const persisted = await generateFreshBook();
+      savedAssets.delete('b-1/back-cover');
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted);
+      const failingImageProvider: ImageGenerationProvider = {
+        providerName: 'mock',
+        generateImage: vi.fn().mockRejectedValue(new Error('back_cover request failed again')),
+        generateCharacterSheet: vi.fn(),
+      };
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        failingImageProvider,
+        makeSpyCharacterProfileProvider(),
+      );
+
+      await resumeService.startBookGeneration(resumedBook);
+
+      // The 7 previously valid assets are never re-requested or overwritten.
+      expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
+      expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
+        'b-1/cover',
+        expect.anything(),
+        expect.anything(),
+      );
+      for (let n = 1; n <= 6; n++) {
+        expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
+          `b-1/page-${n}`,
+          expect.anything(),
+          expect.anything(),
+        );
+      }
+      expect(savedAssets.get('b-1/cover')).toBeDefined();
+      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
+      expect(finalUpdateArg?.data?.status).toBe('failed');
+      expect(finalUpdateArg?.data?.failedStep).toBe('pdf_render');
+      warnSpy.mockRestore();
     });
   });
 });

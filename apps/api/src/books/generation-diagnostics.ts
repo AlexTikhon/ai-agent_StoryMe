@@ -9,6 +9,7 @@ import type {
   GenerationProviderName,
   PdfStorageDiagnostics,
   QueueDiagnostics,
+  ResumeDiagnostics,
 } from '@book/types';
 import { PRESERVE_APPEARANCE_INSTRUCTION } from '../agent/story-generation-provider';
 
@@ -138,6 +139,19 @@ export function buildCharacterPersonalizationDiagnostics(
   };
 }
 
+/**
+ * Reads the idempotent-resume diagnostics AgentService.startBookGeneration
+ * folds onto Book.imageGenerationResult.resume (see ResumeDiagnostics,
+ * agent.service.ts) — null for books generated before this feature existed,
+ * or whose most recent run never reached the point of computing it.
+ */
+function buildResumeDiagnostics(
+  imageGenerationResult: Book['imageGenerationResult'],
+): ResumeDiagnostics | null {
+  const resume = (imageGenerationResult as { resume?: unknown } | null)?.resume;
+  return resume ? (resume as ResumeDiagnostics) : null;
+}
+
 function toAgentLogSummary(log: AgentLog): AgentLogSummary {
   return {
     step: log.step as AgentLogSummary['step'],
@@ -212,5 +226,6 @@ export function buildGenerationDiagnostics(
         !!latestJob && ACTIVE_JOB_STATUSES.has(latestJob.status) && resolvedQueue.workerCount === 0,
     },
     characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
+    resume: buildResumeDiagnostics(book.imageGenerationResult),
   };
 }

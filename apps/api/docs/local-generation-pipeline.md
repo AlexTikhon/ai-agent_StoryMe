@@ -116,6 +116,88 @@ Then, in three phases against the database:
   `pdf_render` — the last one's `status` is `success` or `error` depending on
   Phase 2's outcome, with the error message attached when it failed.
 
+## Idempotent resume of a partially generated book
+
+`BooksService.retryGeneration` (see "Retrying failed generation (Phase 3G)"
+below) never clears
+`Book.storyPlan`/`characterCard`/`bookPreview`/`imageGenerationResult`/
+`characterProfile`/`characterSheetAssetKey` — only `status`/`failedStep`/
+`errorMessage`/`retryCount`. So a retry against a book that previously made
+it past Phase 1 of a run (e.g. one that failed at `pdf_render`) hands
+`AgentService.startBookGeneration` a `Book` row that already carries a full
+prior generation result. `isResumableBook` (`agent.service.ts`) detects this
+(`storyPlan`/`characterCard`/`bookPreview`/`imageGenerationResult` all
+non-null) and the pipeline reuses as much of it as is still valid instead of
+regenerating from scratch:
+
+- **Story** — skipped entirely when resumable: `characterCard`/`storyPlan`/
+  `bookPreview`/`imageGenerationResult` are read straight off the book row,
+  `StoryGenerationProvider.generateStory` is never called.
+- **Character profile** — skipped when `Book.characterProfile` is present;
+  `CharacterProfileProvider.buildProfile` is never called.
+- **Character sheet** — skipped when the profile's `hasCharacterSheet` is
+  true and `Book.characterSheetAssetKey`'s bytes are still readable and
+  non-empty (`classifyCharacterSheetAsset`). If the profile is being reused
+  but the sheet specifically is missing/invalid, only the sheet is
+  regenerated (`regenerateCharacterSheet`) — the profile provider is still
+  never re-called.
+- **Illustrations** — `classifyImageAssets` checks every planned cover/page/
+  back-cover entry's saved bytes via `ImageAssetStorage.getImageAsset`: no
+  bytes at all → missing, a zero-length buffer → invalid, otherwise → valid
+  and reusable as-is. Only missing/invalid entries are sent to
+  `ImageGenerationProvider.generateImage` — for a six-page book with only
+  `back_cover` missing, this is exactly one request.
+  `MAX_GENERATED_IMAGES_PER_BOOK`/`REAL_GENERATION_MAX_PAGES` (see "Real
+  provider hardening" below) still apply to that (usually much smaller) set
+  of new requests. A fresh (non-resumable) book has nothing saved yet, so
+  every entry naturally falls into "missing" — this is the same code path as
+  ordinary first-time generation, not a separate one.
+- **Layout and PDF** — always rebuilt/re-rendered on every run (cheap,
+  deterministic, no external cost), whether resuming or not.
+
+Concurrency (repeated Retry clicks, or two concurrent retries) is guarded the
+same way `startGeneration`/`retryGeneration` already guard against duplicate
+generation: `GenerationJobService.findActive` plus `claimStatusTransition`'s
+conditional UPDATE (see "Retrying failed generation (Phase 3G)" below) —
+idempotent resume adds no
+new concurrency surface.
+
+### Resume diagnostics
+
+Every run — resumed or not — folds a `ResumeDiagnostics` object
+(`@book/types`) onto `Book.imageGenerationResult.resume` (no schema
+migration, the same pattern Phase 3E used for `generatedImageCount`/
+`failedImageCount`), surfaced as `resume` on
+`GET /:id/generation-diagnostics`'s response
+(`GenerationDiagnosticsDto.resume`, `null` for books generated before this
+existed):
+
+```ts
+interface ResumeDiagnostics {
+  resumeMode: boolean;
+  requiredAssets: string[]; // 'character_sheet' | 'cover' | 'page_<n>' | 'back_cover' | 'pdf'
+  validExistingAssets: string[];
+  missingAssetsBeforeRetry: string[];
+  invalidAssetsBeforeRetry: string[];
+  reusedImageCount: number;
+  regeneratedImageCount: number;
+  skippedStoryGeneration: boolean;
+  skippedCharacterProfileGeneration: boolean;
+  skippedCharacterSheetGeneration: boolean;
+  skippedExistingImageGeneration: boolean; // true when at least one image was reused
+  missingAssetsAfterRetry: string[];
+  pdfRenderAttempted: boolean;
+  pdfRenderSucceeded: boolean;
+  finalBookStatus: BookStatus;
+}
+```
+
+`missingAssetsAfterRetry` is only populated for `character_sheet` (its own
+independent best-effort check) and, when `pdf_render` fails, a fresh
+`classifyImageAssets` pass — a successful `pdf_render` implies every planned
+illustration resolved (see `assertAllImagesResolved` above), so no extra
+storage reads happen on the happy path.
+
 ## Story generation provider boundary
 
 `apps/api/src/agent/story-generation-provider.ts` defines `StoryGenerationProvider`,

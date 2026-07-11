@@ -196,6 +196,41 @@ export interface QueueDiagnostics {
   stalledNoWorker: boolean;
 }
 
+/**
+ * Safe, non-secret view of idempotent-resume behavior for one generation run
+ * (see "Idempotent resume" in apps/api/docs/local-generation-pipeline.md).
+ * Persisted onto Book.imageGenerationResult.resume (no schema migration —
+ * mirrors how generatedImageCount/failedImageCount were added in Phase 3E)
+ * and surfaced via GenerationDiagnosticsDto.resume. Asset labels are stable
+ * strings: 'character_sheet', 'cover', 'page_<n>', 'back_cover', 'pdf'.
+ */
+export interface ResumeDiagnostics {
+  /** True when this run reused any prior persisted generation state instead of starting from scratch. */
+  resumeMode: boolean;
+  /** Every asset this book needs to reach 'complete'. */
+  requiredAssets: string[];
+  /** Assets that already had valid, non-empty bytes/data before this run started. */
+  validExistingAssets: string[];
+  /** Required assets that had no prior record/bytes at all before this run. */
+  missingAssetsBeforeRetry: string[];
+  /** Required assets that had a prior record but failed validation (e.g. zero-byte file) before this run. */
+  invalidAssetsBeforeRetry: string[];
+  /** Count of image assets reused as-is (no new provider call) this run. */
+  reusedImageCount: number;
+  /** Count of image assets actually generated via the image provider this run. */
+  regeneratedImageCount: number;
+  skippedStoryGeneration: boolean;
+  skippedCharacterProfileGeneration: boolean;
+  skippedCharacterSheetGeneration: boolean;
+  /** True when at least one existing image asset was reused instead of regenerated this run. */
+  skippedExistingImageGeneration: boolean;
+  /** Required assets still missing/invalid after this run completed. */
+  missingAssetsAfterRetry: string[];
+  pdfRenderAttempted: boolean;
+  pdfRenderSucceeded: boolean;
+  finalBookStatus: BookStatus;
+}
+
 /** WebSocket progress event shapes emitted during generation. */
 export type WsProgressEvent =
   | { type: 'book:progress'; step: AgentStep; percentComplete: number }

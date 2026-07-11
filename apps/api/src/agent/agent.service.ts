@@ -25,6 +25,7 @@ import type {
   CharacterProfile,
   GeneratedImageEntry,
   ImageGenerationResult,
+  ResumeDiagnostics,
 } from '@book/types';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
@@ -259,6 +260,29 @@ function assertAllImagesResolved(
         'if the real image provider is capping generation for this book.',
     );
   }
+}
+
+/** Stable diagnostics label for one planned image entry: 'cover' | 'page_<n>' | 'back_cover'. */
+function imageAssetLabel(entry: GeneratedImageEntry): string {
+  return entry.kind === 'page' ? `page_${entry.pageNumber}` : entry.kind;
+}
+
+/**
+ * True when `book` already carries a full prior generation result (story
+ * plan, character card, book preview, and planned image list) to resume from
+ * — the signature of a retry against a book that previously made it past
+ * Phase 1 of a run (see startBookGeneration below), as opposed to a
+ * brand-new book whose first generation attempt this is. Gating idempotent
+ * resume on this means an ordinary first-time `generate` is byte-identical
+ * to before this feature existed.
+ */
+function isResumableBook(book: Book): boolean {
+  return (
+    book.storyPlan != null &&
+    book.characterCard != null &&
+    book.bookPreview != null &&
+    book.imageGenerationResult != null
+  );
 }
 
 @Injectable()
@@ -499,6 +523,105 @@ export class AgentService {
     };
   }
 
+  /** True when `key` names an existing, non-empty asset in ImageAssetStorage — the "storage key exists AND file is non-empty" validation idempotent resume requires before trusting a prior save. */
+  private async imageAssetIsValid(key: string | null | undefined): Promise<boolean> {
+    if (!key) return false;
+    const buffer = await this.imageAssetStorage.getImageAsset(key);
+    return buffer != null && buffer.length > 0;
+  }
+
+  /** Classifies whether a book's character-sheet reference image is usable as-is: 'missing' if none was ever intended/keyed, 'invalid' if keyed but unreadable/empty, 'valid' otherwise. */
+  private async classifyCharacterSheetAsset(
+    profile: CharacterProfile,
+    sheetKey: string | null | undefined,
+  ): Promise<'valid' | 'missing' | 'invalid'> {
+    if (!profile.hasCharacterSheet) return 'missing';
+    if (!sheetKey) return 'invalid';
+    return (await this.imageAssetIsValid(sheetKey)) ? 'valid' : 'invalid';
+  }
+
+  /**
+   * Splits a book's planned image entries (cover/pages/back_cover) into
+   * those with already-valid saved bytes (reusable as-is, no provider call
+   * needed) and those that need a fresh generateImage call — either because
+   * nothing was ever saved for that entry, or a prior save left zero bytes.
+   * On a brand-new book nothing is saved yet, so every entry naturally lands
+   * in `toGenerate` — this is also the ordinary fresh-generation path, not
+   * just resume.
+   */
+  private async classifyImageAssets(
+    bookId: string,
+    images: GeneratedImageEntry[],
+  ): Promise<{
+    reusable: GeneratedImageEntry[];
+    toGenerate: GeneratedImageEntry[];
+    missing: GeneratedImageEntry[];
+    invalid: GeneratedImageEntry[];
+  }> {
+    const buffers = await Promise.all(
+      images.map((image) =>
+        this.imageAssetStorage.getImageAsset(imageAssetKey(bookId, image.kind, image.pageNumber)),
+      ),
+    );
+    const reusable: GeneratedImageEntry[] = [];
+    const toGenerate: GeneratedImageEntry[] = [];
+    const missing: GeneratedImageEntry[] = [];
+    const invalid: GeneratedImageEntry[] = [];
+    images.forEach((image, i) => {
+      const buffer = buffers[i];
+      if (buffer != null && buffer.length > 0) {
+        reusable.push(image);
+      } else {
+        toGenerate.push(image);
+        (buffer == null ? missing : invalid).push(image);
+      }
+    });
+    return { reusable, toGenerate, missing, invalid };
+  }
+
+  /**
+   * Regenerates only the character-sheet reference image for a book whose
+   * CharacterProfile is being reused as-is (resume path) but whose
+   * previously saved sheet bytes are missing or invalid. Mirrors the sheet
+   * half of buildCharacterProfileAndSheet above — kept separate so reusing a
+   * valid profile never re-runs the (possibly real, billed)
+   * CharacterProfileProvider just to regenerate a sheet.
+   */
+  private async regenerateCharacterSheet(
+    book: Book,
+    characterProfile: CharacterProfile,
+  ): Promise<{
+    characterProfile: CharacterProfile;
+    characterSheetKey?: string;
+    durationMs: number;
+    error?: string;
+  }> {
+    const startedAt = Date.now();
+    try {
+      const { buffer, contentType } = await this.imageGenerationProvider.generateCharacterSheet({
+        bookId: book.id,
+        characterProfile,
+      });
+      const key = characterSheetAssetKey(book.id);
+      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      return {
+        characterProfile: { ...characterProfile, hasCharacterSheet: true },
+        characterSheetKey: key,
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (err) {
+      const sheetError = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Character sheet regeneration/save failed for book ${book.id} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
+      );
+      return {
+        characterProfile: { ...characterProfile, hasCharacterSheet: false },
+        durationMs: Date.now() - startedAt,
+        error: sheetError,
+      };
+    }
+  }
+
   async startBookGeneration(book: Book): Promise<Book> {
     const traceId = randomUUID();
     const startedAt = Date.now();
@@ -518,12 +641,69 @@ export class AgentService {
       image: this.modelLabel(this.imageGenerationProvider),
     };
 
+    // Idempotent resume (see "Idempotent resume" in
+    // apps/api/docs/local-generation-pipeline.md): a retry against a book
+    // that previously made it past Phase 1 of a run already carries a full
+    // story/character/image plan on the row — reuse it instead of paying for
+    // story/character-profile generation again. A brand-new book has none of
+    // this yet, so `resumable` is false and every branch below falls through
+    // to the original from-scratch behavior.
+    const resumable = isResumableBook(book);
+    const priorCharacterProfile = book.characterProfile as unknown as CharacterProfile | null;
+    const priorSheetStatus = priorCharacterProfile
+      ? await this.classifyCharacterSheetAsset(priorCharacterProfile, book.characterSheetAssetKey)
+      : 'missing';
+    const canReuseCharacterProfile = resumable && priorCharacterProfile != null;
+
     // char_build: build the CharacterProfile (+ character-sheet reference
     // image) before the story itself, so every page/cover/back-cover prompt
     // built below can be seeded with it. Persisted below alongside whichever
     // update comes next (the failure-path update or Phase 1's layout
     // update), rather than as its own extra write.
-    const charBuildResult = await this.buildCharacterProfileAndSheet(book);
+    let charBuildResult: {
+      characterProfile: CharacterProfile;
+      characterSheetKey?: string;
+      providerName: string | null;
+      modelName: string | null;
+      durationMs: number;
+      error?: string;
+    };
+    let skippedCharacterProfileGeneration = false;
+    let skippedCharacterSheetGeneration = false;
+
+    if (canReuseCharacterProfile) {
+      skippedCharacterProfileGeneration = true;
+      const profileProviderName = this.characterProfileProvider.providerName ?? null;
+      const profileModelName = this.characterProfileProvider.modelName ?? null;
+      if (priorSheetStatus === 'valid') {
+        skippedCharacterSheetGeneration = priorCharacterProfile!.hasCharacterSheet;
+        charBuildResult = {
+          characterProfile: priorCharacterProfile!,
+          ...(priorCharacterProfile!.hasCharacterSheet &&
+            book.characterSheetAssetKey && { characterSheetKey: book.characterSheetAssetKey }),
+          providerName: profileProviderName,
+          modelName: profileModelName,
+          durationMs: 0,
+        };
+        this.logger.log(
+          `Resuming book ${book.id}: reusing existing character profile${
+            skippedCharacterSheetGeneration ? ' and character sheet' : ''
+          } — skipping char_build generation.`,
+        );
+      } else {
+        this.logger.warn(
+          `Book ${book.id} has a character profile but its saved character-sheet bytes are ${priorSheetStatus} — regenerating only the character sheet, reusing the profile as-is.`,
+        );
+        const sheetResult = await this.regenerateCharacterSheet(book, priorCharacterProfile!);
+        charBuildResult = {
+          ...sheetResult,
+          providerName: profileProviderName,
+          modelName: profileModelName,
+        };
+      }
+    } else {
+      charBuildResult = await this.buildCharacterProfileAndSheet(book);
+    }
     const { characterProfile } = charBuildResult;
     const characterProfileUpdateData: Prisma.BookUpdateInput = {
       characterProfile: characterProfile as unknown as Prisma.InputJsonValue,
@@ -539,72 +719,88 @@ export class AgentService {
     let storyPlanFinal: StoryGenerationResult['storyPlan'];
     let bookPreview: BookPreview;
     let imageGenerationResult: ImageGenerationResult;
+    let skippedStoryGeneration = false;
+    let storyDurationMs: number;
 
-    try {
-      const result = await this.storyGenerationProvider.generateStory({
-        bookId: book.id,
-        childName,
-        childAge,
-        theme,
-        language,
-        pageCount,
-        educationalMessage,
-        characterProfile,
-      });
-      characterCard = result.characterCard;
-      storyPlanFinal = result.storyPlan;
-      bookPreview = result.bookPreview;
-      imageGenerationResult = result.imageGenerationResult;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
-      const failed = await this.prisma.book.update({
-        where: { id: book.id },
-        data: {
-          status: BookStatus.failed,
-          errorMessage: message,
-          failedStep: AgentStep.story_plan,
-          generationTimeMs: Date.now() - startedAt,
-          aiModelVersions,
-          ...characterProfileUpdateData,
-        },
-      });
-      await this.prisma.agentLog.createMany({
-        data: [
-          {
-            bookId: book.id,
-            agent: 'LocalPipelineAgent',
-            step: AgentStep.char_build,
-            status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
-            attempt: 1,
-            traceId,
-            provider: charBuildResult.providerName,
-            model: charBuildResult.modelName,
-            durationMs: charBuildResult.durationMs,
-            ...(charBuildResult.error && { error: charBuildResult.error }),
+    if (resumable) {
+      characterCard = book.characterCard as unknown as StoryGenerationResult['characterCard'];
+      storyPlanFinal = book.storyPlan as unknown as StoryGenerationResult['storyPlan'];
+      bookPreview = book.bookPreview as unknown as BookPreview;
+      imageGenerationResult = book.imageGenerationResult as unknown as ImageGenerationResult;
+      skippedStoryGeneration = true;
+      storyDurationMs = 0;
+      this.logger.log(
+        `Resuming book ${book.id}: reusing existing story plan/preview/image plan — skipping story generation.`,
+      );
+    } else {
+      try {
+        const result = await this.storyGenerationProvider.generateStory({
+          bookId: book.id,
+          childName,
+          childAge,
+          theme,
+          language,
+          pageCount,
+          educationalMessage,
+          characterProfile,
+        });
+        characterCard = result.characterCard;
+        storyPlanFinal = result.storyPlan;
+        bookPreview = result.bookPreview;
+        imageGenerationResult = result.imageGenerationResult;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
+        const failed = await this.prisma.book.update({
+          where: { id: book.id },
+          data: {
+            status: BookStatus.failed,
+            errorMessage: message,
+            failedStep: AgentStep.story_plan,
+            generationTimeMs: Date.now() - startedAt,
+            aiModelVersions,
+            ...characterProfileUpdateData,
           },
-          {
-            bookId: book.id,
-            agent: 'LocalPipelineAgent',
-            step: AgentStep.story_plan,
-            status: AgentLogStatus.error,
-            attempt: 1,
-            traceId,
-            error: message,
-            provider: storyProviderName,
-            model: storyModelName,
-            durationMs: Date.now() - startedAt,
-          },
-        ],
-      });
-      return failed;
+        });
+        await this.prisma.agentLog.createMany({
+          data: [
+            {
+              bookId: book.id,
+              agent: 'LocalPipelineAgent',
+              step: AgentStep.char_build,
+              status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
+              attempt: 1,
+              traceId,
+              provider: charBuildResult.providerName,
+              model: charBuildResult.modelName,
+              durationMs: charBuildResult.durationMs,
+              ...(charBuildResult.error && { error: charBuildResult.error }),
+            },
+            {
+              bookId: book.id,
+              agent: 'LocalPipelineAgent',
+              step: AgentStep.story_plan,
+              status: AgentLogStatus.error,
+              attempt: 1,
+              traceId,
+              error: message,
+              provider: storyProviderName,
+              model: storyModelName,
+              durationMs: Date.now() - startedAt,
+            },
+          ],
+        });
+        return failed;
+      }
+      storyDurationMs = Date.now() - startedAt;
     }
 
     this.logger.log(
-      `Story generated for book ${book.id}: ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} illustrations planned (cover + pages + back cover).`,
+      skippedStoryGeneration
+        ? `Book ${book.id}: reusing ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} planned illustrations from the prior run.`
+        : `Story generated for book ${book.id}: ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} illustrations planned (cover + pages + back cover).`,
     );
 
-    const storyDurationMs = Date.now() - startedAt;
     const imageStartedAt = Date.now();
 
     const characterReference = await this.loadCharacterReference(
@@ -613,11 +809,37 @@ export class AgentService {
     );
     const characterReferenceAvailable = characterReference !== undefined;
 
+    // Idempotent resume: only call the image provider for entries whose
+    // saved bytes are missing or invalid; entries with valid existing bytes
+    // are reused untouched. On a fresh book nothing is saved yet, so every
+    // entry naturally lands in `imagesNeedingGeneration` — this is also the
+    // ordinary fresh-generation path, not just resume.
+    const {
+      reusable: reusableImages,
+      toGenerate: imagesNeedingGeneration,
+      missing: missingImagesBefore,
+      invalid: invalidImagesBefore,
+    } = await this.classifyImageAssets(book.id, imageGenerationResult.images);
+
+    if (reusableImages.length > 0) {
+      this.logger.log(
+        `Book ${book.id}: reusing ${reusableImages.length} already-generated illustration(s) (${reusableImages
+          .map(imageAssetLabel)
+          .join(', ')}); generating ${imagesNeedingGeneration.length} remaining.`,
+      );
+    }
+
+    const priorCharacterReferenceUsedForImages =
+      imageGenerationResult.characterReferenceUsedForImages === true;
+    const priorImageGenerationMode = imageGenerationResult.imageGenerationMode;
+    const priorCharacterReferenceAvailable =
+      imageGenerationResult.characterReferenceAvailable === true;
+
     const { generatedCount, failedCount, lastError, usedCharacterReference } =
       await this.generateAndSaveImageAssets(
         book.id,
         characterCard,
-        imageGenerationResult.images,
+        imagesNeedingGeneration,
         characterReference,
       );
 
@@ -626,17 +848,22 @@ export class AgentService {
       ? ` rateLimit: requestsQueued=${rateLimitDiagnostics.requestsQueued} totalWaitMs=${rateLimitDiagnostics.totalWaitMs} rateLimitHits=${rateLimitDiagnostics.rateLimitHits} retriesUsed=${rateLimitDiagnostics.retriesUsed} retryAfterHonored=${rateLimitDiagnostics.retryAfterHonoredCount}.`
       : '';
     this.logger.log(
-      `Image generation for book ${book.id}: ${generatedCount} generated, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.${rateLimitSummary}`,
+      `Image generation for book ${book.id}: ${generatedCount} generated, ${reusableImages.length} reused, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.${rateLimitSummary}`,
     );
 
     imageGenerationResult.imageByteProvider = imageProviderName;
-    imageGenerationResult.generatedImageCount = generatedCount;
+    imageGenerationResult.generatedImageCount = reusableImages.length + generatedCount;
     imageGenerationResult.failedImageCount = failedCount;
-    imageGenerationResult.characterReferenceAvailable = characterReferenceAvailable;
-    imageGenerationResult.characterReferenceUsedForImages = usedCharacterReference;
-    imageGenerationResult.imageGenerationMode = usedCharacterReference
-      ? 'character-reference-edit'
-      : 'text-to-image';
+    imageGenerationResult.characterReferenceAvailable =
+      characterReferenceAvailable || priorCharacterReferenceAvailable;
+    imageGenerationResult.characterReferenceUsedForImages =
+      usedCharacterReference || priorCharacterReferenceUsedForImages;
+    imageGenerationResult.imageGenerationMode =
+      imagesNeedingGeneration.length > 0
+        ? usedCharacterReference
+          ? 'character-reference-edit'
+          : 'text-to-image'
+        : (priorImageGenerationMode ?? 'text-to-image');
     if (lastError !== undefined) {
       imageGenerationResult.lastImageError = lastError;
     }
@@ -690,10 +917,84 @@ export class AgentService {
 
     // Phase 3: advance to 'complete' or 'failed' and persist PDF url/error
     const finalStatus = pdfRenderError ? BookStatus.failed : BookStatus.complete;
+
+    // Idempotent-resume diagnostics (ResumeDiagnostics, @book/types) — a
+    // safe, structured summary of what this run reused vs. actually
+    // generated, folded into imageGenerationResult (no schema migration,
+    // same pattern Phase 3E used for generatedImageCount/failedImageCount)
+    // and surfaced via GET /:id/generation-diagnostics.
+    // Reuses the single characterReference already loaded above (via
+    // loadCharacterReference) instead of reading ImageAssetStorage again for
+    // the same key — some tests assert the character-sheet key is only ever
+    // read once per run (see "loads the character-sheet bytes only once" in
+    // agent.service.spec.ts).
+    const afterSheetStatus: 'valid' | 'missing' | 'invalid' = !characterProfile.hasCharacterSheet
+      ? 'missing'
+      : characterReference && characterReference.buffer.length > 0
+        ? 'valid'
+        : 'invalid';
+    const missingAssetsAfterRetry: string[] = [];
+    if (afterSheetStatus !== 'valid') missingAssetsAfterRetry.push('character_sheet');
+    if (pdfRenderError) {
+      missingAssetsAfterRetry.push('pdf');
+      const afterImages = await this.classifyImageAssets(book.id, imageGenerationResult.images);
+      missingAssetsAfterRetry.push(
+        ...afterImages.missing.map(imageAssetLabel),
+        ...afterImages.invalid.map(imageAssetLabel),
+      );
+    }
+
+    const requiredAssets = [
+      'character_sheet',
+      ...imageGenerationResult.images.map(imageAssetLabel),
+      'pdf',
+    ];
+    const pdfStatusBefore: 'valid' | 'missing' | 'invalid' =
+      book.previewPdfUrl == null
+        ? 'missing'
+        : (await this.pdfStorage.previewPdfExists(book.id))
+          ? 'valid'
+          : 'invalid';
+    const validExistingAssets = [
+      ...(priorSheetStatus === 'valid' ? ['character_sheet'] : []),
+      ...reusableImages.map(imageAssetLabel),
+      ...(pdfStatusBefore === 'valid' ? ['pdf'] : []),
+    ];
+    const missingAssetsBeforeRetry = [
+      ...(priorSheetStatus === 'missing' ? ['character_sheet'] : []),
+      ...missingImagesBefore.map(imageAssetLabel),
+      ...(pdfStatusBefore === 'missing' ? ['pdf'] : []),
+    ];
+    const invalidAssetsBeforeRetry = [
+      ...(priorSheetStatus === 'invalid' ? ['character_sheet'] : []),
+      ...invalidImagesBefore.map(imageAssetLabel),
+      ...(pdfStatusBefore === 'invalid' ? ['pdf'] : []),
+    ];
+
+    const resumeDiagnostics: ResumeDiagnostics = {
+      resumeMode: resumable,
+      requiredAssets,
+      validExistingAssets,
+      missingAssetsBeforeRetry,
+      invalidAssetsBeforeRetry,
+      reusedImageCount: reusableImages.length,
+      regeneratedImageCount: generatedCount,
+      skippedStoryGeneration,
+      skippedCharacterProfileGeneration,
+      skippedCharacterSheetGeneration,
+      skippedExistingImageGeneration: reusableImages.length > 0,
+      missingAssetsAfterRetry,
+      pdfRenderAttempted: true,
+      pdfRenderSucceeded: !pdfRenderError,
+      finalBookStatus: finalStatus as unknown as ResumeDiagnostics['finalBookStatus'],
+    };
+    imageGenerationResult.resume = resumeDiagnostics;
+
     const finalData: Prisma.BookUpdateInput = {
       status: finalStatus,
       generationTimeMs: Date.now() - startedAt,
       aiModelVersions,
+      imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
     };
     if (previewPdfUrl !== null) {
       finalData.previewPdfUrl = previewPdfUrl;
@@ -784,7 +1085,7 @@ export class AgentService {
           model: imageModelName,
           durationMs: imageDurationMs,
           ...(failedCount > 0 && {
-            error: `${failedCount} of ${imageGenerationResult.images.length} image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
+            error: `${failedCount} of ${imagesNeedingGeneration.length} attempted image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
           }),
         },
         {

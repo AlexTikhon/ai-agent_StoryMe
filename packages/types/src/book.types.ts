@@ -9,6 +9,7 @@ import type {
   Pronouns,
   BookStatus,
   QueueDiagnostics,
+  ResumeDiagnostics,
 } from './agent.types';
 
 // ─── Character ───────────────────────────────────────────────────────────────
@@ -360,6 +361,8 @@ export interface ImageGenerationResult {
   characterReferenceUsedForImages?: boolean;
   /** Which image-generation request shape this run actually used. 'mixed' is reserved for a future run that legitimately used both per entry; the current pipeline uses the same mode for every entry in a run. */
   imageGenerationMode?: 'text-to-image' | 'character-reference-edit' | 'mixed';
+  /** Idempotent-resume diagnostics for this run (see ResumeDiagnostics). Undefined for books generated before this feature existed, or for a run that never reached the point of computing it. */
+  resume?: ResumeDiagnostics;
 }
 
 // ─── Book request (wizard output / API input) ─────────────────────────────────
@@ -534,4 +537,6 @@ export interface GenerationDiagnosticsDto {
   queue: QueueDiagnostics;
   /** Personalized-character pipeline status — see CharacterPersonalizationDiagnostics. */
   characterPersonalization: CharacterPersonalizationDiagnostics;
+  /** Idempotent-resume diagnostics for the most recent generation run, or null if none was ever computed for this book. */
+  resume: ResumeDiagnostics | null;
 }
