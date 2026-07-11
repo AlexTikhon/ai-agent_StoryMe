@@ -39,6 +39,34 @@ function imageCounts(imageGenerationResult: Book['imageGenerationResult']): {
   };
 }
 
+type ImageGenerationModeValue = 'text-to-image' | 'character-reference-edit' | 'mixed';
+
+/**
+ * Reads the visual-reference-usage fields AgentService.startBookGeneration
+ * writes onto Book.imageGenerationResult (see agent.service.ts). Defaults to
+ * the safe "nothing happened yet" shape for books generated before this
+ * phase existed, matching how pagePromptsIncludeConsistencyData already
+ * defaults to false below.
+ */
+function characterReferenceUsage(imageGenerationResult: Book['imageGenerationResult']): {
+  characterReferenceAvailable: boolean;
+  characterReferenceUsedForImages: boolean;
+  imageGenerationMode: ImageGenerationModeValue;
+} {
+  const result = imageGenerationResult as {
+    characterReferenceAvailable?: unknown;
+    characterReferenceUsedForImages?: unknown;
+    imageGenerationMode?: unknown;
+  } | null;
+  const mode = result?.imageGenerationMode;
+  return {
+    characterReferenceAvailable: result?.characterReferenceAvailable === true,
+    characterReferenceUsedForImages: result?.characterReferenceUsedForImages === true,
+    imageGenerationMode:
+      mode === 'character-reference-edit' || mode === 'mixed' ? mode : 'text-to-image',
+  };
+}
+
 /**
  * Builds the safe, non-secret GenerationMetadata view for a book from
  * already-persisted columns (Book.generationTimeMs/aiModelVersions/
@@ -106,6 +134,7 @@ export function buildCharacterPersonalizationDiagnostics(
     characterProfileCreated: book.characterProfile != null,
     characterSheetGenerated: book.characterSheetAssetKey != null,
     pagePromptsIncludeConsistencyData,
+    ...characterReferenceUsage(book.imageGenerationResult),
   };
 }
 
@@ -180,9 +209,7 @@ export function buildGenerationDiagnostics(
     queue: {
       ...resolvedQueue,
       stalledNoWorker:
-        !!latestJob &&
-        ACTIVE_JOB_STATUSES.has(latestJob.status) &&
-        resolvedQueue.workerCount === 0,
+        !!latestJob && ACTIVE_JOB_STATUSES.has(latestJob.status) && resolvedQueue.workerCount === 0,
     },
     characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
   };

@@ -356,7 +356,11 @@ describe('buildGenerationDiagnostics', () => {
       [],
       queuedJob,
       undefined,
-      { queueName: 'book-generation', workerCount: 0, counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 } },
+      {
+        queueName: 'book-generation',
+        workerCount: 0,
+        counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 },
+      },
     );
 
     expect(diagnostics.queue.stalledNoWorker).toBe(true);
@@ -370,7 +374,11 @@ describe('buildGenerationDiagnostics', () => {
       [],
       queuedJob,
       undefined,
-      { queueName: 'book-generation', workerCount: 1, counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 } },
+      {
+        queueName: 'book-generation',
+        workerCount: 1,
+        counts: { waiting: 1, active: 0, completed: 0, failed: 0, delayed: 0 },
+      },
     );
 
     expect(diagnostics.queue.stalledNoWorker).toBe(false);
@@ -396,15 +404,16 @@ describe('buildGenerationDiagnostics', () => {
 
 describe('buildCharacterPersonalizationDiagnostics', () => {
   it('is all-false when nothing personalization-related has happened yet', () => {
-    const result = buildCharacterPersonalizationDiagnostics(
-      makeBook({ bookPreview: null }),
-    );
+    const result = buildCharacterPersonalizationDiagnostics(makeBook({ bookPreview: null }));
 
     expect(result).toEqual({
       hasReferencePhoto: false,
       characterProfileCreated: false,
       characterSheetGenerated: false,
       pagePromptsIncludeConsistencyData: false,
+      characterReferenceAvailable: false,
+      characterReferenceUsedForImages: false,
+      imageGenerationMode: 'text-to-image',
     });
   });
 
@@ -454,5 +463,62 @@ describe('buildCharacterPersonalizationDiagnostics', () => {
       makeBook({ bookPreview: { pages: [] } as unknown as Book['bookPreview'] }),
     );
     expect(result.pagePromptsIncludeConsistencyData).toBe(false);
+  });
+
+  it('defaults characterReferenceAvailable/characterReferenceUsedForImages to false and imageGenerationMode to text-to-image when imageGenerationResult is null', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({ bookPreview: null, imageGenerationResult: null }),
+    );
+
+    expect(result.characterReferenceAvailable).toBe(false);
+    expect(result.characterReferenceUsedForImages).toBe(false);
+    expect(result.imageGenerationMode).toBe('text-to-image');
+  });
+
+  it('reflects characterReferenceAvailable/characterReferenceUsedForImages/imageGenerationMode from imageGenerationResult', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({
+        bookPreview: null,
+        imageGenerationResult: {
+          characterReferenceAvailable: true,
+          characterReferenceUsedForImages: true,
+          imageGenerationMode: 'character-reference-edit',
+        } as unknown as Book['imageGenerationResult'],
+      }),
+    );
+
+    expect(result.characterReferenceAvailable).toBe(true);
+    expect(result.characterReferenceUsedForImages).toBe(true);
+    expect(result.imageGenerationMode).toBe('character-reference-edit');
+  });
+
+  it('distinguishes characterSheetGenerated (created) from characterReferenceAvailable (bytes loaded) from characterReferenceUsedForImages (actually used)', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({
+        bookPreview: null,
+        characterSheetAssetKey: 'b-1/character-sheet',
+        imageGenerationResult: {
+          characterReferenceAvailable: false,
+          characterReferenceUsedForImages: false,
+        } as unknown as Book['imageGenerationResult'],
+      }),
+    );
+
+    expect(result.characterSheetGenerated).toBe(true);
+    expect(result.characterReferenceAvailable).toBe(false);
+    expect(result.characterReferenceUsedForImages).toBe(false);
+  });
+
+  it('never reports imageGenerationMode as anything other than the three known values, even for a malformed stored value', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({
+        bookPreview: null,
+        imageGenerationResult: {
+          imageGenerationMode: 'not-a-real-mode',
+        } as unknown as Book['imageGenerationResult'],
+      }),
+    );
+
+    expect(result.imageGenerationMode).toBe('text-to-image');
   });
 });

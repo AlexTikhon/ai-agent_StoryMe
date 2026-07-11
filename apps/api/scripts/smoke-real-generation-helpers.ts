@@ -19,6 +19,10 @@ export function formatDiagnosticsSummary(diagnostics: GenerationDiagnosticsDto):
     `  Failed images:      ${meta.failedImageCount ?? 'n/a'}`,
     `  Duration:           ${meta.durationMs !== undefined ? `${meta.durationMs}ms` : 'n/a'}`,
     `  PDF preview url:    ${diagnostics.previewPdfUrl ?? 'n/a'}`,
+    `  Character sheet:    ${diagnostics.characterPersonalization.characterSheetGenerated ? 'generated' : 'not generated'}`,
+    `  Reference available:${diagnostics.characterPersonalization.characterReferenceAvailable ? ' yes' : ' no'}`,
+    `  Reference used:     ${diagnostics.characterPersonalization.characterReferenceUsedForImages ? 'yes' : 'no'}`,
+    `  Image gen mode:     ${diagnostics.characterPersonalization.imageGenerationMode}`,
     `  Diagnostics URL:    /api/books/${diagnostics.bookId}/generation-diagnostics`,
   ];
   if (diagnostics.failedStep) {
@@ -55,13 +59,15 @@ const DEFAULT_SMOKE_THEME = 'friendship';
 export function resolveSmokeBookConfig(env: NodeJS.ProcessEnv): SmokeBookConfig {
   const childName = env['SMOKE_CHILD_NAME']?.trim() || DEFAULT_SMOKE_CHILD_NAME;
   const parsedAge = env['SMOKE_CHILD_AGE'] ? Number(env['SMOKE_CHILD_AGE']) : NaN;
-  const childAge = Number.isFinite(parsedAge) && parsedAge > 0 ? Math.floor(parsedAge) : DEFAULT_SMOKE_CHILD_AGE;
+  const childAge =
+    Number.isFinite(parsedAge) && parsedAge > 0 ? Math.floor(parsedAge) : DEFAULT_SMOKE_CHILD_AGE;
   const language = env['SMOKE_LANGUAGE']?.trim() || DEFAULT_SMOKE_LANGUAGE;
   const theme = env['SMOKE_THEME']?.trim() || DEFAULT_SMOKE_THEME;
   const parsedPageCount = env['SMOKE_PAGE_COUNT'] ? Number(env['SMOKE_PAGE_COUNT']) : NaN;
-  const pageCount = Number.isFinite(parsedPageCount) && parsedPageCount > 0
-    ? Math.floor(parsedPageCount)
-    : undefined;
+  const pageCount =
+    Number.isFinite(parsedPageCount) && parsedPageCount > 0
+      ? Math.floor(parsedPageCount)
+      : undefined;
   const childPhotoPath = env['SMOKE_CHILD_PHOTO_PATH']?.trim() || undefined;
 
   return {

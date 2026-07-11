@@ -507,6 +507,17 @@ cover). Run it deliberately, not routinely.
    - `characterPersonalization.pagePromptsIncludeConsistencyData` — confirm
      `true`; `false` means the character-consistency block didn't make it
      into every page's illustration prompt (a regression, not expected).
+   - `characterPersonalization.characterReferenceAvailable` — confirm `true`
+     when a character sheet was generated; `false` with `characterSheetGenerated:
+     true` means the sheet was created but its bytes couldn't be read back
+     from storage (see "Visual-reference consistency" below).
+   - `characterPersonalization.characterReferenceUsedForImages` and
+     `.imageGenerationMode` — confirm `characterReferenceUsedForImages: true`
+     and `imageGenerationMode: 'character-reference-edit'` for a
+     fully-successful personalized run with `IMAGE_GENERATION_PROVIDER=openai`;
+     `imageGenerationMode: 'text-to-image'` is expected whenever no character
+     sheet exists (e.g. `IMAGE_GENERATION_PROVIDER=mock`, or the sheet
+     failed/was unreadable).
    - `pdfStorage.previewAvailable` — confirm `true` before trying
      `GET /:id/pdf/preview`.
    - `recentLogs` (in the raw diagnostics response) — the `char_build` row's
@@ -529,41 +540,83 @@ cover). Run it deliberately, not routinely.
    routine QA; only raise it when you specifically need to review a fully
    illustrated book.
 
-### Character consistency: what's actually verified today
+### Character consistency: text-level vs. visual-reference
 
-- **Text-level consistency** (verified, always on): every page/cover/
-  back-cover illustration prompt embeds the same `CharacterProfile`-derived
-  consistency block (`buildCharacterConsistencyBlock` in
-  `story-generation-provider.ts` — face/hair/outfit/age/illustration style,
-  plus explicit "do not change the character's appearance" and "no text in
-  image" instructions), and `buildImagePrompt`
-  (`openai-image-generation-provider.ts`) repeats an explicit "keep the
+There are two independent, additive layers of character consistency. The
+text-level layer applies to every book; the visual-reference layer only
+applies when a character sheet exists and its bytes can be read back.
+
+- **Text-level consistency** (verified, always on, works with any image
+  provider): every page/cover/back-cover illustration prompt embeds the same
+  `CharacterProfile`-derived consistency block
+  (`buildCharacterConsistencyBlock` in `story-generation-provider.ts` —
+  face/hair/outfit/age/illustration style, plus explicit "do not change the
+  character's appearance" and "no text in image" instructions), and
+  `buildImagePrompt` (`openai-image-generation-provider.ts`, used whenever no
+  character reference image is available) repeats an explicit "keep the
   protagonist visually identical across every illustration" instruction on
   top of that. `characterPersonalization.pagePromptsIncludeConsistencyData`
-  in diagnostics confirms this held for every page of a given book.
-- **Character-sheet image** (generated, but not yet fed back as a visual
-  reference): `AgentService` generates one standalone character-sheet
-  reference image via `ImageGenerationProvider.generateCharacterSheet` and
-  saves it to `ImageAssetStorage` — but today it is **not** passed back into
-  the per-page `OpenAIImageGenerationProvider.generateImage` calls as an
-  actual reference image (those calls use OpenAI's text-to-image
-  `/images/generations` endpoint, not an image-edit/reference endpoint).
-  Practically: consistency across pages today comes entirely from repeating
-  the same *text* description on every prompt, not from the model seeing the
-  character-sheet pixels. Wiring true image-to-image reference generation
-  (e.g. via an images/edit-style endpoint) would be a larger architectural
-  change and is out of scope here.
-- **Fallback behavior** (verified in `agent.service.spec.ts`): if the
-  `CharacterProfileProvider` throws (e.g. a vision-API error), `AgentService`
-  catches it, logs a warning, and falls back to `MockCharacterProfileProvider`
-  — generation is never blocked by a profile failure, and the `char_build`
-  `AgentLog` row is written with `status: 'error'` and `provider: 'mock'` so
-  the fallback is visible in `recentLogs`. If only the character-sheet call
-  fails (profile itself succeeded), generation also continues — the book
-  simply has `characterProfile.hasCharacterSheet: false` and no
-  `characterSheetAssetKey`, with `char_build` staying `status: 'success'`
-  since the profile step (not the best-effort sheet) is what that status
-  reflects.
+  in diagnostics confirms this held for every page of a given book. This is
+  purely a matter of repeating the same *words* on every prompt — the model
+  never sees the character's actual pixels.
+- **Visual-reference consistency** (real `IMAGE_GENERATION_PROVIDER=openai`
+  only): `AgentService` generates one standalone character-sheet reference
+  image via `ImageGenerationProvider.generateCharacterSheet` and saves it to
+  `ImageAssetStorage` (`buildCharacterProfileAndSheet`). Once per book
+  generation run — not once per page — `AgentService.loadCharacterReference`
+  reads those bytes back from storage and holds them in memory as one shared
+  `ImageReference`. Every subsequent cover/page/back-cover
+  `ImageGenerationProvider.generateImage` call for that run receives the same
+  `ImageReference` via `ImageGenerationInput.characterReference`.
+  `OpenAIImageGenerationProvider` responds to a `characterReference` being
+  present by calling OpenAI's `/images/edits` endpoint (multipart/form-data,
+  the character-sheet PNG attached as the input image, `input_fidelity: high`
+  for the default `gpt-image-1` model) instead of `/images/generations`, using
+  the dedicated `buildReferenceImagePrompt` — which tells the model to copy
+  the reference sheet's identity (age, face shape, hairstyle, hair color,
+  eyes, outfit, proportions, illustration style) while taking the scene
+  (environment, action, emotion, lighting, framing, composition, and pose/
+  expression, which are expected to change per page) from that entry's own
+  prompt. **Only the generated, stylized character sheet is ever sent to an
+  image-generation/edit call — the original uploaded child photo is never
+  sent anywhere except the one `CharacterProfileProvider.buildProfile` vision
+  call** (see `CharacterProfileInput.photo`'s doc comment in
+  `character-profile-provider.ts`).
+- **Cost note**: an `/images/edits` request costs the same order of magnitude
+  as an `/images/generations` request per image, but every page/cover/
+  back-cover illustration in a personalized run now makes one edit call
+  instead of one generation call — there's no extra multiplier beyond the
+  existing per-image cost already covered by `MAX_GENERATED_IMAGES_PER_BOOK`.
+- **Confirming which path actually ran**: read
+  `characterPersonalization.characterReferenceAvailable` (bytes were loaded
+  this run), `.characterReferenceUsedForImages` (at least one real
+  `generateImage` call actually received and used the reference — set from
+  `ImageGenerationOutput.usedReference`, not merely inferred from
+  availability), and `.imageGenerationMode`
+  (`'text-to-image' | 'character-reference-edit' | 'mixed'`) from
+  `GET /:id/generation-diagnostics`. `characterSheetGenerated` only means a
+  sheet was *created* — it does not imply the bytes were later available or
+  used; see "Fallback behavior" below for exactly when these diverge.
+- **Fallback behavior** (verified in `agent.service.spec.ts` and
+  `openai-image-generation-provider.spec.ts`): if the `CharacterProfileProvider`
+  throws (e.g. a vision-API error), `AgentService` catches it, logs a
+  warning, and falls back to `MockCharacterProfileProvider` — generation is
+  never blocked by a profile failure, and the `char_build` `AgentLog` row is
+  written with `status: 'error'` and `provider: 'mock'` so the fallback is
+  visible in `recentLogs`. If the character-sheet *generation* call fails
+  (profile itself succeeded), generation also continues — the book has
+  `characterProfile.hasCharacterSheet: false`, no `characterSheetAssetKey`,
+  and `characterReferenceAvailable`/`characterReferenceUsedForImages` both
+  `false` (`imageGenerationMode: 'text-to-image'`), with `char_build` staying
+  `status: 'success'` since the profile step (not the best-effort sheet) is
+  what that status reflects. If the sheet *was* generated and saved but its
+  bytes can't be read back later (e.g. a storage hiccup),
+  `loadCharacterReference` logs a safe warning (never bytes/base64) and
+  every page falls back to the ordinary text-to-image path for that run —
+  `characterSheetGenerated: true` but `characterReferenceAvailable: false`.
+  `MockImageGenerationProvider` accepts (and ignores) `characterReference` on
+  its input, so mock-provider books are unaffected either way and always
+  report `imageGenerationMode: 'text-to-image'`.
 
 ## Generation diagnostics (Phase 3E)
 

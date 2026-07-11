@@ -13,6 +13,7 @@ import {
   IMAGE_GENERATION_PROVIDER_TOKEN,
   resolveMaxGeneratedImagesPerBook,
   type ImageGenerationProvider,
+  type ImageReference,
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
@@ -383,6 +384,39 @@ export class AgentService {
   }
 
   /**
+   * Loads the book's generated character-sheet reference image bytes once
+   * (never the original uploaded child photo — that only ever reaches the
+   * CharacterProfileProvider's vision step, see buildCharacterProfileAndSheet)
+   * so every generateImage call this run can share the same in-memory
+   * ImageReference instead of re-reading storage per page. Returns undefined
+   * — logging only a safe warning, never bytes/base64 — when no character
+   * sheet was created this run, or when its bytes can't be read back; either
+   * way the caller falls back to text-only generation instead of failing the
+   * book.
+   */
+  private async loadCharacterReference(
+    bookId: string,
+    characterSheetKey: string | undefined,
+  ): Promise<ImageReference | undefined> {
+    if (!characterSheetKey) return undefined;
+
+    const buffer = await this.imageAssetStorage.getImageAsset(characterSheetKey);
+    if (!buffer) {
+      this.logger.warn(
+        `Character sheet key "${characterSheetKey}" for book ${bookId} exists but its bytes could not be loaded; continuing with text-only image generation.`,
+      );
+      return undefined;
+    }
+
+    // Character sheets are always saved as 'image/png' by both
+    // MockImageGenerationProvider.generateCharacterSheet and
+    // OpenAIImageGenerationProvider.generateCharacterSheet — ImageAssetStorage
+    // itself doesn't track content type on read, so this is a safe, stable
+    // assumption rather than a guess.
+    return { buffer, contentType: 'image/png' };
+  }
+
+  /**
    * Generates real image bytes for every generated image entry via the
    * injected ImageGenerationProvider, then saves them via ImageAssetStorage,
    * keyed to match buildImageBufferResolver's lookup (imageAssetKey).
@@ -410,7 +444,13 @@ export class AgentService {
     bookId: string,
     characterCard: CharacterCard,
     images: GeneratedImageEntry[],
-  ): Promise<{ generatedCount: number; failedCount: number; lastError?: string }> {
+    characterReference: ImageReference | undefined,
+  ): Promise<{
+    generatedCount: number;
+    failedCount: number;
+    lastError?: string;
+    usedCharacterReference: boolean;
+  }> {
     const isRealProvider = this.imageGenerationProvider.providerName === 'openai';
     const limit = isRealProvider ? resolveMaxGeneratedImagesPerBook() : images.length;
     const imagesToGenerate = images.slice(0, limit);
@@ -424,18 +464,22 @@ export class AgentService {
     let generatedCount = 0;
     let failedCount = 0;
     let lastError: string | undefined;
+    let usedCharacterReference = false;
 
     await Promise.all(
       imagesToGenerate.map(async (image) => {
         try {
-          const { buffer, contentType } = await this.imageGenerationProvider.generateImage({
-            bookId,
-            entry: image,
-            characterCard,
-          });
+          const { buffer, contentType, usedReference } =
+            await this.imageGenerationProvider.generateImage({
+              bookId,
+              entry: image,
+              characterCard,
+              ...(characterReference && { characterReference }),
+            });
           const key = imageAssetKey(bookId, image.kind, image.pageNumber);
           await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
           generatedCount++;
+          if (usedReference) usedCharacterReference = true;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.logger.warn(
@@ -447,7 +491,12 @@ export class AgentService {
       }),
     );
 
-    return { generatedCount, failedCount, ...(lastError !== undefined && { lastError }) };
+    return {
+      generatedCount,
+      failedCount,
+      usedCharacterReference,
+      ...(lastError !== undefined && { lastError }),
+    };
   }
 
   async startBookGeneration(book: Book): Promise<Book> {
@@ -558,19 +607,32 @@ export class AgentService {
     const storyDurationMs = Date.now() - startedAt;
     const imageStartedAt = Date.now();
 
-    const { generatedCount, failedCount, lastError } = await this.generateAndSaveImageAssets(
+    const characterReference = await this.loadCharacterReference(
       book.id,
-      characterCard,
-      imageGenerationResult.images,
+      charBuildResult.characterSheetKey,
     );
+    const characterReferenceAvailable = characterReference !== undefined;
+
+    const { generatedCount, failedCount, lastError, usedCharacterReference } =
+      await this.generateAndSaveImageAssets(
+        book.id,
+        characterCard,
+        imageGenerationResult.images,
+        characterReference,
+      );
 
     this.logger.log(
-      `Image generation for book ${book.id}: ${generatedCount} generated, ${failedCount} failed, ${imageGenerationResult.images.length} planned.`,
+      `Image generation for book ${book.id}: ${generatedCount} generated, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.`,
     );
 
     imageGenerationResult.imageByteProvider = imageProviderName;
     imageGenerationResult.generatedImageCount = generatedCount;
     imageGenerationResult.failedImageCount = failedCount;
+    imageGenerationResult.characterReferenceAvailable = characterReferenceAvailable;
+    imageGenerationResult.characterReferenceUsedForImages = usedCharacterReference;
+    imageGenerationResult.imageGenerationMode = usedCharacterReference
+      ? 'character-reference-edit'
+      : 'text-to-image';
     if (lastError !== undefined) {
       imageGenerationResult.lastImageError = lastError;
     }

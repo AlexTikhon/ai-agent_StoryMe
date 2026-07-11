@@ -978,6 +978,154 @@ describe('AgentService', () => {
       });
     });
 
+    // ── Character-sheet visual reference (character-reference-edit path) ─────
+
+    describe('character-sheet reference image passed to page/cover generation', () => {
+      function makeReferenceAwareImageProvider(): ImageGenerationProvider & {
+        generateImage: ReturnType<typeof vi.fn>;
+        generateCharacterSheet: ReturnType<typeof vi.fn>;
+      } {
+        return {
+          providerName: 'openai' as const,
+          modelName: 'gpt-image-1',
+          generateImage: vi
+            .fn()
+            .mockImplementation(async (input: { characterReference?: unknown }) => ({
+              buffer: Buffer.from('fake-png'),
+              contentType: 'image/png' as const,
+              usedReference: !!input.characterReference,
+            })),
+          generateCharacterSheet: vi.fn().mockResolvedValue({
+            buffer: Buffer.from('fake-character-sheet-png'),
+            contentType: 'image/png' as const,
+          }),
+        };
+      }
+
+      it('loads the character-sheet bytes only once, then passes the same reference to every generateImage call', async () => {
+        const book = makeBook();
+        setupMocks();
+        const provider = makeReferenceAwareImageProvider();
+        const referenceService = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          provider,
+          new MockCharacterProfileProvider(),
+        );
+
+        await referenceService.startBookGeneration(book);
+
+        const sheetReads = mockImageAssetStorage.getImageAsset.mock.calls.filter(
+          (call) => call[0] === 'b-1/character-sheet',
+        );
+        expect(sheetReads).toHaveLength(1);
+
+        expect(provider.generateImage).toHaveBeenCalled();
+        for (const call of provider.generateImage.mock.calls) {
+          const input = call[0] as { characterReference?: { buffer: Buffer } };
+          expect(input.characterReference).toBeDefined();
+          expect(Buffer.isBuffer(input.characterReference!.buffer)).toBe(true);
+        }
+      });
+
+      it('records characterReferenceAvailable/characterReferenceUsedForImages/imageGenerationMode when the reference is actually used', async () => {
+        const book = makeBook();
+        setupMocks();
+        const provider = makeReferenceAwareImageProvider();
+        const referenceService = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          provider,
+          new MockCharacterProfileProvider(),
+        );
+
+        await referenceService.startBookGeneration(book);
+
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+        expect(result.characterReferenceAvailable).toBe(true);
+        expect(result.characterReferenceUsedForImages).toBe(true);
+        expect(result.imageGenerationMode).toBe('character-reference-edit');
+      });
+
+      it('falls back to text-only generation and logs a warning when the character-sheet bytes cannot be read back', async () => {
+        const book = makeBook();
+        setupMocks();
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const provider = makeReferenceAwareImageProvider();
+        mockImageAssetStorage.getImageAsset.mockImplementation(async (key: string) =>
+          key === 'b-1/character-sheet' ? undefined : savedAssets.get(key),
+        );
+        const referenceService = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          provider,
+          new MockCharacterProfileProvider(),
+        );
+
+        await referenceService.startBookGeneration(book);
+
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('bytes could not be loaded'));
+        for (const call of provider.generateImage.mock.calls) {
+          const input = call[0] as { characterReference?: unknown };
+          expect(input.characterReference).toBeUndefined();
+        }
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+        expect(result.characterReferenceAvailable).toBe(false);
+        expect(result.characterReferenceUsedForImages).toBe(false);
+        expect(result.imageGenerationMode).toBe('text-to-image');
+        warnSpy.mockRestore();
+      });
+
+      it('preserves existing text-only behavior when no character-sheet key exists (sheet generation failed)', async () => {
+        const book = makeBook();
+        setupMocks();
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const provider = makeReferenceAwareImageProvider();
+        provider.generateCharacterSheet.mockRejectedValue(new Error('sheet generation failed'));
+        const referenceService = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          provider,
+          new MockCharacterProfileProvider(),
+        );
+
+        await referenceService.startBookGeneration(book);
+
+        for (const call of provider.generateImage.mock.calls) {
+          const input = call[0] as { characterReference?: unknown };
+          expect(input.characterReference).toBeUndefined();
+        }
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+        expect(result.characterReferenceAvailable).toBe(false);
+        expect(result.characterReferenceUsedForImages).toBe(false);
+        expect(result.imageGenerationMode).toBe('text-to-image');
+        warnSpy.mockRestore();
+      });
+
+      it('remains compatible with the mock image provider: character sheet may be available but is never reported as used', async () => {
+        const book = makeBook();
+        setupMocks();
+
+        await service.startBookGeneration(book);
+
+        const updateArg = prisma.book.update.mock.calls[0]?.[0];
+        const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+        expect(result.characterReferenceUsedForImages).toBe(false);
+        expect(result.imageGenerationMode).toBe('text-to-image');
+      });
+    });
+
     // ── MAX_GENERATED_IMAGES_PER_BOOK cost cap ────────────────────────────────
 
     describe('MAX_GENERATED_IMAGES_PER_BOOK cost cap (real provider only)', () => {

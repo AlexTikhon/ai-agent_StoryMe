@@ -5,6 +5,7 @@ import type {
   ImageGenerationInput,
   ImageGenerationOutput,
   ImageGenerationProvider,
+  ImageReference,
 } from './image-generation-provider';
 import {
   DEFAULT_OPENAI_MAX_RETRIES,
@@ -46,6 +47,35 @@ export function buildImagePrompt(
     "The illustration must clearly depict: the environment/setting, the specific action the character is doing, the character's emotion/expression, and warm, storybook-appropriate lighting and composition (clear focal point, not cluttered).",
     "Do not change the character's age, face shape, hairstyle, or outfit from the description above — keep the protagonist visually identical across every illustration in this book.",
     'No text, no letters, no captions, no watermarks, no logos.',
+  ].join(' ');
+}
+
+/**
+ * Builds the image prompt used when a character-sheet reference image is
+ * attached to the request (the OpenAI `/images/edits` path — see
+ * requestImageEdit). Distinguishes visual identity that must be copied
+ * unchanged from the attached reference sheet (age, face shape, hairstyle,
+ * hair color, eyes, outfit, proportions, illustration style) from scene
+ * content that must come from this entry's own prompt (environment, action,
+ * emotion, lighting, framing, composition) — pose and expression are
+ * expected to change per scene, so this deliberately does not repeat
+ * buildImagePrompt's "keep ... identical" framing, which would contradict
+ * that.
+ */
+export function buildReferenceImagePrompt(
+  characterCard: Pick<CharacterCard, 'visualAnchor' | 'narrativeDescription'>,
+  entry: Pick<GeneratedImageEntry, 'prompt'>,
+): string {
+  return [
+    "Personalized children's storybook illustration, warm and child-safe, soft colors, friendly character design.",
+    'Use the attached character reference sheet as the authoritative visual reference for the protagonist.',
+    `Protagonist: ${characterCard.visualAnchor}. ${characterCard.narrativeDescription}`,
+    'Preserve the exact same child character shown in the reference sheet: the same approximate age, face shape, hairstyle, hair color, eye appearance, outfit, proportions, and illustration style. Do not redraw or reproduce the reference sheet itself — place this character naturally into the new scene described below.',
+    `Scene: ${entry.prompt}`,
+    "The illustration must clearly depict: the environment/setting, the specific action the character is doing, the character's emotion/expression, and warm, storybook-appropriate lighting and composition (clear focal point, not cluttered).",
+    'Pose and facial expression should change naturally to fit this scene — do not force the exact same pose or expression as the reference sheet.',
+    'Depict only one copy of the protagonist in the scene — never a second copy of the character.',
+    'Do not include any reference-sheet layout, turnaround/multi-pose grid, labels, captions, borders, text, or watermarks in the output — this must look like a single ordinary storybook illustration, not a character sheet.',
   ].join(' ');
 }
 
@@ -136,8 +166,19 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       );
     }
 
+    const size = sizeForEntry(input.entry);
+    if (input.characterReference) {
+      const prompt = buildReferenceImagePrompt(input.characterCard, input.entry);
+      return this.requestImageEdit(
+        prompt,
+        size,
+        input.characterReference,
+        'Image generation (character reference)',
+      );
+    }
+
     const prompt = buildImagePrompt(input.characterCard, input.entry);
-    return this.requestImage(prompt, sizeForEntry(input.entry), 'Image generation');
+    return this.requestImage(prompt, size, 'Image generation');
   }
 
   async generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput> {
@@ -145,30 +186,89 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     return this.requestImage(prompt, CHARACTER_SHEET_SIZE, 'Character sheet generation');
   }
 
-  /** Shared OpenAI images/generations call for both generateImage and generateCharacterSheet. */
+  /** gpt-image-1 (the default model) supports the `input_fidelity` edit parameter; a future non-gpt-image model may not. */
+  private supportsInputFidelity(): boolean {
+    return this.model.toLowerCase().includes('gpt-image');
+  }
+
+  /** OpenAI images/generations (text-to-image) call, used for generateCharacterSheet and generateImage when no reference image is available. */
   private async requestImage(
     prompt: string,
     size: string,
+    logLabel: string,
+  ): Promise<ImageGenerationOutput> {
+    return this.sendAndParse(
+      `${this.baseUrl}/images/generations`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          prompt,
+          n: 1,
+          size,
+        }),
+      },
+      logLabel,
+    );
+  }
+
+  /**
+   * OpenAI images/edits (image-to-image) call, used for generateImage when a
+   * character-sheet reference image is available. multipart/form-data via
+   * native FormData/Blob — the Content-Type header (including boundary) is
+   * left for the fetch runtime to set; setting it manually would omit the
+   * boundary and break parsing on the API side.
+   */
+  private async requestImageEdit(
+    prompt: string,
+    size: string,
+    reference: ImageReference,
+    logLabel: string,
+  ): Promise<ImageGenerationOutput> {
+    const formData = new FormData();
+    formData.append('model', this.model);
+    formData.append('prompt', prompt);
+    formData.append('size', size);
+    formData.append('n', '1');
+    if (this.supportsInputFidelity()) {
+      formData.append('input_fidelity', 'high');
+    }
+    formData.append(
+      'image',
+      new Blob([reference.buffer], { type: reference.contentType }),
+      reference.filename ?? 'character-sheet.png',
+    );
+
+    const output = await this.sendAndParse(
+      `${this.baseUrl}/images/edits`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: formData,
+      },
+      logLabel,
+    );
+    return { ...output, usedReference: true };
+  }
+
+  /** Shared request/parse flow for both images/generations and images/edits — every field logged here is already proven safe (never prompt text, image bytes, or base64). */
+  private async sendAndParse(
+    url: string,
+    init: RequestInit,
     logLabel: string,
   ): Promise<ImageGenerationOutput> {
     let response: Response;
     try {
       response = await fetchWithRetry({
         fetchImpl: this.fetchImpl,
-        url: `${this.baseUrl}/images/generations`,
-        init: {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: this.model,
-            prompt,
-            n: 1,
-            size,
-          }),
-        },
+        url,
+        init,
         timeoutMs: this.timeoutMs,
         maxRetries: this.maxRetries,
         onAttempt: (attempt, maxAttempts) => {
@@ -187,7 +287,9 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
           : err instanceof Error
             ? err.message
             : String(err);
-      this.logger.error(`${logLabel} failed: provider=openai model=${this.model} reason=${message}`);
+      this.logger.error(
+        `${logLabel} failed: provider=openai model=${this.model} reason=${message}`,
+      );
       throw new ImageGenerationProviderError(`OpenAI image request failed: ${message}`, err);
     }
 

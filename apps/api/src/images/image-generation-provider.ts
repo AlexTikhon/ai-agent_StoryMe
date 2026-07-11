@@ -2,15 +2,31 @@ import type { CharacterCard, CharacterProfile, GeneratedImageEntry } from '@book
 import { generateMockImagePng } from './mock-image-producer';
 import type { ImageAssetContentType } from './image-asset-storage';
 
+/**
+ * A generated, stylized character-sheet reference image (never the original
+ * uploaded child photo — see AgentService.startBookGeneration) passed to
+ * generateImage so a real provider can visually anchor the scene to the same
+ * character instead of relying on text description alone.
+ */
+export interface ImageReference {
+  buffer: Buffer;
+  contentType: ImageAssetContentType;
+  filename?: string;
+}
+
 export interface ImageGenerationInput {
   bookId: string;
   entry: GeneratedImageEntry;
   characterCard: CharacterCard;
+  /** Optional visual anchor for this entry's illustration; see {@link ImageReference}. Absent for the mock provider and for books with no character sheet. */
+  characterReference?: ImageReference;
 }
 
 export interface ImageGenerationOutput {
   buffer: Buffer;
   contentType: ImageAssetContentType;
+  /** True when this output was actually produced via a visual character-reference request (not just that a reference was available). Undefined/false otherwise. */
+  usedReference?: boolean;
 }
 
 /** Input for generating a book's character-sheet reference image — not a GeneratedImageEntry, since it's never rendered as its own PDF page. */

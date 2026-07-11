@@ -3,8 +3,14 @@ import {
   MockImageGenerationProvider,
   resolveMaxGeneratedImagesPerBook,
   type ImageGenerationInput,
+  type ImageReference,
 } from './image-generation-provider';
-import { Pronouns, type CharacterCard, type CharacterProfile, type GeneratedImageEntry } from '@book/types';
+import {
+  Pronouns,
+  type CharacterCard,
+  type CharacterProfile,
+  type GeneratedImageEntry,
+} from '@book/types';
 
 function makeCharacterProfile(overrides: Partial<CharacterProfile> = {}): CharacterProfile {
   return {
@@ -102,6 +108,19 @@ describe('MockImageGenerationProvider', () => {
     );
 
     expect(cover.buffer.equals(page.buffer)).toBe(false);
+  });
+
+  it('ignores an attached characterReference and never sets usedReference (mock stays free/text-only)', async () => {
+    const provider = new MockImageGenerationProvider();
+    const characterReference: ImageReference = {
+      buffer: Buffer.from('fake-character-sheet'),
+      contentType: 'image/png',
+    };
+
+    const result = await provider.generateImage(makeInput({ characterReference }));
+
+    expect(Buffer.isBuffer(result.buffer)).toBe(true);
+    expect(result.usedReference).toBeUndefined();
   });
 
   describe('generateCharacterSheet', () => {

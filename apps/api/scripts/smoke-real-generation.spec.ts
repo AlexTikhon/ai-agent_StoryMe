@@ -46,7 +46,9 @@ describe('checkPreconditions', () => {
 });
 
 describe('formatDiagnosticsSummary', () => {
-  function makeDiagnostics(overrides: Partial<GenerationDiagnosticsDto> = {}): GenerationDiagnosticsDto {
+  function makeDiagnostics(
+    overrides: Partial<GenerationDiagnosticsDto> = {},
+  ): GenerationDiagnosticsDto {
     return {
       bookId: 'b-1',
       status: 'complete' as GenerationDiagnosticsDto['status'],
@@ -62,6 +64,22 @@ describe('formatDiagnosticsSummary', () => {
       },
       recentLogs: [],
       previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      pdfStorage: { driver: 'local', keyPresent: true, previewAvailable: true },
+      queue: {
+        queueName: 'book-generation',
+        workerCount: 1,
+        counts: { waiting: 0, active: 0, completed: 1, failed: 0, delayed: 0 },
+        stalledNoWorker: false,
+      },
+      characterPersonalization: {
+        hasReferencePhoto: true,
+        characterProfileCreated: true,
+        characterSheetGenerated: true,
+        pagePromptsIncludeConsistencyData: true,
+        characterReferenceAvailable: true,
+        characterReferenceUsedForImages: true,
+        imageGenerationMode: 'character-reference-edit',
+      },
       ...overrides,
     };
   }
@@ -77,6 +95,9 @@ describe('formatDiagnosticsSummary', () => {
     expect(summary).toContain('6');
     expect(summary).toContain('12345ms');
     expect(summary).toContain('/files/books/b-1/storybook.pdf');
+    expect(summary).toContain('Reference available: yes');
+    expect(summary).toContain('Reference used:     yes');
+    expect(summary).toContain('character-reference-edit');
   });
 
   it('includes generated/failed image counts and the diagnostics URL', () => {

@@ -32,7 +32,7 @@
 import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 import { NestFactory } from '@nestjs/core';
-import { BookLanguage, BookStatus } from '@prisma/client';
+import { type BookLanguage, BookStatus } from '@prisma/client';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/database/prisma.service';
 import { UsersService } from '../src/users/users.service';
@@ -40,6 +40,7 @@ import { AgentService } from '../src/agent/agent.service';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../src/pdf/pdf-storage';
 import {
   IMAGE_ASSET_STORAGE_TOKEN,
+  characterSheetAssetKey,
   childPhotoAssetKey,
   imageAssetKey,
   type ImageAssetContentType,
@@ -123,7 +124,9 @@ async function main(): Promise<void> {
         where: { id: book.id },
         data: { childPhotoAssetKey: key, childPhotoContentType: contentType },
       });
-      console.log(`      Photo saved (${photoBuffer.length} bytes) — never logged as raw bytes/base64.`);
+      console.log(
+        `      Photo saved (${photoBuffer.length} bytes) — never logged as raw bytes/base64.`,
+      );
     } else {
       console.log('[3/5] No SMOKE_CHILD_PHOTO_PATH set — generating without a reference photo.');
     }
@@ -143,6 +146,49 @@ async function main(): Promise<void> {
 
     assert(result.storyPlan !== null, 'expected storyPlan to be persisted');
     assert(result.imageGenerationResult !== null, 'expected imageGenerationResult to be persisted');
+    assert(result.characterProfile !== null, 'expected a CharacterProfile to be persisted');
+
+    // Visual-reference verification only applies when a photo was supplied
+    // and all three OpenAI providers (character profile, story, image) are
+    // enabled — that's the only configuration where the character-sheet ->
+    // images/edits path can actually run end to end.
+    const allThreeProvidersOpenAI =
+      process.env['CHARACTER_PROFILE_PROVIDER']?.trim().toLowerCase() === 'openai' &&
+      process.env['STORY_GENERATION_PROVIDER']?.trim().toLowerCase() === 'openai' &&
+      process.env['IMAGE_GENERATION_PROVIDER']?.trim().toLowerCase() === 'openai';
+
+    if (config.childPhotoPath && allThreeProvidersOpenAI) {
+      assert(
+        !!result.characterSheetAssetKey,
+        'expected a character-sheet reference image to be generated and stored',
+      );
+      const sheetBuffer = await imageAssetStorage.getImageAsset(characterSheetAssetKey(book.id));
+      assert(
+        !!sheetBuffer && sheetBuffer.length > 0,
+        'expected the character-sheet reference image bytes to be readable from storage',
+      );
+
+      const referenceUsage = result.imageGenerationResult as {
+        characterReferenceAvailable?: boolean;
+        characterReferenceUsedForImages?: boolean;
+        imageGenerationMode?: string;
+      } | null;
+      assert(
+        referenceUsage?.characterReferenceAvailable === true,
+        'expected characterReferenceAvailable to be true when a character sheet was generated',
+      );
+      assert(
+        referenceUsage?.characterReferenceUsedForImages === true,
+        'expected page image generation to report visual-reference usage (characterReferenceUsedForImages)',
+      );
+      console.log(
+        `      Visual-reference character consistency verified (imageGenerationMode=${referenceUsage?.imageGenerationMode}).`,
+      );
+    } else {
+      console.log(
+        '      Skipping visual-reference verification (requires a child photo and CHARACTER_PROFILE_PROVIDER/STORY_GENERATION_PROVIDER/IMAGE_GENERATION_PROVIDER all set to "openai").',
+      );
+    }
 
     const images =
       (

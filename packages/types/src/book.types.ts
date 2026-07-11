@@ -354,6 +354,12 @@ export interface ImageGenerationResult {
   failedImageCount?: number;
   /** Safe (no secrets/prompts) message from the most recent per-image failure this run, if any. */
   lastImageError?: string;
+  /** Whether a generated character-sheet reference image's bytes were successfully loaded this run (distinct from {@link CharacterProfile.hasCharacterSheet}, which only means one was created). */
+  characterReferenceAvailable?: boolean;
+  /** Whether at least one real page/cover/back-cover image request actually used the loaded character-sheet reference (verified by construction from ImageGenerationOutput.usedReference, never just inferred from availability). */
+  characterReferenceUsedForImages?: boolean;
+  /** Which image-generation request shape this run actually used. 'mixed' is reserved for a future run that legitimately used both per entry; the current pipeline uses the same mode for every entry in a run. */
+  imageGenerationMode?: 'text-to-image' | 'character-reference-edit' | 'mixed';
 }
 
 // ─── Book request (wizard output / API input) ─────────────────────────────────
@@ -499,6 +505,12 @@ export interface CharacterPersonalizationDiagnostics {
   characterSheetGenerated: boolean;
   /** Whether every planned page's illustration prompt includes the character-consistency instructions. */
   pagePromptsIncludeConsistencyData: boolean;
+  /** Whether the generated character sheet's bytes were successfully loaded this run — distinct from characterSheetGenerated, which only means one was created. */
+  characterReferenceAvailable: boolean;
+  /** Whether at least one real image-generation request actually used the character sheet as a visual reference this run. */
+  characterReferenceUsedForImages: boolean;
+  /** Which image-generation request shape this run used. */
+  imageGenerationMode: 'text-to-image' | 'character-reference-edit' | 'mixed';
 }
 
 /**
