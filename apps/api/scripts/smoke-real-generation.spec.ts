@@ -4,6 +4,7 @@ import {
   checkPreconditions,
   formatDiagnosticsSummary,
   resolveSmokeBookConfig,
+  type SmokeValidationExtras,
 } from './smoke-real-generation-helpers';
 
 describe('checkPreconditions', () => {
@@ -84,6 +85,18 @@ describe('formatDiagnosticsSummary', () => {
     };
   }
 
+  function makeExtras(overrides: Partial<SmokeValidationExtras> = {}): SmokeValidationExtras {
+    return {
+      expectedImageCount: 8,
+      fallbackImageCount: 0,
+      characterSheetAssetId: 'b-1/character-sheet',
+      characterProfileProvider: 'openai',
+      pdfExists: true,
+      pdfSizeBytes: 123_456,
+      ...overrides,
+    };
+  }
+
   it('includes book id, status, providers, models, page count, duration, and PDF url', () => {
     const summary = formatDiagnosticsSummary(makeDiagnostics());
 
@@ -104,7 +117,7 @@ describe('formatDiagnosticsSummary', () => {
     const summary = formatDiagnosticsSummary(makeDiagnostics());
 
     expect(summary).toContain('Generated images:   8');
-    expect(summary).toContain('Failed images:      0');
+    expect(summary).toContain('Fallback images:    0');
     expect(summary).toContain('/api/books/b-1/generation-diagnostics');
   });
 
@@ -132,10 +145,48 @@ describe('formatDiagnosticsSummary', () => {
     expect(summary.toLowerCase()).not.toContain('b64_json');
     expect(summary.toLowerCase()).not.toContain('base64');
   });
+
+  it('falls back to "n/a" fields when extras are omitted', () => {
+    const summary = formatDiagnosticsSummary(makeDiagnostics());
+
+    expect(summary).toContain('Char. profile prov.: n/a');
+    expect(summary).toContain('Expected images:    n/a');
+    expect(summary).toContain('PDF exists:         n/a');
+    expect(summary).toContain('PDF size > 0:       n/a');
+    expect(summary).toContain('Char. sheet asset:  n/a');
+  });
+
+  it('includes expected/fallback image counts, character-sheet asset id, profile provider, and PDF exists/size when extras are given', () => {
+    const summary = formatDiagnosticsSummary(makeDiagnostics(), makeExtras());
+
+    expect(summary).toContain('Char. profile prov.: openai');
+    expect(summary).toContain('Expected images:    8');
+    expect(summary).toContain('Fallback images:    0');
+    expect(summary).toContain('Char. sheet asset:  b-1/character-sheet');
+    expect(summary).toContain('PDF exists:         yes');
+    expect(summary).toContain('PDF size > 0:       yes (123456 bytes)');
+  });
+
+  it('reports PDF size 0 as "no" rather than a falsy omission', () => {
+    const summary = formatDiagnosticsSummary(
+      makeDiagnostics(),
+      makeExtras({ pdfExists: true, pdfSizeBytes: 0 }),
+    );
+
+    expect(summary).toContain('PDF size > 0:       no (0 bytes)');
+  });
+
+  it('never includes an asset id that looks like a raw filesystem path', () => {
+    const summary = formatDiagnosticsSummary(makeDiagnostics(), makeExtras());
+
+    expect(summary).not.toMatch(/[A-Za-z]:\\/);
+    expect(summary).not.toContain('tmp\\images');
+    expect(summary).not.toContain('tmp/images');
+  });
 });
 
 describe('resolveSmokeBookConfig', () => {
-  it('falls back to safe defaults when no SMOKE_* env vars are set', () => {
+  it('falls back to safe defaults when no SMOKE_* env vars are set, including pageCount=4 (MIN_BOOK_PAGE_COUNT)', () => {
     const config = resolveSmokeBookConfig({} as NodeJS.ProcessEnv);
 
     expect(config).toEqual({
@@ -143,6 +194,7 @@ describe('resolveSmokeBookConfig', () => {
       childAge: 5,
       language: 'en',
       theme: 'friendship',
+      pageCount: 4,
     });
   });
 
@@ -173,6 +225,6 @@ describe('resolveSmokeBookConfig', () => {
     } as unknown as NodeJS.ProcessEnv);
 
     expect(config.childAge).toBe(5);
-    expect(config.pageCount).toBeUndefined();
+    expect(config.pageCount).toBe(4);
   });
 });

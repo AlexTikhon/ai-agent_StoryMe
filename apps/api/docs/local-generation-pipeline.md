@@ -426,7 +426,9 @@ once, end-to-end, against the real OpenAI API:
   - `SMOKE_CHILD_AGE` (default `5`)
   - `SMOKE_LANGUAGE` (default `en`; also try `ru`)
   - `SMOKE_THEME` (default `friendship`)
-  - `SMOKE_PAGE_COUNT` (default: provider's own default, currently 6)
+  - `SMOKE_PAGE_COUNT` (default: `MIN_BOOK_PAGE_COUNT` = 4 — the cheapest
+    page count that can still reach a real `complete` book; the story
+    provider clamps any lower value back up to 4 anyway)
   - `SMOKE_CHILD_PHOTO_PATH` — optional local filesystem path to a
     `.jpg`/`.jpeg`/`.png`/`.webp` reference photo. When set, the script
     uploads it to `ImageAssetStorage` under `childPhotoAssetKey(bookId)` and
@@ -459,30 +461,45 @@ cover). Run it deliberately, not routinely.
    STORY_GENERATION_PROVIDER=openai
    IMAGE_GENERATION_PROVIDER=openai
    CHARACTER_PROFILE_PROVIDER=openai
-   MAX_GENERATED_IMAGES_PER_BOOK=2
    ```
 
-   Start with `MAX_GENERATED_IMAGES_PER_BOOK=2` for the first real run — it
-   caps real (billed) image calls to just the first 2 planned illustrations
-   (cover, then pages, then back cover, in order) while still exercising the
-   full story + character-profile + PDF pipeline. **A book's total planned
-   illustration count is `2 + pageCount` (cover + pages + back cover)** — the
-   cap must cover every planned illustration or the book fails at
-   `pdf_render` (see "Per-book illustration budget" above). Raise it (e.g. to
-   `9` for a 7-page book) once you're ready to review a full, fully
-   illustrated book.
+   **Do not set `MAX_GENERATED_IMAGES_PER_BOOK` below the book's total planned
+   illustration count.** Since `assertAllImagesResolved` requires every
+   planned illustration to have real bytes before a book can reach
+   `complete` (see "Per-book illustration budget" above), a cap that's too
+   low doesn't produce a cheaper partial book — it makes the whole run fail
+   at `pdf_render` instead. **A book's total planned illustration count is
+   `2 + pageCount` (cover + pages + back cover)**. `SMOKE_PAGE_COUNT`
+   defaults to `MIN_BOOK_PAGE_COUNT` (4 pages, so 6 planned illustrations) —
+   the cheapest page count that can still reach a real `complete` book, since
+   `resolveTargetPageCount` clamps anything lower back up to 4 anyway. Leave
+   `MAX_GENERATED_IMAGES_PER_BOOK` unset (or at its existing local `.env`
+   value) as long as it's `>= 6`; raise it only if you also raise
+   `SMOKE_PAGE_COUNT` for a longer full-book review.
 2. Run (from `apps/api`, with a local Postgres + Redis up, e.g. via
    `pnpm --filter @book/api dev`'s existing stack):
 
    ```sh
    SMOKE_CHILD_NAME="Mia" SMOKE_CHILD_AGE=3 SMOKE_LANGUAGE=ru \
-   SMOKE_THEME="a trip to the sea" SMOKE_PAGE_COUNT=6 \
+   SMOKE_THEME="a trip to the sea" \
    SMOKE_CHILD_PHOTO_PATH="/path/to/local/photo.jpg" \
    pnpm --filter @book/api smoke:real-generation
    ```
 
    Omit `SMOKE_CHILD_PHOTO_PATH` to test the no-photo (generic character
-   profile) path instead.
+   profile) path instead. Set `SMOKE_PAGE_COUNT` explicitly to review a
+   longer book once the 4-page smoke run looks right.
+
+   The script always prints its full "Validation summary" (see "Smoke test
+   output" below) right after generation finishes, whether the book reached
+   `complete` or `failed` — a failed run is never just a bare stack trace. If
+   the process throws before or after generation (setup, Nest bootstrap, or
+   the post-completion verification asserts), the top-level error message
+   names the failure stage (`preconditions` / `nest-bootstrap` / `setup` /
+   `generation` / `diagnostics` / `verification`) so it's clear which phase
+   broke. If `SMOKE_CHILD_PHOTO_PATH` is set without
+   `CHARACTER_PROFILE_PROVIDER=openai`, the script prints an upfront warning
+   that visual-reference consistency won't be exercised this run.
 3. **Where output lands**: with the default `LocalPdfStorage`/local
    `ImageAssetStorage` drivers, the rendered PDF is at
    `apps/api/tmp/books/<bookId>/storybook.pdf` and generated illustration
@@ -756,18 +773,35 @@ down which step actually failed and how long prior steps took.
 ### Smoke test output
 
 `pnpm --filter @book/api smoke:real-generation` (see "Manual end-to-end
-smoke test" above) now builds and prints a `GenerationDiagnosticsDto`
-summary after the pipeline finishes, via
-`formatDiagnosticsSummary` (`apps/api/scripts/smoke-real-generation-helpers.ts`):
-book id, status, story/image provider + model, generated page count,
-**generated/failed image counts**, duration, PDF preview url, **the
-`GET /:id/generation-diagnostics` URL for the book**, and (only on failure)
-`failedStep` and `errorMessage`. `formatDiagnosticsSummary` is a pure
-function — unit tested directly in `smoke-real-generation.spec.ts` without
-booting Nest or making a network call — and only ever prints fields already
-proven safe by `GenerationDiagnosticsDto`/`GenerationMetadata`. It never
-prints `OPENAI_API_KEY`, a raw prompt, or generated image bytes/base64 — see
-"What's intentionally not stored (safety)" below.
+smoke test" above) builds and **always** prints a "Validation summary" right
+after `AgentService.startBookGeneration` returns — whether the book reached
+`complete` or `failed` — via `formatDiagnosticsSummary`
+(`apps/api/scripts/smoke-real-generation-helpers.ts`): book id, status,
+story/character-profile/image provider + model, requested vs. generated page
+count, expected vs. generated vs. fallback image counts, duration, PDF
+preview url, whether the PDF exists in storage and has non-zero size, the
+character-sheet's safe storage-key identifier (never a filesystem path), the
+character-reference-usage flags, **the `GET /:id/generation-diagnostics` URL
+for the book**, and (only on failure) `failedStep` and `errorMessage`.
+
+`formatDiagnosticsSummary` takes the shared `GenerationDiagnosticsDto` plus an
+optional `SmokeValidationExtras` object (script-local, not part of
+`@book/types` — see the helpers file) carrying the fields the shared DTO
+doesn't have: `expectedImageCount`, `fallbackImageCount`,
+`characterSheetAssetId`, `characterProfileProvider`, `pdfExists`,
+`pdfSizeBytes`. It's a pure function — unit tested directly in
+`smoke-real-generation.spec.ts` without booting Nest or making a network
+call — and only ever prints fields already proven safe by
+`GenerationDiagnosticsDto`/`GenerationMetadata`/`SmokeValidationExtras`. It
+never prints `OPENAI_API_KEY`, a raw prompt, or generated image bytes/base64
+— see "What's intentionally not stored (safety)" below.
+
+If generation itself throws, or an error occurs outside
+`startBookGeneration` (setup, Nest bootstrap, or the post-completion
+verification asserts), the script's top-level error message names the
+failure stage it was in (`preconditions` / `nest-bootstrap` / `setup` /
+`generation` / `diagnostics` / `verification`) instead of a bare stack trace
+— see "Manual end-to-end smoke test" above.
 
 ### What's intentionally not stored (safety)
 

@@ -18,12 +18,16 @@
  *
  * Optional env vars (all have safe defaults — see resolveSmokeBookConfig):
  *   SMOKE_CHILD_NAME, SMOKE_CHILD_AGE, SMOKE_LANGUAGE, SMOKE_THEME,
- *   SMOKE_PAGE_COUNT, SMOKE_CHILD_PHOTO_PATH (local jpg/png/webp file path —
- *   uploaded exactly like the wizard's child-photo upload before generation
- *   starts, so the real CharacterProfileProvider analyzes it).
+ *   SMOKE_PAGE_COUNT (defaults to MIN_BOOK_PAGE_COUNT = 4, the cheapest page
+ *   count that can still reach a real "complete" book), SMOKE_CHILD_PHOTO_PATH
+ *   (local jpg/png/webp file path — uploaded exactly like the wizard's
+ *   child-photo upload before generation starts, so the real
+ *   CharacterProfileProvider analyzes it; also set CHARACTER_PROFILE_PROVIDER=
+ *   openai to exercise the real vision-based character-sheet path).
  *   MAX_GENERATED_IMAGES_PER_BOOK (cost cap — see agent.service.ts) is
- *   respected automatically; set it to at least the book's total image count
- *   for a full real-image run, or leave the default for a cheap smoke test.
+ *   respected automatically; the default (see apps/api/.env) already covers a
+ *   4-page book's 6 planned illustrations (cover + 4 pages + back cover) —
+ *   raise it only for a longer book.
  *
  * Also boots the real Nest application context, so it needs a running local
  * Postgres + Redis matching apps/api/.env — the same stack
@@ -51,6 +55,7 @@ import {
   checkPreconditions,
   formatDiagnosticsSummary,
   resolveSmokeBookConfig,
+  type SmokeValidationExtras,
 } from './smoke-real-generation-helpers';
 import { buildGenerationDiagnostics } from '../src/books/generation-diagnostics';
 
@@ -67,6 +72,9 @@ function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(`Assertion failed: ${message}`);
 }
 
+/** Tracks which phase is running so any thrown error can be reported with a clear failure stage (never just a bare stack trace). */
+let stage = 'preconditions';
+
 async function main(): Promise<void> {
   const precondition = checkPreconditions(process.env);
   if (precondition) {
@@ -75,6 +83,19 @@ async function main(): Promise<void> {
     return;
   }
 
+  const wantsCharacterProfile =
+    !!process.env['SMOKE_CHILD_PHOTO_PATH']?.trim() &&
+    process.env['CHARACTER_PROFILE_PROVIDER']?.trim().toLowerCase() !== 'openai';
+  if (wantsCharacterProfile) {
+    console.log(
+      'Warning: SMOKE_CHILD_PHOTO_PATH is set but CHARACTER_PROFILE_PROVIDER is not "openai" — ' +
+        'the real vision-based character profile/sheet path will not run, so visual-reference ' +
+        'consistency cannot be validated this run. Set CHARACTER_PROFILE_PROVIDER=openai too if ' +
+        'that is what you want to test.',
+    );
+  }
+
+  stage = 'nest-bootstrap';
   console.log('Booting Nest application context (requires a running Postgres + Redis)...');
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn', 'log'],
@@ -87,13 +108,14 @@ async function main(): Promise<void> {
     const pdfStorage = app.get<PdfStorage>(PDF_STORAGE_TOKEN);
     const imageAssetStorage = app.get<ImageAssetStorage>(IMAGE_ASSET_STORAGE_TOKEN);
 
+    stage = 'setup';
     const config = resolveSmokeBookConfig(process.env);
 
     console.log(`[1/5] Ensuring smoke-test user (${SMOKE_USER_EMAIL})...`);
     const user = await usersService.findOrCreateByEmail(SMOKE_USER_EMAIL, 'Smoke Test');
 
     console.log(
-      `[2/5] Creating a test book (childAge=${config.childAge}, language=${config.language}, theme="${config.theme}"${config.pageCount ? `, pageCount=${config.pageCount}` : ''})...`,
+      `[2/5] Creating a test book (childAge=${config.childAge}, language=${config.language}, theme="${config.theme}", pageCount=${config.pageCount})...`,
     );
     let book = await prisma.book.create({
       data: {
@@ -103,7 +125,7 @@ async function main(): Promise<void> {
         childAge: config.childAge,
         language: config.language as BookLanguage,
         theme: config.theme,
-        ...(config.pageCount !== undefined && { pageCount: config.pageCount }),
+        pageCount: config.pageCount,
       },
     });
     console.log(`      Book id: ${book.id}`);
@@ -131,19 +153,61 @@ async function main(): Promise<void> {
       console.log('[3/5] No SMOKE_CHILD_PHOTO_PATH set — generating without a reference photo.');
     }
 
+    stage = 'generation';
     console.log(
       '[4/5] Running the real generation pipeline (calls the real OpenAI story + image APIs — costs money)...',
     );
     const result = await agentService.startBookGeneration(book);
 
-    console.log(`[5/5] Verifying results (final status: ${result.status})...`);
+    // Always build and print the safe validation summary before doing
+    // anything else — even a failed/incomplete run should surface its full
+    // safe diagnostics, not just a bare thrown error (see docs "Manual
+    // end-to-end smoke test").
+    stage = 'diagnostics';
+    console.log(`[5/5] Building diagnostics (final status: ${result.status})...`);
+    const agentLogs = await prisma.agentLog.findMany({
+      where: { bookId: book.id },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    const diagnostics = buildGenerationDiagnostics(result, agentLogs);
+
+    const imageGenerationResult = result.imageGenerationResult as {
+      images?: Array<{ kind: string; pageNumber?: number }>;
+      failedImageCount?: number;
+    } | null;
+    const expectedImageCount = imageGenerationResult?.images?.length ?? 0;
+    const characterProfileProvider =
+      agentLogs.find((log) => log.step === 'char_build')?.provider ?? 'unknown';
+    const characterSheetAssetId = result.characterSheetAssetKey
+      ? characterSheetAssetKey(book.id)
+      : undefined;
+    const pdfExists = await pdfStorage.previewPdfExists(book.id);
+    const pdfSizeBytes = pdfExists
+      ? (await pdfStorage.getPreviewPdf(book.id))?.buffer.length
+      : undefined;
+    const extras: SmokeValidationExtras = {
+      expectedImageCount,
+      fallbackImageCount: imageGenerationResult?.failedImageCount ?? 0,
+      ...(characterSheetAssetId && { characterSheetAssetId }),
+      characterProfileProvider,
+      pdfExists,
+      ...(pdfSizeBytes !== undefined && { pdfSizeBytes }),
+    };
+
+    console.log('\n--- Validation summary ---');
+    console.log(formatDiagnosticsSummary(diagnostics, extras));
+
     if (result.status !== BookStatus.complete) {
-      throw new Error(
-        `Expected book to reach status "complete", got "${result.status}" ` +
-          `(failedStep=${result.failedStep ?? 'n/a'}, errorMessage=${result.errorMessage ?? 'n/a'})`,
+      console.log(
+        `\n✘ Real generation smoke test FAILED — book did not reach "complete" status ` +
+          `(failedStep=${result.failedStep ?? 'n/a'}). See failed step/error above.`,
       );
+      process.exitCode = 1;
+      return;
     }
 
+    stage = 'verification';
     assert(result.storyPlan !== null, 'expected storyPlan to be persisted');
     assert(result.imageGenerationResult !== null, 'expected imageGenerationResult to be persisted');
     assert(result.characterProfile !== null, 'expected a CharacterProfile to be persisted');
@@ -190,12 +254,7 @@ async function main(): Promise<void> {
       );
     }
 
-    const images =
-      (
-        result.imageGenerationResult as {
-          images?: Array<{ kind: string; pageNumber?: number }>;
-        } | null
-      )?.images ?? [];
+    const images = imageGenerationResult?.images ?? [];
     assert(images.length > 0, 'expected at least one generated image entry');
 
     for (const image of images) {
@@ -210,26 +269,16 @@ async function main(): Promise<void> {
     console.log(`      ${images.length} generated image asset(s) saved and verified.`);
 
     assert(!!result.previewPdfUrl, 'expected previewPdfUrl to be set');
-    assert(
-      await pdfStorage.previewPdfExists(book.id),
-      'expected the rendered PDF to exist in storage',
-    );
-
-    const agentLogs = await prisma.agentLog.findMany({
-      where: { bookId: book.id },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-    });
-    const diagnostics = buildGenerationDiagnostics(result, agentLogs);
+    assert(pdfExists, 'expected the rendered PDF to exist in storage');
+    assert(!!pdfSizeBytes && pdfSizeBytes > 0, 'expected the rendered PDF to have non-zero size');
 
     console.log('\n✔ Real generation smoke test passed — all checks succeeded.');
-    console.log(formatDiagnosticsSummary(diagnostics));
   } finally {
     await app.close();
   }
 }
 
 main().catch((err: unknown) => {
-  console.error('\n✘ Real generation smoke test FAILED:', err);
+  console.error(`\n✘ Real generation smoke test FAILED at stage "${stage}":`, err);
   process.exit(1);
 });
