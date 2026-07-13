@@ -3,8 +3,13 @@ import {
   fetchWithRetry,
   OpenAIRequestError,
   readOpenAIRetryConfig,
+  readOpenAIImageTimeoutConfig,
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   DEFAULT_OPENAI_MAX_RETRIES,
+  DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
+  DEFAULT_OPENAI_IMAGE_TIMEOUT_MAX_RETRIES,
+  MIN_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
+  MAX_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
 } from './openai-request';
 
 function makeAbortableFetch() {
@@ -56,6 +61,62 @@ describe('readOpenAIRetryConfig', () => {
     expect(config).toEqual({
       timeoutMs: DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
       maxRetries: DEFAULT_OPENAI_MAX_RETRIES,
+    });
+  });
+});
+
+describe('readOpenAIImageTimeoutConfig', () => {
+  it('falls back to safe defaults when env vars are missing', () => {
+    const config = readOpenAIImageTimeoutConfig({} as NodeJS.ProcessEnv);
+    expect(config).toEqual({
+      timeoutMs: DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
+      timeoutMaxRetries: DEFAULT_OPENAI_IMAGE_TIMEOUT_MAX_RETRIES,
+    });
+  });
+
+  it('reads valid env vars', () => {
+    const config = readOpenAIImageTimeoutConfig({
+      OPENAI_IMAGE_REQUEST_TIMEOUT_MS: '120000',
+      OPENAI_IMAGE_TIMEOUT_MAX_RETRIES: '3',
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config).toEqual({ timeoutMs: 120000, timeoutMaxRetries: 3 });
+  });
+
+  it('accepts the exact minimum and maximum bounds', () => {
+    expect(
+      readOpenAIImageTimeoutConfig({
+        OPENAI_IMAGE_REQUEST_TIMEOUT_MS: String(MIN_OPENAI_IMAGE_REQUEST_TIMEOUT_MS),
+      } as unknown as NodeJS.ProcessEnv).timeoutMs,
+    ).toBe(MIN_OPENAI_IMAGE_REQUEST_TIMEOUT_MS);
+    expect(
+      readOpenAIImageTimeoutConfig({
+        OPENAI_IMAGE_REQUEST_TIMEOUT_MS: String(MAX_OPENAI_IMAGE_REQUEST_TIMEOUT_MS),
+      } as unknown as NodeJS.ProcessEnv).timeoutMs,
+    ).toBe(MAX_OPENAI_IMAGE_REQUEST_TIMEOUT_MS);
+  });
+
+  it('falls back to the default timeout when below the minimum bound', () => {
+    const config = readOpenAIImageTimeoutConfig({
+      OPENAI_IMAGE_REQUEST_TIMEOUT_MS: '1000',
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config.timeoutMs).toBe(DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS);
+  });
+
+  it('falls back to the default timeout when above the maximum bound', () => {
+    const config = readOpenAIImageTimeoutConfig({
+      OPENAI_IMAGE_REQUEST_TIMEOUT_MS: '999999999',
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config.timeoutMs).toBe(DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS);
+  });
+
+  it('falls back to defaults for malformed values', () => {
+    const config = readOpenAIImageTimeoutConfig({
+      OPENAI_IMAGE_REQUEST_TIMEOUT_MS: 'not-a-number',
+      OPENAI_IMAGE_TIMEOUT_MAX_RETRIES: '-1',
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config).toEqual({
+      timeoutMs: DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
+      timeoutMaxRetries: DEFAULT_OPENAI_IMAGE_TIMEOUT_MAX_RETRIES,
     });
   });
 });
@@ -207,5 +268,81 @@ describe('fetchWithRetry', () => {
     await vi.advanceTimersByTimeAsync(10000);
     await assertion;
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('defaults timeoutMaxRetries to maxRetries when omitted (unchanged behavior)', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = makeAbortableFetch();
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 50,
+      maxRetries: 2,
+    });
+    const assertion = expect(promise).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(10000);
+    await assertion;
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // 1 initial + 2 retries, matching maxRetries
+  });
+
+  it('uses an independent timeoutMaxRetries budget for AbortError, separate from maxRetries', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = makeAbortableFetch();
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 50,
+      maxRetries: 5,
+      timeoutMaxRetries: 1,
+    });
+    const assertion = expect(promise).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(10000);
+    await assertion;
+
+    // Bounded by timeoutMaxRetries=1, not the much larger maxRetries=5.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a timeout at all when timeoutMaxRetries is 0, even with a positive maxRetries', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = makeAbortableFetch();
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 50,
+      maxRetries: 3,
+      timeoutMaxRetries: 0,
+    });
+    const assertion = expect(promise).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(50);
+    await assertion;
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps network-error retries at maxRetries even when timeoutMaxRetries is smaller', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('network down'));
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 1000,
+      maxRetries: 2,
+      timeoutMaxRetries: 0,
+    });
+    const assertion = expect(promise).rejects.toMatchObject({ reason: 'network' });
+    await vi.advanceTimersByTimeAsync(10000);
+    await assertion;
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // network retries unaffected by timeoutMaxRetries
   });
 });

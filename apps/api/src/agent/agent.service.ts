@@ -547,6 +547,9 @@ export class AgentService {
             characterReferenceSupplied:
               details.characterReferenceSupplied ?? characterReference !== undefined,
             requestMode: details.requestMode ?? attemptedRequestMode,
+            ...(details.timeoutMs !== undefined && { timeoutMs: details.timeoutMs }),
+            ...(details.elapsedMs !== undefined && { elapsedMs: details.elapsedMs }),
+            ...(details.retryDecision !== undefined && { retryDecision: details.retryDecision }),
           });
         }
       }),

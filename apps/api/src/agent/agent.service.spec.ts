@@ -2362,6 +2362,11 @@ describe('AgentService', () => {
       expect(failure.httpStatus).toBeUndefined();
       expect(failure.errorType).toBeUndefined();
       expect(failure.errorCode).toBeUndefined();
+      // Timeout-specific diagnostics (see openai-image-generation-provider.ts)
+      // are only present when the underlying error actually was a timeout.
+      expect(failure.timeoutMs).toBeUndefined();
+      expect(failure.elapsedMs).toBeUndefined();
+      expect(failure.retryDecision).toBeUndefined();
       warnSpy.mockRestore();
     });
   });

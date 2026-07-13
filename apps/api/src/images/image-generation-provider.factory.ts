@@ -4,7 +4,7 @@ import {
   type ImageGenerationProvider,
 } from './image-generation-provider';
 import { OpenAIImageGenerationProvider } from './openai-image-generation-provider';
-import { readOpenAIRetryConfig } from '../common/openai-request';
+import { readOpenAIImageTimeoutConfig, readOpenAIRetryConfig } from '../common/openai-request';
 import {
   OpenAIImageRateLimiter,
   readOpenAIImageRateLimiterConfig,
@@ -49,14 +49,19 @@ export function createImageGenerationProvider(
   }
 
   const model = env['OPENAI_IMAGE_MODEL'];
-  const { timeoutMs, maxRetries } = readOpenAIRetryConfig(env);
+  // Network/5xx retries (maxRetries) still come from the shared
+  // OPENAI_MAX_RETRIES config; timeoutMs/timeoutMaxRetries come from their
+  // own image-specific env vars (OPENAI_IMAGE_REQUEST_TIMEOUT_MS /
+  // OPENAI_IMAGE_TIMEOUT_MAX_RETRIES) — see readOpenAIImageTimeoutConfig.
+  const { maxRetries } = readOpenAIRetryConfig(env);
+  const { timeoutMs, timeoutMaxRetries } = readOpenAIImageTimeoutConfig(env);
   const maxPages = readMaxPages(env);
   const rateLimiterConfig = readOpenAIImageRateLimiterConfig(env);
   // One limiter instance shared by every call this provider makes (character
   // sheet, cover, pages, back cover) — see OpenAIImageRateLimiter's class doc.
   const rateLimiter = new OpenAIImageRateLimiter(rateLimiterConfig);
   logger.log(
-    `Image generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries} maxPages=${maxPages} ` +
+    `Image generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries} timeoutMaxRetries=${timeoutMaxRetries} maxPages=${maxPages} ` +
       `imageMinIntervalMs=${rateLimiterConfig.minIntervalMs} imageMaxRetries=${rateLimiterConfig.maxRetries} imageRetryBaseMs=${rateLimiterConfig.retryBaseMs} imageRetryMaxMs=${rateLimiterConfig.retryMaxMs}`,
   );
 
@@ -65,6 +70,7 @@ export function createImageGenerationProvider(
     ...(model && { model }),
     timeoutMs,
     maxRetries,
+    timeoutMaxRetries,
     maxPages,
     rateLimiter,
   });

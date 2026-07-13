@@ -10,12 +10,25 @@ import {
 } from './openai-image-generation-provider';
 import type { ImageGenerationInput, ImageReference } from './image-generation-provider';
 import { OpenAIImageRateLimiter } from './openai-image-rate-limiter';
+import { DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS } from '../common/openai-request';
 import {
   Pronouns,
   type CharacterCard,
   type CharacterProfile,
   type GeneratedImageEntry,
 } from '@book/types';
+
+function makeAbortableFetch() {
+  return vi.fn((_url: string, init: RequestInit) => {
+    return new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
+  });
+}
 
 function makeCharacterProfile(overrides: Partial<CharacterProfile> = {}): CharacterProfile {
   return {
@@ -334,6 +347,7 @@ describe('OpenAIImageGenerationProvider', () => {
         fetchImpl,
         timeoutMs: 50,
         maxRetries: 0,
+        timeoutMaxRetries: 0,
       });
 
       const promise = provider.generateImage(makeInput());
@@ -914,6 +928,7 @@ describe('OpenAIImageGenerationProvider', () => {
           fetchImpl,
           timeoutMs: 50,
           maxRetries: 0,
+          timeoutMaxRetries: 0,
         });
 
         const promise = provider.generateImage(makeInput({ characterReference: makeReference() }));
@@ -1042,6 +1057,238 @@ describe('OpenAIImageGenerationProvider', () => {
       const input = makeInput({ entry: makeEntry({ kind: 'cover', pageNumber: undefined }) });
 
       await expect(provider.generateImage(input)).resolves.toBeDefined();
+    });
+  });
+
+  describe('configurable image request timeout', () => {
+    it('defaults the request timeout to DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS when not configured', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeAbortableFetch();
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          timeoutMaxRetries: 0,
+        });
+
+        const promise = provider.generateImage(makeInput());
+        const assertion = expect(promise).rejects.toThrow(
+          new RegExp(`timed out after ${DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS}ms`),
+        );
+        await vi.advanceTimersByTimeAsync(DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('accepts a slow success well past the old 60s default but below the configured timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = vi.fn(() => {
+          return new Promise((resolve) => {
+            setTimeout(
+              () =>
+                resolve({
+                  ok: true,
+                  status: 200,
+                  json: async () => ({ data: [{ b64_json: TINY_PNG_BASE64 }] }),
+                  text: async () => '',
+                }),
+              100_000,
+            );
+          });
+        });
+        const provider = new OpenAIImageGenerationProvider({ apiKey: 'sk-test', fetchImpl });
+
+        const promise = provider.generateImage(makeInput());
+        await vi.advanceTimersByTimeAsync(100_000);
+        const result = await promise;
+
+        expect(result.contentType).toBe('image/png');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('aborts a request that exceeds the configured timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeAbortableFetch();
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          timeoutMs: 5000,
+          timeoutMaxRetries: 0,
+        });
+
+        const promise = provider.generateImage(makeInput());
+        const assertion = expect(promise).rejects.toThrow(/timed out after 5000ms/);
+        await vi.advanceTimersByTimeAsync(5000);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('makes at most two total attempts by default when every attempt times out (1 initial + 1 retry)', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeAbortableFetch();
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          timeoutMs: 1000,
+        });
+
+        const promise = provider.generateImage(makeInput());
+        const assertion = expect(promise).rejects.toThrow(ImageGenerationProviderError);
+        await vi.advanceTimersByTimeAsync(5000);
+        await assertion;
+
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps maxRetries (network/5xx) independent from timeoutMaxRetries', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeAbortableFetch();
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          timeoutMs: 1000,
+          maxRetries: 5,
+          timeoutMaxRetries: 1,
+        });
+
+        const promise = provider.generateImage(makeInput());
+        const assertion = expect(promise).rejects.toThrow(ImageGenerationProviderError);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await assertion;
+
+        // Bounded by timeoutMaxRetries=1, not the much larger maxRetries=5.
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not let the rate-limiter spacing wait count against the request timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeFetchOk();
+        const rateLimiter = new OpenAIImageRateLimiter({ minIntervalMs: 5000 });
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          timeoutMs: 1000, // shorter than the 5s spacing wait between requests
+          rateLimiter,
+        });
+
+        const first = provider.generateImage(makeInput());
+        await vi.advanceTimersByTimeAsync(0);
+        await first;
+
+        // The second call must wait ~5000ms for rate-limiter spacing before
+        // its own 1000ms request timeout even starts — if the spacing wait
+        // counted against the timeout, this would abort instead of succeeding.
+        const second = provider.generateImage(makeInput());
+        await vi.advanceTimersByTimeAsync(6000);
+        await expect(second).resolves.toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('exposes errorCode=request_timeout, timeoutMs, elapsedMs, and a retryDecision when every attempt times out', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeAbortableFetch();
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          timeoutMs: 1000,
+          timeoutMaxRetries: 0,
+        });
+
+        const promise = provider.generateImage(makeInput());
+        const errPromise = promise.catch((e) => e as OpenAIImageRequestError);
+        await vi.advanceTimersByTimeAsync(1000);
+        const err = await errPromise;
+
+        expect(err.details.errorCode).toBe('request_timeout');
+        expect(err.details.timeoutMs).toBe(1000);
+        expect(err.details.elapsedMs).toBeGreaterThanOrEqual(1000);
+        expect(typeof err.details.retryDecision).toBe('string');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not set errorCode=request_timeout for a plain network failure', async () => {
+      const fetchImpl = vi.fn().mockRejectedValue(new Error('network down'));
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxRetries: 0,
+      });
+
+      const err = await provider
+        .generateImage(makeInput())
+        .catch((e) => e as OpenAIImageRequestError);
+
+      expect(err.details.errorCode).toBeUndefined();
+      expect(err.details.timeoutMs).toBeUndefined();
+      expect(err.details.elapsedMs).toBeUndefined();
+    });
+
+    it('never leaks the API key via timeout failure details', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeAbortableFetch();
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-super-secret-key',
+          fetchImpl,
+          timeoutMs: 1000,
+          timeoutMaxRetries: 0,
+        });
+
+        const promise = provider.generateImage(makeInput());
+        const errPromise = promise.catch((e) => e as OpenAIImageRequestError);
+        await vi.advanceTimersByTimeAsync(1000);
+        const err = await errPromise;
+
+        expect(JSON.stringify(err.details)).not.toContain('sk-super-secret-key');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the character-reference-edit flow still reports request_timeout diagnostics on timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = makeAbortableFetch();
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          timeoutMs: 1000,
+          timeoutMaxRetries: 0,
+        });
+
+        const promise = provider.generateImage(makeInput({ characterReference: makeReference() }));
+        const errPromise = promise.catch((e) => e as OpenAIImageRequestError);
+        await vi.advanceTimersByTimeAsync(1000);
+        const err = await errPromise;
+
+        expect(err.details.errorCode).toBe('request_timeout');
+        expect(err.details.requestMode).toBe('character-reference-edit');
+        expect(err.details.characterReferenceSupplied).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

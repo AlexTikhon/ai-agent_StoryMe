@@ -9,8 +9,9 @@ import type {
   ImageReference,
 } from './image-generation-provider';
 import {
+  DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
+  DEFAULT_OPENAI_IMAGE_TIMEOUT_MAX_RETRIES,
   DEFAULT_OPENAI_MAX_RETRIES,
-  DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   fetchWithRetry,
   OpenAIRequestError,
 } from '../common/openai-request';
@@ -173,6 +174,8 @@ export interface OpenAIImageGenerationProviderOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxRetries?: number;
+  /** Independent retry budget for request-timeout failures only (network/5xx keep using maxRetries) — see readOpenAIImageTimeoutConfig / OPENAI_IMAGE_TIMEOUT_MAX_RETRIES. */
+  timeoutMaxRetries?: number;
   /** Caps real (paid) image generation to this many story pages. See REAL_GENERATION_MAX_PAGES. */
   maxPages?: number;
   /**
@@ -205,6 +208,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
+  private readonly timeoutMaxRetries: number;
   private readonly maxPages: number;
   private readonly rateLimiter: OpenAIImageRateLimiter;
 
@@ -216,8 +220,9 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS;
     this.maxRetries = options.maxRetries ?? DEFAULT_OPENAI_MAX_RETRIES;
+    this.timeoutMaxRetries = options.timeoutMaxRetries ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MAX_RETRIES;
     this.maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
     this.rateLimiter = options.rateLimiter ?? new OpenAIImageRateLimiter({ minIntervalMs: 0 });
   }
@@ -348,7 +353,10 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     let attempts = 0;
     const limiterBefore = this.rateLimiter.getDiagnostics();
     const buildDetails = (
-      extra: Pick<ImageGenerationFailureDetails, 'httpStatus' | 'errorType' | 'errorCode'> = {},
+      extra: Pick<
+        ImageGenerationFailureDetails,
+        'httpStatus' | 'errorType' | 'errorCode' | 'timeoutMs' | 'elapsedMs' | 'retryDecision'
+      > = {},
     ): ImageGenerationFailureDetails => {
       const limiterAfter = this.rateLimiter.getDiagnostics();
       return {
@@ -361,15 +369,21 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       };
     };
 
+    // Set inside the rate-limiter's dispatch closure, i.e. once the request
+    // actually leaves the spacing queue — so elapsedMs below never includes
+    // limiterWaitMs (see OpenAIImageRateLimiter.schedule/runSlot).
+    let requestPhaseStartedAt = 0;
     let response: Response;
     try {
-      response = await this.rateLimiter.schedule(logLabel, () =>
-        fetchWithRetry({
+      response = await this.rateLimiter.schedule(logLabel, () => {
+        requestPhaseStartedAt = Date.now();
+        return fetchWithRetry({
           fetchImpl: this.fetchImpl,
           url,
           init,
           timeoutMs: this.timeoutMs,
           maxRetries: this.maxRetries,
+          timeoutMaxRetries: this.timeoutMaxRetries,
           retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
           onAttempt: (attempt, maxAttempts) => {
             attempts++;
@@ -380,8 +394,8 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
           onRetry: (attempt, reason) => {
             this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
           },
-        }),
-      );
+        });
+      });
     } catch (err) {
       const message =
         err instanceof OpenAIRequestError
@@ -392,9 +406,20 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       this.logger.error(
         `${logLabel} failed: provider=openai model=${this.model} reason=${message}`,
       );
+      const isTimeout = err instanceof OpenAIRequestError && err.reason === 'timeout';
       throw new OpenAIImageRequestError(
         `OpenAI image request failed: ${message}`,
-        buildDetails(),
+        buildDetails({
+          ...(isTimeout && {
+            errorCode: 'request_timeout',
+            timeoutMs: this.timeoutMs,
+            elapsedMs: Date.now() - requestPhaseStartedAt,
+            retryDecision:
+              this.timeoutMaxRetries > 0
+                ? 'timeout_retries_exhausted'
+                : 'no_timeout_retries_configured',
+          }),
+        }),
         err,
       );
     }

@@ -48,6 +48,20 @@ export interface ImageGenerationFailureDetails {
   characterReferenceSupplied?: boolean;
   /** Which endpoint shape the failed request actually used. */
   requestMode?: 'text-to-image' | 'character-reference-edit';
+  /** Configured per-attempt HTTP timeout (ms) for the failed request. Only set when the failure was a request timeout (errorCode === 'request_timeout'). */
+  timeoutMs?: number;
+  /**
+   * Wall-clock ms spent actually attempting the HTTP request(s) (including
+   * any internal timeout retries), measured from when the request left the
+   * rate-limiter's spacing queue — never includes limiterWaitMs. Only set
+   * when the failure was a request timeout. Whether the multipart upload
+   * itself had finished before the abort fired is not observable through the
+   * native fetch/FormData API, so it is deliberately not reported rather than
+   * guessed.
+   */
+  elapsedMs?: number;
+  /** Why no further timeout retry was attempted. Only set when the failure was a request timeout. */
+  retryDecision?: string;
 }
 
 interface ImageGenerationFailureError extends Error {

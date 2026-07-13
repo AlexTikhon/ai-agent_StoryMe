@@ -263,6 +263,12 @@ export interface ImageGenerationFailureDetail {
   characterReferenceSupplied: boolean;
   /** Which endpoint shape this request used. */
   requestMode: 'text-to-image' | 'character-reference-edit';
+  /** Configured per-attempt HTTP timeout (ms) for the failed request. Only present when errorCode is 'request_timeout'. */
+  timeoutMs?: number;
+  /** Wall-clock ms spent actually attempting the HTTP request(s), excluding rate-limiter queue wait. Only present when errorCode is 'request_timeout'. */
+  elapsedMs?: number;
+  /** Why no further timeout retry was attempted. Only present when errorCode is 'request_timeout'. */
+  retryDecision?: string;
 }
 
 /** WebSocket progress event shapes emitted during generation. */
