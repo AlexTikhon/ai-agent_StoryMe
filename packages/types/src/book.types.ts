@@ -6,6 +6,7 @@ import type {
   GenerationJobSummary,
   GenerationMetadata,
   IllustrationStyle,
+  ImageGenerationFailureDetail,
   Pronouns,
   BookStatus,
   QueueDiagnostics,
@@ -361,8 +362,17 @@ export interface ImageGenerationResult {
   characterReferenceUsedForImages?: boolean;
   /** Which image-generation request shape this run actually used. 'mixed' is reserved for a future run that legitimately used both per entry; the current pipeline uses the same mode for every entry in a run. */
   imageGenerationMode?: 'text-to-image' | 'character-reference-edit' | 'mixed';
+  /**
+   * Safe, explicit error when this run's character-sheet asset was recorded
+   * as existing (CharacterProfile.hasCharacterSheet + a characterSheetAssetKey)
+   * but its bytes could not be read back from storage — distinct from simply
+   * never having created a sheet. See AgentService.loadCharacterReference.
+   */
+  characterReferenceLoadError?: string;
   /** Idempotent-resume diagnostics for this run (see ResumeDiagnostics). Undefined for books generated before this feature existed, or for a run that never reached the point of computing it. */
   resume?: ResumeDiagnostics;
+  /** Per-asset failure diagnostics for every image-generation call that failed this run (see ImageGenerationFailureDetail). Empty when nothing failed. */
+  imageFailures?: ImageGenerationFailureDetail[];
 }
 
 // ─── Book request (wizard output / API input) ─────────────────────────────────
@@ -514,6 +524,8 @@ export interface CharacterPersonalizationDiagnostics {
   characterReferenceUsedForImages: boolean;
   /** Which image-generation request shape this run used. */
   imageGenerationMode: 'text-to-image' | 'character-reference-edit' | 'mixed';
+  /** Explicit, safe error when a character-sheet asset was recorded as existing but its bytes could not be read back this run. Undefined when no such failure occurred. */
+  characterReferenceLoadError?: string;
 }
 
 /**
@@ -539,4 +551,6 @@ export interface GenerationDiagnosticsDto {
   characterPersonalization: CharacterPersonalizationDiagnostics;
   /** Idempotent-resume diagnostics for the most recent generation run, or null if none was ever computed for this book. */
   resume: ResumeDiagnostics | null;
+  /** Per-asset failure diagnostics for the most recent generation run's failed image-generation calls (see ImageGenerationFailureDetail). Empty when nothing failed or none was ever computed. */
+  imageFailures: ImageGenerationFailureDetail[];
 }

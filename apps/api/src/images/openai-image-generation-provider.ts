@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import type { CharacterCard, CharacterProfile, GeneratedImageEntry } from '@book/types';
 import type {
   CharacterSheetInput,
+  ImageGenerationFailureDetails,
   ImageGenerationInput,
   ImageGenerationOutput,
   ImageGenerationProvider,
@@ -39,6 +40,52 @@ export class ImageGenerationProviderError extends Error {
   ) {
     super(message);
     this.name = 'ImageGenerationProviderError';
+  }
+}
+
+/**
+ * Thrown by every failure path in OpenAIImageGenerationProvider's request
+ * flow (network/timeout, non-2xx HTTP response, or a malformed 2xx body) so
+ * AgentService can build a truthful ImageGenerationFailureDetail for
+ * diagnostics without ever needing the raw response body, image bytes, or
+ * API key (see ImageGenerationFailureDetails and hasImageGenerationFailureDetails
+ * in image-generation-provider.ts).
+ */
+export class OpenAIImageRequestError extends ImageGenerationProviderError {
+  constructor(
+    message: string,
+    readonly details: ImageGenerationFailureDetails,
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = 'OpenAIImageRequestError';
+  }
+}
+
+/**
+ * Best-effort, safe extraction of `error.message`/`error.type`/`error.code`
+ * from an OpenAI JSON error body (`{ "error": { "message", "type", "code" } }`).
+ * Never falls back to including the raw body text — an unparseable body could
+ * in principle be a non-JSON dump, so a generic message is used instead.
+ */
+function parseOpenAIErrorBody(bodyText: string): {
+  message?: string;
+  type?: string;
+  code?: string;
+} {
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      error?: { message?: unknown; type?: unknown; code?: unknown };
+    };
+    const error = parsed?.error;
+    if (!error || typeof error !== 'object') return {};
+    return {
+      ...(typeof error.message === 'string' && { message: error.message.slice(0, 500) }),
+      ...(typeof error.type === 'string' && { type: error.type }),
+      ...(typeof error.code === 'string' && { code: error.code }),
+    };
+  } catch {
+    return {};
   }
 }
 
@@ -242,6 +289,8 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         }),
       },
       logLabel,
+      'text-to-image',
+      false,
     );
   }
 
@@ -282,6 +331,8 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         body: formData,
       },
       logLabel,
+      'character-reference-edit',
+      true,
     );
     return { ...output, usedReference: true };
   }
@@ -291,7 +342,25 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     url: string,
     init: RequestInit,
     logLabel: string,
+    requestMode: 'text-to-image' | 'character-reference-edit',
+    characterReferenceSupplied: boolean,
   ): Promise<ImageGenerationOutput> {
+    let attempts = 0;
+    const limiterBefore = this.rateLimiter.getDiagnostics();
+    const buildDetails = (
+      extra: Pick<ImageGenerationFailureDetails, 'httpStatus' | 'errorType' | 'errorCode'> = {},
+    ): ImageGenerationFailureDetails => {
+      const limiterAfter = this.rateLimiter.getDiagnostics();
+      return {
+        ...extra,
+        attempts,
+        limiterRetries: limiterAfter.retriesUsed - limiterBefore.retriesUsed,
+        limiterWaitMs: limiterAfter.totalWaitMs - limiterBefore.totalWaitMs,
+        characterReferenceSupplied,
+        requestMode,
+      };
+    };
+
     let response: Response;
     try {
       response = await this.rateLimiter.schedule(logLabel, () =>
@@ -303,6 +372,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
           maxRetries: this.maxRetries,
           retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
           onAttempt: (attempt, maxAttempts) => {
+            attempts++;
             this.logger.log(
               `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
             );
@@ -322,16 +392,26 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       this.logger.error(
         `${logLabel} failed: provider=openai model=${this.model} reason=${message}`,
       );
-      throw new ImageGenerationProviderError(`OpenAI image request failed: ${message}`, err);
+      throw new OpenAIImageRequestError(
+        `OpenAI image request failed: ${message}`,
+        buildDetails(),
+        err,
+      );
     }
 
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
+      const parsed = parseOpenAIErrorBody(bodyText);
       this.logger.error(
-        `${logLabel} failed: provider=openai model=${this.model} status=${response.status}`,
+        `${logLabel} failed: provider=openai model=${this.model} status=${response.status}${parsed.type ? ` type=${parsed.type}` : ''}${parsed.code ? ` code=${parsed.code}` : ''}`,
       );
-      throw new ImageGenerationProviderError(
-        `OpenAI image request failed with status ${response.status}: ${bodyText.slice(0, 500)}`,
+      throw new OpenAIImageRequestError(
+        `OpenAI image request failed with status ${response.status}${parsed.message ? `: ${parsed.message}` : ''}`,
+        buildDetails({
+          httpStatus: response.status,
+          ...(parsed.type && { errorType: parsed.type }),
+          ...(parsed.code && { errorCode: parsed.code }),
+        }),
       );
     }
 
@@ -339,12 +419,19 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     try {
       payload = await response.json();
     } catch (err) {
-      throw new ImageGenerationProviderError('OpenAI image response was not valid JSON', err);
+      throw new OpenAIImageRequestError(
+        'OpenAI image response was not valid JSON',
+        buildDetails({ httpStatus: response.status }),
+        err,
+      );
     }
 
     const b64 = (payload as { data?: Array<{ b64_json?: unknown }> })?.data?.[0]?.b64_json;
     if (typeof b64 !== 'string' || !b64) {
-      throw new ImageGenerationProviderError('OpenAI image response did not include b64_json data');
+      throw new OpenAIImageRequestError(
+        'OpenAI image response did not include b64_json data',
+        buildDetails({ httpStatus: response.status }),
+      );
     }
 
     this.logger.log(`${logLabel} succeeded: provider=openai model=${this.model}`);

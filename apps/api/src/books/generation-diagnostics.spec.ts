@@ -400,6 +400,35 @@ describe('buildGenerationDiagnostics', () => {
     const diagnostics = buildGenerationDiagnostics(makeBook(), []);
     expect(diagnostics.characterPersonalization).toBeDefined();
   });
+
+  it('defaults imageFailures to an empty array when imageGenerationResult has none', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook({ imageGenerationResult: null }), []);
+    expect(diagnostics.imageFailures).toEqual([]);
+  });
+
+  it('surfaces imageFailures from imageGenerationResult', () => {
+    const failure = {
+      assetLabel: 'back_cover',
+      provider: 'openai',
+      model: 'gpt-image-1',
+      httpStatus: 429,
+      message: 'OpenAI image request failed with status 429',
+      attempts: 3,
+      limiterRetries: 2,
+      limiterWaitMs: 24000,
+      characterReferenceSupplied: true,
+      requestMode: 'character-reference-edit',
+    };
+    const diagnostics = buildGenerationDiagnostics(
+      makeBook({
+        imageGenerationResult: {
+          imageFailures: [failure],
+        } as unknown as Book['imageGenerationResult'],
+      }),
+      [],
+    );
+    expect(diagnostics.imageFailures).toEqual([failure]);
+  });
 });
 
 describe('buildCharacterPersonalizationDiagnostics', () => {
@@ -415,6 +444,26 @@ describe('buildCharacterPersonalizationDiagnostics', () => {
       characterReferenceUsedForImages: false,
       imageGenerationMode: 'text-to-image',
     });
+  });
+
+  it('surfaces characterReferenceLoadError when a character-sheet asset was recorded as existing but could not be loaded', () => {
+    const result = buildCharacterPersonalizationDiagnostics(
+      makeBook({
+        bookPreview: null,
+        imageGenerationResult: {
+          characterReferenceLoadError:
+            'Character sheet asset "b-1/character-sheet" is recorded as existing but its bytes could not be loaded from image storage; continuing with text-only image generation for this run.',
+        } as unknown as Book['imageGenerationResult'],
+      }),
+    );
+
+    expect(result.characterReferenceLoadError).toContain('could not be loaded');
+  });
+
+  it('omits characterReferenceLoadError when no such failure occurred', () => {
+    const result = buildCharacterPersonalizationDiagnostics(makeBook({ bookPreview: null }));
+
+    expect(result.characterReferenceLoadError).toBeUndefined();
   });
 
   it('reflects hasReferencePhoto/characterProfileCreated/characterSheetGenerated from their respective columns', () => {

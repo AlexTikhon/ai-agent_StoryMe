@@ -7,6 +7,7 @@ import type {
   GenerationJobSummary,
   GenerationMetadata,
   GenerationProviderName,
+  ImageGenerationFailureDetail,
   PdfStorageDiagnostics,
   QueueDiagnostics,
   ResumeDiagnostics,
@@ -53,11 +54,13 @@ function characterReferenceUsage(imageGenerationResult: Book['imageGenerationRes
   characterReferenceAvailable: boolean;
   characterReferenceUsedForImages: boolean;
   imageGenerationMode: ImageGenerationModeValue;
+  characterReferenceLoadError?: string;
 } {
   const result = imageGenerationResult as {
     characterReferenceAvailable?: unknown;
     characterReferenceUsedForImages?: unknown;
     imageGenerationMode?: unknown;
+    characterReferenceLoadError?: unknown;
   } | null;
   const mode = result?.imageGenerationMode;
   return {
@@ -65,7 +68,24 @@ function characterReferenceUsage(imageGenerationResult: Book['imageGenerationRes
     characterReferenceUsedForImages: result?.characterReferenceUsedForImages === true,
     imageGenerationMode:
       mode === 'character-reference-edit' || mode === 'mixed' ? mode : 'text-to-image',
+    ...(typeof result?.characterReferenceLoadError === 'string' && {
+      characterReferenceLoadError: result.characterReferenceLoadError,
+    }),
   };
+}
+
+/**
+ * Reads the per-asset image-generation failure diagnostics AgentService
+ * folds onto Book.imageGenerationResult.imageFailures (see
+ * ImageGenerationFailureDetail, agent.service.ts) — empty for books
+ * generated before this feature existed, or whose most recent run had no
+ * failures.
+ */
+function buildImageFailureDiagnostics(
+  imageGenerationResult: Book['imageGenerationResult'],
+): ImageGenerationFailureDetail[] {
+  const failures = (imageGenerationResult as { imageFailures?: unknown } | null)?.imageFailures;
+  return Array.isArray(failures) ? (failures as ImageGenerationFailureDetail[]) : [];
 }
 
 /**
@@ -227,5 +247,6 @@ export function buildGenerationDiagnostics(
     },
     characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
     resume: buildResumeDiagnostics(book.imageGenerationResult),
+    imageFailures: buildImageFailureDiagnostics(book.imageGenerationResult),
   };
 }

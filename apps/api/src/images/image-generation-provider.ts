@@ -29,6 +29,41 @@ export interface ImageGenerationOutput {
   usedReference?: boolean;
 }
 
+/**
+ * Safe, non-secret structured failure details a provider MAY attach to a
+ * thrown Error via a `details` property (see OpenAIImageRequestError in
+ * openai-image-generation-provider.ts) so AgentService can build a truthful
+ * ImageGenerationFailureDetail without depending on any specific provider's
+ * error classes. Never includes the API key, image bytes/base64, or a raw
+ * provider response body.
+ */
+export interface ImageGenerationFailureDetails {
+  httpStatus?: number;
+  errorType?: string;
+  errorCode?: string;
+  attempts?: number;
+  limiterRetries?: number;
+  limiterWaitMs?: number;
+  /** Whether a character-sheet reference was actually attached to the request that failed. */
+  characterReferenceSupplied?: boolean;
+  /** Which endpoint shape the failed request actually used. */
+  requestMode?: 'text-to-image' | 'character-reference-edit';
+}
+
+interface ImageGenerationFailureError extends Error {
+  details: ImageGenerationFailureDetails;
+}
+
+/** Duck-types `err` to check whether it carries a `details` object (see ImageGenerationFailureDetails) instead of importing any specific provider's error class. */
+export function hasImageGenerationFailureDetails(err: unknown): err is ImageGenerationFailureError {
+  return (
+    err instanceof Error &&
+    'details' in err &&
+    typeof (err as { details?: unknown }).details === 'object' &&
+    (err as { details?: unknown }).details !== null
+  );
+}
+
 /** Input for generating a book's character-sheet reference image — not a GeneratedImageEntry, since it's never rendered as its own PDF page. */
 export interface CharacterSheetInput {
   bookId: string;

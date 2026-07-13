@@ -868,7 +868,7 @@ describe('AgentService', () => {
         expect(result.lastImageError).toContain('b-1-cover');
       });
 
-      it('the image_gen AgentLog row itself stays status success with a safe summary error, even though the book ultimately fails at pdf_render', async () => {
+      it('the image_gen AgentLog row is truthfully marked error (not success) with a safe summary error when every attempted image fails', async () => {
         const book = makeBook();
         setupMocks();
         const failingService = makePartiallyFailingImageService(() => true);
@@ -880,7 +880,7 @@ describe('AgentService', () => {
           Record<string, unknown>
         >;
         const imageGenEntry = entries.find((e) => e.step === 'image_gen');
-        expect(imageGenEntry?.status).toBe('success');
+        expect(imageGenEntry?.status).toBe('error');
         expect(imageGenEntry?.error).toEqual(expect.stringContaining('failed to generate'));
 
         const pdfEntry = entries.find((e) => e.step === 'pdf_render');
@@ -1058,10 +1058,10 @@ describe('AgentService', () => {
         expect(result.imageGenerationMode).toBe('character-reference-edit');
       });
 
-      it('falls back to text-only generation and logs a warning when the character-sheet bytes cannot be read back', async () => {
+      it('falls back to text-only generation but produces an explicit characterReferenceLoadError (not a silent warning) when the character-sheet bytes cannot be read back', async () => {
         const book = makeBook();
         setupMocks();
-        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
         const provider = makeReferenceAwareImageProvider();
         mockImageAssetStorage.getImageAsset.mockImplementation(async (key: string) =>
           key === 'b-1/character-sheet' ? undefined : savedAssets.get(key),
@@ -1077,7 +1077,7 @@ describe('AgentService', () => {
 
         await referenceService.startBookGeneration(book);
 
-        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('bytes could not be loaded'));
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('bytes could not be loaded'));
         for (const call of provider.generateImage.mock.calls) {
           const input = call[0] as { characterReference?: unknown };
           expect(input.characterReference).toBeUndefined();
@@ -1087,7 +1087,10 @@ describe('AgentService', () => {
         expect(result.characterReferenceAvailable).toBe(false);
         expect(result.characterReferenceUsedForImages).toBe(false);
         expect(result.imageGenerationMode).toBe('text-to-image');
-        warnSpy.mockRestore();
+        expect(result.characterReferenceLoadError).toEqual(
+          expect.stringContaining('recorded as existing but its bytes could not be loaded'),
+        );
+        errorSpy.mockRestore();
       });
 
       it('preserves existing text-only behavior when no character-sheet key exists (sheet generation failed)', async () => {
@@ -2266,6 +2269,99 @@ describe('AgentService', () => {
       const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
       expect(finalUpdateArg?.data?.status).toBe('failed');
       expect(finalUpdateArg?.data?.failedStep).toBe('pdf_render');
+      warnSpy.mockRestore();
+    });
+
+    // ── Diagnose and fix a failed resumed back_cover generation ────────────
+
+    it('passes the stored character-reference bytes to the resumed back_cover request and reports character-reference-edit mode even though the request failed', async () => {
+      const persisted = await generateFreshBook();
+      savedAssets.delete('b-1/back-cover');
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted);
+      const failingImageProvider: ImageGenerationProvider = {
+        providerName: 'openai',
+        modelName: 'gpt-image-1',
+        generateImage: vi.fn().mockRejectedValue(new Error('back_cover request failed again')),
+        generateCharacterSheet: vi.fn(),
+      };
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        failingImageProvider,
+        makeSpyCharacterProfileProvider(),
+      );
+
+      await resumeService.startBookGeneration(resumedBook);
+
+      expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
+      const call = failingImageProvider.generateImage.mock.calls[0]![0] as {
+        characterReference?: { buffer: Buffer };
+      };
+      expect(call.characterReference).toBeDefined();
+      expect(call.characterReference!.buffer.equals(savedAssets.get('b-1/character-sheet')!)).toBe(
+        true,
+      );
+
+      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
+      const result = finalUpdateArg?.data?.imageGenerationResult as {
+        imageGenerationMode?: string;
+        resume?: { regeneratedImageCount?: number };
+        imageFailures?: Array<Record<string, unknown>>;
+      };
+      expect(result.imageGenerationMode).toBe('character-reference-edit');
+      expect(result.resume?.regeneratedImageCount).toBe(0);
+      warnSpy.mockRestore();
+    });
+
+    it('records a safe per-asset imageFailures diagnostic for the failed resumed back_cover request', async () => {
+      const persisted = await generateFreshBook();
+      savedAssets.delete('b-1/back-cover');
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted);
+      const failingImageProvider: ImageGenerationProvider = {
+        providerName: 'openai',
+        modelName: 'gpt-image-1',
+        generateImage: vi.fn().mockRejectedValue(new Error('back_cover request failed again')),
+        generateCharacterSheet: vi.fn(),
+      };
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        failingImageProvider,
+        makeSpyCharacterProfileProvider(),
+      );
+
+      await resumeService.startBookGeneration(resumedBook);
+
+      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
+      const result = finalUpdateArg?.data?.imageGenerationResult as {
+        imageFailures?: Array<Record<string, unknown>>;
+      };
+      expect(result.imageFailures).toHaveLength(1);
+      const failure = result.imageFailures![0]!;
+      expect(failure.assetLabel).toBe('back_cover');
+      expect(failure.provider).toBe('openai');
+      expect(failure.model).toBe('gpt-image-1');
+      expect(failure.message).toContain('back_cover request failed again');
+      expect(failure.characterReferenceSupplied).toBe(true);
+      expect(failure.requestMode).toBe('character-reference-edit');
+      expect(failure.attempts).toBe(1);
+      expect(failure.limiterRetries).toBe(0);
+      expect(failure.limiterWaitMs).toBe(0);
+      // A plain Error carries no HTTP status/type/code — only an OpenAI
+      // request failure (see openai-image-generation-provider.spec.ts) does.
+      expect(failure.httpStatus).toBeUndefined();
+      expect(failure.errorType).toBeUndefined();
+      expect(failure.errorCode).toBeUndefined();
       warnSpy.mockRestore();
     });
   });

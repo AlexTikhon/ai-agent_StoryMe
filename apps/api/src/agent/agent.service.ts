@@ -10,6 +10,7 @@ import {
   type ImageAssetStorage,
 } from '../images/image-asset-storage';
 import {
+  hasImageGenerationFailureDetails,
   IMAGE_GENERATION_PROVIDER_TOKEN,
   resolveMaxGeneratedImagesPerBook,
   type ImageGenerationProvider,
@@ -24,6 +25,8 @@ import type {
   CharacterCard,
   CharacterProfile,
   GeneratedImageEntry,
+  GenerationProviderName,
+  ImageGenerationFailureDetail,
   ImageGenerationResult,
   ResumeDiagnostics,
 } from '@book/types';
@@ -267,6 +270,11 @@ function imageAssetLabel(entry: GeneratedImageEntry): string {
   return entry.kind === 'page' ? `page_${entry.pageNumber}` : entry.kind;
 }
 
+/** Safe provider label for ImageGenerationFailureDetail — never a secret, never a raw response. */
+function toGenerationProviderName(raw: string | undefined): GenerationProviderName {
+  return raw === 'mock' || raw === 'openai' ? raw : 'unknown';
+}
+
 /**
  * True when `book` already carries a full prior generation result (story
  * plan, character card, book preview, and planned image list) to resume from
@@ -412,24 +420,29 @@ export class AgentService {
    * (never the original uploaded child photo — that only ever reaches the
    * CharacterProfileProvider's vision step, see buildCharacterProfileAndSheet)
    * so every generateImage call this run can share the same in-memory
-   * ImageReference instead of re-reading storage per page. Returns undefined
-   * — logging only a safe warning, never bytes/base64 — when no character
-   * sheet was created this run, or when its bytes can't be read back; either
-   * way the caller falls back to text-only generation instead of failing the
-   * book.
+   * ImageReference instead of re-reading storage per page.
+   *
+   * Returns `{}` (no `reference`, no `loadError`) when no character sheet was
+   * ever created this run — the ordinary, unremarkable case. Returns
+   * `{ loadError }` — logged at `error`, not `warn` — when a character sheet
+   * was recorded as existing (a characterSheetKey is set) but its bytes could
+   * not be read back from storage; this is distinct from "never had a sheet"
+   * and must not be silently indistinguishable from it (see
+   * ImageGenerationResult.characterReferenceLoadError). Either way the caller
+   * still falls back to text-only generation for this run instead of failing
+   * the whole book over a missing consistency aid.
    */
   private async loadCharacterReference(
     bookId: string,
     characterSheetKey: string | undefined,
-  ): Promise<ImageReference | undefined> {
-    if (!characterSheetKey) return undefined;
+  ): Promise<{ reference?: ImageReference; loadError?: string }> {
+    if (!characterSheetKey) return {};
 
     const buffer = await this.imageAssetStorage.getImageAsset(characterSheetKey);
     if (!buffer) {
-      this.logger.warn(
-        `Character sheet key "${characterSheetKey}" for book ${bookId} exists but its bytes could not be loaded; continuing with text-only image generation.`,
-      );
-      return undefined;
+      const loadError = `Character sheet asset "${characterSheetKey}" for book ${bookId} is recorded as existing but its bytes could not be loaded from image storage; continuing with text-only image generation for this run.`;
+      this.logger.error(loadError);
+      return { loadError };
     }
 
     // Character sheets are always saved as 'image/png' by both
@@ -437,7 +450,7 @@ export class AgentService {
     // OpenAIImageGenerationProvider.generateCharacterSheet — ImageAssetStorage
     // itself doesn't track content type on read, so this is a safe, stable
     // assumption rather than a guess.
-    return { buffer, contentType: 'image/png' };
+    return { reference: { buffer, contentType: 'image/png' } };
   }
 
   /**
@@ -474,6 +487,7 @@ export class AgentService {
     failedCount: number;
     lastError?: string;
     usedCharacterReference: boolean;
+    failures: ImageGenerationFailureDetail[];
   }> {
     const isRealProvider = this.imageGenerationProvider.providerName === 'openai';
     const limit = isRealProvider ? resolveMaxGeneratedImagesPerBook() : images.length;
@@ -485,10 +499,17 @@ export class AgentService {
       );
     }
 
+    const providerName = toGenerationProviderName(this.imageGenerationProvider.providerName);
+    const modelName = this.imageGenerationProvider.modelName;
+    const attemptedRequestMode: ImageGenerationFailureDetail['requestMode'] = characterReference
+      ? 'character-reference-edit'
+      : 'text-to-image';
+
     let generatedCount = 0;
     let failedCount = 0;
     let lastError: string | undefined;
     let usedCharacterReference = false;
+    const failures: ImageGenerationFailureDetail[] = [];
 
     await Promise.all(
       imagesToGenerate.map(async (image) => {
@@ -511,6 +532,22 @@ export class AgentService {
           );
           failedCount++;
           lastError = message;
+          const details = hasImageGenerationFailureDetails(err) ? err.details : {};
+          failures.push({
+            assetLabel: imageAssetLabel(image),
+            provider: providerName,
+            ...(modelName && { model: modelName }),
+            ...(details.httpStatus !== undefined && { httpStatus: details.httpStatus }),
+            ...(details.errorType !== undefined && { errorType: details.errorType }),
+            ...(details.errorCode !== undefined && { errorCode: details.errorCode }),
+            message,
+            attempts: details.attempts ?? 1,
+            limiterRetries: details.limiterRetries ?? 0,
+            limiterWaitMs: details.limiterWaitMs ?? 0,
+            characterReferenceSupplied:
+              details.characterReferenceSupplied ?? characterReference !== undefined,
+            requestMode: details.requestMode ?? attemptedRequestMode,
+          });
         }
       }),
     );
@@ -519,6 +556,7 @@ export class AgentService {
       generatedCount,
       failedCount,
       usedCharacterReference,
+      failures,
       ...(lastError !== undefined && { lastError }),
     };
   }
@@ -803,10 +841,8 @@ export class AgentService {
 
     const imageStartedAt = Date.now();
 
-    const characterReference = await this.loadCharacterReference(
-      book.id,
-      charBuildResult.characterSheetKey,
-    );
+    const { reference: characterReference, loadError: characterReferenceLoadError } =
+      await this.loadCharacterReference(book.id, charBuildResult.characterSheetKey);
     const characterReferenceAvailable = characterReference !== undefined;
 
     // Idempotent resume: only call the image provider for entries whose
@@ -835,7 +871,7 @@ export class AgentService {
     const priorCharacterReferenceAvailable =
       imageGenerationResult.characterReferenceAvailable === true;
 
-    const { generatedCount, failedCount, lastError, usedCharacterReference } =
+    const { generatedCount, failedCount, lastError, usedCharacterReference, failures } =
       await this.generateAndSaveImageAssets(
         book.id,
         characterCard,
@@ -851,6 +887,24 @@ export class AgentService {
       `Image generation for book ${book.id}: ${generatedCount} generated, ${reusableImages.length} reused, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.${rateLimitSummary}`,
     );
 
+    // Whether a character-sheet reference was actually supplied to this
+    // run's attempted images — used for imageGenerationMode below only when
+    // nothing succeeded this run. When at least one image did succeed,
+    // `usedCharacterReference` (the provider-confirmed signal) still governs
+    // mode, exactly as before — e.g. MockImageGenerationProvider never
+    // reports usedReference even when a reference was supplied, and that
+    // 'text-to-image' reporting for a provider that doesn't meaningfully
+    // support reference-edits must stay unchanged. But when every attempted
+    // image failed, there is no provider confirmation to rely on at all — in
+    // that case the request that was actually *sent* (edits endpoint with a
+    // reference attached) must still be reported truthfully instead of
+    // silently falling back to 'text-to-image' just because it failed (see
+    // "Diagnose and Fix Failed Resumed Back-Cover Generation").
+    const attemptedWithCharacterReference =
+      imagesNeedingGeneration.length > 0 &&
+      generatedCount === 0 &&
+      characterReference !== undefined;
+
     imageGenerationResult.imageByteProvider = imageProviderName;
     imageGenerationResult.generatedImageCount = reusableImages.length + generatedCount;
     imageGenerationResult.failedImageCount = failedCount;
@@ -860,13 +914,19 @@ export class AgentService {
       usedCharacterReference || priorCharacterReferenceUsedForImages;
     imageGenerationResult.imageGenerationMode =
       imagesNeedingGeneration.length > 0
-        ? usedCharacterReference
+        ? usedCharacterReference || attemptedWithCharacterReference
           ? 'character-reference-edit'
           : 'text-to-image'
         : (priorImageGenerationMode ?? 'text-to-image');
     if (lastError !== undefined) {
       imageGenerationResult.lastImageError = lastError;
     }
+    if (characterReferenceLoadError !== undefined) {
+      imageGenerationResult.characterReferenceLoadError = characterReferenceLoadError;
+    } else {
+      delete imageGenerationResult.characterReferenceLoadError;
+    }
+    imageGenerationResult.imageFailures = failures;
 
     const imageDurationMs = Date.now() - imageStartedAt;
     const layoutStartedAt = Date.now();
@@ -1078,7 +1138,14 @@ export class AgentService {
           bookId: book.id,
           agent: 'LocalPipelineAgent',
           step: AgentStep.image_gen,
-          status: AgentLogStatus.success,
+          // Truthful, not optimistic: a run whose only attempted image(s)
+          // failed must not be recorded as 'success' just because the step
+          // itself didn't throw (see "Diagnose and Fix Failed Resumed
+          // Back-Cover Generation"). AgentLogStatus has no dedicated
+          // 'partial' value, so any failedCount > 0 — whether every attempt
+          // failed or only some — is recorded as 'error', with the safe
+          // summary message below explaining exactly how many succeeded.
+          status: failedCount > 0 ? AgentLogStatus.error : AgentLogStatus.success,
           attempt: 1,
           traceId,
           provider: imageProviderName,

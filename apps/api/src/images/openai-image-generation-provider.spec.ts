@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import {
   OpenAIImageGenerationProvider,
   ImageGenerationProviderError,
+  OpenAIImageRequestError,
   buildImagePrompt,
   buildReferenceImagePrompt,
   buildCharacterSheetPrompt,
@@ -519,6 +520,151 @@ describe('OpenAIImageGenerationProvider', () => {
       const message = err instanceof Error ? err.message : String(err);
       expect(message).not.toContain('sk-super-secret-key');
     }
+  });
+
+  describe('structured failure details (OpenAIImageRequestError)', () => {
+    it('retains the HTTP status, OpenAI error type, and OpenAI error code from a JSON error body', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({}),
+        text: async () =>
+          JSON.stringify({
+            error: {
+              message: 'Your request was rejected by the safety system.',
+              type: 'invalid_request_error',
+              code: 'content_policy_violation',
+            },
+          }),
+      });
+      const provider = new OpenAIImageGenerationProvider({ apiKey: 'sk-test', fetchImpl });
+
+      const err = await provider
+        .generateImage(makeInput())
+        .catch((e) => e as OpenAIImageRequestError);
+
+      expect(err).toBeInstanceOf(OpenAIImageRequestError);
+      expect(err.details.httpStatus).toBe(400);
+      expect(err.details.errorType).toBe('invalid_request_error');
+      expect(err.details.errorCode).toBe('content_policy_violation');
+      expect(err.message).toContain('Your request was rejected by the safety system.');
+    });
+
+    it('never includes the raw response body verbatim when it is not valid JSON', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+        text: async () => 'not-json-and-possibly-unsafe-payload',
+      });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxRetries: 0,
+      });
+
+      const err = await provider
+        .generateImage(makeInput())
+        .catch((e) => e as OpenAIImageRequestError);
+
+      expect(err.details.httpStatus).toBe(500);
+      expect(err.details.errorType).toBeUndefined();
+      expect(err.details.errorCode).toBeUndefined();
+      expect(err.message).not.toContain('not-json-and-possibly-unsafe-payload');
+    });
+
+    it('records the attempt count and limiter retry stats when rate-limit retries are exhausted', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          json: async () => ({}),
+          text: async () => '',
+        });
+        const provider = new OpenAIImageGenerationProvider({
+          apiKey: 'sk-test',
+          fetchImpl,
+          rateLimiter: new OpenAIImageRateLimiter({
+            minIntervalMs: 0,
+            maxRetries: 2,
+            retryBaseMs: 10,
+            retryMaxMs: 10,
+          }),
+        });
+
+        const promise = provider.generateImage(makeInput());
+        const errPromise = promise.catch((e) => e as OpenAIImageRequestError);
+        await vi.advanceTimersByTimeAsync(1000);
+        const err = await errPromise;
+
+        expect(err.details.httpStatus).toBe(429);
+        expect(err.details.attempts).toBe(3); // 1 initial + 2 retries
+        expect(err.details.limiterRetries).toBe(2);
+        expect(err.details.limiterWaitMs).toBeGreaterThan(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reports requestMode=character-reference-edit and characterReferenceSupplied=true when the failed request carried a reference', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+        text: async () => '',
+      });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxRetries: 0,
+      });
+
+      const err = await provider
+        .generateImage(makeInput({ characterReference: makeReference() }))
+        .catch((e) => e as OpenAIImageRequestError);
+
+      expect(err.details.requestMode).toBe('character-reference-edit');
+      expect(err.details.characterReferenceSupplied).toBe(true);
+    });
+
+    it('reports requestMode=text-to-image and characterReferenceSupplied=false when the failed request carried no reference', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+        text: async () => '',
+      });
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-test',
+        fetchImpl,
+        maxRetries: 0,
+      });
+
+      const err = await provider
+        .generateImage(makeInput())
+        .catch((e) => e as OpenAIImageRequestError);
+
+      expect(err.details.requestMode).toBe('text-to-image');
+      expect(err.details.characterReferenceSupplied).toBe(false);
+    });
+
+    it('never leaks the API key via the structured error details or message on a network failure', async () => {
+      const fetchImpl = vi.fn().mockRejectedValue(new Error('network down'));
+      const provider = new OpenAIImageGenerationProvider({
+        apiKey: 'sk-super-secret-key',
+        fetchImpl,
+        maxRetries: 0,
+      });
+
+      const err = await provider
+        .generateImage(makeInput())
+        .catch((e) => e as OpenAIImageRequestError);
+
+      expect(err).toBeInstanceOf(OpenAIImageRequestError);
+      expect(err.details.httpStatus).toBeUndefined();
+      expect(JSON.stringify(err.details)).not.toContain('sk-super-secret-key');
+    });
   });
 
   describe('generateImage with a character reference', () => {

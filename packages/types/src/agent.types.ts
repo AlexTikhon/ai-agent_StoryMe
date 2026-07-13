@@ -231,6 +231,40 @@ export interface ResumeDiagnostics {
   finalBookStatus: BookStatus;
 }
 
+/**
+ * Safe, non-secret per-image failure diagnostic captured whenever an
+ * ImageGenerationProvider.generateImage call fails during a generation run
+ * (see "Diagnose and Fix Failed Resumed Back-Cover Generation"). Persisted
+ * onto Book.imageGenerationResult.imageFailures (no schema migration — same
+ * pattern as ResumeDiagnostics) and surfaced via
+ * GenerationDiagnosticsDto.imageFailures. Never includes the API key, image
+ * bytes/base64, prompt text, or a raw provider response body.
+ */
+export interface ImageGenerationFailureDetail {
+  /** Stable asset label: 'cover' | 'page_<n>' | 'back_cover'. */
+  assetLabel: string;
+  provider: GenerationProviderName;
+  model?: string;
+  /** HTTP status code from the provider response, if the failure was an HTTP-level error. */
+  httpStatus?: number;
+  /** OpenAI error `type` field (e.g. 'invalid_request_error'), if the provider returned one. */
+  errorType?: string;
+  /** OpenAI error `code` field (e.g. 'content_policy_violation'), if the provider returned one. */
+  errorCode?: string;
+  /** Safe, truncated error message — never the raw response body, image bytes, or base64. */
+  message: string;
+  /** Number of HTTP attempts made for this image, including fetchWithRetry's own network/5xx retries. */
+  attempts: number;
+  /** Number of HTTP 429 retries the shared OpenAIImageRateLimiter performed for this image. */
+  limiterRetries: number;
+  /** Total milliseconds this image's request spent waiting on the rate limiter (spacing + 429 backoff). */
+  limiterWaitMs: number;
+  /** Whether a character-sheet reference was supplied to this request. */
+  characterReferenceSupplied: boolean;
+  /** Which endpoint shape this request used. */
+  requestMode: 'text-to-image' | 'character-reference-edit';
+}
+
 /** WebSocket progress event shapes emitted during generation. */
 export type WsProgressEvent =
   | { type: 'book:progress'; step: AgentStep; percentComplete: number }
