@@ -44,7 +44,43 @@ export const envSchema = z
     // apps/api/src/rate-limit/. In-memory, single-process; sane defaults that
     // shouldn't interfere with normal local dev/demo usage.
     AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
+    // Per-route+IP+email budget — tight, since a legitimate user rarely
+    // retries the same credential this many times.
     AUTH_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
+    // Per-route+IP budget — deliberately looser than the per-email budget so
+    // many legitimate users sharing one IP (office network, NAT, campus wifi)
+    // aren't crushed by a single tight threshold, while still capping how
+    // many attempts one IP can make in total regardless of which email it
+    // targets (see AuthRateLimitGuard's own doc comment).
+    AUTH_RATE_LIMIT_IP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(30),
+
+    // Per-user rate limiting on expensive BooksController actions — Redis-backed
+    // (see rate-limit/redis-rate-limiter.service.ts), correct across every
+    // API instance. Generation covers POST /:id/generate and
+    // /:id/retry-generation (both start a paid pipeline run); child-photo
+    // covers the upload endpoint; diagnostics covers the polling endpoint the
+    // web app calls on an interval.
+    GENERATION_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(3_600_000),
+    GENERATION_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
+    CHILD_PHOTO_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(3_600_000),
+    CHILD_PHOTO_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(20),
+    DIAGNOSTICS_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+    DIAGNOSTICS_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(60),
+
+    // Business-rule generation caps (distinct from the raw per-route request
+    // throttle above) — how many actual paid generation runs one user may
+    // have in flight or start in a rolling window. Enforced in
+    // BooksService.assertGenerationAllowed.
+    MAX_CONCURRENT_GENERATIONS_PER_USER: z.coerce.number().int().positive().default(2),
+    GENERATION_USER_WINDOW_MS: z.coerce.number().int().positive().default(86_400_000),
+    MAX_GENERATIONS_PER_USER_PER_WINDOW: z.coerce.number().int().positive().default(20),
+
+    // Global circuit breaker on total generation starts across all users —
+    // a safety valve against a runaway cost incident (bug, abuse, provider
+    // pricing change), not a per-user quota. Generous defaults so it never
+    // interferes with normal traffic; tune down during an incident.
+    GLOBAL_GENERATION_CIRCUIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+    GLOBAL_GENERATION_CIRCUIT_MAX_PER_WINDOW: z.coerce.number().int().positive().default(100),
 
     // Story/image generation provider selection (STORY_GENERATION_PROVIDER /
     // IMAGE_GENERATION_PROVIDER). Kept as loose optional strings (not a

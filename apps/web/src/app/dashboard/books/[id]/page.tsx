@@ -99,15 +99,22 @@ export default function BookDetailPage() {
   };
 
   const handleRegenerate = async () => {
-    const confirmMessage =
-      book?.status === BookStatus.Complete
-        ? 'Regenerate this book? This will replace the current story, images, and PDF.'
-        : 'Retry generation? This will replace the current story, images, and PDF.';
+    // A complete book has no "failed run" to retry — regenerateBook always
+    // builds a fresh input snapshot from the book's current (possibly just
+    // edited) fields. A failed book uses retryGeneration instead, which
+    // resumes the exact input the failed run used, ignoring any edits made
+    // since — see BooksService.retryGeneration/regenerateBook.
+    const isComplete = book?.status === BookStatus.Complete;
+    const confirmMessage = isComplete
+      ? 'Regenerate this book? This will replace the current story, images, and PDF.'
+      : 'Retry generation? This will replace the current story, images, and PDF.';
     if (!window.confirm(confirmMessage)) return;
     setRetrying(true);
     setRetryError(null);
     try {
-      const response = await booksApi.retryGeneration(id);
+      const response = isComplete
+        ? await booksApi.regenerateBook(id)
+        : await booksApi.retryGeneration(id);
       setBook(response.book);
       setJustEdited(false);
     } catch (err) {

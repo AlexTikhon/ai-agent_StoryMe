@@ -73,6 +73,9 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     errorMessage: null,
     retryCount: 0,
     failedStep: null,
+    activeRunId: null,
+    publishedRunId: null,
+    lastGenerationInputHash: null,
     deletedAt: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
@@ -162,6 +165,19 @@ describe('AgentService', () => {
       const result = await service.startBookGeneration(book);
 
       expect(result).toBe(updatedBook);
+    });
+
+    it('stamps Book.lastGenerationInputHash with the inputHash this run executed, at the phase-1 persist', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      await service.startBookGeneration(book, 'the-run-inputhash');
+
+      expect(prisma.book.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ lastGenerationInputHash: 'the-run-inputhash' }),
+        }),
+      );
     });
 
     it('stores a characterCard derived from the book fields', async () => {
@@ -1969,6 +1985,13 @@ describe('AgentService', () => {
 
   // ── Idempotent resume of a partially generated book ───────────────────────
   describe('idempotent resume (retrying a book that already has some generated assets)', () => {
+    // Simulates a real retry's inputHash — copied verbatim from the failed
+    // run being retried (see BooksService.retryGeneration), so it always
+    // equals whatever hash the original successful phase-1 persist recorded
+    // in Book.lastGenerationInputHash. Tests that want to exercise a
+    // *changed* input (regenerate-after-edit) pass a different value.
+    const FIXED_INPUT_HASH = 'stable-test-input-hash';
+
     function makeSpyStoryProvider(): StoryGenerationProvider & {
       generateStory: ReturnType<typeof vi.fn>;
     } {
@@ -2020,7 +2043,7 @@ describe('AgentService', () => {
         makeSpyImageProvider(),
         makeSpyCharacterProfileProvider(),
       );
-      await freshService.startBookGeneration(book);
+      await freshService.startBookGeneration(book, FIXED_INPUT_HASH);
       return prisma.book.update.mock.calls[0]?.[0]?.data as Record<string, unknown>;
     }
 
@@ -2039,6 +2062,7 @@ describe('AgentService', () => {
         imageGenerationResult: persisted.imageGenerationResult as Book['imageGenerationResult'],
         characterProfile: persisted.characterProfile as Book['characterProfile'],
         characterSheetAssetKey: (persisted.characterSheetAssetKey as string | undefined) ?? null,
+        lastGenerationInputHash: (persisted.lastGenerationInputHash as string | undefined) ?? null,
         ...overrides,
       });
     }
@@ -2083,7 +2107,7 @@ describe('AgentService', () => {
         profileProvider,
       );
 
-      const result = await resumeService.startBookGeneration(resumedBook);
+      const result = await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       expect(storyProvider.generateStory).not.toHaveBeenCalled();
       expect(profileProvider.buildProfile).not.toHaveBeenCalled();
@@ -2101,6 +2125,40 @@ describe('AgentService', () => {
       expect(result.status).toBe('complete');
     });
 
+    it('does NOT resume — regenerates the story, character profile, and every image — when the run inputHash does not match Book.lastGenerationInputHash (the book was edited since the persisted result)', async () => {
+      const persisted = await generateFreshBook();
+      // Deliberately leave the back_cover asset (and everything else) present
+      // in storage — the whole point of this test is that a changed input
+      // must ignore that prior content entirely, not just fill a gap in it.
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted);
+      const storyProvider = makeSpyStoryProvider();
+      const profileProvider = makeSpyCharacterProfileProvider();
+      const imageProvider = makeSpyImageProvider();
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        storyProvider,
+        imageProvider,
+        profileProvider,
+      );
+
+      await resumeService.startBookGeneration(resumedBook, 'a-completely-different-input-hash');
+
+      // Story/character profile must be regenerated from scratch — reusing
+      // them here is exactly the stale-content bug this hash gate fixes.
+      expect(storyProvider.generateStory).toHaveBeenCalledOnce();
+      expect(profileProvider.buildProfile).toHaveBeenCalledOnce();
+      expect(imageProvider.generateCharacterSheet).toHaveBeenCalledOnce();
+      // Every planned image is regenerated too (cover + 6 pages + back
+      // cover = 8) — old bytes at the same positional keys (e.g.
+      // "b-1/page-3") were produced for the *old* story and must never be
+      // silently reused for the new one.
+      expect(imageProvider.generateImage).toHaveBeenCalledTimes(8);
+    });
+
     it('folds resumeMode/reusedImageCount/regeneratedImageCount/skipped* diagnostics onto imageGenerationResult.resume', async () => {
       const persisted = await generateFreshBook();
       savedAssets.delete('b-1/back-cover');
@@ -2116,7 +2174,7 @@ describe('AgentService', () => {
         makeSpyCharacterProfileProvider(),
       );
 
-      await resumeService.startBookGeneration(resumedBook);
+      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
       const persistedResult = finalUpdateArg?.data?.imageGenerationResult as {
@@ -2158,7 +2216,7 @@ describe('AgentService', () => {
         makeSpyCharacterProfileProvider(),
       );
 
-      await resumeService.startBookGeneration(resumedBook);
+      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
@@ -2186,7 +2244,7 @@ describe('AgentService', () => {
         makeSpyCharacterProfileProvider(),
       );
 
-      await resumeService.startBookGeneration(resumedBook);
+      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
@@ -2219,7 +2277,7 @@ describe('AgentService', () => {
         profileProvider,
       );
 
-      const result = await resumeService.startBookGeneration(resumedBook);
+      const result = await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       expect(storyProvider.generateStory).not.toHaveBeenCalled();
       expect(profileProvider.buildProfile).not.toHaveBeenCalled();
@@ -2249,7 +2307,7 @@ describe('AgentService', () => {
         makeSpyCharacterProfileProvider(),
       );
 
-      await resumeService.startBookGeneration(resumedBook);
+      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       // The 7 previously valid assets are never re-requested or overwritten.
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
@@ -2296,7 +2354,7 @@ describe('AgentService', () => {
         makeSpyCharacterProfileProvider(),
       );
 
-      await resumeService.startBookGeneration(resumedBook);
+      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
       const call = failingImageProvider.generateImage.mock.calls[0]![0] as {
@@ -2340,7 +2398,7 @@ describe('AgentService', () => {
         makeSpyCharacterProfileProvider(),
       );
 
-      await resumeService.startBookGeneration(resumedBook);
+      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
 
       const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
       const result = finalUpdateArg?.data?.imageGenerationResult as {

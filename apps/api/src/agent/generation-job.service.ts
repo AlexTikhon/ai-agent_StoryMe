@@ -36,6 +36,20 @@ export class GenerationJobService {
     });
   }
 
+  /** Number of jobs currently queued/running for `userId`, across every one of their books — the per-user concurrent-generation cap's source of truth. */
+  countActiveForUser(userId: string): Promise<number> {
+    return this.prisma.generationJob.count({
+      where: { userId, status: { in: [GenerationJobStatus.queued, GenerationJobStatus.running] } },
+    });
+  }
+
+  /** Number of jobs created for `userId` since `since` — the per-user rolling-window generation cap's source of truth. */
+  countCreatedForUserSince(userId: string, since: Date): Promise<number> {
+    return this.prisma.generationJob.count({
+      where: { userId, createdAt: { gte: since } },
+    });
+  }
+
   /**
    * Queued/running jobs last touched before `cutoff` — used by
    * GenerationJobRecoveryService (Phase 3J) to find jobs abandoned by a

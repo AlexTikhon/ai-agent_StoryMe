@@ -172,6 +172,40 @@ describe('booksApi', () => {
     });
   });
 
+  describe('retryGeneration()', () => {
+    it('sends POST /books/:id/retry-generation and returns GenerateBookResponse', async () => {
+      const retried: GenerateBookResponse = {
+        book: { ...MOCK_BOOK, status: BookStatus.CharBuild },
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(retried));
+
+      const result = await booksApi.retryGeneration('book-1');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/retry-generation');
+      expect(init.method).toBe('POST');
+      expect(result).toEqual(retried);
+    });
+  });
+
+  describe('regenerateBook()', () => {
+    it('sends POST /books/:id/regenerate (a distinct endpoint from retry-generation) and returns GenerateBookResponse', async () => {
+      const regenerated: GenerateBookResponse = {
+        book: { ...MOCK_BOOK, status: BookStatus.CharBuild },
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(regenerated));
+
+      const result = await booksApi.regenerateBook('book-1');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/regenerate');
+      expect(init.method).toBe('POST');
+      expect(result).toEqual(regenerated);
+    });
+  });
+
   describe('remove()', () => {
     it('sends DELETE /books/:id and returns undefined on 204', async () => {
       vi.mocked(fetch).mockResolvedValueOnce({ ok: true, status: 204 } as Response);

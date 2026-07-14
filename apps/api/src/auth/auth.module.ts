@@ -10,6 +10,7 @@ import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { AuthService } from './auth.service';
 import { DevAuthGuard } from './dev-auth.guard';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { RequireVerifiedEmailGuard } from './require-verified-email.guard';
 import { TokenService } from './token.service';
 
 @Module({
@@ -31,6 +32,7 @@ import { TokenService } from './token.service';
     JwtAuthGuard,
     AuthModeGuard,
     AuthRateLimitGuard,
+    RequireVerifiedEmailGuard,
   ],
   // Re-export UsersModule alongside the guards: modules that only import
   // AuthModule to use @UseGuards(AuthModeGuard) (e.g. BooksModule) otherwise
@@ -39,6 +41,6 @@ import { TokenService } from './token.service';
   // relative to the *consuming* module's visible providers, not just the
   // guard's own module. (Same boot-blocking bug class fixed in Phase 5C —
   // see docs/deployment-readiness.md.)
-  exports: [DevAuthGuard, JwtAuthGuard, AuthModeGuard, UsersModule],
+  exports: [DevAuthGuard, JwtAuthGuard, AuthModeGuard, RequireVerifiedEmailGuard, UsersModule],
 })
 export class AuthModule {}

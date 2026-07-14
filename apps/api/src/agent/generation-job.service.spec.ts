@@ -94,6 +94,33 @@ describe('GenerationJobService', () => {
     });
   });
 
+  describe('countActiveForUser', () => {
+    it('counts queued or running jobs for the user, across every book', async () => {
+      prisma.generationJob.count.mockResolvedValue(2);
+
+      const result = await service.countActiveForUser('u-1');
+
+      expect(prisma.generationJob.count).toHaveBeenCalledWith({
+        where: { userId: 'u-1', status: { in: ['queued', 'running'] } },
+      });
+      expect(result).toBe(2);
+    });
+  });
+
+  describe('countCreatedForUserSince', () => {
+    it('counts jobs created for the user at or after the given timestamp', async () => {
+      prisma.generationJob.count.mockResolvedValue(5);
+      const since = new Date('2026-01-01T00:00:00.000Z');
+
+      const result = await service.countCreatedForUserSince('u-1', since);
+
+      expect(prisma.generationJob.count).toHaveBeenCalledWith({
+        where: { userId: 'u-1', createdAt: { gte: since } },
+      });
+      expect(result).toBe(5);
+    });
+  });
+
   describe('markFailed', () => {
     it('sets status failed, failedAt, errorMessage, and failedStep', async () => {
       prisma.generationJob.update.mockResolvedValue({ id: 'job-1' });

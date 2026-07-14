@@ -5,7 +5,8 @@ import { QUEUES } from '../queue/queues.config';
 
 export interface GenerationQueueJobData {
   bookId: string;
-  jobId: string;
+  /** GenerationRun.id — also used as the BullMQ jobId, so a re-dispatch of the same run (e.g. a re-swept outbox event) is a no-op rather than a duplicate job. */
+  runId: string;
 }
 
 /**
@@ -29,13 +30,16 @@ export interface QueueDiagnostics {
 }
 
 /**
- * Durable BullMQ-backed replacement for the old in-process GenerationTaskRunner
- * (Phase 3H). One BullMQ job per GenerationJob row (Phase 3I) — `jobId` is
- * used as the BullMQ job id, which is already unique per generation attempt,
- * so no separate de-duplication logic is needed here: GenerationJobService's
- * `findActive` check plus BooksService's atomic status claim are still what
- * prevent two concurrent attempts for the same book (see
- * "Generation jobs (Phase 3I)" in docs/local-generation-pipeline.md).
+ * Durable BullMQ-backed dispatch for the book-generation pipeline. One BullMQ
+ * job per GenerationRun (Phase 2A/2B) — `runId` is used as the BullMQ job id,
+ * which is already unique per generation attempt and lets a re-dispatch of
+ * the same run (e.g. OutboxDispatcherService re-sweeping a `pending` event
+ * after a crash) land as an idempotent no-op instead of a duplicate job. Only
+ * ever called by OutboxDispatcherService now — BooksService creates the
+ * GenerationRun/OutboxEvent transactionally and never calls this directly, so
+ * a crash between "commit the run" and "publish to BullMQ" can never
+ * permanently lose the dispatch (see "Generation runs" in
+ * docs/local-generation-pipeline.md).
  */
 @Injectable()
 export class GenerationQueueService {
@@ -46,8 +50,35 @@ export class GenerationQueueService {
   ) {}
 
   async enqueue(data: GenerationQueueJobData): Promise<void> {
-    this.logger.log(`Enqueuing generation job — bookId=${data.bookId} jobId=${data.jobId}`);
-    await this.queue.add('run-generation', data, { jobId: data.jobId });
+    this.logger.log(`Enqueuing generation run — bookId=${data.bookId} runId=${data.runId}`);
+    await this.queue.add('run-generation', data, { jobId: data.runId });
+  }
+
+  /**
+   * True when BullMQ still considers `runId`'s job pending in some form —
+   * active, waiting, delayed, or failed-with-more-attempts-still-to-come.
+   * False when the job is missing entirely, or failed with every attempt
+   * already exhausted. GenerationRunRecoveryService uses this so a run whose
+   * DB lease looks expired but whose BullMQ job is still legitimately
+   * in-flight is never force-failed based on DB age alone (invariant F in
+   * docs/local-generation-pipeline.md) — a `completed` job is deliberately
+   * NOT treated as "still pending" (false) either: by construction, a run
+   * whose job actually reached BullMQ's `completed` state can only get there
+   * after BooksService.completeRun already finished, at which point the run
+   * itself is no longer `queued`/`running` and would never have been a
+   * recovery candidate in the first place — so `false` here is the safe,
+   * conservative answer in every case recovery can actually observe it.
+   */
+  async isJobStillPending(runId: string): Promise<boolean> {
+    const job = await this.queue.getJob(runId);
+    if (!job) return false;
+    const state = await job.getState();
+    if (state === 'completed') return false;
+    if (state === 'failed') {
+      const maxAttempts = job.opts.attempts ?? 1;
+      return job.attemptsMade < maxAttempts;
+    }
+    return true;
   }
 
   /** Non-secret queue health for GET /:id/generation-diagnostics — see QueueDiagnostics. */

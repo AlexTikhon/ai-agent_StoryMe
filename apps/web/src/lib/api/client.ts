@@ -38,10 +38,17 @@ let refreshInFlight: Promise<string | null> | null = null;
 // guards against. The server tolerates a stray duplicate call via a short
 // reuse grace period (see AuthService.REFRESH_REUSE_GRACE_MS), so this is a
 // best-effort optimization, not a correctness requirement: if the lock or
-// storage event is unavailable/missed, the tab just falls back to its own
+// broadcast is unavailable/missed, the tab just falls back to its own
 // refresh call.
+//
+// The lock marker (REFRESH_LOCK_KEY) carries no secret — just an id and a
+// timestamp — so it's fine in localStorage, which is what makes it visible
+// to other tabs synchronously on read. The refresh *result* carries the
+// actual access token, so it is never written to localStorage/sessionStorage
+// — it is handed to waiting tabs over a BroadcastChannel, which is an
+// in-memory, same-origin pub/sub channel that never touches disk.
 export const REFRESH_LOCK_KEY = 'storyme:refresh-lock';
-export const REFRESH_RESULT_KEY = 'storyme:refresh-result';
+const REFRESH_CHANNEL_NAME = 'storyme:refresh-result';
 const REFRESH_LOCK_TTL_MS = 8000;
 const REFRESH_WAIT_TIMEOUT_MS = 5000;
 
@@ -50,7 +57,7 @@ interface RefreshLock {
   startedAt: number;
 }
 
-interface RefreshResult {
+interface RefreshResultMessage {
   lockId: string;
   token: string | null;
 }
@@ -81,23 +88,33 @@ function removeKey(key: string): void {
   }
 }
 
-/** Waits for the tab holding `lockId` to publish its refresh result, falling back to null (triggering our own refresh) if it never does. */
+/** Undefined during SSR or in browsers without BroadcastChannel — callers must treat that as "no cross-tab coordination available" and fall back to their own refresh. */
+function openRefreshChannel(): BroadcastChannel | undefined {
+  if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') {
+    return undefined;
+  }
+  return new BroadcastChannel(REFRESH_CHANNEL_NAME);
+}
+
+/** Waits for the tab holding `lockId` to broadcast its refresh result, falling back to null (triggering our own refresh) if it never does or BroadcastChannel isn't available. */
 function waitForCrossTabRefresh(lockId: string): Promise<string | null> {
   return new Promise((resolve) => {
+    const channel = openRefreshChannel();
+    if (!channel) {
+      resolve(null);
+      return;
+    }
     let settled = false;
     const finish = (token: string | null) => {
       if (settled) return;
       settled = true;
-      window.removeEventListener('storage', onStorage);
+      channel.close();
       clearTimeout(timer);
       resolve(token);
     };
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== REFRESH_RESULT_KEY || !event.newValue) return;
-      const result = readJSON<RefreshResult>(REFRESH_RESULT_KEY);
-      if (result?.lockId === lockId) finish(result.token);
+    channel.onmessage = (event: MessageEvent<RefreshResultMessage>) => {
+      if (event.data?.lockId === lockId) finish(event.data.token);
     };
-    window.addEventListener('storage', onStorage);
     const timer = setTimeout(() => finish(null), REFRESH_WAIT_TIMEOUT_MS);
   });
 }
@@ -130,7 +147,9 @@ function performOwnRefresh(): Promise<string | null> {
     })
     .then((token) => {
       if (typeof window !== 'undefined') {
-        writeJSON(REFRESH_RESULT_KEY, { lockId, token } satisfies RefreshResult);
+        const channel = openRefreshChannel();
+        channel?.postMessage({ lockId, token } satisfies RefreshResultMessage);
+        channel?.close();
         removeKey(REFRESH_LOCK_KEY);
       }
       return token;

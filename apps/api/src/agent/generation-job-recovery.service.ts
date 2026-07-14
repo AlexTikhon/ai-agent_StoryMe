@@ -1,6 +1,5 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { BookStatus, type GenerationJob } from '@prisma/client';
-import { PrismaService } from '../database/prisma.service';
+import type { GenerationJob } from '@prisma/client';
 import { GenerationJobService } from './generation-job.service';
 
 export const DEFAULT_GENERATION_JOB_STALE_AFTER_MS = 30 * 60 * 1000;
@@ -8,14 +7,6 @@ export const DEFAULT_GENERATION_JOB_STALE_AFTER_MS = 30 * 60 * 1000;
 /** Safe, user-facing message — never a stack trace or provider error detail. */
 export const GENERATION_INTERRUPTED_MESSAGE =
   'Generation was interrupted before completion. Please retry.';
-
-/** Books in these statuses are left untouched by recovery — already done, already failed, or explicitly ended. */
-const TERMINAL_BOOK_STATUSES = new Set<BookStatus>([
-  BookStatus.complete,
-  BookStatus.failed,
-  BookStatus.partial,
-  BookStatus.cancelled,
-]);
 
 export interface RecoverySummary {
   staleJobsFound: number;
@@ -32,14 +23,21 @@ export function readGenerationJobStaleAfterMs(env: NodeJS.ProcessEnv = process.e
 
 /**
  * Runs once on app bootstrap to fail-safe any GenerationJob left `queued`/
- * `running` by a previous process that died or restarted. Since Phase 3K,
- * generation itself is durably queued (BullMQ/Redis), but a job whose worker
- * died mid-run can still outlive BullMQ's own stalled-job detection window,
- * or the whole app (including Redis connectivity) can go down together — so
- * a book could otherwise stay stuck in a non-terminal "generating" status
- * forever. Recovery never resumes or re-runs generation — it only marks the
- * stale job/book `failed` so the user can retry via the existing
- * retry-generation flow (Phase 3G). See "Startup recovery (Phase 3J)" and
+ * `running` by a previous process that died or restarted.
+ *
+ * IMPORTANT (Phase 2): GenerationJob is no longer the authority for
+ * dispatch/concurrency or Book.status — GenerationRun is (see
+ * BooksService.createRunAndSchedule, GenerationRunRecoveryService). This
+ * service now only cleans up the legacy GenerationJob diagnostics mirror
+ * itself and deliberately never touches Book anymore: it used to also mark
+ * Book.status failed based purely on GenerationJob row age, which — now that
+ * a book's real generation state lives in GenerationRun — could have
+ * incorrectly failed a book whose actual (GenerationRun-driven) pipeline was
+ * still legitimately running, since this service's own age heuristic has no
+ * visibility into GenerationRun or BullMQ at all. GenerationRunRecoveryService
+ * is the only thing that may now transition Book.status during recovery, and
+ * it checks BullMQ's own state before doing so (invariant F in
+ * docs/local-generation-pipeline.md). See "Startup recovery (Phase 3J)" and
  * "Durable generation queue (Phase 3K)" in
  * apps/api/docs/local-generation-pipeline.md.
  */
@@ -47,10 +45,7 @@ export function readGenerationJobStaleAfterMs(env: NodeJS.ProcessEnv = process.e
 export class GenerationJobRecoveryService implements OnApplicationBootstrap {
   private readonly logger = new Logger(GenerationJobRecoveryService.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly generationJobService: GenerationJobService,
-  ) {}
+  constructor(private readonly generationJobService: GenerationJobService) {}
 
   /** Never throws — a recovery failure is logged and the app still boots. */
   async onApplicationBootstrap(): Promise<void> {
@@ -90,17 +85,5 @@ export class GenerationJobRecoveryService implements OnApplicationBootstrap {
     await this.generationJobService.markFailed(job.id, {
       errorMessage: GENERATION_INTERRUPTED_MESSAGE,
     });
-
-    const book = await this.prisma.book.findUnique({ where: { id: job.bookId } });
-    if (book && !TERMINAL_BOOK_STATUSES.has(book.status)) {
-      await this.prisma.book.update({
-        where: { id: job.bookId },
-        data: {
-          status: BookStatus.failed,
-          failedStep: null,
-          errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-        },
-      });
-    }
   }
 }

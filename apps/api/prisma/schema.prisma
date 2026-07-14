@@ -153,6 +153,24 @@ enum GenerationJobStatus {
   cancelled
 }
 
+// Phase 2A (production-safety hardening): the GenerationRun aggregate
+// replaces GenerationJob as the source of truth for dispatch/fencing —
+// GenerationJob stays in the schema (unused by new code) until a separate
+// cleanup migration removes it. See docs/local-generation-pipeline.md
+// "Generation runs" once Phase 2B wires this in.
+enum GenerationRunKind {
+  initial
+  retry
+  regenerate
+}
+
+enum GenerationRunStatus {
+  queued
+  running
+  completed
+  failed
+}
+
 // ═══════════════════════════════════════════
 // USER & AUTH
 // ═══════════════════════════════════════════
@@ -362,6 +380,29 @@ model Book {
   retryCount       Int         @default(0) @map("retry_count")
   failedStep       AgentStep?  @map("failed_step")
 
+  // Phase 2A (production-safety hardening) — not yet read/written by any
+  // code path; wired in by Phase 2B. activeRunId is cleared when the run it
+  // points at reaches a terminal state; publishedRunId is updated only on a
+  // run's successful completion, so the last successful output stays
+  // referenced while a later run is in flight or fails (invariant G in
+  // docs/local-generation-pipeline.md). Plain UUID columns, not Prisma
+  // relations, to avoid a 3-way relation-naming tangle with GenerationRun's
+  // own bookId relation below — nothing here depends on FK-level cascade
+  // behavior for correctness (see GenerationRun.retryOfRunId for the same
+  // reasoning).
+  activeRunId      String?     @map("active_run_id") @db.Uuid
+  publishedRunId   String?     @map("published_run_id") @db.Uuid
+
+  // Phase 2D — the GenerationRun.inputHash that produced the story/character/
+  // image JSON currently stored on this row, if any. AgentService.
+  // isResumableBook compares this against the run it's currently executing:
+  // only an exact hash match means the input hasn't changed since these
+  // artifacts were generated, and only then may they be reused. This is what
+  // stops a retry/regenerate from silently reusing stale content after the
+  // book was edited (previously any prior JSON was reused unconditionally —
+  // see AgentService's old isResumableBook doc comment).
+  lastGenerationInputHash String? @map("last_generation_input_hash")
+
   deletedAt        DateTime?   @map("deleted_at")
   createdAt        DateTime    @default(now()) @map("created_at")
   updatedAt        DateTime    @updatedAt @map("updated_at")
@@ -374,6 +415,7 @@ model Book {
   userBookStates   UserBookState[]
   agentLogs        AgentLog[]
   generationJobs   GenerationJob[]
+  generationRuns   GenerationRun[]
 
   @@index([userId])
   @@index([status])
@@ -614,6 +656,85 @@ model GenerationJob {
   @@index([bookId])
   @@index([bookId, status])
   @@map("generation_jobs")
+}
+
+// ═══════════════════════════════════════════
+// GENERATION RUNS (Phase 2A — schema only; wired in by Phase 2B)
+// ═══════════════════════════════════════════
+
+// One generation attempt, replacing GenerationJob as the dispatch/fencing
+// source of truth. Carries its own immutable input snapshot (so a retry
+// resumes the exact input a prior run used, while a regenerate captures the
+// book's *current* fields at creation time — see AgentService's
+// isResumableBook, which this replaces) and a lease/fencingVersion pair so a
+// stale worker can never overwrite a newer run or the published book (see
+// "State-transition table" in docs/local-generation-pipeline.md once Phase
+// 2B lands). A partial unique index (added via raw SQL below, since Prisma
+// has no native conditional-unique syntax) enforces at most one active
+// (queued/running) run per book at the database level — Book.activeRunId
+// alone is an application-level mirror of that invariant, not its enforcement.
+model GenerationRun {
+  id             String              @id @default(uuid()) @db.Uuid
+  bookId         String              @map("book_id") @db.Uuid
+  userId         String              @map("user_id") @db.Uuid
+  kind           GenerationRunKind
+  status         GenerationRunStatus @default(queued)
+  // Immutable copy of the book's generation-relevant fields at run-creation
+  // time (childName, childAge, language, theme, educationalMessage,
+  // pageCount, childPhotoAssetKey, childPhotoContentType).
+  inputSnapshot  Json                @map("input_snapshot")
+  // sha256 of a canonical serialization of inputSnapshot — lets the frontend
+  // (Phase 5) derive "this edit hasn't been generated yet" without a second
+  // round-trip.
+  inputHash      String              @map("input_hash")
+  // Set only when kind = retry — the run being retried, whose inputSnapshot
+  // this run reuses verbatim. Plain UUID, not a Prisma self-relation: see the
+  // note on Book.activeRunId/publishedRunId above for why.
+  retryOfRunId   String?             @map("retry_of_run_id") @db.Uuid
+  currentStep    AgentStep?          @map("current_step")
+  attempt        Int                 @default(1)
+  leaseOwner     String?             @map("lease_owner")
+  leaseExpiresAt DateTime?           @map("lease_expires_at")
+  // Incremented on every guarded claim/heartbeat/recovery-forced-failure —
+  // every mutation this run makes must condition its WHERE clause on the
+  // fencingVersion it last observed, so a stale worker's late write matches
+  // zero rows instead of resurrecting a run recovery already failed.
+  fencingVersion Int                 @default(0) @map("fencing_version")
+  errorCode      String?             @map("error_code")
+  errorMessage   String?             @map("error_message")
+
+  startedAt      DateTime?           @map("started_at")
+  completedAt    DateTime?           @map("completed_at")
+  failedAt       DateTime?           @map("failed_at")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+
+  book           Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+  @@index([userId])
+  @@map("generation_runs")
+}
+
+// Transactional outbox: created in the same DB transaction as the
+// GenerationRun it announces, so a crash between "commit the run" and
+// "publish to BullMQ" can never permanently lose the dispatch — a periodic
+// sweep (Phase 2B's OutboxDispatcherService) publishes every still-`pending`
+// event, using aggregateId as the BullMQ jobId so a re-swept event is an
+// idempotent no-op rather than a duplicate job.
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id") @db.Uuid
+  eventType     String    @map("event_type")
+  payload       Json
+  status        String    @default("pending")
+  attempts      Int       @default(0)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  dispatchedAt  DateTime? @map("dispatched_at")
+
+  @@index([status, createdAt])
+  @@map("outbox_events")
 }
 
 // ═══════════════════════════════════════════

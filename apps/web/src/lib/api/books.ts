@@ -38,8 +38,13 @@ export const booksApi = {
   generate: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/generate`, { method: 'POST' }),
 
+  /** Resumes a failed book using the exact input the failed run used. For a complete book, or to pick up edits made since a failure, use regenerateBook instead. */
   retryGeneration: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/retry-generation`, { method: 'POST' }),
+
+  /** Replaces a failed or complete book's story/images/PDF with a fresh run built from the book's current fields. */
+  regenerateBook: (id: string): Promise<GenerateBookResponse> =>
+    apiFetch(`/books/${id}/regenerate`, { method: 'POST' }),
 
   remove: (id: string): Promise<void> => apiFetch(`/books/${id}`, { method: 'DELETE' }),
 

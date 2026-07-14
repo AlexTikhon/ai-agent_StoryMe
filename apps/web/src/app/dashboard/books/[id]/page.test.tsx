@@ -2111,7 +2111,7 @@ describe('BookDetailPage', () => {
       expect(screen.queryByRole('button', { name: /^retry generation$/i })).toBeNull();
     });
 
-    it('asks for confirmation and calls retry-generation when confirmed', async () => {
+    it('asks for confirmation and calls the regenerate endpoint (not retry-generation) when confirmed', async () => {
       const user = userEvent.setup();
       const completeBook: BookDto = {
         ...MOCK_BOOK,
@@ -2131,10 +2131,15 @@ describe('BookDetailPage', () => {
       expect(window.confirm).toHaveBeenCalled();
       await waitFor(() => {
         const call = fetchMock.fetchFn.mock.calls.find(([input]) =>
-          String(input).includes('/retry-generation'),
+          String(input).includes('/regenerate'),
         );
         expect(call).toBeDefined();
       });
+      // A complete book always builds a fresh input snapshot — it must never
+      // hit retry-generation, which resumes a failed run's frozen input.
+      expect(
+        fetchMock.fetchFn.mock.calls.find(([input]) => String(input).includes('/retry-generation')),
+      ).toBeUndefined();
     });
 
     it('does nothing when the user cancels the regenerate confirmation', async () => {
@@ -2152,7 +2157,7 @@ describe('BookDetailPage', () => {
       await user.click(screen.getByRole('button', { name: /regenerate book/i }));
 
       const call = fetchMock.fetchFn.mock.calls.find(([input]) =>
-        String(input).includes('/retry-generation'),
+        String(input).includes('/regenerate'),
       );
       expect(call).toBeUndefined();
     });

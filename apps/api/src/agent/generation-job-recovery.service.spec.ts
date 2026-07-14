@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { Book, GenerationJob } from '@prisma/client';
+import type { GenerationJob } from '@prisma/client';
 import {
   GenerationJobRecoveryService,
   GENERATION_INTERRUPTED_MESSAGE,
@@ -32,60 +32,6 @@ function makeGenerationJob(overrides: Partial<GenerationJob> = {}): GenerationJo
   };
 }
 
-function makeBook(overrides: Partial<Book> = {}): Book {
-  return {
-    id: 'b-1',
-    userId: 'u-1',
-    childProfileId: null,
-    status: 'char_build' as Book['status'],
-    request: null,
-    title: 'The Adventures of Mia',
-    dedicationText: null,
-    pageCount: null,
-    childName: 'Mia',
-    childAge: 5,
-    language: 'en' as Book['language'],
-    theme: 'friendship',
-    educationalMessage: null,
-    characterCard: null,
-    storyPlan: null,
-    bookPreview: null,
-    imageGenerationResult: null,
-    bookLayout: null,
-    childPhotoAssetKey: null,
-    childPhotoContentType: null,
-    characterProfile: null,
-    characterSheetAssetKey: null,
-    chapters: null,
-    imagePrompts: null,
-    qualityReport: null,
-    pageLayouts: null,
-    coverUrl: null,
-    pdfR2Key: null,
-    pdfUrl: null,
-    printPdfR2Key: null,
-    printPdfUrl: null,
-    previewPdfR2Key: null,
-    previewPdfUrl: null,
-    socialCardUrl: null,
-    isPaid: false,
-    paidAt: null,
-    stripePaymentIntentId: null,
-    isPublic: false,
-    generationTimeMs: null,
-    totalCostUsd: null,
-    aiModelVersions: null,
-    generatedDegraded: false,
-    errorMessage: null,
-    retryCount: 0,
-    failedStep: null,
-    deletedAt: null,
-    createdAt: new Date('2026-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-    ...overrides,
-  };
-}
-
 describe('readGenerationJobStaleAfterMs', () => {
   it('defaults to 30 minutes when unset', () => {
     expect(readGenerationJobStaleAfterMs({})).toBe(DEFAULT_GENERATION_JOB_STALE_AFTER_MS);
@@ -109,6 +55,12 @@ describe('readGenerationJobStaleAfterMs', () => {
   });
 });
 
+/**
+ * This service only cleans up the legacy GenerationJob diagnostics mirror
+ * now — it must never touch Book (see the service's own doc comment for
+ * why: GenerationRunRecoveryService is the sole authority for Book.status
+ * during recovery since Phase 2C, and it checks BullMQ before acting).
+ */
 describe('GenerationJobRecoveryService', () => {
   let prisma: MockPrisma;
   let generationJobService: GenerationJobService;
@@ -118,15 +70,13 @@ describe('GenerationJobRecoveryService', () => {
   beforeEach(() => {
     prisma = createMockPrisma();
     generationJobService = new GenerationJobService(prisma as never);
-    service = new GenerationJobRecoveryService(prisma as never, generationJobService);
+    service = new GenerationJobRecoveryService(generationJobService);
   });
 
   it('marks a stale queued job failed with a safe error message', async () => {
     const job = makeGenerationJob({ status: 'queued' as GenerationJob['status'] });
     prisma.generationJob.findMany.mockResolvedValue([job]);
     prisma.generationJob.update.mockResolvedValue({ ...job, status: 'failed' });
-    prisma.book.findUnique.mockResolvedValue(makeBook({ status: 'char_build' as Book['status'] }));
-    prisma.book.update.mockResolvedValue(makeBook({ status: 'failed' as Book['status'] }));
 
     const summary = await service.recover(DEFAULT_GENERATION_JOB_STALE_AFTER_MS, now);
 
@@ -148,8 +98,6 @@ describe('GenerationJobRecoveryService', () => {
     });
     prisma.generationJob.findMany.mockResolvedValue([job]);
     prisma.generationJob.update.mockResolvedValue({ ...job, status: 'failed' });
-    prisma.book.findUnique.mockResolvedValue(makeBook({ status: 'image_gen' as Book['status'] }));
-    prisma.book.update.mockResolvedValue(makeBook({ status: 'failed' as Book['status'] }));
 
     await service.recover(DEFAULT_GENERATION_JOB_STALE_AFTER_MS, now);
 
@@ -162,51 +110,16 @@ describe('GenerationJobRecoveryService', () => {
     });
   });
 
-  it('marks the related book failed when it is still in a non-terminal generating status', async () => {
+  it('never touches Book — GenerationRunRecoveryService owns that now', async () => {
     const job = makeGenerationJob();
     prisma.generationJob.findMany.mockResolvedValue([job]);
     prisma.generationJob.update.mockResolvedValue({ ...job, status: 'failed' });
-    prisma.book.findUnique.mockResolvedValue(makeBook({ status: 'layout' as Book['status'] }));
-    prisma.book.update.mockResolvedValue(makeBook({ status: 'failed' as Book['status'] }));
-
-    await service.recover(DEFAULT_GENERATION_JOB_STALE_AFTER_MS, now);
-
-    expect(prisma.book.update).toHaveBeenCalledWith({
-      where: { id: job.bookId },
-      data: {
-        status: 'failed',
-        failedStep: null,
-        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-      },
-    });
-  });
-
-  it('does not overwrite a book that already completed', async () => {
-    const job = makeGenerationJob();
-    prisma.generationJob.findMany.mockResolvedValue([job]);
-    prisma.generationJob.update.mockResolvedValue({ ...job, status: 'failed' });
-    prisma.book.findUnique.mockResolvedValue(makeBook({ status: 'complete' as Book['status'] }));
 
     await service.recover(DEFAULT_GENERATION_JOB_STALE_AFTER_MS, now);
 
     expect(prisma.book.update).not.toHaveBeenCalled();
-  });
-
-  it('does not damage a book that already failed', async () => {
-    const job = makeGenerationJob();
-    prisma.generationJob.findMany.mockResolvedValue([job]);
-    prisma.generationJob.update.mockResolvedValue({ ...job, status: 'failed' });
-    prisma.book.findUnique.mockResolvedValue(
-      makeBook({
-        status: 'failed' as Book['status'],
-        failedStep: 'image_gen' as Book['failedStep'],
-        errorMessage: 'Original failure reason',
-      }),
-    );
-
-    await service.recover(DEFAULT_GENERATION_JOB_STALE_AFTER_MS, now);
-
-    expect(prisma.book.update).not.toHaveBeenCalled();
+    expect(prisma.book.updateMany).not.toHaveBeenCalled();
+    expect(prisma.book.findUnique).not.toHaveBeenCalled();
   });
 
   it('does not recover fresh queued/running jobs (delegates cutoff filtering to findStaleActiveJobs)', async () => {
@@ -231,8 +144,6 @@ describe('GenerationJobRecoveryService', () => {
     prisma.generationJob.update
       .mockRejectedValueOnce(new Error('db unavailable'))
       .mockResolvedValueOnce({ ...jobB, status: 'failed' });
-    prisma.book.findUnique.mockResolvedValue(makeBook({ status: 'layout' as Book['status'] }));
-    prisma.book.update.mockResolvedValue(makeBook({ status: 'failed' as Book['status'] }));
 
     const summary = await service.recover(DEFAULT_GENERATION_JOB_STALE_AFTER_MS, now);
 

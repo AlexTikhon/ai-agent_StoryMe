@@ -5,15 +5,23 @@ import {
   apiFetchForm,
   AUTH_EXPIRED_EVENT,
   REFRESH_LOCK_KEY,
-  REFRESH_RESULT_KEY,
 } from './client';
 import { setAccessToken } from '../auth/token-store';
 
-/** Simulates another browser tab publishing to localStorage — real browsers never fire `storage` in the writer's own window, only in other same-origin tabs. */
-function publishFromAnotherTab(key: string, value: unknown): void {
+const REFRESH_CHANNEL_NAME = 'storyme:refresh-result';
+
+/** Simulates another browser tab publishing its refresh lock to localStorage — real browsers never fire `storage` in the writer's own window, only in other same-origin tabs. */
+function publishLockFromAnotherTab(value: unknown): void {
   const newValue = JSON.stringify(value);
-  window.localStorage.setItem(key, newValue);
-  window.dispatchEvent(new StorageEvent('storage', { key, newValue }));
+  window.localStorage.setItem(REFRESH_LOCK_KEY, newValue);
+  window.dispatchEvent(new StorageEvent('storage', { key: REFRESH_LOCK_KEY, newValue }));
+}
+
+/** Simulates another browser tab broadcasting its refresh result — a distinct BroadcastChannel instance on the same channel name, exactly like a separate tab would use. */
+function publishResultFromAnotherTab(message: { lockId: string; token: string | null }): void {
+  const channel = new BroadcastChannel(REFRESH_CHANNEL_NAME);
+  channel.postMessage(message);
+  channel.close();
 }
 
 function mockOk(body: unknown, status = 200): Response {
@@ -131,7 +139,7 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
     describe('cross-tab refresh coordination', () => {
       it("waits for another tab's in-flight refresh instead of firing its own POST /api/auth/refresh", async () => {
         setAccessToken('expired-token');
-        publishFromAnotherTab(REFRESH_LOCK_KEY, { id: 'tab-a-lock', startedAt: Date.now() });
+        publishLockFromAnotherTab({ id: 'tab-a-lock', startedAt: Date.now() });
 
         vi.mocked(fetch)
           .mockResolvedValueOnce(mockUnauthorized()) // original request (this tab)
@@ -139,10 +147,10 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
 
         const resultPromise = apiFetch('/books');
 
-        // Give the microtask queue a turn so refreshOnce() has registered its
-        // storage listener before tab A's result arrives.
+        // Give the microtask queue a turn so refreshOnce() has opened its
+        // BroadcastChannel before tab A's result arrives.
         await Promise.resolve();
-        publishFromAnotherTab(REFRESH_RESULT_KEY, { lockId: 'tab-a-lock', token: 'shared-token' });
+        publishResultFromAnotherTab({ lockId: 'tab-a-lock', token: 'shared-token' });
 
         const result = await resultPromise;
 
@@ -157,7 +165,7 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
 
       it('ignores a stale lock (older than the TTL) and performs its own refresh', async () => {
         setAccessToken('expired-token');
-        publishFromAnotherTab(REFRESH_LOCK_KEY, {
+        publishLockFromAnotherTab({
           id: 'stale-lock',
           startedAt: Date.now() - 60_000,
         });
@@ -179,7 +187,7 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
         vi.useFakeTimers();
         try {
           setAccessToken('expired-token');
-          publishFromAnotherTab(REFRESH_LOCK_KEY, { id: 'tab-a-lock', startedAt: Date.now() });
+          publishLockFromAnotherTab({ id: 'tab-a-lock', startedAt: Date.now() });
 
           vi.mocked(fetch)
             .mockResolvedValueOnce(mockUnauthorized())
@@ -202,20 +210,49 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
         }
       });
 
-      it('publishes its refresh result to localStorage for other tabs and clears the lock', async () => {
+      it('broadcasts its refresh result to other tabs (never localStorage) and clears the lock', async () => {
         setAccessToken('expired-token');
         vi.mocked(fetch)
           .mockResolvedValueOnce(mockUnauthorized())
           .mockResolvedValueOnce(mockOk({ accessToken: 'new-token', user: { id: 'u1' } }))
           .mockResolvedValueOnce(mockOk({ items: [] }));
 
+        const listener = new BroadcastChannel(REFRESH_CHANNEL_NAME);
+        const received = new Promise<{ lockId: string; token: string | null }>((resolve) => {
+          listener.onmessage = (event) => resolve(event.data);
+        });
+
+        await apiFetch('/books');
+        const message = await received;
+        listener.close();
+
+        expect(message.token).toBe('new-token');
+        expect(window.localStorage.getItem(REFRESH_LOCK_KEY)).toBeNull();
+      });
+
+      it('never writes the access token to localStorage or sessionStorage at any point in the refresh flow', async () => {
+        setAccessToken('expired-token');
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(mockUnauthorized())
+          .mockResolvedValueOnce(mockOk({ accessToken: 'super-secret-token', user: { id: 'u1' } }))
+          .mockResolvedValueOnce(mockOk({ items: [] }));
+
+        const localSetItem = vi.spyOn(window.localStorage.__proto__, 'setItem');
+        const sessionSetItem = vi.spyOn(window.sessionStorage.__proto__, 'setItem');
+
         await apiFetch('/books');
 
-        expect(window.localStorage.getItem(REFRESH_LOCK_KEY)).toBeNull();
-        const result = JSON.parse(window.localStorage.getItem(REFRESH_RESULT_KEY) ?? 'null') as {
-          token: string | null;
-        } | null;
-        expect(result?.token).toBe('new-token');
+        for (const call of [...localSetItem.mock.calls, ...sessionSetItem.mock.calls]) {
+          expect(String(call[1])).not.toContain('super-secret-token');
+        }
+        // localStorage itself (not just setItem's arguments) must never contain the token.
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          expect(key ? window.localStorage.getItem(key) : null).not.toContain('super-secret-token');
+        }
+
+        localSetItem.mockRestore();
+        sessionSetItem.mockRestore();
       });
     });
   });

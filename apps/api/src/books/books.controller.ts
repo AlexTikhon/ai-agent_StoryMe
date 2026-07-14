@@ -29,12 +29,15 @@ import type {
 } from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { RequireVerifiedEmailGuard } from '../auth/require-verified-email.guard';
+import { RateLimit } from '../rate-limit/rate-limit.decorator';
+import { UserRateLimitGuard } from '../rate-limit/user-rate-limit.guard';
 import { BooksService } from './books.service';
 import { CreateBookDto } from './dto/create-book.dto';
 import { UpdateBookDto } from './dto/update-book.dto';
 import { isAllowedChildPhotoMimeType, MAX_CHILD_PHOTO_BYTES } from './child-photo.constants';
 
-@UseGuards(AuthModeGuard)
+@UseGuards(AuthModeGuard, UserRateLimitGuard)
 @Controller('books')
 export class BooksController {
   constructor(private readonly booksService: BooksService) {}
@@ -76,6 +79,11 @@ export class BooksController {
    */
   @Post(':id/child-photo')
   @HttpCode(200)
+  @UseGuards(RequireVerifiedEmailGuard)
+  @RateLimit({
+    windowMsEnvKey: 'CHILD_PHOTO_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'CHILD_PHOTO_RATE_LIMIT_MAX_ATTEMPTS',
+  })
   @UseInterceptors(
     FileInterceptor('photo', {
       storage: memoryStorage(),
@@ -110,6 +118,11 @@ export class BooksController {
 
   @Post(':id/generate')
   @HttpCode(200)
+  @UseGuards(RequireVerifiedEmailGuard)
+  @RateLimit({
+    windowMsEnvKey: 'GENERATION_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'GENERATION_RATE_LIMIT_MAX_ATTEMPTS',
+  })
   generate(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
@@ -117,13 +130,34 @@ export class BooksController {
     return this.booksService.startGeneration(user.id, id);
   }
 
+  /** Resumes a failed book using the exact input the failed run used — see BooksService.retryGeneration. Use POST /:id/regenerate for a complete book, or to pick up edits made since a failure. */
   @Post(':id/retry-generation')
   @HttpCode(200)
+  @UseGuards(RequireVerifiedEmailGuard)
+  @RateLimit({
+    windowMsEnvKey: 'GENERATION_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'GENERATION_RATE_LIMIT_MAX_ATTEMPTS',
+  })
   retryGeneration(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<GenerateBookResponse> {
     return this.booksService.retryGeneration(user.id, id);
+  }
+
+  /** Replaces a failed or complete book's story/images/PDF with a fresh run built from the book's current fields — see BooksService.regenerateBook. */
+  @Post(':id/regenerate')
+  @HttpCode(200)
+  @UseGuards(RequireVerifiedEmailGuard)
+  @RateLimit({
+    windowMsEnvKey: 'GENERATION_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'GENERATION_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  regenerate(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<GenerateBookResponse> {
+    return this.booksService.regenerateBook(user.id, id);
   }
 
   @Delete(':id')
@@ -133,6 +167,10 @@ export class BooksController {
   }
 
   @Get(':id/generation-diagnostics')
+  @RateLimit({
+    windowMsEnvKey: 'DIAGNOSTICS_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'DIAGNOSTICS_RATE_LIMIT_MAX_ATTEMPTS',
+  })
   getGenerationDiagnostics(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,

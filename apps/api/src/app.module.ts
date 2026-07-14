@@ -7,6 +7,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { QueueModule } from './queue/queue.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
+import { RedisModule } from './redis/redis.module';
 import { UsersModule } from './users/users.module';
 
 export type AppModuleOptions = BooksModuleOptions;
@@ -29,6 +30,7 @@ export class AppModule {
         // Infrastructure (global)
         DatabaseModule,
         CacheModule,
+        RedisModule,
         RateLimitModule,
 
         // Queue (BullMQ)

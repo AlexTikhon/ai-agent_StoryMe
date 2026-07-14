@@ -277,15 +277,28 @@ function toGenerationProviderName(raw: string | undefined): GenerationProviderNa
 
 /**
  * True when `book` already carries a full prior generation result (story
- * plan, character card, book preview, and planned image list) to resume from
- * — the signature of a retry against a book that previously made it past
- * Phase 1 of a run (see startBookGeneration below), as opposed to a
- * brand-new book whose first generation attempt this is. Gating idempotent
- * resume on this means an ordinary first-time `generate` is byte-identical
- * to before this feature existed.
+ * plan, character card, book preview, and planned image list) produced by
+ * the *exact same input* this run is executing — the signature of a retry
+ * resuming a book that previously made it past Phase 1 of a run with an
+ * unchanged input, as opposed to a brand-new book, or a book whose
+ * childName/theme/etc. were edited since that prior result was produced.
+ *
+ * `book.lastGenerationInputHash` (Phase 2D) records the GenerationRun.
+ * inputHash that produced whatever JSON currently sits on the row — compared
+ * against `inputHash`, the hash of the run currently executing. A `retry`
+ * run's inputHash is copied verbatim from the run it retries, so this is
+ * always true for an unmodified retry-after-failure; a `regenerate` (or
+ * `initial`) run's inputHash is built fresh from the book's *current* fields
+ * at run-creation time, so an edit made before regenerating changes the hash
+ * and correctly forces a full regeneration instead of silently reusing stale
+ * story/images (see BooksService.createRunAndSchedule and
+ * generation-input-snapshot.ts). Gating idempotent resume on this means an
+ * ordinary first-time `generate` is byte-identical to before this feature
+ * existed.
  */
-function isResumableBook(book: Book): boolean {
+function isResumableBook(book: Book, inputHash: string): boolean {
   return (
+    book.lastGenerationInputHash === inputHash &&
     book.storyPlan != null &&
     book.characterCard != null &&
     book.bookPreview != null &&
@@ -663,7 +676,7 @@ export class AgentService {
     }
   }
 
-  async startBookGeneration(book: Book): Promise<Book> {
+  async startBookGeneration(book: Book, inputHash: string): Promise<Book> {
     const traceId = randomUUID();
     const startedAt = Date.now();
     const childName = book.childName ?? 'Alex';
@@ -689,7 +702,7 @@ export class AgentService {
     // story/character-profile generation again. A brand-new book has none of
     // this yet, so `resumable` is false and every branch below falls through
     // to the original from-scratch behavior.
-    const resumable = isResumableBook(book);
+    const resumable = isResumableBook(book, inputHash);
     const priorCharacterProfile = book.characterProfile as unknown as CharacterProfile | null;
     const priorSheetStatus = priorCharacterProfile
       ? await this.classifyCharacterSheetAsset(priorCharacterProfile, book.characterSheetAssetKey)
@@ -853,12 +866,28 @@ export class AgentService {
     // are reused untouched. On a fresh book nothing is saved yet, so every
     // entry naturally lands in `imagesNeedingGeneration` — this is also the
     // ordinary fresh-generation path, not just resume.
+    //
+    // Gated on `resumable`, not called unconditionally: ImageAssetStorage
+    // keys are positional (imageAssetKey(bookId, kind, pageNumber) — e.g.
+    // "<bookId>/page-3"), not content- or run-scoped (that's Phase 3's
+    // run-namespaced artifact storage). When the input changed (!resumable),
+    // any bytes already sitting at those keys were produced for the *old*
+    // story/theme and must never be reused just because a page with the same
+    // number happens to exist in the new plan too — every entry is treated
+    // as needing fresh generation instead.
     const {
       reusable: reusableImages,
       toGenerate: imagesNeedingGeneration,
       missing: missingImagesBefore,
       invalid: invalidImagesBefore,
-    } = await this.classifyImageAssets(book.id, imageGenerationResult.images);
+    } = resumable
+      ? await this.classifyImageAssets(book.id, imageGenerationResult.images)
+      : {
+          reusable: [] as GeneratedImageEntry[],
+          toGenerate: imageGenerationResult.images,
+          missing: imageGenerationResult.images,
+          invalid: [] as GeneratedImageEntry[],
+        };
 
     if (reusableImages.length > 0) {
       this.logger.log(
@@ -947,6 +976,11 @@ export class AgentService {
         bookPreview: bookPreview as unknown as Prisma.InputJsonValue,
         imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
         bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
+        // Records which input produced this JSON — see isResumableBook's doc
+        // comment. Written here (not on the earlier failure path, where
+        // these fields are never set) since this is the only point at which
+        // isResumableBook could ever become true for this hash.
+        lastGenerationInputHash: inputHash,
         ...characterProfileUpdateData,
       },
     });

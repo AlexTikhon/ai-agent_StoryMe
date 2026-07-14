@@ -5,10 +5,15 @@ import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationJobRecoveryService } from '../agent/generation-job-recovery.service';
+import { GenerationRunService } from '../agent/generation-run.service';
+import { GenerationRunRecoveryService } from '../agent/generation-run-recovery.service';
+import { OutboxService } from '../outbox/outbox.service';
+import { OutboxDispatcherService } from '../outbox/outbox-dispatcher.service';
 import { BooksController } from './books.controller';
 import { BooksService } from './books.service';
 import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
 import { IMAGE_ASSET_STORAGE_TOKEN, createImageAssetStorage } from '../images/image-asset-storage';
+import { ChildPhotoProcessor } from '../images/child-photo-processor';
 import { IMAGE_GENERATION_PROVIDER_TOKEN } from '../images/image-generation-provider';
 import { createImageGenerationProvider } from '../images/image-generation-provider.factory';
 import { STORY_GENERATION_PROVIDER_TOKEN } from '../agent/story-generation-provider';
@@ -50,6 +55,20 @@ export class BooksModule {
       GenerationQueueService,
       GenerationJobService,
       GenerationJobRecoveryService,
+      GenerationRunService,
+      // Registered unconditionally, same reasoning as OutboxDispatcherService
+      // below — recovery is safe and useful in every process, and its
+      // Postgres advisory lock already ensures only one live instance runs a
+      // pass at a time.
+      GenerationRunRecoveryService,
+      OutboxService,
+      // Registered unconditionally (not gated on enableGenerationWorker) —
+      // the outbox sweep is safe and useful in every process, API included,
+      // since a runId-keyed BullMQ jobId makes a duplicate sweep of the same
+      // event an idempotent no-op (see OutboxDispatcherService's own doc
+      // comment).
+      OutboxDispatcherService,
+      ChildPhotoProcessor,
     ];
 
     // GenerationQueueProcessor's @Processor decorator opens a real BullMQ

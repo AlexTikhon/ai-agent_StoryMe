@@ -1,10 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import type { RateLimiter, RateLimitResult } from './rate-limiter.interface';
 
-export interface RateLimitResult {
-  allowed: boolean;
-  remaining: number;
-  retryAfterMs: number;
-}
+export type { RateLimitResult } from './rate-limiter.interface';
 
 interface Bucket {
   count: number;
@@ -17,16 +14,15 @@ interface Bucket {
  * IP + route + identifier), this service only owns the counting.
  *
  * Single-process only: state is not shared across instances, so this is
- * only correct for a single-instance deploy — see docs/deployment-readiness.md.
- * A multi-instance deploy needs a shared store (e.g. Redis, which this app
- * already provisions for other purposes, including the durable generation
- * queue — see GenerationQueueService) behind the same consume()/reset() shape.
+ * only correct for a single-instance deploy or unit tests — see
+ * RedisRateLimiter for the production (multi-instance-safe) implementation
+ * actually wired up behind RATE_LIMITER_TOKEN (rate-limit.module.ts).
  */
 @Injectable()
-export class RateLimiterService {
+export class RateLimiterService implements RateLimiter {
   private readonly buckets = new Map<string, Bucket>();
 
-  consume(key: string, windowMs: number, maxAttempts: number): RateLimitResult {
+  async consume(key: string, windowMs: number, maxAttempts: number): Promise<RateLimitResult> {
     const now = Date.now();
     const existing = this.buckets.get(key);
 
