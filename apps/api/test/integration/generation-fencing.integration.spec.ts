@@ -835,4 +835,97 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(winningBytes).toEqual(bytes);
     });
   });
+
+  describe('Legacy migration after a run already produced resumable Book state (retry-after-layout-failure resume)', () => {
+    const backfill = new GenerationInputSnapshotBackfillService(
+      prisma,
+      new LocalImageAssetStorage(),
+    );
+
+    /** The exact pre-Phase-A GenerationRun.input_snapshot JSON shape — see the sibling describe block above. */
+    function legacySnapshotFixture(overrides: Record<string, unknown> = {}) {
+      return {
+        childName: 'Mia',
+        childAge: 5,
+        language: 'en',
+        theme: 'friendship',
+        educationalMessage: null,
+        pageCount: 6,
+        childPhotoAssetKey: null,
+        childPhotoContentType: null,
+        ...overrides,
+      };
+    }
+
+    it('migrates Book.lastGenerationInputHash in lockstep with a terminal legacy run, so a same-input retry can still resume', async () => {
+      // A legacy run reached the layout phase (Book got its resumable
+      // fields, and Book.lastGenerationInputHash was stamped with this run's
+      // then-legacy inputHash) before later failing at a later step.
+      const legacyHash = 'legacy-hash-from-original-run';
+      const book = await createUserAndBook({
+        status: 'failed',
+        lastGenerationInputHash: legacyHash,
+        storyPlan: { pages: ['once upon a time'] },
+        characterCard: { description: 'a brave child' },
+        bookPreview: { coverText: 'Mia the brave' },
+        imageGenerationResult: { images: [] },
+      });
+      const legacyRun = await prisma.generationRun.create({
+        data: {
+          bookId: book.id,
+          userId: book.userId,
+          kind: 'initial',
+          status: GenerationRunStatus.failed,
+          failedAt: new Date(),
+          inputSnapshot: legacySnapshotFixture() as unknown as Prisma.InputJsonValue,
+          inputHash: legacyHash,
+        },
+      });
+
+      // retryGeneration's real first step: normalize() the terminal legacy
+      // run before building the retry's own snapshot/hash.
+      const normalized = await backfill.normalize(legacyRun);
+
+      // What createRunAndSchedule always does for a retry run: recompute the
+      // hash fresh from the (now-migrated) snapshot it was handed.
+      const retryRunInputHash = hashInputSnapshot(normalized.snapshot);
+      expect(retryRunInputHash).toBe(normalized.inputHash);
+
+      const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
+      // The exact condition AgentService.isResumableBook checks — without
+      // the Book-mirror migration this stays the stale legacy hash forever,
+      // never equal to any future retry's freshly-computed hash.
+      expect(reloadedBook.lastGenerationInputHash).toBe(retryRunInputHash);
+      expect(reloadedBook.lastGenerationInputHash).not.toBe(legacyHash);
+      // The resumable fields themselves are untouched by the migration.
+      expect(reloadedBook.storyPlan).toEqual({ pages: ['once upon a time'] });
+      expect(reloadedBook.characterCard).toEqual({ description: 'a brave child' });
+      expect(reloadedBook.bookPreview).toEqual({ coverText: 'Mia the brave' });
+      expect(reloadedBook.imageGenerationResult).toEqual({ images: [] });
+    });
+
+    it('leaves Book.lastGenerationInputHash untouched when it was stamped by a different run than the one being migrated', async () => {
+      const someOtherRunsHash = 'hash-from-a-later-run-that-also-reached-layout';
+      const book = await createUserAndBook({
+        status: 'failed',
+        lastGenerationInputHash: someOtherRunsHash,
+      });
+      const legacyRun = await prisma.generationRun.create({
+        data: {
+          bookId: book.id,
+          userId: book.userId,
+          kind: 'initial',
+          status: GenerationRunStatus.failed,
+          failedAt: new Date(),
+          inputSnapshot: legacySnapshotFixture() as unknown as Prisma.InputJsonValue,
+          inputHash: 'this-runs-own-legacy-hash',
+        },
+      });
+
+      await backfill.normalize(legacyRun);
+
+      const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
+      expect(reloadedBook.lastGenerationInputHash).toBe(someOtherRunsHash);
+    });
+  });
 });

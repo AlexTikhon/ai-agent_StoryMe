@@ -120,6 +120,8 @@ describe('GenerationRunRecoveryService', () => {
       staleFound: 0,
       recovered: 0,
       stillPendingInBullMq: 0,
+      staleFenceLost: 0,
+      mirrorMismatch: 0,
       errors: 0,
       lockSkipped: true,
     });
@@ -244,7 +246,7 @@ describe('GenerationRunRecoveryService', () => {
     );
   });
 
-  it('counts the run as "still pending" (not recovered) when the coordinator reports stale_fence — a live claim already moved it on', async () => {
+  it('counts the run under staleFenceLost (never stillPendingInBullMq or recovered) when the coordinator reports stale_fence — a live claim already moved it on', async () => {
     const run = makeGenerationRun();
     prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
     generationQueueService.isJobStillPending.mockResolvedValue(false);
@@ -252,10 +254,15 @@ describe('GenerationRunRecoveryService', () => {
 
     const summary = await service.recover(now);
 
-    expect(summary).toMatchObject({ recovered: 0, stillPendingInBullMq: 1 });
+    expect(summary).toMatchObject({
+      recovered: 0,
+      stillPendingInBullMq: 0,
+      staleFenceLost: 1,
+      mirrorMismatch: 0,
+    });
   });
 
-  it('counts the run as "still pending" (not recovered) when the coordinator reports a book_mirror_mismatch — logged loudly by the coordinator itself, retried next pass', async () => {
+  it('counts the run under mirrorMismatch — never folded into stillPendingInBullMq or staleFenceLost — when the coordinator reports a book_mirror_mismatch, since BullMQ has already reported the job absent', async () => {
     const run = makeGenerationRun();
     prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
     generationQueueService.isJobStillPending.mockResolvedValue(false);
@@ -263,7 +270,12 @@ describe('GenerationRunRecoveryService', () => {
 
     const summary = await service.recover(now);
 
-    expect(summary).toMatchObject({ recovered: 0, stillPendingInBullMq: 1 });
+    expect(summary).toMatchObject({
+      recovered: 0,
+      stillPendingInBullMq: 0,
+      staleFenceLost: 0,
+      mirrorMismatch: 1,
+    });
   });
 
   it('continues past one run erroring and reports the error count', async () => {

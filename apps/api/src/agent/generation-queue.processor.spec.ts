@@ -5,7 +5,10 @@ import type { GenerationRun } from '@prisma/client';
 import { GenerationQueueProcessor } from './generation-queue.processor';
 import type { BooksService } from '../books/books.service';
 import type { GenerationRunService } from './generation-run.service';
-import type { GenerationRunCoordinator } from './generation-run-coordinator.service';
+import {
+  GenerationRunMirrorInvariantError,
+  type GenerationRunCoordinator,
+} from './generation-run-coordinator.service';
 import type { GenerationInputSnapshotBackfillService } from './generation-input-snapshot-backfill.service';
 import { parseGenerationInputSnapshot } from './generation-input-snapshot';
 import type { GenerationExecutionContext } from './generation-execution-context';
@@ -269,6 +272,25 @@ describe('GenerationQueueProcessor', () => {
       const [, publicMessage] = generationRunCoordinator.failInvalidSnapshot.mock.calls[0]!;
       expect(publicMessage).not.toContain('ZodError');
       expect(publicMessage).not.toContain('not: ');
+    });
+
+    it('throws GenerationRunMirrorInvariantError (so BullMQ retries rather than treating the delivery as completed) when failInvalidSnapshot reports a book_mirror_mismatch', async () => {
+      const booksService = createMockBooksService();
+      const claimed = makeGenerationRun({ inputSnapshot: { not: 'a valid snapshot' } });
+      const generationRunService = createMockGenerationRunService(claimed);
+      const generationRunCoordinator = createMockGenerationRunCoordinator();
+      generationRunCoordinator.failInvalidSnapshot.mockResolvedValue('book_mirror_mismatch');
+      const snapshotBackfill = createMockSnapshotBackfillService();
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+        generationRunCoordinator as never,
+        snapshotBackfill as never,
+      );
+
+      await expect(
+        processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' }), TOKEN),
+      ).rejects.toBeInstanceOf(GenerationRunMirrorInvariantError);
     });
 
     it('logs the stable GENERATION_INPUT_SNAPSHOT_INVALID code when finalizing a malformed snapshot', async () => {

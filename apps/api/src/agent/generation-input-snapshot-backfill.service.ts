@@ -55,20 +55,18 @@ const MAX_MIGRATION_CAS_ATTEMPTS = 5;
  *
  * **Snapshot/hash invariant**: the `inputHash` this method returns is always
  * exactly `hashInputSnapshot(snapshot)` for the `snapshot` returned alongside
- * it — never a stale value read off the run row before migration. Before this
- * was enforced here, a legacy run's `inputHash` column was left exactly as it
- * was pre-migration (computed over the old, differently-shaped JSON) while
- * `inputSnapshot` was rewritten to the current shape — so a later retry,
- * which always recomputes its own new run's inputHash fresh from *its*
- * (already-current) copy of the snapshot (see BooksService.
- * createRunAndSchedule), would compute a hash that could never equal
- * `Book.lastGenerationInputHash` (stamped from the *stale* hash the first,
- * migrated run actually executed under). `AgentService.isResumableBook`
- * gates purely on that equality, so the mismatch didn't corrupt anything —
- * it just silently forced a full, unnecessary regeneration on every retry of
- * a migrated run instead of resuming. Callers must always use the `inputHash`
- * this method returns (never a run's own `.inputHash` field read
- * separately) precisely so migration can never desynchronize the pair again.
+ * it — verified (and repaired in place if it drifted) even for a snapshot
+ * that was already current-shaped, never blindly trusted off the run row.
+ * Callers must always use the `inputHash` this method returns, never a run's
+ * own `.inputHash` field read separately.
+ *
+ * **Book mirror**: whenever this method rewrites a run's own `inputHash`
+ * (legacy migration, or repairing a drift), it also migrates
+ * `Book.lastGenerationInputHash` to the same new value in the same
+ * transaction, but only if it still held the run's exact pre-rewrite hash —
+ * see `migrateBookMirrorHash`'s own doc comment for why a retry of a legacy
+ * run that reached the layout phase before failing depends on this to
+ * resume correctly.
  *
  * A legacy snapshot with no photo is normalized in-memory with no I/O. A
  * legacy snapshot *with* a photo requires reading the existing asset bytes
@@ -123,11 +121,27 @@ export class GenerationInputSnapshotBackfillService {
   async normalize(run: SnapshotBearingRun, attempt = 1): Promise<NormalizedGenerationInput> {
     const current = generationInputSnapshotSchema.safeParse(run.inputSnapshot);
     if (current.success) {
-      // Trusted as-is: createRunAndSchedule always writes inputHash and
-      // inputSnapshot together for a freshly-created run, and this method is
-      // the only other writer of either column (see the CAS write below,
-      // which keeps them paired too) — the invariant holds by construction.
-      return { snapshot: current.data, inputHash: run.inputHash };
+      const expectedHash = hashInputSnapshot(current.data);
+      if (expectedHash !== run.inputHash) {
+        // The stored column has drifted from hashInputSnapshot(inputSnapshot)
+        // — never trust it blindly (that would silently break this method's
+        // contract). Repair it in place, keeping Book.lastGenerationInputHash
+        // in lockstep the same way legacy migration below does, but always
+        // return the deterministically-correct hash regardless of whether
+        // the repair write itself lands (a concurrent writer may have
+        // already fixed or superseded it).
+        this.logger.warn(
+          `GenerationRun ${run.id} (book ${run.bookId}) had inputHash "${run.inputHash}" that did not match hashInputSnapshot(inputSnapshot) ("${expectedHash}") despite an already current-shaped snapshot — repairing the stored hash.`,
+        );
+        await this.prisma.$transaction(async (tx) => {
+          await tx.generationRun.updateMany({
+            where: { id: run.id, inputHash: run.inputHash },
+            data: { inputHash: expectedHash },
+          });
+          await this.migrateBookMirrorHash(tx, run.bookId, run.inputHash, expectedHash);
+        });
+      }
+      return { snapshot: current.data, inputHash: expectedHash };
     }
 
     const legacy = legacyGenerationInputSnapshotSchemaV1.safeParse(run.inputSnapshot);
@@ -147,15 +161,27 @@ export class GenerationInputSnapshotBackfillService {
     // Compare-and-swap on the exact pre-migration snapshot value, not a
     // blind `where: { id }` — see this class's "Concurrency" doc comment. A
     // second concurrent migrator's write here matches zero rows and must not
-    // be treated as success.
-    const persisted = await this.prisma.generationRun.updateMany({
-      where: { id: run.id, inputSnapshot: { equals: run.inputSnapshot as Prisma.InputJsonValue } },
-      data: {
-        inputSnapshot: migrated as unknown as Prisma.InputJsonValue,
-        inputHash,
-      },
+    // be treated as success. Paired, in the same transaction, with migrating
+    // Book.lastGenerationInputHash if it was stamped from this exact run's
+    // pre-migration hash — see migrateBookMirrorHash's doc comment for why
+    // that pairing must be atomic with the run write, not a follow-up step.
+    const persistedCount = await this.prisma.$transaction(async (tx) => {
+      const runUpdate = await tx.generationRun.updateMany({
+        where: {
+          id: run.id,
+          inputSnapshot: { equals: run.inputSnapshot as Prisma.InputJsonValue },
+        },
+        data: {
+          inputSnapshot: migrated as unknown as Prisma.InputJsonValue,
+          inputHash,
+        },
+      });
+      if (runUpdate.count > 0) {
+        await this.migrateBookMirrorHash(tx, run.bookId, run.inputHash, inputHash);
+      }
+      return runUpdate.count;
     });
-    if (persisted.count === 0) {
+    if (persistedCount === 0) {
       const fresh = await this.prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
       return this.normalize(fresh, attempt + 1);
     }
@@ -164,6 +190,36 @@ export class GenerationInputSnapshotBackfillService {
       `Migrated legacy (pre-Phase-A) input_snapshot for run ${run.id} (book ${run.bookId}) to snapshotVersion ${CURRENT_SNAPSHOT_VERSION}.`,
     );
     return { snapshot: migrated, inputHash };
+  }
+
+  /**
+   * Book.lastGenerationInputHash records whichever GenerationRun.inputHash
+   * produced the story/character/preview JSON currently resident on the Book
+   * row (see AgentService.isResumableBook). Whenever this class rewrites a
+   * run's own inputHash out from under it — legacy migration, or repairing a
+   * drifted hash above — that Book mirror must move to the same new hash in
+   * the same transaction, but only if it still holds the exact pre-rewrite
+   * value: a legacy run that failed *after* reaching the layout phase leaves
+   * its (then-legacy) hash stamped on Book.lastGenerationInputHash, and a
+   * later retryGeneration always recomputes its new run's hash fresh from
+   * the migrated (current-shaped) snapshot — so without this, that fresh
+   * hash could never equal the still-legacy Book value and
+   * AgentService.isResumableBook would stay permanently false, silently
+   * forcing a full regeneration on every retry. CAS-guarded on `fromHash` so
+   * a Book whose mirror reflects a different run (never stamped by this one,
+   * or already advanced by someone else) is left untouched.
+   */
+  private async migrateBookMirrorHash(
+    tx: Prisma.TransactionClient,
+    bookId: string,
+    fromHash: string,
+    toHash: string,
+  ): Promise<void> {
+    if (fromHash === toHash) return;
+    await tx.book.updateMany({
+      where: { id: bookId, lastGenerationInputHash: fromHash },
+      data: { lastGenerationInputHash: toHash },
+    });
   }
 
   private async migrateLegacy(

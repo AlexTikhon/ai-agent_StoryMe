@@ -25,6 +25,10 @@ export interface RunRecoverySummary {
   staleFound: number;
   recovered: number;
   stillPendingInBullMq: number;
+  /** Coordinator returned 'stale_fence' — a live claim or another recovery pass already moved this run on between this pass's SELECT and its write. A benign lost race, not an error. */
+  staleFenceLost: number;
+  /** Coordinator returned 'book_mirror_mismatch' — the run/Book mirror invariant is broken. Never a benign race: logged at `error` severity and left for operator attention / a later pass, distinct from both a genuine BullMQ-pending job and a lost fencing race. */
+  mirrorMismatch: number;
   errors: number;
   lockSkipped: boolean;
 }
@@ -118,8 +122,14 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
       if (summary.lockSkipped) return;
       this.logger.log(
         `Generation run recovery: found ${summary.staleFound} stale candidate(s), ` +
-          `recovered ${summary.recovered}, ${summary.stillPendingInBullMq} still pending in BullMQ (left alone), ${summary.errors} error(s)`,
+          `recovered ${summary.recovered}, ${summary.stillPendingInBullMq} still pending in BullMQ (left alone), ` +
+          `${summary.staleFenceLost} lost a fencing race (left alone), ${summary.mirrorMismatch} mirror mismatch(es) (needs attention), ${summary.errors} error(s)`,
       );
+      if (summary.mirrorMismatch > 0) {
+        this.logger.error(
+          `Generation run recovery found ${summary.mirrorMismatch} run(s) with a broken run/Book mirror invariant this pass — see the coordinator's own error logs for the specific run/book ids.`,
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Generation run recovery failed to run: ${message}`);
@@ -187,7 +197,15 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
   async recover(now: Date = new Date()): Promise<RunRecoverySummary> {
     const generation = await this.acquireLease(readRecoveryLeaseMs());
     if (generation === null) {
-      return { staleFound: 0, recovered: 0, stillPendingInBullMq: 0, errors: 0, lockSkipped: true };
+      return {
+        staleFound: 0,
+        recovered: 0,
+        stillPendingInBullMq: 0,
+        staleFenceLost: 0,
+        mirrorMismatch: 0,
+        errors: 0,
+        lockSkipped: true,
+      };
     }
 
     try {
@@ -204,6 +222,8 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
 
       let recovered = 0;
       let stillPendingInBullMq = 0;
+      let staleFenceLost = 0;
+      let mirrorMismatch = 0;
       let errors = 0;
       let processed = 0;
       for (const run of candidates) {
@@ -220,8 +240,20 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
         processed += 1;
         try {
           const outcome = await this.recoverOne(run);
-          if (outcome === 'recovered') recovered += 1;
-          else stillPendingInBullMq += 1;
+          switch (outcome) {
+            case 'recovered':
+              recovered += 1;
+              break;
+            case 'still_pending_bullmq':
+              stillPendingInBullMq += 1;
+              break;
+            case 'stale_fence':
+              staleFenceLost += 1;
+              break;
+            case 'mirror_mismatch':
+              mirrorMismatch += 1;
+              break;
+          }
         } catch (err) {
           errors += 1;
           const message = err instanceof Error ? err.message : String(err);
@@ -233,6 +265,8 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
         staleFound: candidates.length,
         recovered,
         stillPendingInBullMq,
+        staleFenceLost,
+        mirrorMismatch,
         errors,
         lockSkipped: false,
       };
@@ -241,22 +275,21 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
     }
   }
 
-  private async recoverOne(run: GenerationRun): Promise<'recovered' | 'still-pending'> {
+  private async recoverOne(
+    run: GenerationRun,
+  ): Promise<'recovered' | 'still_pending_bullmq' | 'stale_fence' | 'mirror_mismatch'> {
     const stillPending = await this.generationQueueService.isJobStillPending(run.id);
     if (stillPending) {
       this.logger.log(
         `Run ${run.id} (book ${run.bookId}) looks stale by DB lease/age but BullMQ still has its job pending — leaving it alone this pass.`,
       );
-      return 'still-pending';
+      return 'still_pending_bullmq';
     }
 
     // `fromStatus: run.status` (not a hardcoded `running`) because a
     // candidate here can be a never-claimed `queued` run stuck in dispatch,
     // not just a claimed-then-abandoned `running` one — see this class's own
-    // doc comment. A 'stale_fence' result means something else (a live
-    // claim, a normal completion) already moved this run on between our
-    // SELECT and the coordinator's write — not an error, just a lost race,
-    // and Book is provably left untouched by that same transaction.
+    // doc comment.
     const result = await this.generationRunCoordinator.failAbandoned(
       {
         runId: run.id,
@@ -272,6 +305,22 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
       { errorCode: ABANDONED_ERROR_CODE, errorMessage: GENERATION_INTERRUPTED_MESSAGE },
     );
 
-    return result === 'applied' ? 'recovered' : 'still-pending';
+    if (result === 'applied') return 'recovered';
+    if (result === 'stale_fence') {
+      // Something else (a live claim, a normal completion) already moved
+      // this run on between our SELECT and the coordinator's write — a
+      // benign lost race, not an error, and Book is provably untouched by
+      // that same rolled-back transaction.
+      return 'stale_fence';
+    }
+
+    // 'book_mirror_mismatch': BullMQ has already reported this job absent
+    // (checked above), so this can never be quietly folded into "still
+    // pending in BullMQ" — it is a genuine invariant failure that leaves the
+    // run stuck until the mirror is repaired. The coordinator already logged
+    // it at `error` severity; surfaced here as its own summary category too
+    // so a dashboard/alert built on RunRecoverySummary can't mistake it for
+    // a benign race or a job still legitimately in flight.
+    return 'mirror_mismatch';
   }
 }

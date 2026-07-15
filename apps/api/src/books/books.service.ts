@@ -35,7 +35,10 @@ import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import { StaleGenerationRunError } from '../agent/generation-execution.service';
-import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
+import {
+  GenerationRunCoordinator,
+  GenerationRunMirrorInvariantError,
+} from '../agent/generation-run-coordinator.service';
 import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
 import type { GenerationOutcome } from '../agent/generation-outcome';
@@ -585,13 +588,14 @@ export class BooksService {
    * GenerationQueueProcessor.onFailed for what happens once BullMQ's own
    * attempts are exhausted.
    *
-   * completeRun's result gates the legacy GenerationJob update below: if it
-   * didn't come back 'applied' (this attempt was superseded, or the
-   * run/Book mirror invariant broke — see CoordinatorOutcome), this attempt
-   * has no business declaring victory or defeat on a diagnostics row that a
-   * different, still-live attempt for the same book may still be writing to.
-   * Whichever attempt actually gets 'applied' is the one responsible for its
-   * own GenerationJob update.
+   * completeRun's result gates the legacy GenerationJob update below: a
+   * 'stale_fence' means a different, still-live attempt for the same book
+   * owns that diagnostics row now, so this attempt quietly returns.
+   * 'book_mirror_mismatch' is not a race — it means the run/Book mirror
+   * invariant itself is broken — so it is rethrown as
+   * GenerationRunMirrorInvariantError instead, the same way an unexpected
+   * pipeline error above is: so BullMQ never treats this delivery as
+   * completed, and the exhausted-retries backstop eventually reconciles it.
    */
   async runGenerationPipeline(ctx: GenerationExecutionContext): Promise<void> {
     const { bookId, runId } = ctx;
@@ -636,6 +640,9 @@ export class BooksService {
     }
 
     const published = await this.generationRunCoordinator.completeRun(ctx, outcome);
+    if (published === 'book_mirror_mismatch') {
+      throw new GenerationRunMirrorInvariantError(runId, bookId);
+    }
     if (published !== 'applied') return;
 
     if (legacyJob) {
@@ -689,6 +696,14 @@ export class BooksService {
       },
       { errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE', errorMessage: safeMessage },
     );
+    if (result === 'book_mirror_mismatch') {
+      // Rethrown (caught and logged by GenerationQueueProcessor.onFailed's
+      // caller) rather than silently returned — a broken mirror invariant on
+      // an exhausted-retries run must never look like "nothing to do" here;
+      // GenerationRunRecoveryService's sweep is what eventually reconciles
+      // it, since BullMQ has nothing left to redeliver.
+      throw new GenerationRunMirrorInvariantError(run.id, run.bookId);
+    }
     if (result !== 'applied') return;
 
     const legacyJob = await this.generationJobService.findActive(run.bookId).catch(() => null);

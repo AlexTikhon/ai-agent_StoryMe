@@ -46,6 +46,25 @@ export type CoordinatorOutcome = 'applied' | 'stale_fence' | 'book_mirror_mismat
 class BookMirrorMismatchError extends Error {}
 
 /**
+ * Thrown by a caller that received a `'book_mirror_mismatch'`
+ * CoordinatorOutcome and needs that fact to be a genuine, visible failure
+ * rather than a quiet no-op — e.g. so BullMQ retries/fails the delivery
+ * instead of treating it as completed. Every such caller must react
+ * distinctly to this outcome (never fall through the same `!== 'applied'`
+ * branch used for the routine `'stale_fence'` case); this error type exists
+ * so "I saw a mirror mismatch and did something about it" is enforced by the
+ * type checker at each call site, not just left to a comment.
+ */
+export class GenerationRunMirrorInvariantError extends Error {
+  constructor(runId: string, bookId: string) {
+    super(
+      `GenerationRun ${runId} (book ${bookId}) hit a book_mirror_mismatch — the run/Book mirror invariant is broken. This delivery must not be treated as successfully completed.`,
+    );
+    this.name = 'GenerationRunMirrorInvariantError';
+  }
+}
+
+/**
  * The single choke point that publishes a GenerationRun's terminal outcome —
  * extracted out of BooksService (not just kept as a private method there) so
  * this exact production code path, not a hand-copied mirror of it, can be

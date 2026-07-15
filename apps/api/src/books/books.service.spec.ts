@@ -9,7 +9,10 @@ import type { GenerationJobService } from '../agent/generation-job.service';
 import type { GenerationRunService } from '../agent/generation-run.service';
 import { StaleGenerationRunError } from '../agent/generation-execution.service';
 import { InvalidGenerationInputSnapshotError } from '../agent/generation-input-snapshot';
-import type { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
+import {
+  GenerationRunMirrorInvariantError,
+  type GenerationRunCoordinator,
+} from '../agent/generation-run-coordinator.service';
 import type { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
 import type { GenerationOutcome } from '../agent/generation-outcome';
@@ -1562,7 +1565,7 @@ describe('BooksService', () => {
       expect(generationJobService.markFailed).not.toHaveBeenCalled();
     });
 
-    it('does NOT mark the legacy GenerationJob completed/failed when completeRun reports a book_mirror_mismatch — publication did not actually apply', async () => {
+    it('throws GenerationRunMirrorInvariantError (never a silent success) when completeRun reports a book_mirror_mismatch, and does NOT mark the legacy GenerationJob completed/failed', async () => {
       const ctx = makeCtx();
       agentService.startBookGeneration.mockResolvedValue(
         makeOutcome({ status: STATUS_FAILED as GenerationOutcome['status'] }),
@@ -1570,7 +1573,9 @@ describe('BooksService', () => {
       generationJobService.findActive.mockResolvedValue(makeGenerationJob());
       generationRunCoordinator.completeRun.mockResolvedValue('book_mirror_mismatch');
 
-      await service.runGenerationPipeline(ctx);
+      await expect(service.runGenerationPipeline(ctx)).rejects.toBeInstanceOf(
+        GenerationRunMirrorInvariantError,
+      );
 
       expect(generationJobService.markCompleted).not.toHaveBeenCalled();
       expect(generationJobService.markFailed).not.toHaveBeenCalled();
@@ -1626,6 +1631,24 @@ describe('BooksService', () => {
       generationJobService.findActive.mockResolvedValue(makeGenerationJob());
 
       await service.markRunPermanentlyFailedAfterExhaustedRetries('run-1');
+
+      expect(generationJobService.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('throws GenerationRunMirrorInvariantError (never a silent no-op) when the coordinator reports a book_mirror_mismatch', async () => {
+      const run = makeGenerationRun({
+        id: 'run-1',
+        bookId: 'b-1',
+        fencingVersion: 2,
+        status: 'running' as GenerationRun['status'],
+      });
+      prisma.generationRun.findUnique.mockResolvedValue(run);
+      generationRunCoordinator.failAbandoned.mockResolvedValue('book_mirror_mismatch');
+      generationJobService.findActive.mockResolvedValue(makeGenerationJob());
+
+      await expect(
+        service.markRunPermanentlyFailedAfterExhaustedRetries('run-1'),
+      ).rejects.toBeInstanceOf(GenerationRunMirrorInvariantError);
 
       expect(generationJobService.markFailed).not.toHaveBeenCalled();
     });

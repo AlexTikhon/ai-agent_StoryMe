@@ -7,7 +7,10 @@ import { BooksService } from '../books/books.service';
 import { GenerationRunService, readGenerationRunLeaseMs } from './generation-run.service';
 import { InvalidGenerationInputSnapshotError } from './generation-input-snapshot';
 import { GenerationInputSnapshotBackfillService } from './generation-input-snapshot-backfill.service';
-import { GenerationRunCoordinator } from './generation-run-coordinator.service';
+import {
+  GenerationRunCoordinator,
+  GenerationRunMirrorInvariantError,
+} from './generation-run-coordinator.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationQueueJobData } from './generation-queue.service';
 
@@ -86,10 +89,17 @@ export class GenerationQueueProcessor extends WorkerHost {
       this.logger.error(
         `Run ${claimed.id} (book ${claimed.bookId}) has a permanently malformed input_snapshot — finalizing as invalid without any BullMQ retry: ${err.message}`,
       );
-      await this.generationRunCoordinator.failInvalidSnapshot(
+      const result = await this.generationRunCoordinator.failInvalidSnapshot(
         { runId: claimed.id, bookId: claimed.bookId, fencingVersion: claimed.fencingVersion },
         INVALID_SNAPSHOT_PUBLIC_MESSAGE,
       );
+      if (result === 'book_mirror_mismatch') {
+        // A broken mirror invariant is not the same permanent, non-retryable
+        // condition the invalid snapshot itself is — thrown so BullMQ treats
+        // this delivery as failed (retry/backoff, then the exhausted-retries
+        // backstop) instead of silently completing it.
+        throw new GenerationRunMirrorInvariantError(claimed.id, claimed.bookId);
+      }
       return;
     }
 
