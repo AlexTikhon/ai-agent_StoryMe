@@ -1,7 +1,13 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  CopyObjectCommand,
+} from '@aws-sdk/client-s3';
 import type { BookLayoutEntry } from '@book/types';
 import type { ImageBufferResolver } from '../pdf/pdf-renderer';
 import { readCloudConfig, type CloudPdfStorageConfig } from '../pdf/pdf-storage';
@@ -39,6 +45,16 @@ export interface ImageAssetStorage {
     contentType: ImageAssetContentType,
   ): Promise<ImageAssetRef>;
   getImageAsset(key: string): Promise<Buffer | undefined>;
+  /**
+   * Server-/filesystem-native copy of an already-saved asset to a new key,
+   * without the API process ever holding the full bytes in memory purely to
+   * relay them. Added in Phase B, Slice B2 for the future copy-forward retry
+   * algorithm (not wired to any caller yet — see claimImageAssetKey's doc
+   * comment); every driver must resolve `undefined` only for a genuinely
+   * missing source and let every other failure (validation, permission,
+   * network, malformed metadata) propagate.
+   */
+  copyImageAsset(sourceKey: string, destinationKey: string): Promise<ImageAssetRef | undefined>;
 }
 
 export const IMAGE_ASSET_STORAGE_TOKEN = 'IMAGE_ASSET_STORAGE';
@@ -99,6 +115,44 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
     }
     return undefined;
   }
+
+  /**
+   * Locates the source by the same fixed-extension probe getImageAsset uses,
+   * then hands the copy to fs.copyFile (an OS-level copy, not a
+   * read-into-memory-then-write) rather than reading the source into a Buffer.
+   */
+  async copyImageAsset(
+    sourceKey: string,
+    destinationKey: string,
+  ): Promise<ImageAssetRef | undefined> {
+    const sourceSegments = validateImageAssetKey(sourceKey);
+    const destinationSegments = validateImageAssetKey(destinationKey);
+
+    const sourceDir = join(TMP_ROOT, 'images', ...sourceSegments.slice(0, -1));
+    const sourceBase = sourceSegments[sourceSegments.length - 1]!;
+    const found = (
+      Object.entries(CONTENT_TYPE_EXTENSIONS) as [ImageAssetContentType, string][]
+    ).find(([, ext]) => existsSync(join(sourceDir, `${sourceBase}.${ext}`)));
+    if (!found) return undefined;
+    const [contentType, ext] = found;
+    const sourcePath = join(sourceDir, `${sourceBase}.${ext}`);
+
+    const destinationDir = join(TMP_ROOT, 'images', ...destinationSegments.slice(0, -1));
+    const destinationPath = join(
+      destinationDir,
+      `${destinationSegments[destinationSegments.length - 1]}.${ext}`,
+    );
+
+    // Same logical key: nothing to copy, and fs.copyFile(path, path) is
+    // unsafe/driver-defined behavior rather than a guaranteed no-op.
+    if (sourcePath === destinationPath) {
+      return { key: destinationKey, path: destinationPath, contentType };
+    }
+
+    await mkdir(destinationDir, { recursive: true });
+    await copyFile(sourcePath, destinationPath);
+    return { key: destinationKey, path: destinationPath, contentType };
+  }
 }
 
 /** True for the S3-shaped "object not found" errors returned by GetObject. */
@@ -131,6 +185,17 @@ async function bodyToBuffer(body: unknown): Promise<Buffer> {
 export function imageObjectKey(key: string, contentType: ImageAssetContentType): string {
   const segments = validateImageAssetKey(key);
   return `images/${segments.join('/')}.${extensionFor(contentType)}`;
+}
+
+/**
+ * S3's CopySource header is "<bucket>/<key>", where the key portion must be
+ * URL-encoded but the "/" segment separators must survive encoding — encoding
+ * the whole string with a single encodeURIComponent would turn every "/" in a
+ * multi-segment key into "%2F" and point CopyObjectCommand at a key that does
+ * not exist. Encode each segment independently instead.
+ */
+function encodeCopySource(bucket: string, key: string): string {
+  return `${bucket}/${key.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 /**
@@ -193,6 +258,65 @@ export class CloudImageAssetStorage implements ImageAssetStorage {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Locates the source with HeadObjectCommand (metadata only, no body) probed
+   * across the same fixed extension set getImageAsset reads, then issues a
+   * server-side CopyObjectCommand — the object's bytes never transit this
+   * process, unlike a GetObject-then-PutObject relay.
+   */
+  async copyImageAsset(
+    sourceKey: string,
+    destinationKey: string,
+  ): Promise<ImageAssetRef | undefined> {
+    const sourceSegments = validateImageAssetKey(sourceKey);
+    validateImageAssetKey(destinationKey);
+
+    let sourceCloudKey: string | undefined;
+    let contentType: ImageAssetContentType | undefined;
+    for (const [candidateType, ext] of Object.entries(CONTENT_TYPE_EXTENSIONS) as [
+      ImageAssetContentType,
+      string,
+    ][]) {
+      const candidateKey = `images/${sourceSegments.join('/')}.${ext}`;
+      let head;
+      try {
+        head = await this.client.send(
+          new HeadObjectCommand({ Bucket: this.bucket, Key: candidateKey }),
+        );
+      } catch (err) {
+        if (isNotFoundError(err)) continue;
+        throw err;
+      }
+      if (head.ContentType !== candidateType) {
+        throw new Error(
+          `Cannot copy image asset "${sourceKey}": object at "${candidateKey}" has ` +
+            `${head.ContentType ? `unexpected content-type metadata "${head.ContentType}"` : 'missing content-type metadata'} ` +
+            `(expected "${candidateType}").`,
+        );
+      }
+      sourceCloudKey = candidateKey;
+      contentType = candidateType;
+      break;
+    }
+    if (!sourceCloudKey || !contentType) return undefined;
+
+    const destinationCloudKey = imageObjectKey(destinationKey, contentType);
+    if (sourceCloudKey !== destinationCloudKey) {
+      // Same-key CopyObjectCommand without MetadataDirective: 'REPLACE' is
+      // rejected by S3 ("copy request is illegal... without changing the
+      // object's metadata") — the identical-key case is handled explicitly
+      // above instead of relying on that error.
+      await this.client.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          CopySource: encodeCopySource(this.bucket, sourceCloudKey),
+          Key: destinationCloudKey,
+        }),
+      );
+    }
+    return { key: destinationKey, path: destinationCloudKey, contentType };
   }
 }
 

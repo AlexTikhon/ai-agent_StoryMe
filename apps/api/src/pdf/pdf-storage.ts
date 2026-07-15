@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import {
   S3Client,
   PutObjectCommand,
@@ -9,10 +9,16 @@ import {
 } from '@aws-sdk/client-s3';
 import {
   claimArtifactBasePath,
-  type GenerationArtifactNamespace,
+  type ClaimArtifactNamespace,
 } from '../agent/generation-artifact-namespace';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
+
+export interface PreviewPdfResult {
+  buffer: Buffer;
+  contentType: 'application/pdf';
+  filename: string;
+}
 
 /**
  * Storage boundary for generated PDF previews. Every driver (local disk today;
@@ -23,13 +29,27 @@ export interface PdfStorage {
   /** Which driver this instance is — surfaced read-only for diagnostics (never a secret/path). */
   readonly driver: 'local' | 's3' | 'r2';
   savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }>;
-  getPreviewPdf(bookId: string): Promise<{
-    buffer: Buffer;
-    contentType: 'application/pdf';
-    filename: string;
-  } | null>;
+  getPreviewPdf(bookId: string): Promise<PreviewPdfResult | null>;
   /** Cheap existence check that avoids reading the file into memory. */
   previewPdfExists(bookId: string): Promise<boolean>;
+  /**
+   * Claim-scoped counterparts to the three legacy methods above (Phase B,
+   * Slice B2 — see claimPreviewPdfKey below). Not yet called by any
+   * production path: BooksService/GenerationRunCoordinator still read/write
+   * only the legacy positional methods. Accepting `ClaimArtifactNamespace`
+   * (never the legacy union) makes "no silent legacy fallback" a compile-time
+   * guarantee for these three methods specifically.
+   */
+  saveClaimPreviewPdf(
+    bookId: string,
+    namespace: ClaimArtifactNamespace,
+    buffer: Buffer,
+  ): Promise<{ url: string; path?: string }>;
+  getClaimPreviewPdf(
+    bookId: string,
+    namespace: ClaimArtifactNamespace,
+  ): Promise<PreviewPdfResult | null>;
+  claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean>;
 }
 
 export const PDF_STORAGE_TOKEN = 'PDF_STORAGE';
@@ -53,31 +73,62 @@ function validateBookId(bookId: string): void {
 export class LocalPdfStorage implements PdfStorage {
   readonly driver = 'local' as const;
 
+  private legacyPath(bookId: string): string {
+    return join(TMP_ROOT, 'books', bookId, 'storybook.pdf');
+  }
+
+  /** claimPreviewPdfKey already validates bookId + namespace before returning a key. */
+  private claimPath(bookId: string, namespace: ClaimArtifactNamespace): string {
+    return join(TMP_ROOT, ...claimPreviewPdfKey(bookId, namespace).split('/'));
+  }
+
+  private async writePdfFile(path: string, buffer: Buffer): Promise<{ path: string }> {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, buffer);
+    return { path };
+  }
+
+  private async readPdfFile(path: string, filename: string): Promise<PreviewPdfResult | null> {
+    if (!existsSync(path)) return null;
+    const buffer = await readFile(path);
+    return { buffer, contentType: 'application/pdf', filename };
+  }
+
   async savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }> {
     validateBookId(bookId);
-    const dir = join(TMP_ROOT, 'books', bookId);
-    await mkdir(dir, { recursive: true });
-    const path = join(dir, 'storybook.pdf');
-    await writeFile(path, buffer);
+    const { path } = await this.writePdfFile(this.legacyPath(bookId), buffer);
     return { url: `/files/books/${bookId}/storybook.pdf`, path };
   }
 
-  async getPreviewPdf(bookId: string): Promise<{
-    buffer: Buffer;
-    contentType: 'application/pdf';
-    filename: string;
-  } | null> {
+  async getPreviewPdf(bookId: string): Promise<PreviewPdfResult | null> {
     validateBookId(bookId);
-    const path = join(TMP_ROOT, 'books', bookId, 'storybook.pdf');
-    if (!existsSync(path)) return null;
-    const buffer = await readFile(path);
-    return { buffer, contentType: 'application/pdf', filename: `storyme-preview-${bookId}.pdf` };
+    return this.readPdfFile(this.legacyPath(bookId), `storyme-preview-${bookId}.pdf`);
   }
 
   async previewPdfExists(bookId: string): Promise<boolean> {
     validateBookId(bookId);
-    const path = join(TMP_ROOT, 'books', bookId, 'storybook.pdf');
-    return existsSync(path);
+    return existsSync(this.legacyPath(bookId));
+  }
+
+  async saveClaimPreviewPdf(
+    bookId: string,
+    namespace: ClaimArtifactNamespace,
+    buffer: Buffer,
+  ): Promise<{ url: string; path?: string }> {
+    const key = claimPreviewPdfKey(bookId, namespace);
+    const { path } = await this.writePdfFile(this.claimPath(bookId, namespace), buffer);
+    return { url: `/files/${key}`, path };
+  }
+
+  async getClaimPreviewPdf(
+    bookId: string,
+    namespace: ClaimArtifactNamespace,
+  ): Promise<PreviewPdfResult | null> {
+    return this.readPdfFile(this.claimPath(bookId, namespace), `storyme-preview-${bookId}.pdf`);
+  }
+
+  async claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean> {
+    return existsSync(this.claimPath(bookId, namespace));
   }
 }
 
@@ -103,10 +154,7 @@ export function objectKey(bookId: string): string {
  * fencingVersion), not just runId, so two different deliveries of the same
  * GenerationRun can never write to the same PDF object.
  */
-export function claimPreviewPdfKey(
-  bookId: string,
-  namespace: Extract<GenerationArtifactNamespace, { kind: 'claim' }>,
-): string {
+export function claimPreviewPdfKey(bookId: string, namespace: ClaimArtifactNamespace): string {
   validateBookId(bookId);
   return `${claimArtifactBasePath(bookId, namespace)}/storyme-preview-${bookId}.pdf`;
 }
@@ -156,9 +204,7 @@ export class CloudPdfStorage implements PdfStorage {
     });
   }
 
-  async savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }> {
-    validateBookId(bookId);
-    const key = objectKey(bookId);
+  private async putPdfObject(key: string, buffer: Buffer): Promise<void> {
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
@@ -167,31 +213,22 @@ export class CloudPdfStorage implements PdfStorage {
         ContentType: 'application/pdf',
       }),
     );
-    return { url: key };
   }
 
-  async getPreviewPdf(bookId: string): Promise<{
-    buffer: Buffer;
-    contentType: 'application/pdf';
-    filename: string;
-  } | null> {
-    validateBookId(bookId);
-    const key = objectKey(bookId);
+  private async getPdfObject(key: string, filename: string): Promise<PreviewPdfResult | null> {
     try {
       const result = await this.client.send(
         new GetObjectCommand({ Bucket: this.bucket, Key: key }),
       );
       const buffer = await bodyToBuffer(result.Body);
-      return { buffer, contentType: 'application/pdf', filename: `storyme-preview-${bookId}.pdf` };
+      return { buffer, contentType: 'application/pdf', filename };
     } catch (err) {
       if (isNotFoundError(err)) return null;
       throw err;
     }
   }
 
-  async previewPdfExists(bookId: string): Promise<boolean> {
-    validateBookId(bookId);
-    const key = objectKey(bookId);
+  private async pdfObjectExists(key: string): Promise<boolean> {
     try {
       await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
       return true;
@@ -199,6 +236,45 @@ export class CloudPdfStorage implements PdfStorage {
       if (isNotFoundError(err)) return false;
       throw err;
     }
+  }
+
+  async savePreviewPdf(bookId: string, buffer: Buffer): Promise<{ url: string; path?: string }> {
+    validateBookId(bookId);
+    const key = objectKey(bookId);
+    await this.putPdfObject(key, buffer);
+    return { url: key };
+  }
+
+  async getPreviewPdf(bookId: string): Promise<PreviewPdfResult | null> {
+    validateBookId(bookId);
+    return this.getPdfObject(objectKey(bookId), `storyme-preview-${bookId}.pdf`);
+  }
+
+  async previewPdfExists(bookId: string): Promise<boolean> {
+    validateBookId(bookId);
+    return this.pdfObjectExists(objectKey(bookId));
+  }
+
+  async saveClaimPreviewPdf(
+    bookId: string,
+    namespace: ClaimArtifactNamespace,
+    buffer: Buffer,
+  ): Promise<{ url: string; path?: string }> {
+    const key = claimPreviewPdfKey(bookId, namespace);
+    await this.putPdfObject(key, buffer);
+    return { url: key };
+  }
+
+  async getClaimPreviewPdf(
+    bookId: string,
+    namespace: ClaimArtifactNamespace,
+  ): Promise<PreviewPdfResult | null> {
+    const key = claimPreviewPdfKey(bookId, namespace);
+    return this.getPdfObject(key, `storyme-preview-${bookId}.pdf`);
+  }
+
+  async claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean> {
+    return this.pdfObjectExists(claimPreviewPdfKey(bookId, namespace));
   }
 }
 

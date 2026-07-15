@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import type { BookLayout, BookLayoutEntry } from '@book/types';
 import { renderStorybookPdf } from '../pdf/pdf-renderer';
 
@@ -11,9 +11,16 @@ vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: vi.fn().mockImplementation(() => ({ send: sendMock })),
   PutObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
   GetObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  HeadObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  CopyObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
 }));
 
-import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import {
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  CopyObjectCommand,
+} from '@aws-sdk/client-s3';
 import {
   LocalImageAssetStorage,
   CloudImageAssetStorage,
@@ -135,6 +142,150 @@ describe('LocalImageAssetStorage', () => {
   });
 });
 
+describe('LocalImageAssetStorage.copyImageAsset (Phase B, Slice B2)', () => {
+  afterEach(async () => {
+    if (existsSync(TEST_DIR)) {
+      await rm(TEST_DIR, { recursive: true });
+    }
+  });
+
+  it('copies bytes and content type to a new key, leaving the source untouched', async () => {
+    const storage = new LocalImageAssetStorage();
+    const sourceKey = `${TEST_BOOK_ID}/copy-source`;
+    const destKey = `${TEST_BOOK_ID}/copy-dest`;
+    await storage.saveImageAsset(sourceKey, VALID_PNG, 'image/png');
+
+    const ref = await storage.copyImageAsset(sourceKey, destKey);
+
+    expect(ref).toEqual({
+      key: destKey,
+      path: expect.stringContaining('copy-dest.png'),
+      contentType: 'image/png',
+    });
+    expect((await storage.getImageAsset(destKey))!.equals(VALID_PNG)).toBe(true);
+    expect((await storage.getImageAsset(sourceKey))!.equals(VALID_PNG)).toBe(true);
+  });
+
+  it('preserves a non-PNG content type across the copy', async () => {
+    const storage = new LocalImageAssetStorage();
+    const sourceKey = `${TEST_BOOK_ID}/copy-source-jpeg`;
+    const destKey = `${TEST_BOOK_ID}/copy-dest-jpeg`;
+    const jpegBytes = Buffer.from('fake-jpeg-bytes');
+    await storage.saveImageAsset(sourceKey, jpegBytes, 'image/jpeg');
+
+    const ref = await storage.copyImageAsset(sourceKey, destKey);
+
+    expect(ref!.contentType).toBe('image/jpeg');
+    expect((await storage.getImageAsset(destKey))!.equals(jpegBytes)).toBe(true);
+  });
+
+  it('returns undefined when the source was never saved', async () => {
+    const storage = new LocalImageAssetStorage();
+    const result = await storage.copyImageAsset(
+      `${TEST_BOOK_ID}/never-saved`,
+      `${TEST_BOOK_ID}/copy-dest-missing`,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it('rejects an invalid source key before touching the filesystem', async () => {
+    const storage = new LocalImageAssetStorage();
+    await expect(storage.copyImageAsset('../evil', `${TEST_BOOK_ID}/dest`)).rejects.toThrow(
+      /Invalid image asset key/,
+    );
+  });
+
+  it('rejects an invalid destination key before touching the filesystem, even when the source exists', async () => {
+    const storage = new LocalImageAssetStorage();
+    const sourceKey = `${TEST_BOOK_ID}/copy-source-valid`;
+    await storage.saveImageAsset(sourceKey, VALID_PNG, 'image/png');
+
+    await expect(storage.copyImageAsset(sourceKey, '../evil')).rejects.toThrow(
+      /Invalid image asset key/,
+    );
+  });
+
+  it('handles copying a key to itself explicitly rather than via driver-specific fs.copyFile(path, path) behavior', async () => {
+    const storage = new LocalImageAssetStorage();
+    const key = `${TEST_BOOK_ID}/copy-self`;
+    await storage.saveImageAsset(key, VALID_PNG, 'image/png');
+
+    const ref = await storage.copyImageAsset(key, key);
+
+    expect(ref).toEqual({
+      key,
+      path: expect.stringContaining('copy-self.png'),
+      contentType: 'image/png',
+    });
+    expect((await storage.getImageAsset(key))!.equals(VALID_PNG)).toBe(true);
+  });
+
+  it('overwrites an existing destination idempotently', async () => {
+    const storage = new LocalImageAssetStorage();
+    const sourceKey = `${TEST_BOOK_ID}/copy-source-overwrite`;
+    const destKey = `${TEST_BOOK_ID}/copy-dest-overwrite`;
+    await storage.saveImageAsset(sourceKey, VALID_PNG, 'image/png');
+    await storage.saveImageAsset(destKey, Buffer.from('stale-bytes'), 'image/png');
+
+    await storage.copyImageAsset(sourceKey, destKey);
+
+    expect((await storage.getImageAsset(destKey))!.equals(VALID_PNG)).toBe(true);
+  });
+});
+
+describe('LocalImageAssetStorage.copyImageAsset — claim-scoped destinations (Phase B, Slice B2)', () => {
+  const RUN_ID = '33333333-3333-3333-3333-333333333333';
+  const CLAIM_ROOT = resolve(process.cwd(), 'tmp', 'images', 'books', TEST_BOOK_ID);
+
+  afterEach(async () => {
+    if (existsSync(TEST_DIR)) await rm(TEST_DIR, { recursive: true });
+    if (existsSync(CLAIM_ROOT)) await rm(CLAIM_ROOT, { recursive: true });
+  });
+
+  it('creates nested claim directories that do not already exist', async () => {
+    const storage = new LocalImageAssetStorage();
+    const sourceKey = `${TEST_BOOK_ID}/nested-source`;
+    await storage.saveImageAsset(sourceKey, VALID_PNG, 'image/png');
+
+    const destKey = claimImageAssetKey(
+      TEST_BOOK_ID,
+      { kind: 'claim', runId: RUN_ID, fencingVersion: 1 },
+      'cover',
+    );
+    expect(existsSync(join(CLAIM_ROOT, 'runs'))).toBe(false);
+
+    const ref = await storage.copyImageAsset(sourceKey, destKey);
+
+    expect(ref).toBeDefined();
+    expect(existsSync(ref!.path)).toBe(true);
+    expect((await storage.getImageAsset(destKey))!.equals(VALID_PNG)).toBe(true);
+  });
+
+  it('two claim destinations for the same run with different fencing versions remain distinct', async () => {
+    const storage = new LocalImageAssetStorage();
+    const sourceKey = `${TEST_BOOK_ID}/nested-source-2`;
+    await storage.saveImageAsset(sourceKey, VALID_PNG, 'image/png');
+
+    const destV1 = claimImageAssetKey(
+      TEST_BOOK_ID,
+      { kind: 'claim', runId: RUN_ID, fencingVersion: 1 },
+      'cover',
+    );
+    const destV2 = claimImageAssetKey(
+      TEST_BOOK_ID,
+      { kind: 'claim', runId: RUN_ID, fencingVersion: 2 },
+      'cover',
+    );
+
+    const refV1 = await storage.copyImageAsset(sourceKey, destV1);
+    const refV2 = await storage.copyImageAsset(sourceKey, destV2);
+
+    expect(refV1!.path).not.toBe(refV2!.path);
+    expect((await storage.getImageAsset(destV1))!.equals(VALID_PNG)).toBe(true);
+    expect((await storage.getImageAsset(destV2))!.equals(VALID_PNG)).toBe(true);
+  });
+});
+
 describe('imageAssetKey', () => {
   it('builds a cover key', () => {
     expect(imageAssetKey('book-1', 'cover')).toBe('book-1/cover');
@@ -172,6 +323,8 @@ describe('CloudImageAssetStorage', () => {
     sendMock.mockReset();
     vi.mocked(PutObjectCommand).mockClear();
     vi.mocked(GetObjectCommand).mockClear();
+    vi.mocked(HeadObjectCommand).mockClear();
+    vi.mocked(CopyObjectCommand).mockClear();
   });
 
   it('constructs without making any network calls', () => {
@@ -266,6 +419,171 @@ describe('CloudImageAssetStorage', () => {
     );
     await expect(storage.getImageAsset('../evil')).rejects.toThrow(/Invalid image asset key/);
     expect(sendMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('CloudImageAssetStorage.copyImageAsset (Phase B, Slice B2)', () => {
+  const RUN_ID = '44444444-4444-4444-4444-444444444444';
+
+  beforeEach(() => {
+    sendMock.mockReset();
+    vi.mocked(PutObjectCommand).mockClear();
+    vi.mocked(GetObjectCommand).mockClear();
+    vi.mocked(HeadObjectCommand).mockClear();
+    vi.mocked(CopyObjectCommand).mockClear();
+  });
+
+  it('uses HeadObjectCommand to identify the source, then CopyObjectCommand — never GetObjectCommand', async () => {
+    sendMock
+      .mockResolvedValueOnce({ ContentType: 'image/png' }) // HeadObjectCommand
+      .mockResolvedValueOnce({}); // CopyObjectCommand
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    const result = await storage.copyImageAsset('book-1/cover', 'book-1/cover-copy');
+
+    expect(HeadObjectCommand).toHaveBeenCalledWith({
+      Bucket: 'test-bucket',
+      Key: 'images/book-1/cover.png',
+    });
+    expect(CopyObjectCommand).toHaveBeenCalledWith({
+      Bucket: 'test-bucket',
+      CopySource: 'test-bucket/images/book-1/cover.png',
+      Key: 'images/book-1/cover-copy.png',
+    });
+    expect(GetObjectCommand).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      key: 'book-1/cover-copy',
+      path: 'images/book-1/cover-copy.png',
+      contentType: 'image/png',
+    });
+  });
+
+  it('encodes CopySource as "<bucket>/<key>" with each segment URL-encoded but "/" separators preserved', async () => {
+    sendMock.mockResolvedValueOnce({ ContentType: 'image/png' }).mockResolvedValueOnce({});
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    const sourceKey = 'book-1/runs/11111111-1111-1111-1111-111111111111/claims/1/cover';
+
+    await storage.copyImageAsset(sourceKey, 'book-1/dest');
+
+    const call = vi.mocked(CopyObjectCommand).mock.calls[0]![0] as { CopySource: string };
+    expect(call.CopySource).toBe(
+      'test-bucket/images/book-1/runs/11111111-1111-1111-1111-111111111111/claims/1/cover.png',
+    );
+  });
+
+  it('probes subsequent extensions via HeadObjectCommand when earlier ones 404, then copies with the matched extension', async () => {
+    sendMock
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { name: 'NoSuchKey' })) // Head .png
+      .mockResolvedValueOnce({ ContentType: 'image/jpeg' }) // Head .jpg
+      .mockResolvedValueOnce({}); // Copy
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    const result = await storage.copyImageAsset('book-1/page-1', 'book-1/page-1-copy');
+
+    expect(HeadObjectCommand).toHaveBeenNthCalledWith(1, {
+      Bucket: 'test-bucket',
+      Key: 'images/book-1/page-1.png',
+    });
+    expect(HeadObjectCommand).toHaveBeenNthCalledWith(2, {
+      Bucket: 'test-bucket',
+      Key: 'images/book-1/page-1.jpg',
+    });
+    expect(result!.contentType).toBe('image/jpeg');
+  });
+
+  it('returns undefined when every extension 404s on Head, without calling CopyObjectCommand', async () => {
+    sendMock.mockRejectedValue(Object.assign(new Error('missing'), { name: 'NoSuchKey' }));
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+
+    await expect(
+      storage.copyImageAsset('book-1/never-saved', 'book-1/dest'),
+    ).resolves.toBeUndefined();
+    expect(sendMock).toHaveBeenCalledTimes(4); // one Head probe per supported extension
+    expect(CopyObjectCommand).not.toHaveBeenCalled();
+  });
+
+  it('rethrows non-404 HeadObjectCommand errors instead of treating them as a missing source', async () => {
+    sendMock.mockRejectedValueOnce(new Error('access denied'));
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+
+    await expect(storage.copyImageAsset('book-1/cover', 'book-1/dest')).rejects.toThrow(
+      /access denied/,
+    );
+    expect(CopyObjectCommand).not.toHaveBeenCalled();
+  });
+
+  it('rethrows CopyObjectCommand errors (e.g. throttling) after a successful Head', async () => {
+    sendMock
+      .mockResolvedValueOnce({ ContentType: 'image/png' })
+      .mockRejectedValueOnce(new Error('throttled'));
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+
+    await expect(storage.copyImageAsset('book-1/cover', 'book-1/dest')).rejects.toThrow(
+      /throttled/,
+    );
+  });
+
+  it('fails clearly when the source object has missing content-type metadata, rather than guessing', async () => {
+    sendMock.mockResolvedValueOnce({}); // Head succeeds but ContentType is absent
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+
+    await expect(storage.copyImageAsset('book-1/cover', 'book-1/dest')).rejects.toThrow(
+      /missing content-type metadata/,
+    );
+    expect(CopyObjectCommand).not.toHaveBeenCalled();
+  });
+
+  it('fails clearly when the source object has mismatched/unsupported content-type metadata', async () => {
+    sendMock.mockResolvedValueOnce({ ContentType: 'image/gif' }); // exists at .png, but wrong type
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+
+    await expect(storage.copyImageAsset('book-1/cover', 'book-1/dest')).rejects.toThrow(
+      /unexpected content-type metadata/,
+    );
+    expect(CopyObjectCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not call CopyObjectCommand when source and destination resolve to the identical S3 key', async () => {
+    sendMock.mockResolvedValueOnce({ ContentType: 'image/png' });
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+
+    const result = await storage.copyImageAsset('book-1/cover', 'book-1/cover');
+
+    expect(CopyObjectCommand).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      key: 'book-1/cover',
+      path: 'images/book-1/cover.png',
+      contentType: 'image/png',
+    });
+  });
+
+  it('rejects for keys containing path-traversal characters before sending anything', async () => {
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    await expect(storage.copyImageAsset('../evil', 'book-1/dest')).rejects.toThrow(
+      /Invalid image asset key/,
+    );
+    await expect(storage.copyImageAsset('book-1/cover', '../evil')).rejects.toThrow(
+      /Invalid image asset key/,
+    );
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('produces distinct destination keys for two different fencing versions of the same run', async () => {
+    sendMock.mockResolvedValue({ ContentType: 'image/png' });
+    const storage = new CloudImageAssetStorage(validCloudConfig);
+    const destV1 = claimImageAssetKey(
+      'book-1',
+      { kind: 'claim', runId: RUN_ID, fencingVersion: 1 },
+      'cover',
+    );
+    const destV2 = claimImageAssetKey(
+      'book-1',
+      { kind: 'claim', runId: RUN_ID, fencingVersion: 2 },
+      'cover',
+    );
+
+    const refV1 = await storage.copyImageAsset('book-1/cover', destV1);
+    const refV2 = await storage.copyImageAsset('book-1/cover', destV2);
+
+    expect(refV1!.path).not.toBe(refV2!.path);
   });
 });
 

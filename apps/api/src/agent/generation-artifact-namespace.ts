@@ -43,6 +43,16 @@ export class InvalidGenerationArtifactPointerError extends Error {
 
 export const LEGACY_NAMESPACE: GenerationArtifactNamespace = { kind: 'legacy' };
 
+/**
+ * The claim-only half of GenerationArtifactNamespace, named for driver methods
+ * (Phase B, Slice B2 — see ../images/image-asset-storage.ts / ../pdf/pdf-storage.ts)
+ * that must never accept `{ kind: 'legacy' }`: unlike the resolvers above (which
+ * legitimately produce either variant for the existing positional call sites),
+ * a claim-scoped save/read/exists method has no legacy fallback to convert to —
+ * accepting only this type makes that a compile-time guarantee, not a runtime check.
+ */
+export type ClaimArtifactNamespace = Extract<GenerationArtifactNamespace, { kind: 'claim' }>;
+
 /** Matches the safe path-segment convention already used for storage keys (see ImageAssetStorage's validateImageAssetKey / PdfStorage's validateBookId) — no separators, no traversal. */
 const SAFE_SEGMENT_PATTERN = /^[\w-]+$/;
 
@@ -78,10 +88,7 @@ export function claimNamespace(runId: string, fencingVersion: number): Generatio
  * for their own (non-claim-scoped) keys — so a claim-scoped key can never
  * accidentally duplicate a prefix a driver adds separately.
  */
-export function claimArtifactBasePath(
-  bookId: string,
-  namespace: Extract<GenerationArtifactNamespace, { kind: 'claim' }>,
-): string {
+export function claimArtifactBasePath(bookId: string, namespace: ClaimArtifactNamespace): string {
   if (!SAFE_SEGMENT_PATTERN.test(bookId)) {
     throw new InvalidGenerationArtifactPointerError(
       `Invalid bookId for artifact namespace: "${bookId}"`,

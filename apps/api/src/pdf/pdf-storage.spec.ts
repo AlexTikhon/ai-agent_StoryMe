@@ -20,8 +20,12 @@ import {
   createPdfStorage,
   assertPdfStorageSupportsWorker,
   claimPreviewPdfKey,
+  objectKey,
 } from './pdf-storage';
-import { InvalidGenerationArtifactPointerError } from '../agent/generation-artifact-namespace';
+import {
+  InvalidGenerationArtifactPointerError,
+  LEGACY_NAMESPACE,
+} from '../agent/generation-artifact-namespace';
 
 const validCloudEnv = {
   PDF_STORAGE_BUCKET: 'test-bucket',
@@ -433,5 +437,216 @@ describe('claimPreviewPdfKey (Phase B, Slice B1)', () => {
     const first = claimPreviewPdfKey(TEST_BOOK_ID, claimA1);
     const second = claimPreviewPdfKey(TEST_BOOK_ID, claimA1);
     expect(first).toBe(second);
+  });
+});
+
+describe('LocalPdfStorage claim-scoped methods (Phase B, Slice B2)', () => {
+  const RUN_A = '11111111-1111-1111-1111-111111111111';
+  const claim1 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 1 };
+  const claim2 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 2 };
+  let storage: LocalPdfStorage;
+
+  beforeEach(() => {
+    storage = new LocalPdfStorage();
+  });
+
+  afterEach(async () => {
+    // Claim paths nest under tmp/books/<bookId>/runs/... — the same TEST_DIR
+    // (tmp/books/<bookId>) the legacy suites above already clean up.
+    if (existsSync(TEST_DIR)) await rm(TEST_DIR, { recursive: true });
+  });
+
+  it('round-trips save/read/exists for a claim namespace', async () => {
+    const buffer = Buffer.from('%PDF-1.4 claim round trip');
+
+    await expect(storage.claimPreviewPdfExists(TEST_BOOK_ID, claim1)).resolves.toBe(false);
+    const saveResult = await storage.saveClaimPreviewPdf(TEST_BOOK_ID, claim1, buffer);
+    expect(saveResult.path).toBeDefined();
+    expect(existsSync(saveResult.path!)).toBe(true);
+
+    await expect(storage.claimPreviewPdfExists(TEST_BOOK_ID, claim1)).resolves.toBe(true);
+    const readResult = await storage.getClaimPreviewPdf(TEST_BOOK_ID, claim1);
+    expect(readResult).not.toBeNull();
+    expect(readResult!.buffer.equals(buffer)).toBe(true);
+    expect(readResult!.contentType).toBe('application/pdf');
+    expect(readResult!.filename).toBe(`storyme-preview-${TEST_BOOK_ID}.pdf`);
+  });
+
+  it('claim 1 and claim 2 of the same run do not collide', async () => {
+    const bufferV1 = Buffer.from('%PDF-1.4 v1');
+    const bufferV2 = Buffer.from('%PDF-1.4 v2');
+
+    await storage.saveClaimPreviewPdf(TEST_BOOK_ID, claim1, bufferV1);
+    await storage.saveClaimPreviewPdf(TEST_BOOK_ID, claim2, bufferV2);
+
+    const readV1 = await storage.getClaimPreviewPdf(TEST_BOOK_ID, claim1);
+    const readV2 = await storage.getClaimPreviewPdf(TEST_BOOK_ID, claim2);
+    expect(readV1!.buffer.equals(bufferV1)).toBe(true);
+    expect(readV2!.buffer.equals(bufferV2)).toBe(true);
+  });
+
+  it('getClaimPreviewPdf returns null and claimPreviewPdfExists returns false for a claim nothing was saved to', async () => {
+    await expect(storage.getClaimPreviewPdf(TEST_BOOK_ID, claim1)).resolves.toBeNull();
+    await expect(storage.claimPreviewPdfExists(TEST_BOOK_ID, claim1)).resolves.toBe(false);
+  });
+
+  it('legacy savePreviewPdf/getPreviewPdf are unaffected by a claim save for the same bookId', async () => {
+    const legacyBuffer = Buffer.from('%PDF-1.4 legacy');
+    const claimBuffer = Buffer.from('%PDF-1.4 claim');
+
+    await storage.savePreviewPdf(TEST_BOOK_ID, legacyBuffer);
+    await storage.saveClaimPreviewPdf(TEST_BOOK_ID, claim1, claimBuffer);
+
+    const legacyRead = await storage.getPreviewPdf(TEST_BOOK_ID);
+    expect(legacyRead!.buffer.equals(legacyBuffer)).toBe(true);
+  });
+
+  it('rejects an unsafe bookId before touching the filesystem', async () => {
+    await expect(
+      storage.saveClaimPreviewPdf('../evil', claim1, Buffer.from('%PDF')),
+    ).rejects.toThrow();
+    await expect(storage.getClaimPreviewPdf('../evil', claim1)).rejects.toThrow();
+    await expect(storage.claimPreviewPdfExists('../evil', claim1)).rejects.toThrow();
+  });
+
+  it('rejects an invalid fencing version before touching the filesystem', async () => {
+    const invalidClaim = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 0 };
+    await expect(
+      storage.saveClaimPreviewPdf(TEST_BOOK_ID, invalidClaim, Buffer.from('%PDF')),
+    ).rejects.toThrow(InvalidGenerationArtifactPointerError);
+  });
+
+  it('cannot silently accept a legacy namespace even when force-cast at a call site', async () => {
+    const legacyAsClaim = LEGACY_NAMESPACE as unknown as typeof claim1;
+    await expect(
+      storage.saveClaimPreviewPdf(TEST_BOOK_ID, legacyAsClaim, Buffer.from('%PDF')),
+    ).rejects.toThrow(InvalidGenerationArtifactPointerError);
+  });
+});
+
+describe('CloudPdfStorage claim-scoped methods (Phase B, Slice B2)', () => {
+  const RUN_A = '11111111-1111-1111-1111-111111111111';
+  const claim1 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 1 };
+  const claim2 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 2 };
+  const expectedKey1 = claimPreviewPdfKey('book-1', claim1);
+  const expectedKey2 = claimPreviewPdfKey('book-1', claim2);
+
+  beforeEach(() => {
+    sendMock.mockReset();
+    vi.mocked(PutObjectCommand).mockClear();
+    vi.mocked(GetObjectCommand).mockClear();
+    vi.mocked(HeadObjectCommand).mockClear();
+  });
+
+  it('saveClaimPreviewPdf sends PutObjectCommand at the exact B1 claim key', async () => {
+    sendMock.mockResolvedValueOnce({});
+    const storage = new CloudPdfStorage(validCloudConfig);
+    const buffer = Buffer.from('%PDF-1.4 claim');
+
+    const result = await storage.saveClaimPreviewPdf('book-1', claim1, buffer);
+
+    expect(PutObjectCommand).toHaveBeenCalledWith({
+      Bucket: 'test-bucket',
+      Key: expectedKey1,
+      Body: buffer,
+      ContentType: 'application/pdf',
+    });
+    expect(result.url).toBe(expectedKey1);
+  });
+
+  it('getClaimPreviewPdf sends GetObjectCommand at the exact B1 claim key and returns the buffer', async () => {
+    const pdfBytes = Buffer.from('%PDF-1.4 claim read-back');
+    sendMock.mockResolvedValueOnce({
+      Body: { transformToByteArray: async () => new Uint8Array(pdfBytes) },
+    });
+    const storage = new CloudPdfStorage(validCloudConfig);
+
+    const result = await storage.getClaimPreviewPdf('book-1', claim1);
+
+    expect(GetObjectCommand).toHaveBeenCalledWith({ Bucket: 'test-bucket', Key: expectedKey1 });
+    expect(result!.buffer.equals(pdfBytes)).toBe(true);
+    expect(result!.filename).toBe('storyme-preview-book-1.pdf');
+  });
+
+  it('getClaimPreviewPdf returns null for a missing claim object', async () => {
+    sendMock.mockRejectedValueOnce(Object.assign(new Error('missing'), { name: 'NoSuchKey' }));
+    const storage = new CloudPdfStorage(validCloudConfig);
+    await expect(storage.getClaimPreviewPdf('book-1', claim1)).resolves.toBeNull();
+  });
+
+  it('getClaimPreviewPdf rethrows non-404 errors', async () => {
+    sendMock.mockRejectedValueOnce(new Error('access denied'));
+    const storage = new CloudPdfStorage(validCloudConfig);
+    await expect(storage.getClaimPreviewPdf('book-1', claim1)).rejects.toThrow(/access denied/);
+  });
+
+  it('claimPreviewPdfExists sends HeadObjectCommand at the exact B1 claim key', async () => {
+    sendMock.mockResolvedValueOnce({});
+    const storage = new CloudPdfStorage(validCloudConfig);
+    await expect(storage.claimPreviewPdfExists('book-1', claim1)).resolves.toBe(true);
+    expect(HeadObjectCommand).toHaveBeenCalledWith({ Bucket: 'test-bucket', Key: expectedKey1 });
+  });
+
+  it('claimPreviewPdfExists returns false for a missing claim object and propagates operational errors', async () => {
+    sendMock.mockRejectedValueOnce(Object.assign(new Error('nf'), { name: 'NotFound' }));
+    const storage = new CloudPdfStorage(validCloudConfig);
+    await expect(storage.claimPreviewPdfExists('book-1', claim1)).resolves.toBe(false);
+
+    sendMock.mockRejectedValueOnce(new Error('connection reset'));
+    await expect(storage.claimPreviewPdfExists('book-1', claim1)).rejects.toThrow(
+      /connection reset/,
+    );
+  });
+
+  it('claim 1 and claim 2 of the same run use distinct object keys and do not collide', async () => {
+    expect(expectedKey1).not.toBe(expectedKey2);
+
+    sendMock.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+    const storage = new CloudPdfStorage(validCloudConfig);
+    await storage.saveClaimPreviewPdf('book-1', claim1, Buffer.from('v1'));
+    await storage.saveClaimPreviewPdf('book-1', claim2, Buffer.from('v2'));
+
+    expect(PutObjectCommand).toHaveBeenNthCalledWith(1, {
+      Bucket: 'test-bucket',
+      Key: expectedKey1,
+      Body: Buffer.from('v1'),
+      ContentType: 'application/pdf',
+    });
+    expect(PutObjectCommand).toHaveBeenNthCalledWith(2, {
+      Bucket: 'test-bucket',
+      Key: expectedKey2,
+      Body: Buffer.from('v2'),
+      ContentType: 'application/pdf',
+    });
+  });
+
+  it('legacy savePreviewPdf/getPreviewPdf still use objectKey, not a claim key, and are unaffected by claim methods existing', async () => {
+    sendMock.mockResolvedValueOnce({});
+    const storage = new CloudPdfStorage(validCloudConfig);
+    await storage.savePreviewPdf('book-1', Buffer.from('%PDF'));
+    expect(PutObjectCommand).toHaveBeenCalledWith({
+      Bucket: 'test-bucket',
+      Key: objectKey('book-1'),
+      Body: Buffer.from('%PDF'),
+      ContentType: 'application/pdf',
+    });
+  });
+
+  it('rejects an invalid fencing version before sending anything', async () => {
+    const storage = new CloudPdfStorage(validCloudConfig);
+    const invalidClaim = { kind: 'claim' as const, runId: RUN_A, fencingVersion: -1 };
+    await expect(
+      storage.saveClaimPreviewPdf('book-1', invalidClaim, Buffer.from('%PDF')),
+    ).rejects.toThrow(InvalidGenerationArtifactPointerError);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('cannot silently accept a legacy namespace even when force-cast at a call site', async () => {
+    const storage = new CloudPdfStorage(validCloudConfig);
+    const legacyAsClaim = LEGACY_NAMESPACE as unknown as typeof claim1;
+    await expect(
+      storage.saveClaimPreviewPdf('book-1', legacyAsClaim, Buffer.from('%PDF')),
+    ).rejects.toThrow(InvalidGenerationArtifactPointerError);
+    expect(sendMock).not.toHaveBeenCalled();
   });
 });

@@ -1817,12 +1817,12 @@ DB-level guarantee.
   every layer in one run. Adding one is straightforward but was not done in
   this pass — flagged here rather than silently left uncovered.
 
-## Phase B — claim-scoped artifact storage (Slice B1: foundations)
+## Phase B — claim-scoped artifact storage (Slices B1–B2)
 
 Closes the "Run-scoped artifact storage" gap flagged above, one slice at a
-time. **Slice B1** (this one) adds only the schema and a typed namespace
-abstraction — it is additive and behavior-neutral: no production write or
-read path has been switched to it yet, and every existing positional
+time. **Slice B1** adds only the schema and a typed namespace abstraction —
+it is additive and behavior-neutral: no production write or read path has
+been switched to it yet, and every existing positional
 (`imageAssetKey`/`characterSheetAssetKey`/`objectKey`) key builder and
 caller is unchanged.
 
@@ -1844,15 +1844,67 @@ caller is unchanged.
   `20260715160805_phase_b1_artifact_namespace_pointers`).
 - **Every existing row remains legacy** (`lastGenerationRunId`/
   `lastGenerationFencingVersion` null, `publishedRunFencingVersion` null even
-  where `publishedRunId` is already set) until a run generated *after* this
-  slice's follow-up (Slice B2 — the `AgentService`/PDF pipeline cutover,
-  copy-forward, and publication wiring) writes claim metadata for it. No
-  migration backfill is possible or attempted — there is no historical
-  per-write claim record to reconstruct.
+  where `publishedRunId` is already set) until a run generated *after* the
+  eventual pipeline cutover writes claim metadata for it. No migration
+  backfill is possible or attempted — there is no historical per-write claim
+  record to reconstruct.
 - **No production storage path has changed.** `classifyImageAssets`,
   `buildImageBufferResolver`, `pdfStorage.savePreviewPdf`/`getPreviewPdf`,
   and every other real read/write in the pipeline still use the positional
   keys they always have.
+
+**Slice B2** adds storage-_driver capabilities_ only — still additive and
+behavior-neutral, and still zero production cutover. (An earlier version of
+this doc described B2 as the `AgentService`/PDF pipeline cutover,
+copy-forward, and publication wiring; that scope was split out to a later
+slice once it became clear the driver primitives it depends on — a
+same-bucket copy and claim-scoped PDF save/read/exists — hadn't been built
+yet. This section describes what B2 actually shipped.)
+
+- **`ImageAssetStorage.copyImageAsset(sourceKey, destinationKey)`** — a new
+  method on the existing interface, implemented by both
+  `LocalImageAssetStorage` and `CloudImageAssetStorage`. Exists for the
+  future copy-forward retry algorithm (an edited-then-retried book should be
+  able to reuse a prior claim's still-valid images instead of
+  re-generating them) — not called by anything yet.
+  - **Local**: locates the source via the same fixed-extension probe
+    `getImageAsset` already uses, then copies with `fs.copyFile` (an
+    OS-level copy) rather than reading the source into a `Buffer` and
+    writing it back out.
+  - **S3/R2**: locates the source with `HeadObjectCommand` (metadata only —
+    confirms both existence and the object's real `ContentType`, without
+    downloading the body), then copies with a single `CopyObjectCommand`
+    (`CopySource` pointing at the located object). The object's bytes never
+    transit the API process. A source with missing or mismatched
+    content-type metadata fails loudly rather than guessing.
+  - Both drivers treat a source that genuinely does not exist as `undefined`
+    and let every other failure (validation, permission, network,
+    unexpected metadata) propagate. Copying a key to itself is handled
+    explicitly (a no-op that still returns the ref) rather than relying on
+    what the filesystem or S3 happens to do with a self-copy.
+- **`PdfStorage.saveClaimPreviewPdf` / `getClaimPreviewPdf` /
+  `claimPreviewPdfExists`** — claim-only counterparts to the three legacy
+  preview-PDF methods, implemented by both `LocalPdfStorage` and
+  `CloudPdfStorage`, all built on B1's `claimPreviewPdfKey` as the single
+  key-construction source (so the local path and the S3/R2 object key always
+  represent the same logical namespace). They take a `ClaimArtifactNamespace`
+  (the `{ kind: 'claim' }` half of `GenerationArtifactNamespace`, now
+  exported from `generation-artifact-namespace.ts`) — never the legacy
+  union — so passing a legacy pointer to a claim-only method is a type error
+  at every real call site, and even a forced/`as never` cast is still
+  rejected at runtime by `claimPreviewPdfKey`'s existing validation.
+- **Every legacy method is untouched behaviorally.** `savePreviewPdf`,
+  `getPreviewPdf`, `previewPdfExists`, `saveImageAsset`, and `getImageAsset`
+  send the exact same S3 commands / touch the exact same filesystem paths as
+  before; the claim methods and `copyImageAsset` share small private helpers
+  with them purely to avoid duplicating the request-building code, not to
+  change what the legacy methods do.
+- **Still nothing production reads or writes claim-scoped storage.**
+  `AgentService`, PDF rendering, `BooksService` endpoints, diagnostics, and
+  `GenerationRunCoordinator` are all unchanged by this slice. Copy-forward
+  itself — actually calling `copyImageAsset` from a retry path — is not
+  active yet; that, along with the `AgentService`/PDF pipeline cutover and
+  publication wiring, is deferred to a later slice.
 
 ## Worker process separation
 
