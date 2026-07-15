@@ -281,11 +281,11 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       };
     }
 
-    it('leaves Book and GenerationRun completely untouched when the fencing guard fails inside the transaction', async () => {
+    it('returns "stale_fence" and leaves Book and GenerationRun completely untouched when the fencing guard fails inside the transaction', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 3 });
 
-      const published = await coordinator.completeRun(
+      const result = await coordinator.completeRun(
         {
           runId: run.id,
           bookId: book.id,
@@ -296,7 +296,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
         completedOutcome(),
       );
 
-      expect(published).toBe(false);
+      expect(result).toBe('stale_fence');
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.activeRunId).toBe(run.id); // unchanged
       expect(reloadedBook.publishedRunId).toBeNull();
@@ -305,11 +305,15 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(reloadedRun.status).toBe(GenerationRunStatus.running);
     });
 
-    it('atomically publishes Book.status=complete, GenerationRun.status=completed, activeRunId, and publishedRunId together on success', async () => {
+    it('returns "book_mirror_mismatch" and rolls back the ENTIRE transaction (GenerationRun included, provably still `running` in the DB) when the run fence holds but Book.activeRunId has drifted', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 3 });
+      // Break the mirror invariant directly, simulating some other bug having
+      // already cleared/repointed activeRunId while this run's own fencing
+      // still legitimately holds.
+      await prisma.book.update({ where: { id: book.id }, data: { activeRunId: null } });
 
-      const published = await coordinator.completeRun(
+      const result = await coordinator.completeRun(
         {
           runId: run.id,
           bookId: book.id,
@@ -320,7 +324,32 @@ describe('Generation pipeline fencing (real Postgres)', () => {
         completedOutcome(),
       );
 
-      expect(published).toBe(true);
+      expect(result).toBe('book_mirror_mismatch');
+      // Proves a real rollback, not just "the Book write didn't happen" —
+      // GenerationRun's own terminal transition, which happened earlier in
+      // the same transaction, must have been undone too.
+      const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
+      expect(reloadedRun.status).toBe(GenerationRunStatus.running);
+      const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
+      expect(reloadedBook.status).not.toBe('complete');
+    });
+
+    it('atomically publishes Book.status=complete, GenerationRun.status=completed, activeRunId, and publishedRunId together on success', async () => {
+      const book = await createUserAndBook();
+      const run = await createRun(book, { fencingVersion: 3 });
+
+      const result = await coordinator.completeRun(
+        {
+          runId: run.id,
+          bookId: book.id,
+          fencingVersion: 3,
+          inputHash: run.inputHash,
+          inputSnapshot: buildInputSnapshot(book),
+        },
+        completedOutcome(),
+      );
+
+      expect(result).toBe('applied');
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.activeRunId).toBeNull();
       expect(reloadedBook.publishedRunId).toBe(run.id);
@@ -334,7 +363,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 1 });
 
-      const published = await coordinator.completeRun(
+      const result = await coordinator.completeRun(
         {
           runId: run.id,
           bookId: book.id,
@@ -345,7 +374,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
         failedOutcome({ errorMessage: 'PDF render crashed' }),
       );
 
-      expect(published).toBe(true);
+      expect(result).toBe('applied');
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.status).toBe('failed');
       expect(reloadedBook.errorMessage).toBe('PDF render crashed');
@@ -361,12 +390,12 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 2 });
 
-      const published = await coordinator.failInvalidSnapshot(
+      const result = await coordinator.failInvalidSnapshot(
         { runId: run.id, bookId: book.id, fencingVersion: 2 },
         'safe public message',
       );
 
-      expect(published).toBe(true);
+      expect(result).toBe('applied');
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.status).toBe('failed');
       expect(reloadedBook.errorMessage).toBe('safe public message');
@@ -380,14 +409,70 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 2 });
 
-      const published = await coordinator.failInvalidSnapshot(
+      const result = await coordinator.failInvalidSnapshot(
         { runId: run.id, bookId: book.id, fencingVersion: 999 },
         'safe public message',
       );
 
-      expect(published).toBe(false);
+      expect(result).toBe('stale_fence');
       const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
       expect(reloadedRun.status).toBe(GenerationRunStatus.running);
+    });
+
+    it('failAbandoned atomically fails Book and GenerationRun (fenced on fromStatus="running") — the mechanism BooksService.markRunPermanentlyFailedAfterExhaustedRetries uses', async () => {
+      const book = await createUserAndBook();
+      const run = await createRun(book, { fencingVersion: 2 });
+
+      const result = await coordinator.failAbandoned(
+        {
+          runId: run.id,
+          bookId: book.id,
+          fencingVersion: 2,
+          fromStatus: GenerationRunStatus.running,
+        },
+        {
+          errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE',
+          errorMessage: 'Generation failed after repeated errors.',
+        },
+      );
+
+      expect(result).toBe('applied');
+      const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
+      expect(reloadedBook.status).toBe('failed');
+      expect(reloadedBook.activeRunId).toBeNull();
+      const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
+      expect(reloadedRun.status).toBe(GenerationRunStatus.failed);
+      expect(reloadedRun.errorCode).toBe('GENERATION_INFRASTRUCTURE_FAILURE');
+    });
+
+    it('failAbandoned fences on fromStatus="queued" for a never-claimed run — the mechanism GenerationRunRecoveryService uses for a run stuck before dispatch', async () => {
+      const book = await createUserAndBook();
+      const run = await prisma.generationRun.create({
+        data: {
+          bookId: book.id,
+          userId: book.userId,
+          kind: 'initial',
+          status: GenerationRunStatus.queued,
+          inputSnapshot: buildInputSnapshot(book) as unknown as Prisma.InputJsonValue,
+          inputHash: hashInputSnapshot(buildInputSnapshot(book)),
+          fencingVersion: 0,
+        },
+      });
+      await prisma.book.update({ where: { id: book.id }, data: { activeRunId: run.id } });
+
+      const result = await coordinator.failAbandoned(
+        {
+          runId: run.id,
+          bookId: book.id,
+          fencingVersion: 0,
+          fromStatus: GenerationRunStatus.queued,
+        },
+        { errorCode: 'GENERATION_ABANDONED', errorMessage: 'Generation was interrupted.' },
+      );
+
+      expect(result).toBe('applied');
+      const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
+      expect(reloadedRun.status).toBe(GenerationRunStatus.failed);
     });
 
     it("genuinely concurrent completeRun calls racing on the exact same fencingVersion (fired together via Promise.all — real overlapping transactions, not sequenced by the test) let exactly one win, via Postgres's own row-lock + WHERE re-check, not application-level ordering", async () => {
@@ -421,7 +506,8 @@ describe('Generation pipeline fencing (real Postgres)', () => {
         ),
       ]);
 
-      expect([resultA, resultB].filter(Boolean)).toHaveLength(1);
+      expect([resultA, resultB].filter((result) => result === 'applied')).toHaveLength(1);
+      expect([resultA, resultB].filter((result) => result === 'stale_fence')).toHaveLength(1);
 
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
@@ -472,10 +558,12 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const serviceA = new GenerationRunRecoveryService(
         prismaA,
         neverPendingQueue,
+        new GenerationRunCoordinator(prismaA),
       ) as unknown as LeaseInternals;
       const serviceB = new GenerationRunRecoveryService(
         prismaB,
         neverPendingQueue,
+        new GenerationRunCoordinator(prismaB),
       ) as unknown as LeaseInternals;
 
       const generationA = await serviceA.acquireLease(60_000);
@@ -491,10 +579,12 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const serviceA = new GenerationRunRecoveryService(
         prismaA,
         neverPendingQueue,
+        new GenerationRunCoordinator(prismaA),
       ) as unknown as LeaseInternals;
       const serviceB = new GenerationRunRecoveryService(
         prismaB,
         neverPendingQueue,
+        new GenerationRunCoordinator(prismaB),
       ) as unknown as LeaseInternals;
 
       const generationA = await serviceA.acquireLease(60_000);
@@ -619,12 +709,17 @@ describe('Generation pipeline fencing (real Postgres)', () => {
 
       const migrated = await backfill.normalize(run);
 
-      expect(migrated.snapshotVersion).toBe(2);
-      expect(migrated.childPhoto).toBeNull();
+      expect(migrated.snapshot.snapshotVersion).toBe(2);
+      expect(migrated.snapshot.childPhoto).toBeNull();
+      expect(migrated.inputHash).toBe(hashInputSnapshot(migrated.snapshot));
+      expect(migrated.inputHash).not.toBe('legacy-hash');
       const reloaded = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
-      expect(reloaded.inputSnapshot).toEqual(migrated);
-      // Deployment safety: the migration only ever touches inputSnapshot —
-      // status/fencing are provably untouched by it.
+      expect(reloaded.inputSnapshot).toEqual(migrated.snapshot);
+      // The snapshot/hash invariant this migration must maintain — see
+      // GenerationInputSnapshotBackfillService's own doc comment.
+      expect(reloaded.inputHash).toBe(migrated.inputHash);
+      // Deployment safety: the migration only ever touches inputSnapshot/
+      // inputHash — status/fencing are provably untouched by it.
       expect(reloaded.status).toBe(GenerationRunStatus.queued);
     });
 
@@ -653,13 +748,14 @@ describe('Generation pipeline fencing (real Postgres)', () => {
 
       const migrated = await localBackfill.normalize(run);
 
-      expect(migrated.childPhoto).not.toBeNull();
-      expect(migrated.childPhoto!.assetKey).not.toBe(originalKey);
-      expect(migrated.childPhoto!.sizeBytes).toBe(bytes.length);
+      expect(migrated.snapshot.childPhoto).not.toBeNull();
+      expect(migrated.snapshot.childPhoto!.assetKey).not.toBe(originalKey);
+      expect(migrated.snapshot.childPhoto!.sizeBytes).toBe(bytes.length);
+      expect(migrated.inputHash).toBe(hashInputSnapshot(migrated.snapshot));
       // The original key's bytes are untouched — the migration mints a copy, never mutates in place.
       const originalStillThere = await storage.getImageAsset(originalKey);
       expect(originalStillThere).toEqual(bytes);
-      const migratedBytes = await storage.getImageAsset(migrated.childPhoto!.assetKey);
+      const migratedBytes = await storage.getImageAsset(migrated.snapshot.childPhoto!.assetKey);
       expect(migratedBytes).toEqual(bytes);
       // Deployment safety: a run already terminal (failed) is still migrated cleanly.
       const reloaded = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
@@ -687,6 +783,56 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const secondPass = await backfill.normalize(reloadedAfterFirst);
 
       expect(secondPass).toEqual(firstPass);
+    });
+
+    it('genuinely concurrent normalize() calls on the SAME legacy run (fired together via Promise.all, real overlapping transactions) converge on exactly one migration — no last-write-wins split between inputSnapshot and inputHash', async () => {
+      const storage = new LocalImageAssetStorage();
+      const originalKey = `backfill-race-fixture-${randomUUID()}/child-photo-legacy`;
+      const bytes = Buffer.from('legacy photo bytes raced by two concurrent migrators');
+      await storage.saveImageAsset(originalKey, bytes, 'image/jpeg');
+      const backfillA = new GenerationInputSnapshotBackfillService(prisma, storage);
+      const backfillB = new GenerationInputSnapshotBackfillService(prisma, storage);
+
+      const book = await createUserAndBook();
+      const run = await prisma.generationRun.create({
+        data: {
+          bookId: book.id,
+          userId: book.userId,
+          kind: 'initial',
+          status: GenerationRunStatus.failed,
+          failedAt: new Date(),
+          inputSnapshot: preExistingPhaseASnapshotFixture({
+            childPhotoAssetKey: originalKey,
+            childPhotoContentType: 'image/jpeg',
+          }) as unknown as Prisma.InputJsonValue,
+          inputHash: 'legacy-hash',
+        },
+      });
+
+      // Two independent service instances, each starting from the identical
+      // pre-migration row, racing to migrate it — genuinely concurrent from
+      // Node's perspective, not sequenced.
+      const [resultA, resultB] = await Promise.all([
+        backfillA.normalize(run),
+        backfillB.normalize(run),
+      ]);
+
+      // Both callers converge on the same winning migration — one CAS write
+      // won, the other detected the loss and re-read/returned the winner's
+      // result, rather than each trusting its own locally-computed copy.
+      expect(resultA).toEqual(resultB);
+      expect(resultA.inputHash).toBe(hashInputSnapshot(resultA.snapshot));
+
+      // The persisted row is self-consistent (never a torn mix of one
+      // racer's snapshot with the other's hash).
+      const reloaded = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
+      expect(reloaded.inputSnapshot).toEqual(resultA.snapshot);
+      expect(reloaded.inputHash).toBe(resultA.inputHash);
+
+      // The legacy photo itself is never lost — whichever versioned copy the
+      // final row references still resolves to the original bytes.
+      const winningBytes = await storage.getImageAsset(resultA.snapshot.childPhoto!.assetKey);
+      expect(winningBytes).toEqual(bytes);
     });
   });
 });

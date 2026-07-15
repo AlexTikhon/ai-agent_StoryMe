@@ -8,6 +8,7 @@ import {
 } from './generation-run-recovery.service';
 import { GENERATION_INTERRUPTED_MESSAGE } from './generation-job-recovery.service';
 import type { GenerationQueueService } from './generation-queue.service';
+import type { GenerationRunCoordinator } from './generation-run-coordinator.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 
 type MockPrisma = ReturnType<typeof createMockPrisma>;
@@ -45,6 +46,12 @@ function createMockGenerationQueueService(isPending = false): jest.Mocked<Genera
   } as unknown as jest.Mocked<GenerationQueueService>;
 }
 
+function createMockGenerationRunCoordinator(): jest.Mocked<GenerationRunCoordinator> {
+  return {
+    failAbandoned: vi.fn().mockResolvedValue('applied'),
+  } as unknown as jest.Mocked<GenerationRunCoordinator>;
+}
+
 describe('readGenerationRunQueuedStaleMs / readGenerationRunRecoveryIntervalMs', () => {
   it('fall back to their defaults for missing/malformed values', () => {
     expect(readGenerationRunQueuedStaleMs({})).toBe(DEFAULT_GENERATION_RUN_QUEUED_STALE_MS);
@@ -69,6 +76,7 @@ function sqlOf(strings: unknown): string {
 describe('GenerationRunRecoveryService', () => {
   let prisma: MockPrisma;
   let generationQueueService: jest.Mocked<GenerationQueueService>;
+  let generationRunCoordinator: jest.Mocked<GenerationRunCoordinator>;
   let service: GenerationRunRecoveryService;
   const now = new Date('2026-01-01T01:00:00.000Z');
   let leaseHeld: boolean;
@@ -77,7 +85,12 @@ describe('GenerationRunRecoveryService', () => {
   beforeEach(() => {
     prisma = createMockPrisma();
     generationQueueService = createMockGenerationQueueService(false);
-    service = new GenerationRunRecoveryService(prisma as never, generationQueueService as never);
+    generationRunCoordinator = createMockGenerationRunCoordinator();
+    service = new GenerationRunRecoveryService(
+      prisma as never,
+      generationQueueService as never,
+      generationRunCoordinator as never,
+    );
     prisma.$transaction.mockImplementation((cb: (tx: MockPrisma) => unknown) => cb(prisma));
     // Lease acquired by default; individual tests override for the "lease busy" / "lost mid-pass" cases.
     leaseHeld = true;
@@ -194,7 +207,7 @@ describe('GenerationRunRecoveryService', () => {
     expect(summary).toMatchObject({ staleFound: 1, recovered: 0, stillPendingInBullMq: 1 });
   });
 
-  it('fails a run (fenced) and clears Book.activeRunId when BullMQ no longer has its job pending', async () => {
+  it('finalizes a stale run via GenerationRunCoordinator.failAbandoned (fenced on its own status/fencingVersion) when BullMQ no longer has its job pending', async () => {
     const run = makeGenerationRun({
       id: 'run-1',
       bookId: 'b-1',
@@ -206,36 +219,51 @@ describe('GenerationRunRecoveryService', () => {
 
     const summary = await service.recover(now);
 
-    expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
-      where: { id: 'run-1', status: 'running', fencingVersion: 2 },
-      data: {
-        status: 'failed',
-        failedAt: expect.any(Date),
-        errorCode: 'GENERATION_ABANDONED',
-        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-      },
-    });
-    expect(prisma.book.updateMany).toHaveBeenCalledWith({
-      where: { id: 'b-1', activeRunId: 'run-1' },
-      data: {
-        activeRunId: null,
-        status: 'failed',
-        failedStep: null,
-        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-      },
-    });
+    expect(generationRunCoordinator.failAbandoned).toHaveBeenCalledWith(
+      { runId: 'run-1', bookId: 'b-1', fencingVersion: 2, fromStatus: 'running' },
+      { errorCode: 'GENERATION_ABANDONED', errorMessage: GENERATION_INTERRUPTED_MESSAGE },
+    );
     expect(summary).toMatchObject({ recovered: 1 });
   });
 
-  it('does not touch Book when the fencing guard finds the run already moved on (updateMany matches 0 rows)', async () => {
-    const run = makeGenerationRun();
-    prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
+  it('fences a stale queued (never-claimed) run on fromStatus "queued", not "running"', async () => {
+    const run = makeGenerationRun({
+      id: 'run-1',
+      bookId: 'b-1',
+      status: 'queued' as GenerationRun['status'],
+      fencingVersion: 0,
+    });
+    prisma.generationRun.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([run]);
     generationQueueService.isJobStillPending.mockResolvedValue(false);
-    prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
 
     await service.recover(now);
 
-    expect(prisma.book.updateMany).not.toHaveBeenCalled();
+    expect(generationRunCoordinator.failAbandoned).toHaveBeenCalledWith(
+      expect.objectContaining({ fromStatus: 'queued' }),
+      expect.anything(),
+    );
+  });
+
+  it('counts the run as "still pending" (not recovered) when the coordinator reports stale_fence — a live claim already moved it on', async () => {
+    const run = makeGenerationRun();
+    prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
+    generationQueueService.isJobStillPending.mockResolvedValue(false);
+    generationRunCoordinator.failAbandoned.mockResolvedValue('stale_fence');
+
+    const summary = await service.recover(now);
+
+    expect(summary).toMatchObject({ recovered: 0, stillPendingInBullMq: 1 });
+  });
+
+  it('counts the run as "still pending" (not recovered) when the coordinator reports a book_mirror_mismatch — logged loudly by the coordinator itself, retried next pass', async () => {
+    const run = makeGenerationRun();
+    prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
+    generationQueueService.isJobStillPending.mockResolvedValue(false);
+    generationRunCoordinator.failAbandoned.mockResolvedValue('book_mirror_mismatch');
+
+    const summary = await service.recover(now);
+
+    expect(summary).toMatchObject({ recovered: 0, stillPendingInBullMq: 1 });
   });
 
   it('continues past one run erroring and reports the error count', async () => {

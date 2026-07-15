@@ -73,16 +73,19 @@ function makeJob(data: GenerationQueueJobData): Job<GenerationQueueJobData> {
 
 function createMockGenerationRunCoordinator(): jest.Mocked<GenerationRunCoordinator> {
   return {
-    completeRun: vi.fn().mockResolvedValue(true),
-    failInvalidSnapshot: vi.fn().mockResolvedValue(true),
+    completeRun: vi.fn().mockResolvedValue('applied'),
+    failInvalidSnapshot: vi.fn().mockResolvedValue('applied'),
   } as unknown as jest.Mocked<GenerationRunCoordinator>;
 }
 
-/** Default: delegates to the real (pure, no-I/O) parseGenerationInputSnapshot — legacy-migration itself is covered by generation-input-snapshot-backfill.service.spec.ts. */
+/** Default: delegates to the real (pure, no-I/O) parseGenerationInputSnapshot, paired with the run's own inputHash — legacy-migration itself is covered by generation-input-snapshot-backfill.service.spec.ts. */
 function createMockSnapshotBackfillService(): jest.Mocked<GenerationInputSnapshotBackfillService> {
   return {
-    normalize: vi.fn((run: { id: string; inputSnapshot: unknown }) =>
-      Promise.resolve(parseGenerationInputSnapshot(run.id, run.inputSnapshot)),
+    normalize: vi.fn((run: { id: string; inputSnapshot: unknown; inputHash: string }) =>
+      Promise.resolve({
+        snapshot: parseGenerationInputSnapshot(run.id, run.inputSnapshot),
+        inputHash: run.inputHash,
+      }),
     ),
   } as unknown as jest.Mocked<GenerationInputSnapshotBackfillService>;
 }

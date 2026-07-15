@@ -7,10 +7,7 @@ import type { AgentService } from '../agent/agent.service';
 import type { GenerationQueueService } from '../agent/generation-queue.service';
 import type { GenerationJobService } from '../agent/generation-job.service';
 import type { GenerationRunService } from '../agent/generation-run.service';
-import {
-  GenerationExecutionService,
-  StaleGenerationRunError,
-} from '../agent/generation-execution.service';
+import { StaleGenerationRunError } from '../agent/generation-execution.service';
 import { InvalidGenerationInputSnapshotError } from '../agent/generation-input-snapshot';
 import type { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
 import type { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
@@ -41,20 +38,20 @@ function createMockAgentService(): jest.Mocked<AgentService> {
   return { startBookGeneration: vi.fn() } as unknown as jest.Mocked<AgentService>;
 }
 
-function createMockGenerationExecutionService(): jest.Mocked<GenerationExecutionService> {
-  return { applyFencedBookWrite: vi.fn() } as unknown as jest.Mocked<GenerationExecutionService>;
-}
-
 function createMockGenerationRunCoordinator(): jest.Mocked<GenerationRunCoordinator> {
   return {
-    completeRun: vi.fn().mockResolvedValue(true),
+    completeRun: vi.fn().mockResolvedValue('applied'),
+    failAbandoned: vi.fn().mockResolvedValue('applied'),
   } as unknown as jest.Mocked<GenerationRunCoordinator>;
 }
 
-/** Default: trusts the run's stored inputSnapshot is already current-shaped and echoes it back — snapshot versioning/legacy-migration itself is covered by generation-input-snapshot-backfill.service.spec.ts. */
+/** Default: trusts the run's stored inputSnapshot is already current-shaped and echoes it back (paired with the run's own inputHash) — snapshot versioning/legacy-migration itself is covered by generation-input-snapshot-backfill.service.spec.ts. */
 function createMockSnapshotBackfillService(): jest.Mocked<GenerationInputSnapshotBackfillService> {
   return {
-    normalize: vi.fn(async (run: { inputSnapshot: unknown }) => run.inputSnapshot),
+    normalize: vi.fn(async (run: { inputSnapshot: unknown; inputHash: string }) => ({
+      snapshot: run.inputSnapshot,
+      inputHash: run.inputHash,
+    })),
   } as unknown as jest.Mocked<GenerationInputSnapshotBackfillService>;
 }
 
@@ -295,7 +292,6 @@ describe('BooksService', () => {
   let generationQueueService: ReturnType<typeof createMockGenerationQueueService>;
   let generationJobService: ReturnType<typeof createMockGenerationJobService>;
   let generationRunService: ReturnType<typeof createMockGenerationRunService>;
-  let generationExecutionService: ReturnType<typeof createMockGenerationExecutionService>;
   let generationRunCoordinator: ReturnType<typeof createMockGenerationRunCoordinator>;
   let snapshotBackfill: ReturnType<typeof createMockSnapshotBackfillService>;
   let config: ReturnType<typeof createMockConfig>;
@@ -330,7 +326,6 @@ describe('BooksService', () => {
     generationQueueService = createMockGenerationQueueService();
     generationJobService = createMockGenerationJobService();
     generationRunService = createMockGenerationRunService();
-    generationExecutionService = createMockGenerationExecutionService();
     generationRunCoordinator = createMockGenerationRunCoordinator();
     snapshotBackfill = createMockSnapshotBackfillService();
     config = createMockConfig();
@@ -344,7 +339,6 @@ describe('BooksService', () => {
       generationQueueService as never,
       generationJobService as never,
       generationRunService as never,
-      generationExecutionService as never,
       generationRunCoordinator as never,
       snapshotBackfill as never,
       config,
@@ -1555,12 +1549,38 @@ describe('BooksService', () => {
         errorMessage: 'unexpected pipeline crash',
       });
     });
+
+    it('does NOT mark the legacy GenerationJob completed/failed when completeRun reports the run was superseded (stale_fence) — a superseded worker must not touch diagnostics for whichever attempt actually owns the run now', async () => {
+      const ctx = makeCtx();
+      agentService.startBookGeneration.mockResolvedValue(makeOutcome());
+      generationJobService.findActive.mockResolvedValue(makeGenerationJob());
+      generationRunCoordinator.completeRun.mockResolvedValue('stale_fence');
+
+      await service.runGenerationPipeline(ctx);
+
+      expect(generationJobService.markCompleted).not.toHaveBeenCalled();
+      expect(generationJobService.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('does NOT mark the legacy GenerationJob completed/failed when completeRun reports a book_mirror_mismatch — publication did not actually apply', async () => {
+      const ctx = makeCtx();
+      agentService.startBookGeneration.mockResolvedValue(
+        makeOutcome({ status: STATUS_FAILED as GenerationOutcome['status'] }),
+      );
+      generationJobService.findActive.mockResolvedValue(makeGenerationJob());
+      generationRunCoordinator.completeRun.mockResolvedValue('book_mirror_mismatch');
+
+      await service.runGenerationPipeline(ctx);
+
+      expect(generationJobService.markCompleted).not.toHaveBeenCalled();
+      expect(generationJobService.markFailed).not.toHaveBeenCalled();
+    });
   });
 
   // ─── markRunPermanentlyFailedAfterExhaustedRetries ───────────────────────────
 
   describe('markRunPermanentlyFailedAfterExhaustedRetries', () => {
-    it('marks the run and Book failed (fenced) once BullMQ has exhausted every attempt', async () => {
+    it('finalizes the run via GenerationRunCoordinator.failAbandoned (fenced on the run row it read) once BullMQ has exhausted every attempt', async () => {
       const run = makeGenerationRun({
         id: 'run-1',
         bookId: 'b-1',
@@ -1568,23 +1588,13 @@ describe('BooksService', () => {
         status: 'running' as GenerationRun['status'],
       });
       prisma.generationRun.findUnique.mockResolvedValue(run);
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
       await service.markRunPermanentlyFailedAfterExhaustedRetries('run-1');
 
-      expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
-        where: { id: 'run-1', status: 'running', fencingVersion: 2 },
-        data: {
-          status: 'failed',
-          failedAt: expect.any(Date),
-          errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE',
-          errorMessage: expect.any(String),
-        },
-      });
-      expect(prisma.book.updateMany).toHaveBeenCalledWith({
-        where: { id: 'b-1', activeRunId: 'run-1' },
-        data: { activeRunId: null, status: 'failed', errorMessage: expect.any(String) },
-      });
+      expect(generationRunCoordinator.failAbandoned).toHaveBeenCalledWith(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 2, fromStatus: 'running' },
+        { errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE', errorMessage: expect.any(String) },
+      );
     });
 
     it('is a no-op when the run is already terminal (finished normally before retries were exhausted)', async () => {
@@ -1593,8 +1603,7 @@ describe('BooksService', () => {
 
       await service.markRunPermanentlyFailedAfterExhaustedRetries('run-1');
 
-      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
-      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+      expect(generationRunCoordinator.failAbandoned).not.toHaveBeenCalled();
     });
 
     it('is a no-op when the run no longer exists', async () => {
@@ -1602,7 +1611,40 @@ describe('BooksService', () => {
 
       await service.markRunPermanentlyFailedAfterExhaustedRetries('no-such-run');
 
-      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
+      expect(generationRunCoordinator.failAbandoned).not.toHaveBeenCalled();
+    });
+
+    it('does not mark the legacy GenerationJob when the coordinator reports the run was already superseded', async () => {
+      const run = makeGenerationRun({
+        id: 'run-1',
+        bookId: 'b-1',
+        fencingVersion: 2,
+        status: 'running' as GenerationRun['status'],
+      });
+      prisma.generationRun.findUnique.mockResolvedValue(run);
+      generationRunCoordinator.failAbandoned.mockResolvedValue('stale_fence');
+      generationJobService.findActive.mockResolvedValue(makeGenerationJob());
+
+      await service.markRunPermanentlyFailedAfterExhaustedRetries('run-1');
+
+      expect(generationJobService.markFailed).not.toHaveBeenCalled();
+    });
+
+    it('marks the legacy GenerationJob failed once the coordinator confirms the transition applied', async () => {
+      const run = makeGenerationRun({
+        id: 'run-1',
+        bookId: 'b-1',
+        fencingVersion: 2,
+        status: 'running' as GenerationRun['status'],
+      });
+      prisma.generationRun.findUnique.mockResolvedValue(run);
+      generationJobService.findActive.mockResolvedValue(makeGenerationJob());
+
+      await service.markRunPermanentlyFailedAfterExhaustedRetries('run-1');
+
+      expect(generationJobService.markFailed).toHaveBeenCalledWith('job-1', {
+        errorMessage: expect.any(String),
+      });
     });
   });
 

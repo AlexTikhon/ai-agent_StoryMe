@@ -34,10 +34,7 @@ import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationRunService } from '../agent/generation-run.service';
-import {
-  GenerationExecutionService,
-  StaleGenerationRunError,
-} from '../agent/generation-execution.service';
+import { StaleGenerationRunError } from '../agent/generation-execution.service';
 import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
 import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
@@ -108,7 +105,6 @@ export class BooksService {
     private readonly generationQueueService: GenerationQueueService,
     private readonly generationJobService: GenerationJobService,
     private readonly generationRunService: GenerationRunService,
-    private readonly generationExecutionService: GenerationExecutionService,
     private readonly generationRunCoordinator: GenerationRunCoordinator,
     private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
     private readonly config: ConfigService<Env, true>,
@@ -360,7 +356,12 @@ export class BooksService {
     let inputSnapshot: GenerationInputSnapshot;
     if (priorRun) {
       try {
-        inputSnapshot = await this.snapshotBackfill.normalize(priorRun);
+        // .snapshot only — createRunAndSchedule below always recomputes
+        // inputHash fresh from whatever inputSnapshot it's given, so the new
+        // run's hash is self-consistent regardless (see
+        // GenerationInputSnapshotBackfillService's snapshot/hash invariant
+        // doc comment for why that pairing matters at all).
+        inputSnapshot = (await this.snapshotBackfill.normalize(priorRun)).snapshot;
       } catch (err) {
         if (!(err instanceof InvalidGenerationInputSnapshotError)) throw err;
         // Predictable, safe failure (never the raw Zod issue list) rather
@@ -583,6 +584,14 @@ export class BooksService {
    * transient failure requiring the user to click retry manually. See
    * GenerationQueueProcessor.onFailed for what happens once BullMQ's own
    * attempts are exhausted.
+   *
+   * completeRun's result gates the legacy GenerationJob update below: if it
+   * didn't come back 'applied' (this attempt was superseded, or the
+   * run/Book mirror invariant broke — see CoordinatorOutcome), this attempt
+   * has no business declaring victory or defeat on a diagnostics row that a
+   * different, still-live attempt for the same book may still be writing to.
+   * Whichever attempt actually gets 'applied' is the one responsible for its
+   * own GenerationJob update.
    */
   async runGenerationPipeline(ctx: GenerationExecutionContext): Promise<void> {
     const { bookId, runId } = ctx;
@@ -626,7 +635,8 @@ export class BooksService {
       throw err;
     }
 
-    await this.generationRunCoordinator.completeRun(ctx, outcome);
+    const published = await this.generationRunCoordinator.completeRun(ctx, outcome);
+    if (published !== 'applied') return;
 
     if (legacyJob) {
       if (outcome.status === BookStatus.failed) {
@@ -656,39 +666,30 @@ export class BooksService {
    * error kept recurring and no more retries are coming," so the book is
    * never left stuck in a non-terminal status indefinitely. A no-op if the
    * run isn't `running` anymore (already finalized by a normal completion,
-   * or already reclaimed) — checked via the same fencing guard as
-   * completeRun. Phase 2C's recovery sweep is the equivalent backstop for a
-   * whole worker *process* dying mid-attempt, as opposed to a single job
-   * exhausting its retries while the process stays up.
+   * or already reclaimed) — that early read is this method's own policy
+   * decision (only a BullMQ-exhausted, still-`running` claim is this
+   * backstop's concern); the actual fenced GenerationRun+Book transition is
+   * GenerationRunCoordinator.failAbandoned, shared with
+   * GenerationRunRecoveryService's abandoned-run sweep below. Phase 2C's
+   * recovery sweep is the equivalent backstop for a whole worker *process*
+   * dying mid-attempt, as opposed to a single job exhausting its retries
+   * while the process stays up.
    */
   async markRunPermanentlyFailedAfterExhaustedRetries(runId: string): Promise<void> {
     const run = await this.prisma.generationRun.findUnique({ where: { id: runId } });
     if (!run || run.status !== GenerationRunStatus.running) return;
 
     const safeMessage = 'Generation failed after repeated errors — please retry.';
-    const finalized = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.generationRun.updateMany({
-        where: {
-          id: run.id,
-          status: GenerationRunStatus.running,
-          fencingVersion: run.fencingVersion,
-        },
-        data: {
-          status: GenerationRunStatus.failed,
-          failedAt: new Date(),
-          errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE',
-          errorMessage: safeMessage,
-        },
-      });
-      if (updated.count === 0) return false;
-
-      await tx.book.updateMany({
-        where: { id: run.bookId, activeRunId: run.id },
-        data: { activeRunId: null, status: BookStatus.failed, errorMessage: safeMessage },
-      });
-      return true;
-    });
-    if (!finalized) return;
+    const result = await this.generationRunCoordinator.failAbandoned(
+      {
+        runId: run.id,
+        bookId: run.bookId,
+        fencingVersion: run.fencingVersion,
+        fromStatus: GenerationRunStatus.running,
+      },
+      { errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE', errorMessage: safeMessage },
+    );
+    if (result !== 'applied') return;
 
     const legacyJob = await this.generationJobService.findActive(run.bookId).catch(() => null);
     if (legacyJob) {

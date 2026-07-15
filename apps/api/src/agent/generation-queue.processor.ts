@@ -78,9 +78,9 @@ export class GenerationQueueProcessor extends WorkerHost {
       return;
     }
 
-    let inputSnapshot;
+    let normalized;
     try {
-      inputSnapshot = await this.snapshotBackfill.normalize(claimed);
+      normalized = await this.snapshotBackfill.normalize(claimed);
     } catch (err) {
       if (!(err instanceof InvalidGenerationInputSnapshotError)) throw err;
       this.logger.error(
@@ -98,8 +98,12 @@ export class GenerationQueueProcessor extends WorkerHost {
       runId: claimed.id,
       bookId: claimed.bookId,
       fencingVersion: claimed.fencingVersion,
-      inputHash: claimed.inputHash,
-      inputSnapshot,
+      // The pair normalize() returns, never claimed.inputHash directly — a
+      // migrated legacy run's stored inputHash column can be stale relative
+      // to its (just-migrated) inputSnapshot; see
+      // GenerationInputSnapshotBackfillService's own doc comment.
+      inputHash: normalized.inputHash,
+      inputSnapshot: normalized.snapshot,
       signal: abortController.signal,
     };
 

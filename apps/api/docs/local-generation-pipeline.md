@@ -43,10 +43,10 @@ the full design and its remaining limitations.
 ## What `AgentService.startBookGeneration` does, in order
 
 - (a) `storyGenerationProvider.generateStory({ bookId, childName, childAge,
-  theme, language })` — delegates all character/story/page/image-metadata
+theme, language })` — delegates all character/story/page/image-metadata
   planning to the injected `StoryGenerationProvider` (see "Story generation
   provider boundary" below) and returns `{ characterCard, storyPlan,
-  bookPreview, imageGenerationResult }`. If this call throws, `AgentService`
+bookPreview, imageGenerationResult }`. If this call throws, `AgentService`
   catches it, marks the book `failed` (`failedStep: 'story_plan'`,
   `errorMessage` from the caught error), writes a single `story_plan`
   `AgentLog` row with `status: 'error'`, and returns immediately — none of
@@ -55,13 +55,13 @@ the full design and its remaining limitations.
   `GeneratedImageEntry` in the provider's `imageGenerationResult` (up to the
   `MAX_GENERATED_IMAGES_PER_BOOK` cap for the real provider), calls the
   injected `ImageGenerationProvider.generateImage({ bookId, entry,
-  characterCard })` (see "Image generation provider boundary" below) to get
+characterCard })` (see "Image generation provider boundary" below) to get
   real image bytes, then saves them through
   `ImageAssetStorage.saveImageAsset(imageAssetKey(bookId, kind, pageNumber),
-  buffer, contentType)`. **This helper never throws.** Both a `generateImage`
+buffer, contentType)`. **This helper never throws.** Both a `generateImage`
   failure (e.g. a real provider's API outage) and a `saveImageAsset` failure
   for one entry are caught per-entry, logged (`Image generation/save failed
-  for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
+for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
   Unlike earlier phases, this no longer degrades quietly: `assertAllImagesResolved`
   (Phase 2 below) requires every planned illustration to have real bytes, so
   any entry left without saved bytes now fails the whole book at `pdf_render`
@@ -216,7 +216,9 @@ interface StoryGenerationInput {
 
 interface StoryGenerationResult {
   characterCard: CharacterCard;
-  storyPlan: StoryPlan & { pages: Array<PagePlan & { storyText: string; illustration: IllustrationPlan }> };
+  storyPlan: StoryPlan & {
+    pages: Array<PagePlan & { storyText: string; illustration: IllustrationPlan }>;
+  };
   bookPreview: BookPreview;
   imageGenerationResult: ImageGenerationResult;
 }
@@ -236,9 +238,9 @@ interface StoryGenerationProvider {
   `buildBookPreview`, `buildImageGenerationResult` — now private functions in
   `story-generation-provider.ts`) — same inputs still produce byte-identical
   output; no behavior changed by the extraction.
-- Image *metadata* (prompts, mock `imageUrl` placeholder paths,
+- Image _metadata_ (prompts, mock `imageUrl` placeholder paths,
   `GeneratedImageEntry` records) is built by the provider as part of
-  `imageGenerationResult`. Actual image *bytes* are not — that stays behind
+  `imageGenerationResult`. Actual image _bytes_ are not — that stays behind
   `ImageAssetStorage` / `generateMockImagePng` (see "Images" in
   `apps/api/docs/pdf-rendering.md`), called separately by `AgentService`
   after the provider returns. This split is deliberate: a future real-LLM
@@ -319,7 +321,7 @@ default mock provider.
 
 `apps/api/src/images/image-generation-provider.ts` defines
 `ImageGenerationProvider`, the internal boundary `AgentService` depends on
-for producing the actual image *bytes* for one `GeneratedImageEntry`
+for producing the actual image _bytes_ for one `GeneratedImageEntry`
 (cover/page/back_cover), mirroring the `StoryGenerationProvider` pattern:
 
 ```ts
@@ -377,7 +379,7 @@ interface ImageGenerationProvider {
   has no saved bytes, so `assertAllImagesResolved` fails the whole book at
   the `pdf_render` step (see "Local mock/real image producer" above and
   `apps/api/docs/pdf-rendering.md`) instead of degrading to a placeholder —
-  this holds even if *every* entry fails (e.g. a full API outage). The counts
+  this holds even if _every_ entry fails (e.g. a full API outage). The counts
   are surfaced via `imageGenerationResult.generatedImageCount`/`failedImageCount`/
   `lastImageError` (see "Generation diagnostics" below) and folded into the
   final `image_gen` `AgentLog` row's `error` field when `failedCount > 0`
@@ -514,7 +516,7 @@ Set `MAX_GENERATED_IMAGES_PER_BOOK` to at least the book's total image count
 (cover + pages + back cover) for a full real-image local test run — e.g. `9`
 for a 7-page book. This is still deliberately independent of
 `REAL_GENERATION_MAX_PAGES` above: that guardrail rejects any single page
-request beyond a page-number threshold; this one limits the *count* of real
+request beyond a page-number threshold; this one limits the _count_ of real
 illustrations per book to control cost.
 
 ### Manual end-to-end smoke test
@@ -602,6 +604,7 @@ cover). Run it deliberately, not routinely.
    `MAX_GENERATED_IMAGES_PER_BOOK` unset (or at its existing local `.env`
    value) as long as it's `>= 6`; raise it only if you also raise
    `SMOKE_PAGE_COUNT` for a longer full-book review.
+
 2. Run (from `apps/api`, with a local Postgres + Redis up, e.g. via
    `pnpm --filter @book/api dev`'s existing stack):
 
@@ -626,12 +629,13 @@ cover). Run it deliberately, not routinely.
    broke. If `SMOKE_CHILD_PHOTO_PATH` is set without
    `CHARACTER_PROFILE_PROVIDER=openai`, the script prints an upfront warning
    that visual-reference consistency won't be exercised this run.
+
 3. **Where output lands**: with the default `LocalPdfStorage`/local
    `ImageAssetStorage` drivers, the rendered PDF is at
    `apps/api/tmp/books/<bookId>/storybook.pdf` and generated illustration
    bytes are under `apps/api/tmp/images/` (exact layout is storage-driver
    internal — always go through `imageAssetKey`/`GET
-   /api/books/:id/pdf/preview` rather than hardcoding paths). The console
+/api/books/:id/pdf/preview` rather than hardcoding paths). The console
    summary prints the book id and PDF preview URL — see "Smoke test output"
    below.
 4. **Safe diagnostics to check** — either read the script's printed summary,
@@ -652,7 +656,7 @@ cover). Run it deliberately, not routinely.
      into every page's illustration prompt (a regression, not expected).
    - `characterPersonalization.characterReferenceAvailable` — confirm `true`
      when a character sheet was generated; `false` with `characterSheetGenerated:
-     true` means the sheet was created but its bytes couldn't be read back
+true` means the sheet was created but its bytes couldn't be read back
      from storage (see "Visual-reference consistency" below).
    - `characterPersonalization.characterReferenceUsedForImages` and
      `.imageGenerationMode` — confirm `characterReferenceUsedForImages: true`
@@ -670,7 +674,7 @@ cover). Run it deliberately, not routinely.
 5. **Cleaning up local files** — this script does not delete what it creates.
    To reset: delete the smoke-test book's row(s) from `Book`/`AgentLog`/
    `GenerationJob` (`childName`/`title` filter on `'Real Generation Smoke
-   Test'`, or `userId` of the `smoke-real-generation@storyme.local` user), and
+Test'`, or `userId` of the `smoke-real-generation@storyme.local` user), and
    delete `apps/api/tmp/books/<bookId>/` and any `apps/api/tmp/images/<bookId>*`
    files for those book ids.
 6. **Cost warning**: every run with `IMAGE_GENERATION_PROVIDER=openai` and
@@ -700,7 +704,7 @@ applies when a character sheet exists and its bytes can be read back.
   protagonist visually identical across every illustration" instruction on
   top of that. `characterPersonalization.pagePromptsIncludeConsistencyData`
   in diagnostics confirms this held for every page of a given book. This is
-  purely a matter of repeating the same *words* on every prompt — the model
+  purely a matter of repeating the same _words_ on every prompt — the model
   never sees the character's actual pixels.
 - **Visual-reference consistency** (real `IMAGE_GENERATION_PROVIDER=openai`
   only): `AgentService` generates one standalone character-sheet reference
@@ -738,7 +742,7 @@ applies when a character sheet exists and its bytes can be read back.
   availability), and `.imageGenerationMode`
   (`'text-to-image' | 'character-reference-edit' | 'mixed'`) from
   `GET /:id/generation-diagnostics`. `characterSheetGenerated` only means a
-  sheet was *created* — it does not imply the bytes were later available or
+  sheet was _created_ — it does not imply the bytes were later available or
   used; see "Fallback behavior" below for exactly when these diverge.
 - **Fallback behavior** (verified in `agent.service.spec.ts` and
   `openai-image-generation-provider.spec.ts`): if the `CharacterProfileProvider`
@@ -746,13 +750,13 @@ applies when a character sheet exists and its bytes can be read back.
   warning, and falls back to `MockCharacterProfileProvider` — generation is
   never blocked by a profile failure, and the `char_build` `AgentLog` row is
   written with `status: 'error'` and `provider: 'mock'` so the fallback is
-  visible in `recentLogs`. If the character-sheet *generation* call fails
+  visible in `recentLogs`. If the character-sheet _generation_ call fails
   (profile itself succeeded), generation also continues — the book has
   `characterProfile.hasCharacterSheet: false`, no `characterSheetAssetKey`,
   and `characterReferenceAvailable`/`characterReferenceUsedForImages` both
   `false` (`imageGenerationMode: 'text-to-image'`), with `char_build` staying
   `status: 'success'` since the profile step (not the best-effort sheet) is
-  what that status reflects. If the sheet *was* generated and saved but its
+  what that status reflects. If the sheet _was_ generated and saved but its
   bytes can't be read back later (e.g. a storage hiccup),
   `loadCharacterReference` logs a safe warning (never bytes/base64) and
   every page falls back to the ordinary text-to-image path for that run —
@@ -811,13 +815,13 @@ interface GenerationDiagnosticsDto {
   failedStep?: AgentStep | null;
   errorMessage?: string | null;
   generationMetadata: GenerationMetadata; // storyProvider, imageProvider, storyModel,
-                                           // imageModel, requestedPages, generatedPages,
-                                           // generatedImageCount, failedImageCount,
-                                           // startedAt, completedAt, failedAt, durationMs,
-                                           // failedStep, errorMessage
-  recentLogs: AgentLogSummary[];          // up to 20 most recent AgentLog rows, newest first
+  // imageModel, requestedPages, generatedPages,
+  // generatedImageCount, failedImageCount,
+  // startedAt, completedAt, failedAt, durationMs,
+  // failedStep, errorMessage
+  recentLogs: AgentLogSummary[]; // up to 20 most recent AgentLog rows, newest first
   previewPdfUrl?: string | null;
-  pdfStorage: PdfStorageDiagnostics;      // driver, keyPresent, previewAvailable — see below
+  pdfStorage: PdfStorageDiagnostics; // driver, keyPresent, previewAvailable — see below
 }
 ```
 
@@ -855,9 +859,9 @@ production incident that motivated this.
 ```ts
 interface PdfStorageDiagnostics {
   driver: 'local' | 's3' | 'r2'; // the PdfStorage driver actually configured for this process
-  keyPresent: boolean;           // Book.previewPdfUrl is set — the pipeline believes a PDF was saved
-  previewAvailable: boolean;     // the storage backend was actually asked (PdfStorage.previewPdfExists)
-                                  // and confirmed it can produce bytes right now
+  keyPresent: boolean; // Book.previewPdfUrl is set — the pipeline believes a PDF was saved
+  previewAvailable: boolean; // the storage backend was actually asked (PdfStorage.previewPdfExists)
+  // and confirmed it can produce bytes right now
 }
 ```
 
@@ -872,7 +876,7 @@ interface PdfStorageDiagnostics {
   tool or admin view.
 - **How to read it**: `keyPresent: true, previewAvailable: false` is the
   specific signature of the worker/API storage-mismatch bug — the pipeline
-  saved a PDF somewhere, but *this* process's configured `PdfStorage` can't
+  saved a PDF somewhere, but _this_ process's configured `PdfStorage` can't
   find it. `keyPresent: false` just means generation hasn't reached the PDF
   step yet (or failed before it). `previewAvailable: true` means
   `GET /:id/pdf/preview` should succeed right now.
@@ -1005,13 +1009,13 @@ place, reusing `AgentService.startBookGeneration` rather than duplicating any
 generation logic.
 
 - **How a failed generation is represented** — nothing new. `Book.status ===
-  'failed'`, `Book.failedStep` (which pipeline step failed), and
+'failed'`, `Book.failedStep` (which pipeline step failed), and
   `Book.errorMessage` (the caught error's message) are the same fields set by
   the original run (see "What `AgentService.startBookGeneration` does, in
   order" above). The `AgentLog` rows from the failed attempt are never
   deleted.
 - **How to inspect diagnostics** — unchanged from Phase 3E: `GET
-  /api/books/:id/generation-diagnostics` (or the book detail page's
+/api/books/:id/generation-diagnostics` (or the book detail page's
   diagnostics panel) shows `failedStep`, `errorMessage`, and `recentLogs` for
   the failed run. See "Generation diagnostics (Phase 3E)" above.
 - **How to retry** — `BooksService.retryGeneration(userId, bookId)`:
@@ -1042,7 +1046,7 @@ generation logic.
 - **Frontend**: the book detail page shows a "Retry generation" button next
   to the diagnostics panel only when `status === BookStatus.Failed`. Clicking
   it calls `booksApi.retryGeneration(id)` (`POST
-  /books/:id/retry-generation`), disables the button until the response
+/books/:id/retry-generation`), disables the button until the response
   comes back, and on success replaces the page's `book` state with the
   response — which re-triggers the existing status/diagnostics poll effect
   exactly as a fresh `Generate Story` click does, since that effect is keyed
@@ -1073,13 +1077,13 @@ generation logic.
 > it describes no longer exist in the code; `generationTaskRunner.run(...)`
 > below is the same call site now made through `GenerationQueueService`. The
 > request-lifecycle behavior (HTTP response returns as soon as the status
-> transition is persisted, pipeline runs after) is unchanged — only *what*
+> transition is persisted, pipeline runs after) is unchanged — only _what_
 > runs it changed.
 
 `POST /api/books/:id/generate` and `POST /api/books/:id/retry-generation`
 return as soon as the status transition is persisted — they no longer wait
 for the whole pipeline (including PDF render) to finish. The pipeline itself
-is unchanged; only *when* the HTTP response is sent changed.
+is unchanged; only _when_ the HTTP response is sent changed.
 
 - **`apps/api/src/agent/generation-task-runner.ts`** — `GenerationTaskRunner`,
   an injectable, in-process scheduler:
@@ -1089,7 +1093,7 @@ is unchanged; only *when* the HTTP response is sent changed.
     is already in its in-memory `running` `Set`, so the same book can't have
     two pipeline runs in flight at once within this process.
   - Any error the task throws is caught, logged (`Unhandled generation task
-    error for book <id>: <message>`), and swallowed — a background failure
+error for book <id>: <message>`), and swallowed — a background failure
     can never crash the process via an unhandled rejection.
   - `bookId` is removed from the running set in a `finally`, whether the task
     resolved or rejected, so the same book can be regenerated later.
@@ -1111,11 +1115,11 @@ is unchanged; only *when* the HTTP response is sent changed.
   `startGeneration`/`retryGeneration` used to make directly, so none of
   `AgentService`'s own failure handling (story-plan/image-gen/pdf-render →
   `failed`) changed. This method's own `try/catch` only guards against an
-  error escaping *all* of `AgentService`'s handling (a truly unexpected bug);
+  error escaping _all_ of `AgentService`'s handling (a truly unexpected bug);
   if that happens, it marks the book `failed` with the caught error's message
   so the book never gets stuck in a non-terminal status forever, and logs
   (`Background generation pipeline threw unexpectedly for book <id>:
-  <message>`). Even the fallback `prisma.book.update` is wrapped in a
+<message>`). Even the fallback `prisma.book.update` is wrapped in a
   `.catch()` — this method must never throw, since nothing awaits it.
 - **Duplicate generation** — guarded at two levels: the DB `status` check
   (a book already past `created`/not `failed` is rejected with 409 before any
@@ -1136,7 +1140,7 @@ is unchanged; only *when* the HTTP response is sent changed.
 
 Alongside `Book.status` (still the source of truth for user-facing status),
 every `generate`/`retry-generation` call now also creates a `GenerationJob`
-row — a typed, persisted record of that one generation *attempt*. This is
+row — a typed, persisted record of that one generation _attempt_. This is
 job-state hardening only: the runner is still `GenerationTaskRunner`
 in-process scheduling (unchanged from Phase 3H), not a durable queue. The
 model exists so generation attempts are individually inspectable today and so
@@ -1196,7 +1200,7 @@ without redesigning the pipeline.
 - **Known limitations**:
   - **No resume-on-restart.** A `GenerationJob` stuck in `running` because the
     API process crashed or redeployed mid-generation is not automatically
-    retried — see "Startup recovery (Phase 3J)" below for what *does* happen
+    retried — see "Startup recovery (Phase 3J)" below for what _does_ happen
     to it on the next boot (a fail-safe, not a resume).
   - ~~Still in-process, still no cross-instance coordination.~~ **Done in
     Phase 3K** — see "Durable generation queue (Phase 3K)" below.
@@ -1208,7 +1212,7 @@ without redesigning the pipeline.
 ## Startup recovery (Phase 3J)
 
 Phase 3I made a `GenerationJob` stuck in `queued`/`running` after an API
-crash or redeploy *visible* via diagnostics but didn't fix it — the book
+crash or redeploy _visible_ via diagnostics but didn't fix it — the book
 stayed in a non-terminal "generating" status forever, since nothing else
 would ever move it. Phase 3J closes that gap with a **fail-safe, not a
 resume**: on every app boot, any job left active by a previous process is
@@ -1234,8 +1238,8 @@ automatically re-run.
   - `recover(staleAfterMs, now?)` computes `cutoff = now - staleAfterMs`,
     calls `findStaleActiveJobs(cutoff)`, and for each stale job:
     1. `generationJobService.markFailed(job.id, { errorMessage:
-       GENERATION_INTERRUPTED_MESSAGE })` — `"Generation was interrupted
-       before completion. Please retry."`. `failedStep` is left `null`
+GENERATION_INTERRUPTED_MESSAGE })` — `"Generation was interrupted
+before completion. Please retry."`. `failedStep` is left `null`
        rather than set to a specific `AgentStep`: recovery has no record of
        which pipeline step the process actually died on (`GenerationJob`
        doesn't track a "current step"), and `AgentStep` is a strict Prisma
@@ -1244,7 +1248,7 @@ automatically re-run.
     2. Looks up the job's `Book`; if its `status` isn't one of the terminal
        values (`complete`, `failed`, `partial`, `cancelled`), updates it to
        `status: 'failed'`, `failedStep: null`, `errorMessage:
-       GENERATION_INTERRUPTED_MESSAGE`. A book already `complete` or `failed`
+GENERATION_INTERRUPTED_MESSAGE`. A book already `complete` or `failed`
        is left completely untouched — recovery never overwrites an existing
        outcome or a prior failure's own `errorMessage`/`failedStep`.
     - Each job is recovered independently (`try/catch` per job) — one job
@@ -1265,7 +1269,7 @@ automatically re-run.
   already derives `latestJob` from `GenerationJobService.findLatest`, which
   reads the same (now-updated) `GenerationJob` row; a recovered job shows up
   as `latestJob.status: 'failed'` with `errorMessage:
-  "Generation was interrupted before completion. Please retry."` the next
+"Generation was interrupted before completion. Please retry."` the next
   time diagnostics are fetched, with no extra plumbing.
 - **Retry after recovery** — unaffected. A book recovery marks `failed` is,
   from `BooksService.retryGeneration`'s point of view, indistinguishable from
@@ -1289,7 +1293,7 @@ automatically re-run.
     thing that catches a job BullMQ itself can't recover (e.g. the whole
     process, including Redis connectivity, died in a way BullMQ's stalled-job
     detection doesn't cover before the next restart).
-  - A job that goes stale *between* recovery runs (i.e., the API stays up but
+  - A job that goes stale _between_ recovery runs (i.e., the API stays up but
     the worker silently stops progressing without throwing or the process
     crashing) is not detected until the next process restart — recovery only
     runs on boot, not on an interval. BullMQ's own stalled-job detection (see
@@ -1332,8 +1336,8 @@ endpoints, or `AgentService`'s pipeline changed — only what schedules and runs
   never actually triggers here — see the processor note below.
 - **Producer — `apps/api/src/agent/generation-queue.service.ts`**
   (`GenerationQueueService`, registered in `books.module.ts`): `enqueue({
-  bookId, jobId })` adds one job (`queue.add('run-generation', data, { jobId
-  })`), using the `GenerationJob` row's own id as the BullMQ job id. Since
+bookId, jobId })` adds one job (`queue.add('run-generation', data, { jobId
+})`), using the `GenerationJob` row's own id as the BullMQ job id. Since
   that id is already unique per attempt (a fresh `GenerationJob` is created by
   `startGeneration`/`retryGeneration` every time), no separate
   de-duplication logic is needed at the queue layer — `GenerationJobService.findActive`
@@ -1387,7 +1391,7 @@ endpoints, or `AgentService`'s pipeline changed — only what schedules and runs
     behind a load balancer now lets BullMQ distribute `book-generation` jobs
     across whichever instance's worker claims each one, instead of every
     instance's in-memory `running` `Set` only knowing about its own
-    schedules. The *request-time* duplicate-generation guard
+    schedules. The _request-time_ duplicate-generation guard
     (`GenerationJobService.findActive` + the atomic status-claim UPDATE) was
     already cross-instance-safe via Postgres and is unchanged.
   - **BullMQ's own stalled-job detection** as a second (partial) safety net
@@ -1463,7 +1467,7 @@ generation-relevant field (`childName`, `childAge`, `theme`, `language`,
 The Book row is still loaded, but only for prior-progress fields (story
 plan/character card/etc., for idempotent resume) and identity — never for
 the input parameters themselves. This is what makes "edit the book, then
-retry" resume from the *pre-edit* input the retried run actually captured,
+retry" resume from the _pre-edit_ input the retried run actually captured,
 not whatever the book looks like right now.
 
 #### Snapshot versioning + legacy backfill (Phase A.1)
@@ -1483,22 +1487,56 @@ versioned identity object (this predates `Book.childPhotoSha256`/
 (copying a prior run's snapshot forward) instead of the plain
 `parseGenerationInputSnapshot` — tries the current schema first, and only on
 failure attempts the legacy one. A legacy snapshot with no photo normalizes
-with no I/O. A legacy snapshot *with* a photo reads the existing asset bytes
+with no I/O. A legacy snapshot _with_ a photo reads the existing asset bytes
 once, computes sha256/size, and writes an **immutable versioned copy** under
 a fresh key (mirroring `uploadChildPhoto`'s own versioning invariant — the
-original bytes are never mutated or deleted), then persists the migrated
-snapshot back onto the run so this only ever happens once per run. If the
-legacy photo's bytes are missing from storage, this throws
-`InvalidGenerationInputSnapshotError` rather than silently treating the run
-as if it never had a photo — a legacy photo is never silently discarded just
-because the new digest columns are null. Safe to call on a run in any status
-(queued/running/failed/completed): it only ever reads+rewrites the
-`inputSnapshot` JSON column, never touches status/fencing.
+original bytes are never mutated or deleted). If the legacy photo's bytes are
+missing from storage, this throws `InvalidGenerationInputSnapshotError` rather
+than silently treating the run as if it never had a photo — a legacy photo is
+never silently discarded just because the new digest columns are null. Safe to
+call on a run in any status (queued/running/failed/completed): it only ever
+reads+rewrites the `inputSnapshot`/`inputHash` columns, never touches
+status/fencing.
+
+`normalize` returns `{ snapshot, inputHash }`, never just the snapshot —
+**every caller must use the returned `inputHash`, never a run's own
+`.inputHash` field read separately.** A migration rewrites `inputSnapshot` to
+the current shape and, in the same write, recomputes and persists `inputHash
+= hashInputSnapshot(snapshot)` — the two always travel together. Earlier, only
+`inputSnapshot` was rewritten and `inputHash` was left exactly as it was
+pre-migration; since a retry always builds its _new_ run's hash fresh from its
+own (already-current) copy of the snapshot (`BooksService.createRunAndSchedule`),
+that stale value could never equal `Book.lastGenerationInputHash` (stamped
+from the hash the migrated run actually executed under), so
+`AgentService.isResumableBook` silently forced a full, unnecessary
+regeneration on every retry of a migrated run instead of resuming — no data
+was lost or corrupted, just wasted work. `GenerationQueueProcessor` builds its
+`GenerationExecutionContext.inputHash` from `normalize`'s return value, not
+`claimed.inputHash`, for the same reason.
+
+**Concurrency.** Two callers can legitimately race to migrate the _same_ run
+— e.g. two concurrent `retryGeneration` requests for the same book, both
+reading the same prior (terminal) run before either has created a new one;
+the per-book "one active run" index only rejects the loser at run-_creation_
+time, after both may already be here. The migration write is a
+compare-and-swap on the run's exact pre-migration `inputSnapshot` value (not a
+blind `updateMany({ where: { id } })`): exactly one racer's write lands. The
+other(s) detect zero rows matched, re-read the now-migrated row, and recurse,
+converging on whichever migration won rather than each trusting its own
+locally-computed copy (bounded at 5 attempts as a safety net against a
+never-converging write storm, which should never happen in practice). Every
+racer's own versioned photo-asset write to `ImageAssetStorage` still happens
+independently (storage has no CAS primitive) — a losing racer's copy is left
+unreferenced, the same accepted cleanup debt `uploadChildPhoto`'s own
+re-upload versioning already carries — but the legacy photo itself is never
+lost (every racer either wins or converges on someone else's equally valid
+migration), and the run's own persisted `inputSnapshot`/`inputHash` pair is
+always self-consistent, never a torn mix of two racers' writes.
 
 #### Invalid snapshot handling — finalize, don't burn retries
 
 A snapshot that fails both the current and legacy schema (truly malformed —
-never expected in practice, but not assumed impossible) is a *permanent*
+never expected in practice, but not assumed impossible) is a _permanent_
 condition, not a transient one. `GenerationQueueProcessor.process` catches
 `InvalidGenerationInputSnapshotError` right after claiming and calls
 `GenerationRunCoordinator.failInvalidSnapshot` directly — finalizing
@@ -1563,7 +1601,7 @@ would fail that old OR-clause and `GenerationQueueProcessor` would silently
 treat it as a no-op, permanently stranding the run.
 
 The fix: `deliveryToken` (the `token` BullMQ's Worker passes to
-`process(job, token)`, minted fresh on *every* lock acquisition, including a
+`process(job, token)`, minted fresh on _every_ lock acquisition, including a
 stalled redelivery) is the fencing identity now, not the attempt count. Every
 call to `claim()` represents BullMQ itself asserting "a worker holds this
 job's lock right now," so it always succeeds and unconditionally bumps
@@ -1597,27 +1635,87 @@ write already goes through independently.
 `AgentService.startBookGeneration` never writes `Book.status = complete` or
 `failed` itself — it returns a typed `GenerationOutcome` (status + safe
 error fields + the rest of the Book update data, deliberately excluding
-those three fields). `GenerationRunCoordinator.completeRun` (extracted out of
-`BooksService` specifically so this exact production method — not a
-hand-copied mirror of it — is what integration tests exercise against real
-Postgres) is the *only* place those fields are ever written: one transaction
-that fences the `GenerationRun` terminal write on `fencingVersion`, and only
-if that holds, writes `Book.status`/`errorMessage`/`failedStep` +
-`activeRunId` (+`publishedRunId` on success) together. Earlier, AgentService
-wrote `Book.status` directly (still fenced, but as a *separate* transaction
-from the one that flipped `GenerationRun` to terminal and cleared
-`activeRunId`) — a crash between those two transactions left `Book` already
-showing `complete`/`failed` while `GenerationRun` was still `running` and
-`activeRunId` still pointed at it, which among other things left
-`findActiveForBook` blocking a legitimate retry/regenerate against a book
-that looked finished. `GenerationRunCoordinator.failInvalidSnapshot` follows
-the identical pattern for a permanently malformed `input_snapshot` (see
-below). A crash before either coordinator method's transaction commits
-leaves both `Book` and `GenerationRun` non-terminal; a crash after leaves
-both terminal and consistent — there is no in-between state either way.
-`markRunPermanentlyFailedAfterExhaustedRetries` (BullMQ attempts exhausted,
-no `AgentService` outcome to publish) follows the same fenced
-transaction shape inline in `BooksService`.
+those three fields). `GenerationRunCoordinator` (`apps/api/src/agent/
+generation-run-coordinator.service.ts`, extracted out of `BooksService`
+specifically so this exact production code — not a hand-copied mirror of it
+— is what integration tests exercise against real Postgres) is the _only_
+place a `GenerationRun`'s terminal transition is ever paired with a `Book`
+mirror write. Every public method shares one private helper
+(`runFencedTerminalTransition`) that does exactly two things, in one
+transaction: fences the `GenerationRun` write on `status` + `fencingVersion`,
+and — only if that held — writes `Book` (`activeRunId` cleared, plus whatever
+that method's own terminal fields are). Three callers reach it, each owning
+its own _policy_ (when to fail a run, with what code/message) while the
+mechanism itself lives only here:
+
+- **`completeRun(ctx, outcome)`** — `AgentService`'s own computed outcome
+  (success or an anticipated pipeline failure). Writes
+  `Book.status`/`errorMessage`/`failedStep` + `activeRunId` (+
+  `publishedRunId` on success) together with `GenerationRun`'s own
+  `completed`/`failed` transition.
+- **`failInvalidSnapshot(ctx, errorMessage)`** — a permanently malformed
+  `input_snapshot`, caught before `AgentService` ever runs (see below).
+- **`failAbandoned(ref, params)`** — a run finalized without `AgentService`
+  ever having produced an outcome at all: BullMQ retry exhaustion
+  (`BooksService.markRunPermanentlyFailedAfterExhaustedRetries`) or an
+  abandoned-run recovery sweep (`GenerationRunRecoveryService.recoverOne`).
+  `ref.fromStatus` is the `GenerationRun` status the caller actually observed
+  (`running` for exhausted retries — a claimed run is always `running`;
+  `running` _or_ `queued` for recovery, which also reclaims runs stuck before
+  ever being claimed).
+
+Earlier (pre-Phase-A), `AgentService` wrote `Book.status` directly (still
+fenced, but as a _separate_ transaction from the one that flipped
+`GenerationRun` to terminal and cleared `activeRunId`) — a crash between those
+two transactions left `Book` already showing `complete`/`failed` while
+`GenerationRun` was still `running` and `activeRunId` still pointed at it,
+which among other things left `findActiveForBook` blocking a legitimate
+retry/regenerate against a book that looked finished. This phase's later
+hardening pass found — and closed — a second, subtler version of the same
+problem: `markRunPermanentlyFailedAfterExhaustedRetries` and the recovery
+sweep's abandoned-run path both still hand-rolled their _own_ copy of this
+same fenced-transaction shape directly against `BooksService`'s/
+`GenerationRunRecoveryService`'s own `PrismaService`, bypassing the
+coordinator entirely — so the coordinator's own doc comment claiming to be
+"the only place" was not, in fact, literally true. Both now go through
+`failAbandoned` instead; every terminal `GenerationRun`+`Book` transition in
+this codebase goes through `GenerationRunCoordinator`, full stop. Queue/
+recovery _policy_ (BullMQ attempt bookkeeping, the recovery lease, BullMQ
+pending-job checks) deliberately stayed in `BooksService`/
+`GenerationRunRecoveryService` — only the transactional write mechanism moved,
+so the coordinator stays a small, typed API rather than growing into a
+god service that also owns orchestration.
+
+A crash before any coordinator method's transaction commits leaves both
+`Book` and `GenerationRun` non-terminal; a crash after leaves both terminal
+and consistent — there is no in-between state either way.
+
+**Result type, not a boolean.** Every coordinator method returns
+`CoordinatorOutcome` (`'applied' | 'stale_fence' | 'book_mirror_mismatch'`),
+not a plain boolean:
+
+- `'applied'` — both writes committed; this attempt's outcome is now durable.
+- `'stale_fence'` — the `GenerationRun` fencing WHERE clause matched zero
+  rows: a newer claim/recovery already superseded this attempt. Expected
+  under normal operation, not a bug — `Book` is provably untouched.
+- `'book_mirror_mismatch'` — the `GenerationRun` fence held (this attempt
+  still legitimately owns the run) but `Book.activeRunId` no longer pointed
+  back at it. Under every invariant this system maintains, `activeRunId` is
+  only ever cleared together with that same run's own terminal transition, so
+  this should never happen; if it does, the _entire_ transaction (the
+  `GenerationRun` write included) is rolled back rather than left half-applied,
+  and it's logged at `error` severity (distinct from `stale_fence`'s routine
+  `warn`).
+
+A plain boolean could not distinguish the last two — both read as "nothing
+happened" to a caller that only checks truthiness. Concretely, this is what
+closed a real bug: `BooksService.runGenerationPipeline` used to call
+`completeRun` and then unconditionally update the legacy `GenerationJob`
+mirror regardless of what `completeRun` reported — a superseded worker would
+still mark that diagnostics job `completed`/`failed`, potentially racing (and
+clobbering) whatever the actually-owning attempt was concurrently writing to
+the same job row. It now only touches the `GenerationJob` mirror when the
+coordinator reports `'applied'`.
 
 ### Recovery leadership — a lease row, not a session advisory lock (Phase A.1: server time + fencing generation)
 
@@ -1636,15 +1734,16 @@ between an instance and the DB) could otherwise let two instances disagree
 about whether a lease has actually expired. `leaseGeneration` increments on
 every successful acquire and is returned as a fencing token: instead of a
 renewal heartbeat, the recovery loop re-verifies (`stillHoldsLease`) that it
-still holds this exact generation before *every* candidate it processes —
+still holds this exact generation before _every_ candidate it processes —
 a bounded-batch guard that stops the pass early (leaving the rest for next
 time) the instant leadership is lost, whether because the pass simply ran
 long or because a new leader already took over. `releaseLease` is likewise
 fenced on the acquired generation, so it can never release a lease a newer
-leader has since acquired. `recoverOne`'s own run-fail + Book-clear is
-likewise one transaction, fenced on the `GenerationRun`'s own
-`fencingVersion` (independent of, and in addition to, the recovery lease
-itself). See the "RecoveryLease leadership across two instances" describe
+leader has since acquired. `recoverOne`'s own run-fail + Book-clear goes
+through `GenerationRunCoordinator.failAbandoned` (see "Atomic terminal
+transitions" above) — fenced on the `GenerationRun`'s own status/
+`fencingVersion`, independent of, and in addition to, the recovery lease
+itself. See the "RecoveryLease leadership across two instances" describe
 block in `test/integration/generation-fencing.integration.spec.ts` for
 deterministic, barrier-driven (not `Promise.all`-timing-dependent) coverage
 of both the mutual-exclusion and the fencing-generation invariants.
@@ -1660,7 +1759,7 @@ generation has already begun.
 
 ### Known limitations (explicit, not yet built)
 
-**Scope honesty (Phase A.1):** every `GenerationRun`/`Book` *database write*
+**Scope honesty (Phase A.1):** every `GenerationRun`/`Book` _database write_
 in the generation pipeline is now fenced — claim, heartbeat, every
 `applyFencedBookWrite` call, `completeRun`, `failInvalidSnapshot`,
 `markRunPermanentlyFailedAfterExhaustedRetries`, and recovery's own fail path
@@ -1673,7 +1772,7 @@ all." Two gaps remain, deliberately out of scope for this pass:
   positionally (`imageAssetKey(bookId, kind, pageNumber)`), not
   `books/{bookId}/runs/{runId}/...`. A stale (superseded) attempt's
   in-flight `ImageAssetStorage.saveImageAsset`/PDF-render calls are not
-  fenced by anything — `assertNotSuperseded` checks stop it from *starting*
+  fenced by anything — `assertNotSuperseded` checks stop it from _starting_
   new work promptly once its heartbeat detects supersession, but bytes it
   already started writing before that point can still land at the same key
   a newer attempt is also writing to. There is no `GenerationArtifact` model
@@ -1688,7 +1787,7 @@ all." Two gaps remain, deliberately out of scope for this pass:
   status/content) but is explicitly not fenced today.
 
 Do not describe this phase as having made the pipeline fully safe against a
-stale/zombie worker in general — only its *database writes* are proven safe;
+stale/zombie worker in general — only its _database writes_ are proven safe;
 artifact writes and AgentLog rows still rely on the same-process
 `assertNotSuperseded` best-effort check (or nothing at all) rather than a
 DB-level guarantee.
@@ -1743,7 +1842,7 @@ changed — only which process registers the BullMQ worker.
 - **`apps/api/src/main.ts`** (API entrypoint, unchanged behavior otherwise):
   calls `NestFactory.create(AppModule.register({ enableGenerationWorker }))`
   where `enableGenerationWorker = process.env.ENABLE_GENERATION_WORKER ===
-  'true'`. **Defaults to `false`** — the API never registers the processor
+'true'`. **Defaults to `false`** — the API never registers the processor
   unless that var is explicitly set, matching the "don't consume jobs unless
   explicitly enabled" requirement. Still starts the HTTP server exactly as
   before.
@@ -1759,7 +1858,7 @@ changed — only which process registers the BullMQ worker.
   by BullMQ's stalled-job detection) instead of being killed mid-write.
 - **`GenerationJobRecoveryService` is unaffected** — it's still an
   unconditional `BooksModule` provider (`OnApplicationBootstrap`), so it runs
-  in *both* the API and the worker on their respective boots. This is
+  in _both_ the API and the worker on their respective boots. This is
   deliberately left as-is rather than pinned to one process: it's a
   DB-only fail-safe sweep (see "Startup recovery (Phase 3J)" above), every
   write is an idempotent last-write-wins `update`, and running it twice on a
@@ -1823,15 +1922,15 @@ concepts.
 `CreateBookDto` (`apps/api/src/books/dto/create-book.dto.ts`), enforced by the
 global `ValidationPipe` (`whitelist: true`, `forbidNonWhitelisted: true`):
 
-| Field | Required | Bounds / rules |
-| --- | --- | --- |
-| `title` | yes | trimmed, 1–120 chars |
-| `childName` | yes | trimmed, 1–80 chars |
-| `childAge` | yes | integer, 1–12 |
-| `language` | no | `SupportedLanguage` enum (`en`/`ru`/`pl`); defaults to `en` |
-| `theme` | yes | trimmed, 1–120 chars |
-| `educationalMessage` | no | trimmed, 1–300 chars if present |
-| `pageCount` | no | integer, `MIN_BOOK_PAGE_COUNT`–`MAX_BOOK_PAGE_COUNT` (4–12); defaults to `DEFAULT_BOOK_PAGE_COUNT` (6) |
+| Field                | Required | Bounds / rules                                                                                         |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------ |
+| `title`              | yes      | trimmed, 1–120 chars                                                                                   |
+| `childName`          | yes      | trimmed, 1–80 chars                                                                                    |
+| `childAge`           | yes      | integer, 1–12                                                                                          |
+| `language`           | no       | `SupportedLanguage` enum (`en`/`ru`/`pl`); defaults to `en`                                            |
+| `theme`              | yes      | trimmed, 1–120 chars                                                                                   |
+| `educationalMessage` | no       | trimmed, 1–300 chars if present                                                                        |
+| `pageCount`          | no       | integer, `MIN_BOOK_PAGE_COUNT`–`MAX_BOOK_PAGE_COUNT` (4–12); defaults to `DEFAULT_BOOK_PAGE_COUNT` (6) |
 
 `MIN_BOOK_PAGE_COUNT` / `MAX_BOOK_PAGE_COUNT` / `DEFAULT_BOOK_PAGE_COUNT` are
 exported from `@book/types` (`packages/types/src/book.types.ts`) and shared by
@@ -1884,7 +1983,7 @@ gained two optional fields: `pageCount` and `educationalMessage`.
 
 - **`resolveTargetPageCount(pageCount)`** (exported from
   `story-generation-provider.ts`) clamps to `[MIN_BOOK_PAGE_COUNT,
-  MAX_BOOK_PAGE_COUNT]` and defaults to `DEFAULT_BOOK_PAGE_COUNT` when absent
+MAX_BOOK_PAGE_COUNT]` and defaults to `DEFAULT_BOOK_PAGE_COUNT` when absent
   or non-numeric — a defense-in-depth clamp behind the DTO's own bounds
   (relevant for books created before this migration, whose `pageCount` is
   `null`).
@@ -1971,20 +2070,20 @@ re-verified here — see "Test coverage" below.
 
 ## Failure states summary
 
-| State | Trigger | HTTP surface |
-| --- | --- | --- |
-| `BadRequestException` (400) | `generate` called with missing draft fields | `POST /:id/generate` |
-| `ConflictException` (409) | `update`/`remove` after `status !== created` | `PATCH /:id`, `DELETE /:id` |
-| `ConflictException` (409) | `generate` called when `status !== created` | `POST /:id/generate` |
-| `ConflictException` (409) | `retry-generation` called when `status !== failed` | `POST /:id/retry-generation` |
-| `ConflictException` (409) | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I) | `POST /:id/generate`, `POST /:id/retry-generation` |
-| `InternalServerErrorException` (500) | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K) | `POST /:id/generate`, `POST /:id/retry-generation` |
-| `ConflictException` (409) | preview requested before `previewPdfUrl` is set | `GET /:id/pdf/preview` |
-| `NotFoundException` (404) | book missing / not owned / soft-deleted | any `:id` route |
-| `NotFoundException` (404) | `previewPdfUrl` set but file missing from storage | `GET /:id/pdf/preview` |
-| `BookStatus.failed` | PDF render or `pdfStorage.savePreviewPdf` throws | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H |
-| `BookStatus.failed` | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`) | observed via polling — see above |
-| `BookStatus.failed` | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`) | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H) |
+| State                                            | Trigger                                                                                                                                                                                                                                                             | HTTP surface                                                                                                                                                                                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BadRequestException` (400)                      | `generate` called with missing draft fields                                                                                                                                                                                                                         | `POST /:id/generate`                                                                                                                                                                                                                    |
+| `ConflictException` (409)                        | `update`/`remove` after `status !== created`                                                                                                                                                                                                                        | `PATCH /:id`, `DELETE /:id`                                                                                                                                                                                                             |
+| `ConflictException` (409)                        | `generate` called when `status !== created`                                                                                                                                                                                                                         | `POST /:id/generate`                                                                                                                                                                                                                    |
+| `ConflictException` (409)                        | `retry-generation` called when `status !== failed`                                                                                                                                                                                                                  | `POST /:id/retry-generation`                                                                                                                                                                                                            |
+| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I)                                                                                                                                            | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `InternalServerErrorException` (500)             | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K)                                                                                                                                                                      | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `ConflictException` (409)                        | preview requested before `previewPdfUrl` is set                                                                                                                                                                                                                     | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
+| `NotFoundException` (404)                        | book missing / not owned / soft-deleted                                                                                                                                                                                                                             | any `:id` route                                                                                                                                                                                                                         |
+| `NotFoundException` (404)                        | `previewPdfUrl` set but file missing from storage                                                                                                                                                                                                                   | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
+| `BookStatus.failed`                              | PDF render or `pdfStorage.savePreviewPdf` throws                                                                                                                                                                                                                    | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H                                                                                                                  |
+| `BookStatus.failed`                              | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`)                                                                                                                                                                                         | observed via polling — see above                                                                                                                                                                                                        |
+| `BookStatus.failed`                              | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`)                                                                                                                                                                           | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H)                                                                                                                                            |
 | `BookStatus.failed` (`failedStep: 'pdf_render'`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them), or `MAX_GENERATED_IMAGES_PER_BOOK` capped an entry — `assertAllImagesResolved` then fails the book before rendering | observed via polling `GET /:id` or `GET /:id/generation-diagnostics`; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError`, and the `pdf_render` `AgentLog` row's `error` for which page(s) were missing |
 
 ## Test coverage
@@ -2137,7 +2236,7 @@ re-verified here — see "Test coverage" below.
   `char_build` (not a terminal status) and `AgentService.startBookGeneration`
   is not called synchronously; `generationQueueService.enqueue` is called
   with `{ bookId, jobId }`; calling `service.runGenerationPipeline(bookId,
-  jobId)` directly (as `GenerationQueueProcessor` would) calls
+jobId)` directly (as `GenerationQueueProcessor` would) calls
   `AgentService.startBookGeneration` with the freshly-reloaded book; invoking
   it when `AgentService.startBookGeneration` rejects marks the book `failed`
   with the caught error's message instead of throwing; an
@@ -2223,7 +2322,7 @@ lifecycle — no extra wiring needed.
    the child/story wizard, and submit to create a `created` book.
 4. Open the new book's detail page and click **Generate Story**. Since Phase
    3H, the button only shows "Generating…" for the brief `POST
-   /:id/generate` request itself (which returns as soon as the book is
+/:id/generate` request itself (which returns as soon as the book is
    flipped to `char_build`) — the whole pipeline (story/layout/mock
    images/PDF render) then runs in the background, and the detail page
    auto-polls every 2.5s until it reaches a terminal `complete`/`failed`
@@ -2263,6 +2362,7 @@ here touches Railway or any cloud storage; `PDF_STORAGE_DRIVER`/
    ```
 
    Never commit `.env` or print `OPENAI_API_KEY` — it's already git-ignored.
+
 2. **Have local Postgres + Redis running** (same prerequisite as any other
    local generation run — see the repo root README/`.env.example` for
    connection strings).

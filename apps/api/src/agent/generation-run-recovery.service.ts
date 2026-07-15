@@ -1,8 +1,9 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { BookStatus, GenerationRunStatus, type GenerationRun } from '@prisma/client';
+import { GenerationRunStatus, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { GenerationQueueService } from './generation-queue.service';
+import { GenerationRunCoordinator } from './generation-run-coordinator.service';
 import { GENERATION_INTERRUPTED_MESSAGE } from './generation-job-recovery.service';
 
 export const DEFAULT_GENERATION_RUN_QUEUED_STALE_MS = 5 * 60 * 1000;
@@ -74,11 +75,13 @@ export function readRecoveryLeaseMs(env: NodeJS.ProcessEnv = process.env): numbe
  * require acquire/work/release to run on the same physical connection, a
  * guarantee Prisma's pooled client does not make; getting that wrong either
  * leaks the lock (permanently wedging future passes) or gives no real
- * cross-instance guarantee at all. Every recovery write is still a fenced
- * conditional update (`status` + `fencingVersion` in the WHERE clause, and
- * the run/Book transition wrapped in one transaction) so a run a live worker
- * legitimately advanced between this pass's SELECT and its UPDATE is left
- * untouched (0 rows matched, not an error).
+ * cross-instance guarantee at all. The actual run/Book terminal write for
+ * each stale candidate goes through GenerationRunCoordinator.failAbandoned —
+ * the same fenced (`status` + `fencingVersion` in the WHERE clause, run/Book
+ * transitioned in one transaction) mechanism BooksService's exhausted-retries
+ * backstop uses — so a run a live worker legitimately advanced between this
+ * pass's SELECT and its write is left untouched, not just here but by
+ * construction, in one place.
  */
 @Injectable()
 export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -89,6 +92,7 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
   constructor(
     private readonly prisma: PrismaService,
     private readonly generationQueueService: GenerationQueueService,
+    private readonly generationRunCoordinator: GenerationRunCoordinator,
   ) {}
 
   /** Never throws — a recovery failure is logged and the app still boots/keeps running. */
@@ -246,35 +250,28 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
       return 'still-pending';
     }
 
-    const recovered = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.generationRun.updateMany({
-        where: { id: run.id, status: run.status, fencingVersion: run.fencingVersion },
-        data: {
-          status: GenerationRunStatus.failed,
-          failedAt: new Date(),
-          errorCode: ABANDONED_ERROR_CODE,
-          errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-        },
-      });
-      if (updated.count === 0) {
-        // Something else (a live claim, a normal completion) already moved
-        // this run on between our SELECT and this UPDATE — not an error,
-        // just a lost race. Aborting the transaction leaves Book untouched.
-        return false;
-      }
+    // `fromStatus: run.status` (not a hardcoded `running`) because a
+    // candidate here can be a never-claimed `queued` run stuck in dispatch,
+    // not just a claimed-then-abandoned `running` one — see this class's own
+    // doc comment. A 'stale_fence' result means something else (a live
+    // claim, a normal completion) already moved this run on between our
+    // SELECT and the coordinator's write — not an error, just a lost race,
+    // and Book is provably left untouched by that same transaction.
+    const result = await this.generationRunCoordinator.failAbandoned(
+      {
+        runId: run.id,
+        bookId: run.bookId,
+        fencingVersion: run.fencingVersion,
+        // Safe: `run` only ever comes from this pass's staleRunning/staleQueued
+        // queries (see recover()), which already filter to exactly these two
+        // statuses — the wider GenerationRunStatus type here is just Prisma's
+        // model type, not a claim that 'completed'/'failed' are possible.
+        fromStatus: run.status as
+          typeof GenerationRunStatus.queued | typeof GenerationRunStatus.running,
+      },
+      { errorCode: ABANDONED_ERROR_CODE, errorMessage: GENERATION_INTERRUPTED_MESSAGE },
+    );
 
-      await tx.book.updateMany({
-        where: { id: run.bookId, activeRunId: run.id },
-        data: {
-          activeRunId: null,
-          status: BookStatus.failed,
-          failedStep: null,
-          errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-        },
-      });
-      return true;
-    });
-
-    return recovered ? 'recovered' : 'still-pending';
+    return result === 'applied' ? 'recovered' : 'still-pending';
   }
 }
