@@ -21,7 +21,10 @@ import {
   imageAssetKey,
   imageObjectKey,
   buildImageBufferResolver,
+  claimImageAssetKey,
+  claimCharacterSheetAssetKey,
 } from './image-asset-storage';
+import { InvalidGenerationArtifactPointerError } from '../agent/generation-artifact-namespace';
 
 const validCloudEnv = {
   PDF_STORAGE_BUCKET: 'test-bucket',
@@ -377,5 +380,67 @@ describe('buildImageBufferResolver integration with renderStorybookPdf', () => {
     const buf = await renderStorybookPdf(makeLayout(bookId, entries), { resolveImageBuffer });
 
     expect(buf.toString('latin1')).not.toContain('/Subtype /Image');
+  });
+});
+
+describe('claimImageAssetKey / claimCharacterSheetAssetKey (Phase B, Slice B1)', () => {
+  const RUN_A = '11111111-1111-1111-1111-111111111111';
+  const RUN_B = '22222222-2222-2222-2222-222222222222';
+  const claimA1 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 1 };
+  const claimA2 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 2 };
+  const claimB1 = { kind: 'claim' as const, runId: RUN_B, fencingVersion: 1 };
+
+  it('produces a deterministic logical key for every artifact kind', () => {
+    expect(claimImageAssetKey(TEST_BOOK_ID, claimA1, 'cover')).toBe(
+      `books/${TEST_BOOK_ID}/runs/${RUN_A}/claims/1/cover`,
+    );
+    expect(claimImageAssetKey(TEST_BOOK_ID, claimA1, 'page', 3)).toBe(
+      `books/${TEST_BOOK_ID}/runs/${RUN_A}/claims/1/page-3`,
+    );
+    expect(claimImageAssetKey(TEST_BOOK_ID, claimA1, 'back_cover')).toBe(
+      `books/${TEST_BOOK_ID}/runs/${RUN_A}/claims/1/back-cover`,
+    );
+    expect(claimCharacterSheetAssetKey(TEST_BOOK_ID, claimA1)).toBe(
+      `books/${TEST_BOOK_ID}/runs/${RUN_A}/claims/1/character-sheet`,
+    );
+  });
+
+  it('never bakes in the S3 "images/" prefix — that stays driver-specific, exactly like imageObjectKey', () => {
+    expect(claimImageAssetKey(TEST_BOOK_ID, claimA1, 'cover')).not.toContain('images/');
+  });
+
+  it('differs for the same runId across two fencing versions (stalled-redelivery reclaim)', () => {
+    expect(claimImageAssetKey(TEST_BOOK_ID, claimA1, 'cover')).not.toBe(
+      claimImageAssetKey(TEST_BOOK_ID, claimA2, 'cover'),
+    );
+  });
+
+  it('differs for two different runIds at the same fencingVersion', () => {
+    expect(claimImageAssetKey(TEST_BOOK_ID, claimA1, 'cover')).not.toBe(
+      claimImageAssetKey(TEST_BOOK_ID, claimB1, 'cover'),
+    );
+  });
+
+  it('requires a positive integer pageNumber for kind "page"', () => {
+    expect(() => claimImageAssetKey(TEST_BOOK_ID, claimA1, 'page')).toThrow();
+    expect(() => claimImageAssetKey(TEST_BOOK_ID, claimA1, 'page', 0)).toThrow();
+    expect(() => claimImageAssetKey(TEST_BOOK_ID, claimA1, 'page', -1)).toThrow();
+    expect(() => claimImageAssetKey(TEST_BOOK_ID, claimA1, 'page', 1.5)).toThrow();
+  });
+
+  it('rejects a malformed kind at runtime', () => {
+    expect(() => claimImageAssetKey(TEST_BOOK_ID, claimA1, 'not-a-real-kind' as never)).toThrow();
+  });
+
+  it('rejects an unsafe bookId (traversal/separator)', () => {
+    expect(() => claimImageAssetKey('../etc/passwd', claimA1, 'cover')).toThrow(
+      InvalidGenerationArtifactPointerError,
+    );
+  });
+
+  it('rejects a non-positive fencingVersion, even one constructed as a raw literal bypassing claimNamespace()', () => {
+    expect(() =>
+      claimImageAssetKey(TEST_BOOK_ID, { kind: 'claim', runId: RUN_A, fencingVersion: 0 }, 'cover'),
+    ).toThrow(InvalidGenerationArtifactPointerError);
   });
 });

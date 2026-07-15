@@ -7,6 +7,10 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
 } from '@aws-sdk/client-s3';
+import {
+  claimArtifactBasePath,
+  type GenerationArtifactNamespace,
+} from '../agent/generation-artifact-namespace';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
@@ -89,6 +93,22 @@ export interface CloudPdfStorageConfig {
 
 export function objectKey(bookId: string): string {
   return `previews/${bookId}/storyme-preview-${bookId}.pdf`;
+}
+
+/**
+ * Claim-scoped counterpart to objectKey (Phase B, Slice B1 — see
+ * generation-artifact-namespace.ts). Not yet used by any production write or
+ * read path: LocalPdfStorage/CloudPdfStorage still key purely by bookId, and
+ * this slice does not change that. Embeds the claiming run's exact (runId,
+ * fencingVersion), not just runId, so two different deliveries of the same
+ * GenerationRun can never write to the same PDF object.
+ */
+export function claimPreviewPdfKey(
+  bookId: string,
+  namespace: Extract<GenerationArtifactNamespace, { kind: 'claim' }>,
+): string {
+  validateBookId(bookId);
+  return `${claimArtifactBasePath(bookId, namespace)}/storyme-preview-${bookId}.pdf`;
 }
 
 /** True for the S3-shaped "object not found" errors returned by GetObject/HeadObject. */

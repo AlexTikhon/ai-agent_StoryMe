@@ -5,6 +5,10 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3
 import type { BookLayoutEntry } from '@book/types';
 import type { ImageBufferResolver } from '../pdf/pdf-renderer';
 import { readCloudConfig, type CloudPdfStorageConfig } from '../pdf/pdf-storage';
+import {
+  claimArtifactBasePath,
+  type GenerationArtifactNamespace,
+} from '../agent/generation-artifact-namespace';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
@@ -250,6 +254,51 @@ export function childPhotoAssetKey(bookId: string, version: string): string {
 /** Stable image asset key for a book's generated character-sheet reference image. Not part of BookLayoutEntry — never rendered as its own PDF page. */
 export function characterSheetAssetKey(bookId: string): string {
   return `${bookId}/character-sheet`;
+}
+
+const VALID_IMAGE_ASSET_KIND_SLUGS: Record<'cover' | 'page' | 'back_cover', string> = {
+  cover: 'cover',
+  page: 'page',
+  back_cover: 'back-cover',
+};
+
+/**
+ * Claim-scoped counterpart to imageAssetKey (Phase B, Slice B1 — see
+ * generation-artifact-namespace.ts). Not yet used by any production write or
+ * read path: AgentService/classifyImageAssets still call the positional
+ * imageAssetKey above, and this slice does not change that. Embeds the
+ * claiming run's exact (runId, fencingVersion), not just runId, so two
+ * different deliveries of the same GenerationRun (e.g. a stalled-job
+ * redelivery — see GenerationRunService.claim) can never compute the same
+ * key.
+ */
+export function claimImageAssetKey(
+  bookId: string,
+  namespace: Extract<GenerationArtifactNamespace, { kind: 'claim' }>,
+  kind: 'cover' | 'page' | 'back_cover',
+  pageNumber?: number,
+): string {
+  const slug = VALID_IMAGE_ASSET_KIND_SLUGS[kind];
+  if (!slug) {
+    throw new Error(`Invalid image asset kind for claim-scoped key: "${String(kind)}"`);
+  }
+  if (kind === 'page') {
+    if (!Number.isInteger(pageNumber) || (pageNumber as number) <= 0) {
+      throw new Error(
+        `A positive integer pageNumber is required to build a claim-scoped image asset key for kind "page" (got ${pageNumber})`,
+      );
+    }
+    return `${claimArtifactBasePath(bookId, namespace)}/page-${pageNumber}`;
+  }
+  return `${claimArtifactBasePath(bookId, namespace)}/${slug}`;
+}
+
+/** Claim-scoped counterpart to characterSheetAssetKey (Phase B, Slice B1). Not yet used by any production write or read path — see claimImageAssetKey's doc comment. */
+export function claimCharacterSheetAssetKey(
+  bookId: string,
+  namespace: Extract<GenerationArtifactNamespace, { kind: 'claim' }>,
+): string {
+  return `${claimArtifactBasePath(bookId, namespace)}/character-sheet`;
 }
 
 /**

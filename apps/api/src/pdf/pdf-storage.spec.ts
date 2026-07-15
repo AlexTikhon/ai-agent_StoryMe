@@ -19,7 +19,9 @@ import {
   CloudPdfStorage,
   createPdfStorage,
   assertPdfStorageSupportsWorker,
+  claimPreviewPdfKey,
 } from './pdf-storage';
+import { InvalidGenerationArtifactPointerError } from '../agent/generation-artifact-namespace';
 
 const validCloudEnv = {
   PDF_STORAGE_BUCKET: 'test-bucket',
@@ -381,5 +383,55 @@ describe('assertPdfStorageSupportsWorker', () => {
       assertPdfStorageSupportsWorker({ NODE_ENV: 'development', PDF_STORAGE_DRIVER: 'local' }),
     ).not.toThrow();
     expect(() => assertPdfStorageSupportsWorker({})).not.toThrow();
+  });
+});
+
+describe('claimPreviewPdfKey (Phase B, Slice B1)', () => {
+  const RUN_A = '11111111-1111-1111-1111-111111111111';
+  const RUN_B = '22222222-2222-2222-2222-222222222222';
+  const claimA1 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 1 };
+  const claimA2 = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 2 };
+  const claimB1 = { kind: 'claim' as const, runId: RUN_B, fencingVersion: 1 };
+
+  it('produces the expected deterministic logical key', () => {
+    expect(claimPreviewPdfKey(TEST_BOOK_ID, claimA1)).toBe(
+      `books/${TEST_BOOK_ID}/runs/${RUN_A}/claims/1/storyme-preview-${TEST_BOOK_ID}.pdf`,
+    );
+  });
+
+  it('never bakes in the S3 "previews/" prefix — that stays driver-specific, exactly like objectKey', () => {
+    expect(claimPreviewPdfKey(TEST_BOOK_ID, claimA1)).not.toContain('previews/');
+  });
+
+  it('differs for the same runId across two fencing versions (stalled-redelivery reclaim)', () => {
+    expect(claimPreviewPdfKey(TEST_BOOK_ID, claimA1)).not.toBe(
+      claimPreviewPdfKey(TEST_BOOK_ID, claimA2),
+    );
+  });
+
+  it('differs for two different runIds at the same fencingVersion', () => {
+    expect(claimPreviewPdfKey(TEST_BOOK_ID, claimA1)).not.toBe(
+      claimPreviewPdfKey(TEST_BOOK_ID, claimB1),
+    );
+  });
+
+  it('rejects an unsafe bookId (traversal/separator)', () => {
+    expect(() => claimPreviewPdfKey('../etc/passwd', claimA1)).toThrow();
+  });
+
+  it('rejects an invalid claim namespace (non-positive fencingVersion), even one constructed as a raw literal bypassing claimNamespace()', () => {
+    expect(() =>
+      claimPreviewPdfKey(TEST_BOOK_ID, { kind: 'claim', runId: RUN_A, fencingVersion: 0 }),
+    ).toThrow(InvalidGenerationArtifactPointerError);
+  });
+
+  it('produces logically identical keys to what CloudPdfStorage/LocalPdfStorage would need for the same claim (local/cloud parity)', () => {
+    // claimPreviewPdfKey is the single logical-key source both a future local
+    // and cloud PdfStorage driver would build their own path/object key from
+    // (mirroring how imageObjectKey/LocalImageAssetStorage share one key
+    // today) — calling it twice for the same inputs must be deterministic.
+    const first = claimPreviewPdfKey(TEST_BOOK_ID, claimA1);
+    const second = claimPreviewPdfKey(TEST_BOOK_ID, claimA1);
+    expect(first).toBe(second);
   });
 });

@@ -411,6 +411,24 @@ model Book {
   // see AgentService's old isResumableBook doc comment).
   lastGenerationInputHash String? @map("last_generation_input_hash")
 
+  // Phase B, Slice B1 (schema/typed-namespace foundations only — see
+  // docs/local-generation-pipeline.md "Phase B" section). Identifies the
+  // exact claim — (runId, fencingVersion), not runId alone — whose artifact
+  // storage namespace backs the resumable JSON above / the currently
+  // published PDF/images. runId alone cannot identify this: a stalled BullMQ
+  // redelivery reclaims the *same* GenerationRun.id under a new
+  // fencingVersion (see GenerationRunService.claim), so two different
+  // deliveries of one run must still resolve to two different namespaces.
+  // Both pairs are nullable and independently nullable-together (see the
+  // CHECK constraints added alongside these columns): null on both fields
+  // means "legacy positional storage key," the correct and permanent state
+  // for every row that predates this slice. No production write path sets
+  // these yet — see the migration's constraint block and generation-
+  // artifact-namespace.ts for the full invariant.
+  lastGenerationRunId          String? @map("last_generation_run_id") @db.Uuid
+  lastGenerationFencingVersion Int?    @map("last_generation_fencing_version")
+  publishedRunFencingVersion   Int?    @map("published_run_fencing_version")
+
   deletedAt        DateTime?   @map("deleted_at")
   createdAt        DateTime    @default(now()) @map("created_at")
   updatedAt        DateTime    @updatedAt @map("updated_at")

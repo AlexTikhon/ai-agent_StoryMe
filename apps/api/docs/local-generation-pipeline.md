@@ -1817,6 +1817,43 @@ DB-level guarantee.
   every layer in one run. Adding one is straightforward but was not done in
   this pass — flagged here rather than silently left uncovered.
 
+## Phase B — claim-scoped artifact storage (Slice B1: foundations)
+
+Closes the "Run-scoped artifact storage" gap flagged above, one slice at a
+time. **Slice B1** (this one) adds only the schema and a typed namespace
+abstraction — it is additive and behavior-neutral: no production write or
+read path has been switched to it yet, and every existing positional
+(`imageAssetKey`/`characterSheetAssetKey`/`objectKey`) key builder and
+caller is unchanged.
+
+- **Artifact ownership is `(runId, fencingVersion)`, not `runId` alone.**
+  `GenerationRunService.claim()` reclaims a stalled job's *same*
+  `GenerationRun.id` and unconditionally bumps `fencingVersion` — so two
+  different BullMQ deliveries of one run share a `runId` but never a
+  `fencingVersion`. A storage key scoped only to `runId` cannot distinguish
+  the delivery a redelivery superseded from the one that superseded it; this
+  is why `GenerationArtifactNamespace` (`generation-artifact-namespace.ts`)
+  and the new `claim*Key` builders always require both.
+- **`Book` gained three nullable pointer columns**:
+  `lastGenerationRunId`/`lastGenerationFencingVersion` (which claim's
+  namespace backs the resumable JSON currently on the row) and
+  `publishedRunFencingVersion` (which claim's namespace, alongside the
+  existing `publishedRunId`, backs the currently published PDF/images). DB
+  CHECK constraints enforce each pair is set together or not at all, and
+  that a set fencing version is always positive (see the migration:
+  `20260715160805_phase_b1_artifact_namespace_pointers`).
+- **Every existing row remains legacy** (`lastGenerationRunId`/
+  `lastGenerationFencingVersion` null, `publishedRunFencingVersion` null even
+  where `publishedRunId` is already set) until a run generated *after* this
+  slice's follow-up (Slice B2 — the `AgentService`/PDF pipeline cutover,
+  copy-forward, and publication wiring) writes claim metadata for it. No
+  migration backfill is possible or attempted — there is no historical
+  per-write claim record to reconstruct.
+- **No production storage path has changed.** `classifyImageAssets`,
+  `buildImageBufferResolver`, `pdfStorage.savePreviewPdf`/`getPreviewPdf`,
+  and every other real read/write in the pipeline still use the positional
+  keys they always have.
+
 ## Worker process separation
 
 Closes the last limitation Phase 3K flagged: `GenerationQueueProcessor` no
