@@ -703,14 +703,17 @@ model GenerationRun {
   attempt        Int                 @default(1)
   leaseOwner     String?             @map("lease_owner")
   leaseExpiresAt DateTime?           @map("lease_expires_at")
-  // The BullMQ delivery attempt number (job.attemptsMade + 1) currently
-  // holding the lease. A claim from a strictly higher attempt always wins
-  // regardless of leaseExpiresAt — BullMQ only issues attempt N+1 after it
-  // has itself decided attempt N is done or stalled, so this is what lets a
-  // legitimate redelivery to a different worker reclaim the run instead of
-  // silently no-opping while the old lease hasn't yet wall-clock-expired
-  // (see GenerationRunService.claim).
-  leaseAttempt   Int                 @default(0) @map("lease_attempt")
+  // BullMQ's own per-delivery lock token (the `token` argument
+  // GenerationQueueProcessor.process(job, token) receives) — a fresh value
+  // every time BullMQ hands this job's lock to a worker, *including* a
+  // stalled-job redelivery, which BullMQ can issue without ever incrementing
+  // job.attemptsMade. This is why claim() no longer compares attempt numbers
+  // at all: every call to claim() represents BullMQ itself asserting "a
+  // worker holds this job's lock right now," so it always succeeds (while the
+  // run is still queued/running) and unconditionally bumps fencingVersion,
+  // replacing whichever delivery held it before — see GenerationRunService.
+  // claim/heartbeat.
+  deliveryToken  String?             @map("delivery_token")
   // Incremented on every guarded claim/heartbeat/recovery-forced-failure —
   // every mutation this run makes must condition its WHERE clause on the
   // fencingVersion it last observed, so a stale worker's late write matches
@@ -764,6 +767,13 @@ model RecoveryLease {
   id             String    @id
   leaseOwner     String?   @map("lease_owner")
   leaseExpiresAt DateTime? @map("lease_expires_at")
+  // Incremented on every successful acquire (never on renew) — a fencing
+  // token so a former leader whose lease already expired (and was
+  // subsequently acquired by a new leader, bumping this) can detect it no
+  // longer holds current leadership and must stop issuing further recovery
+  // writes for this pass, even if its own wall-clock check hasn't caught up
+  // yet. See GenerationRunRecoveryService.stillHoldsLease.
+  leaseGeneration Int      @default(0) @map("lease_generation")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@map("recovery_leases")

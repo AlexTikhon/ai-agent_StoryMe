@@ -38,11 +38,15 @@ import {
   GenerationExecutionService,
   StaleGenerationRunError,
 } from '../agent/generation-execution.service';
+import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
+import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
+import type { GenerationOutcome } from '../agent/generation-outcome';
 import {
   buildInputSnapshot,
   hashInputSnapshot,
-  parseGenerationInputSnapshot,
+  GENERATION_INPUT_SNAPSHOT_INVALID,
+  InvalidGenerationInputSnapshotError,
   type GenerationInputSnapshot,
 } from '../agent/generation-input-snapshot';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
@@ -105,6 +109,8 @@ export class BooksService {
     private readonly generationJobService: GenerationJobService,
     private readonly generationRunService: GenerationRunService,
     private readonly generationExecutionService: GenerationExecutionService,
+    private readonly generationRunCoordinator: GenerationRunCoordinator,
+    private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
     private readonly config: ConfigService<Env, true>,
     @Inject(RATE_LIMITER_TOKEN) private readonly rateLimiter: RateLimiter,
     private readonly childPhotoProcessor: ChildPhotoProcessor,
@@ -351,9 +357,28 @@ export class BooksService {
         `Retry for book ${bookId} found no prior GenerationRun to copy input from — building a fresh snapshot from the book's current fields instead.`,
       );
     }
-    const inputSnapshot = priorRun
-      ? parseGenerationInputSnapshot(priorRun.id, priorRun.inputSnapshot)
-      : buildInputSnapshot(book);
+    let inputSnapshot: GenerationInputSnapshot;
+    if (priorRun) {
+      try {
+        inputSnapshot = await this.snapshotBackfill.normalize(priorRun);
+      } catch (err) {
+        if (!(err instanceof InvalidGenerationInputSnapshotError)) throw err;
+        // Predictable, safe failure (never the raw Zod issue list) rather
+        // than an unhandled 500 — see GENERATION_INPUT_SNAPSHOT_INVALID's own
+        // doc comment. regenerateBook is the escape hatch: it always builds a
+        // fresh snapshot from the book's current fields instead of copying
+        // the corrupted prior one.
+        throw new ConflictException({
+          error:
+            "This book's prior generation request is corrupted and cannot be retried — use regenerate instead.",
+          message:
+            "This book's prior generation request is corrupted and cannot be retried — use regenerate instead.",
+          code: GENERATION_INPUT_SNAPSHOT_INVALID,
+        });
+      }
+    } else {
+      inputSnapshot = buildInputSnapshot(book);
+    }
 
     const updated = await this.createRunAndSchedule({
       book,
@@ -543,9 +568,10 @@ export class BooksService {
    * GenerationExecutionContext's doc comment) and passes that through to
    * AgentService.
    *
-   * AgentService already marks the book failed for every failure it
-   * anticipates (story generation, image generation, PDF render) — that is
-   * treated as an ordinary, expected outcome here (`completeRun('failed')`).
+   * AgentService already computes a failed GenerationOutcome for every
+   * failure it anticipates (story generation, image generation, PDF render)
+   * — that is treated as an ordinary, expected outcome here, published via
+   * GenerationRunCoordinator.completeRun exactly like a success.
    * StaleGenerationRunError means a newer claim/recovery already superseded
    * this attempt mid-pipeline — logged and swallowed, not rethrown, since
    * whichever attempt owns the run now is responsible for its own
@@ -572,10 +598,10 @@ export class BooksService {
       );
     }
 
-    let result: Book;
+    let outcome: GenerationOutcome;
     try {
-      result = await this.agentService.startBookGeneration(ctx);
-      this.logger.log(`Book ${bookId} status -> ${result.status} (run ${runId})`);
+      outcome = await this.agentService.startBookGeneration(ctx);
+      this.logger.log(`Book ${bookId} pipeline outcome -> ${outcome.status} (run ${runId})`);
     } catch (err) {
       if (err instanceof StaleGenerationRunError) {
         this.logger.warn(
@@ -600,25 +626,20 @@ export class BooksService {
       throw err;
     }
 
-    if (result.status === BookStatus.failed) {
-      await this.completeRun(ctx, 'failed', {
-        errorCode: 'GENERATION_FAILED',
-        errorMessage: result.errorMessage ?? 'Generation failed',
-      });
-      if (legacyJob) {
+    await this.generationRunCoordinator.completeRun(ctx, outcome);
+
+    if (legacyJob) {
+      if (outcome.status === BookStatus.failed) {
         await this.markJob(
           this.generationJobService.markFailed(legacyJob.id, {
-            errorMessage: result.errorMessage ?? 'Generation failed',
-            failedStep: result.failedStep,
+            errorMessage: outcome.errorMessage ?? 'Generation failed',
+            ...(outcome.failedStep !== undefined && { failedStep: outcome.failedStep }),
           }),
           legacyJob.id,
           bookId,
           'failed',
         );
-      }
-    } else {
-      await this.completeRun(ctx, 'completed');
-      if (legacyJob) {
+      } else {
         await this.markJob(
           this.generationJobService.markCompleted(legacyJob.id),
           legacyJob.id,
@@ -626,70 +647,6 @@ export class BooksService {
           'completed',
         );
       }
-    }
-  }
-
-  /**
-   * Guarded, atomic terminal transition for a claimed run: the GenerationRun
-   * status write and the Book.activeRunId/publishedRunId update happen in
-   * one transaction, so a crash between them can never leave a terminal run
-   * with Book still pointing at it as active. Only takes effect if the run
-   * is still `running` with the exact `fencingVersion` this worker observed
-   * at claim time — if recovery (or a later claim) already moved it on, the
-   * whole transaction is a no-op (Book is provably untouched, not just
-   * "probably" — see GenerationExecutionService.applyFencedBookWrite for why
-   * a fenced updateMany's row lock + WHERE re-check on the GenerationRun row
-   * is what actually enforces this, not best-effort ordering). On success,
-   * Book.publishedRunId is set — the last successful run stays published
-   * even if a later run is started and fails (invariant G); on failure, only
-   * activeRunId is cleared, `Book.status`/`errorMessage`/`failedStep` are
-   * left exactly as AgentService itself already wrote them.
-   */
-  private async completeRun(
-    ctx: GenerationExecutionContext,
-    outcome: 'completed' | 'failed',
-    failureDetails?: { errorCode: string; errorMessage: string },
-  ): Promise<void> {
-    const fenceWhere = {
-      id: ctx.runId,
-      status: GenerationRunStatus.running,
-      fencingVersion: ctx.fencingVersion,
-    };
-
-    const claimedStillValid = await this.prisma.$transaction(async (tx) => {
-      const runUpdate =
-        outcome === 'completed'
-          ? await tx.generationRun.updateMany({
-              where: fenceWhere,
-              data: { status: GenerationRunStatus.completed, completedAt: new Date() },
-            })
-          : await tx.generationRun.updateMany({
-              where: fenceWhere,
-              data: {
-                status: GenerationRunStatus.failed,
-                failedAt: new Date(),
-                // completeRun('failed', ...) is only ever called with failureDetails set (see both call sites below).
-                errorCode: failureDetails?.errorCode ?? 'GENERATION_FAILED',
-                errorMessage: failureDetails?.errorMessage ?? 'Generation failed',
-              },
-            });
-
-      if (runUpdate.count === 0) return false;
-
-      await tx.book.updateMany({
-        where: { id: ctx.bookId, activeRunId: ctx.runId },
-        data:
-          outcome === 'completed'
-            ? { activeRunId: null, publishedRunId: ctx.runId }
-            : { activeRunId: null },
-      });
-      return true;
-    });
-
-    if (!claimedStillValid) {
-      this.logger.warn(
-        `Run ${ctx.runId} (book ${ctx.bookId}) finished ${outcome} but its fencing guard found it already superseded — not touching Book.`,
-      );
     }
   }
 

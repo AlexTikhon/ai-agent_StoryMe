@@ -1,4 +1,5 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { Book } from '@prisma/client';
 import { AgentService } from './agent.service';
@@ -20,6 +21,7 @@ import {
 import { buildInputSnapshot } from './generation-input-snapshot';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationExecutionService } from './generation-execution.service';
+import type { GenerationOutcome } from './generation-outcome';
 
 vi.mock('../pdf/pdf-renderer', () => ({
   renderStorybookPdf: vi.fn(),
@@ -111,7 +113,7 @@ function runGeneration(
   mockPrisma: MockPrisma,
   book: Book,
   inputHash = 'hash-1',
-): Promise<Book> {
+): Promise<GenerationOutcome> {
   mockPrisma.book.findUniqueOrThrow.mockResolvedValue(book);
   return targetService.startBookGeneration(ctxFor(book, inputHash));
 }
@@ -201,13 +203,14 @@ describe('AgentService', () => {
       );
     });
 
-    it('returns the updated book', async () => {
+    it('returns a completed GenerationOutcome without writing status itself', async () => {
       const book = makeBook();
-      const updatedBook = setupMocks();
+      setupMocks();
 
       const result = await runGeneration(service, prisma, book);
 
-      expect(result).toBe(updatedBook);
+      expect(result.status).toBe('complete');
+      expect(result.bookUpdate).not.toHaveProperty('status');
     });
 
     it('stamps Book.lastGenerationInputHash with the inputHash this run executed, at the phase-1 persist', async () => {
@@ -801,11 +804,10 @@ describe('AgentService', () => {
         })
         .mockRejectedValueOnce(new Error('disk full'));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.status).toBe('failed');
-      expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+      expect(result.status).toBe('failed');
+      expect(result.failedStep).toBe('pdf_render');
       expect(renderStorybookPdf).not.toHaveBeenCalled();
     });
 
@@ -872,11 +874,10 @@ describe('AgentService', () => {
         const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
         const failingService = makePartiallyFailingImageService(() => true);
 
-        await runGeneration(failingService, prisma, book);
+        const result = await runGeneration(failingService, prisma, book);
 
-        const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-        expect(secondCallArg?.data?.status).toBe('failed');
-        expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+        expect(result.status).toBe('failed');
+        expect(result.failedStep).toBe('pdf_render');
         expect(renderStorybookPdf).not.toHaveBeenCalled();
         expect(mockPdfStorage.savePreviewPdf).not.toHaveBeenCalled();
         // Only the char_build character-sheet save happens — per-page/cover
@@ -895,7 +896,7 @@ describe('AgentService', () => {
         setupMocks();
         const failingService = makePartiallyFailingImageService((id) => id === 'b-1-cover');
 
-        await runGeneration(failingService, prisma, book);
+        const result = await runGeneration(failingService, prisma, book);
 
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
           'b-1/cover',
@@ -907,10 +908,9 @@ describe('AgentService', () => {
         );
         expect(pageOneCall).toBeDefined();
 
-        const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-        expect(secondCallArg?.data?.status).toBe('failed');
-        expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
-        expect(secondCallArg?.data?.errorMessage).toContain('cover');
+        expect(result.status).toBe('failed');
+        expect(result.failedStep).toBe('pdf_render');
+        expect(result.errorMessage).toContain('cover');
       });
 
       it('records generatedImageCount/failedImageCount/lastImageError on imageGenerationResult', async () => {
@@ -1042,6 +1042,166 @@ describe('AgentService', () => {
         >;
         const charBuildEntry = entries.find((e) => e.step === 'char_build');
         expect(charBuildEntry?.status).toBe('success');
+        warnSpy.mockRestore();
+      });
+    });
+
+    // ── Child photo integrity (sha256/size verification before use) ──────────
+
+    describe('child photo integrity verification', () => {
+      const CHILD_PHOTO_BYTES = Buffer.from('fake-child-photo-bytes');
+      const CHILD_PHOTO_SHA256 = createHash('sha256').update(CHILD_PHOTO_BYTES).digest('hex');
+
+      function makeBookWithChildPhoto(overrides: Partial<Book> = {}): Book {
+        return makeBook({
+          childPhotoAssetKey: 'b-1/child-photo-v1',
+          childPhotoContentType: 'image/jpeg' as Book['childPhotoContentType'],
+          childPhotoSha256: CHILD_PHOTO_SHA256,
+          childPhotoSizeBytes: CHILD_PHOTO_BYTES.length,
+          ...overrides,
+        });
+      }
+
+      it('uses the photo when its bytes match the recorded sha256/size exactly', async () => {
+        const book = makeBookWithChildPhoto();
+        setupMocks();
+        mockImageAssetStorage.getImageAsset.mockImplementation(async (key: string) =>
+          key === 'b-1/child-photo-v1' ? CHILD_PHOTO_BYTES : savedAssets.get(key),
+        );
+        const profileProvider = {
+          providerName: 'mock',
+          buildProfile: vi
+            .fn()
+            .mockImplementation((input) => new MockCharacterProfileProvider().buildProfile(input)),
+        };
+        const service = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          new MockImageGenerationProvider(),
+          profileProvider,
+          generationExecutionService as never,
+        );
+
+        await runGeneration(service, prisma, book);
+
+        expect(profileProvider.buildProfile).toHaveBeenCalledWith(
+          expect.objectContaining({
+            photo: { base64: CHILD_PHOTO_BYTES.toString('base64'), contentType: 'image/jpeg' },
+          }),
+        );
+      });
+
+      it('degrades to text-only (never uses the bytes) and logs a stable CHILD_PHOTO_INTEGRITY_MISMATCH error when the loaded bytes are truncated', async () => {
+        const book = makeBookWithChildPhoto();
+        setupMocks();
+        const truncated = CHILD_PHOTO_BYTES.subarray(0, CHILD_PHOTO_BYTES.length - 5);
+        mockImageAssetStorage.getImageAsset.mockImplementation(async (key: string) =>
+          key === 'b-1/child-photo-v1' ? truncated : savedAssets.get(key),
+        );
+        const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        const profileProvider = {
+          providerName: 'mock',
+          buildProfile: vi
+            .fn()
+            .mockImplementation((input) => new MockCharacterProfileProvider().buildProfile(input)),
+        };
+        const service = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          new MockImageGenerationProvider(),
+          profileProvider,
+          generationExecutionService as never,
+        );
+
+        await runGeneration(service, prisma, book);
+
+        expect(profileProvider.buildProfile).toHaveBeenCalledWith(
+          expect.objectContaining({ photo: undefined }),
+        );
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),
+        );
+        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
+          Record<string, unknown>
+        >;
+        const charBuildEntry = entries.find((e) => e.step === 'char_build');
+        expect(charBuildEntry?.error).toContain('CHILD_PHOTO_INTEGRITY_MISMATCH');
+        errorSpy.mockRestore();
+      });
+
+      it('degrades to text-only and logs CHILD_PHOTO_INTEGRITY_MISMATCH when the bytes are the right size but a digest mismatch (replaced/corrupted content)', async () => {
+        const book = makeBookWithChildPhoto();
+        setupMocks();
+        // Same length as CHILD_PHOTO_BYTES, different content entirely.
+        const swapped = Buffer.alloc(CHILD_PHOTO_BYTES.length, 'x');
+        mockImageAssetStorage.getImageAsset.mockImplementation(async (key: string) =>
+          key === 'b-1/child-photo-v1' ? swapped : savedAssets.get(key),
+        );
+        const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        const profileProvider = {
+          providerName: 'mock',
+          buildProfile: vi
+            .fn()
+            .mockImplementation((input) => new MockCharacterProfileProvider().buildProfile(input)),
+        };
+        const service = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          new MockImageGenerationProvider(),
+          profileProvider,
+          generationExecutionService as never,
+        );
+
+        await runGeneration(service, prisma, book);
+
+        expect(profileProvider.buildProfile).toHaveBeenCalledWith(
+          expect.objectContaining({ photo: undefined }),
+        );
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),
+        );
+        errorSpy.mockRestore();
+      });
+
+      it('degrades to text-only with only a warning (not the integrity error) when the asset is simply missing from storage', async () => {
+        const book = makeBookWithChildPhoto();
+        setupMocks();
+        mockImageAssetStorage.getImageAsset.mockImplementation(async (key: string) =>
+          key === 'b-1/child-photo-v1' ? undefined : savedAssets.get(key),
+        );
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const errorSpy = vi.spyOn(Logger.prototype, 'error');
+        const profileProvider = {
+          providerName: 'mock',
+          buildProfile: vi
+            .fn()
+            .mockImplementation((input) => new MockCharacterProfileProvider().buildProfile(input)),
+        };
+        const service = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          new MockStoryGenerationProvider(),
+          new MockImageGenerationProvider(),
+          profileProvider,
+          generationExecutionService as never,
+        );
+
+        await runGeneration(service, prisma, book);
+
+        expect(profileProvider.buildProfile).toHaveBeenCalledWith(
+          expect.objectContaining({ photo: undefined }),
+        );
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no bytes were found'));
+        expect(errorSpy).not.toHaveBeenCalledWith(
+          expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),
+        );
         warnSpy.mockRestore();
       });
     });
@@ -1249,7 +1409,7 @@ describe('AgentService', () => {
           );
           setupMocks();
 
-          await runGeneration(realService, prisma, book);
+          const result = await runGeneration(realService, prisma, book);
 
           expect(realProvider.generateImage).toHaveBeenCalledTimes(2);
           // +1 for the char_build character-sheet save.
@@ -1266,9 +1426,8 @@ describe('AgentService', () => {
 
           // The cap left more planned illustrations than were generated, so
           // rendering must fail loudly rather than silently placeholder them.
-          const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-          expect(secondCallArg?.data?.status).toBe('failed');
-          expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+          expect(result.status).toBe('failed');
+          expect(result.failedStep).toBe('pdf_render');
           expect(renderStorybookPdf).not.toHaveBeenCalled();
         });
       });
@@ -1524,33 +1683,23 @@ describe('AgentService', () => {
       expect(mockPdfStorage.savePreviewPdf).toHaveBeenCalledWith('b-1', mockBuffer);
     });
 
-    it('advances book status to complete on success', async () => {
+    it('resolves a completed GenerationOutcome on success', async () => {
       const book = makeBook();
       setupMocks();
-
-      await runGeneration(service, prisma, book);
-
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data).toMatchObject({ status: 'complete' });
-    });
-
-    it('persists previewPdfUrl from storage result on the second update', async () => {
-      const book = makeBook();
-      setupMocks();
-
-      await runGeneration(service, prisma, book);
-
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.previewPdfUrl).toBe('/files/books/b-1/storybook.pdf');
-    });
-
-    it('returns the completed book (result of the second update)', async () => {
-      const book = makeBook();
-      const completedBook = setupMocks();
 
       const result = await runGeneration(service, prisma, book);
 
-      expect(result).toBe(completedBook);
+      expect(result.status).toBe('complete');
+      expect(result.bookUpdate).not.toHaveProperty('status');
+    });
+
+    it('persists previewPdfUrl from storage result on the outcome', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      const result = await runGeneration(service, prisma, book);
+
+      expect(result.bookUpdate.previewPdfUrl).toBe('/files/books/b-1/storybook.pdf');
     });
 
     it('pdf_render AgentLog entry has status success on happy path', async () => {
@@ -1570,58 +1719,37 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
       vi.mocked(renderStorybookPdf).mockRejectedValue(new Error('PDF engine crashed'));
-      // Second prisma update now returns a failed book — reset the mock chain
-      const failedBook = makeBook({ status: 'failed' as Book['status'] });
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(failedBook);
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.status).toBe('failed');
+      expect(result.status).toBe('failed');
     });
 
     it('does not set previewPdfUrl when PDF render fails', async () => {
       const book = makeBook();
       setupMocks();
       vi.mocked(renderStorybookPdf).mockRejectedValue(new Error('render error'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data).not.toHaveProperty('previewPdfUrl');
+      expect(result.bookUpdate).not.toHaveProperty('previewPdfUrl');
     });
 
     it('persists errorMessage and failedStep when PDF render fails', async () => {
       const book = makeBook();
       setupMocks();
       vi.mocked(renderStorybookPdf).mockRejectedValue(new Error('PDFKit failure'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.errorMessage).toBe('PDFKit failure');
-      expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+      expect(result.errorMessage).toBe('PDFKit failure');
+      expect(result.failedStep).toBe('pdf_render');
     });
 
     it('pdf_render AgentLog entry has status error when render fails', async () => {
       const book = makeBook();
       setupMocks();
       vi.mocked(renderStorybookPdf).mockRejectedValue(new Error('render error'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
       await runGeneration(service, prisma, book);
 
@@ -1637,15 +1765,10 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
       vi.mocked(renderStorybookPdf).mockRejectedValue(new Error('boom'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.status).not.toBe('complete');
+      expect(result.status).not.toBe('complete');
     });
 
     // ── Phase 2M: Storage failure ─────────────────────────────────────────────
@@ -1654,61 +1777,41 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
       mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('disk full'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.status).toBe('failed');
+      expect(result.status).toBe('failed');
     });
 
     it('does not mark book complete when storage fails', async () => {
       const book = makeBook();
       setupMocks();
       mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('storage error'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.status).not.toBe('complete');
+      expect(result.status).not.toBe('complete');
     });
 
     it('does not persist previewPdfUrl when storage fails', async () => {
       const book = makeBook();
       setupMocks();
       mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('storage error'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data).not.toHaveProperty('previewPdfUrl');
+      expect(result.bookUpdate).not.toHaveProperty('previewPdfUrl');
     });
 
     it('persists errorMessage and failedStep when storage fails', async () => {
       const book = makeBook();
       setupMocks();
       mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('disk full'));
-      prisma.book.update.mockReset();
-      prisma.book.update
-        .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
-        .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(secondCallArg?.data?.errorMessage).toBe('disk full');
-      expect(secondCallArg?.data?.failedStep).toBe('pdf_render');
+      expect(result.errorMessage).toBe('disk full');
+      expect(result.failedStep).toBe('pdf_render');
     });
 
     it('pdf_render AgentLog entry has status error when storage fails', async () => {
@@ -1748,33 +1851,29 @@ describe('AgentService', () => {
         );
       }
 
-      it('marks the book as failed with the provider error message', async () => {
+      it('resolves a failed GenerationOutcome with the provider error message, without writing status/errorMessage/failedStep to Book itself', async () => {
         const book = makeBook();
-        const failedBook = makeBook({ status: 'failed' as Book['status'] });
-        prisma.book.update.mockResolvedValueOnce(failedBook);
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('LLM provider unavailable');
 
         const result = await runGeneration(failingService, prisma, book);
 
-        expect(result).toBe(failedBook);
-        expect(prisma.book.update).toHaveBeenCalledWith({
-          where: { id: 'b-1' },
-          data: {
-            status: 'failed',
-            errorMessage: 'LLM provider unavailable',
-            failedStep: 'story_plan',
-            generationTimeMs: expect.any(Number),
-            aiModelVersions: { story: 'unknown', image: 'mock' },
-            characterProfile: expect.any(Object),
-            characterSheetAssetKey: expect.any(String),
-          },
+        expect(result.status).toBe('failed');
+        expect(result.errorMessage).toBe('LLM provider unavailable');
+        expect(result.failedStep).toBe('story_plan');
+        expect(result.bookUpdate).toEqual({
+          generationTimeMs: expect.any(Number),
+          aiModelVersions: { story: 'unknown', image: 'mock' },
+          characterProfile: expect.any(Object),
+          characterSheetAssetKey: expect.any(String),
         });
+        // Never written by AgentService itself — see GenerationOutcome's doc
+        // comment; the coordinator applies these atomically instead.
+        expect(prisma.book.update).not.toHaveBeenCalled();
       });
 
       it('does not attempt to save per-page/cover image assets, build layout, or render a PDF (the char_build character sheet still saves, independent of story generation)', async () => {
         const book = makeBook();
-        prisma.book.update.mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('boom');
 
@@ -1788,12 +1887,11 @@ describe('AgentService', () => {
         );
         expect(renderStorybookPdf).not.toHaveBeenCalled();
         expect(mockPdfStorage.savePreviewPdf).not.toHaveBeenCalled();
-        expect(prisma.book.update).toHaveBeenCalledOnce();
+        expect(prisma.book.update).not.toHaveBeenCalled();
       });
 
       it('writes a char_build AgentLog entry plus a story_plan AgentLog entry with status error', async () => {
         const book = makeBook();
-        prisma.book.update.mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('bad prompt');
 
@@ -1849,11 +1947,10 @@ describe('AgentService', () => {
         const book = makeBook();
         setupMocks();
 
-        await runGeneration(service, prisma, book);
+        const result = await runGeneration(service, prisma, book);
 
-        const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
-        expect(finalUpdateArg?.data?.generationTimeMs).toEqual(expect.any(Number));
-        expect(finalUpdateArg?.data?.aiModelVersions).toEqual({ story: 'mock', image: 'mock' });
+        expect(result.bookUpdate.generationTimeMs).toEqual(expect.any(Number));
+        expect(result.bookUpdate.aiModelVersions).toEqual({ story: 'mock', image: 'mock' });
       });
 
       it('tags every AgentLog entry with provider/model from the injected providers', async () => {
@@ -1904,10 +2001,9 @@ describe('AgentService', () => {
           generationExecutionService as never,
         );
 
-        await runGeneration(openaiService, prisma, book);
+        const result = await runGeneration(openaiService, prisma, book);
 
-        const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
-        expect(finalUpdateArg?.data?.aiModelVersions).toEqual({
+        expect(result.bookUpdate.aiModelVersions).toEqual({
           story: 'gpt-4o-mini',
           image: 'mock',
         });
@@ -2234,10 +2330,9 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
-      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
-      const persistedResult = finalUpdateArg?.data?.imageGenerationResult as {
+      const persistedResult = result.bookUpdate.imageGenerationResult as unknown as {
         resume?: Record<string, unknown>;
       };
       const resume = persistedResult.resume;
@@ -2371,7 +2466,7 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       // The 7 previously valid assets are never re-requested or overwritten.
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
@@ -2388,9 +2483,8 @@ describe('AgentService', () => {
         );
       }
       expect(savedAssets.get('b-1/cover')).toBeDefined();
-      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
-      expect(finalUpdateArg?.data?.status).toBe('failed');
-      expect(finalUpdateArg?.data?.failedStep).toBe('pdf_render');
+      expect(result.status).toBe('failed');
+      expect(result.failedStep).toBe('pdf_render');
       warnSpy.mockRestore();
     });
 
@@ -2419,7 +2513,7 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const outcome = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
       const call = failingImageProvider.generateImage.mock.calls[0]![0] as {
@@ -2430,8 +2524,7 @@ describe('AgentService', () => {
         true,
       );
 
-      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
-      const result = finalUpdateArg?.data?.imageGenerationResult as {
+      const result = outcome.bookUpdate.imageGenerationResult as unknown as {
         imageGenerationMode?: string;
         resume?: { regeneratedImageCount?: number };
         imageFailures?: Array<Record<string, unknown>>;
@@ -2464,10 +2557,9 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const outcome = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
-      const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
-      const result = finalUpdateArg?.data?.imageGenerationResult as {
+      const result = outcome.bookUpdate.imageGenerationResult as unknown as {
         imageFailures?: Array<Record<string, unknown>>;
       };
       expect(result.imageFailures).toHaveLength(1);

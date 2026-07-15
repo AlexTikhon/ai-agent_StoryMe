@@ -122,32 +122,67 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
     }
   }
 
-  /** Acquires the RecoveryLease for this instance — a plain conditional row UPDATE, so it's safe regardless of which pooled connection executes it. */
-  private async acquireLease(now: Date, leaseMs: number): Promise<boolean> {
-    const result = await this.prisma.recoveryLease.updateMany({
-      where: {
-        id: RECOVERY_LEASE_ID,
-        OR: [{ leaseOwner: null }, { leaseExpiresAt: { lt: now } }],
-      },
-      data: {
-        leaseOwner: this.instanceId,
-        leaseExpiresAt: new Date(now.getTime() + leaseMs),
-      },
-    });
-    return result.count > 0;
+  /**
+   * Acquires the RecoveryLease for this instance, using PostgreSQL's own
+   * server time (`NOW()`) for both the expiry comparison and the new
+   * expiry's computation — never application `Date`, which would let clock
+   * skew between instances (or between an instance and the DB) cause two
+   * instances to disagree about whether a lease has actually expired. A
+   * plain conditional row UPDATE, so it's safe regardless of which pooled
+   * connection executes it.
+   *
+   * `lease_generation` is incremented on every successful acquire (never on
+   * a mere renewal — there is no renewal path; a lease is held for exactly
+   * one pass) and returned to the caller as a fencing token: a former leader
+   * whose lease has since expired and been acquired by a new leader can
+   * detect via stillHoldsLease that its generation is stale and must stop
+   * issuing further recovery writes, even before its own wall-clock check
+   * would catch up.
+   */
+  private async acquireLease(leaseMs: number): Promise<number | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ lease_generation: number }>>`
+      UPDATE recovery_leases
+      SET lease_owner = ${this.instanceId},
+          lease_expires_at = NOW() + (${leaseMs}::text || ' milliseconds')::interval,
+          lease_generation = lease_generation + 1
+      WHERE id = ${RECOVERY_LEASE_ID}
+        AND (lease_owner IS NULL OR lease_expires_at < NOW())
+      RETURNING lease_generation
+    `;
+    return rows[0]?.lease_generation ?? null;
   }
 
-  /** Best-effort release — not required for correctness (the lease has a TTL), just lets the next interval tick elsewhere sooner. */
-  private async releaseLease(): Promise<void> {
+  /**
+   * Cheap fencing check the recovery loop re-verifies between candidates: a
+   * bounded-batch guard so a pass can never keep issuing recovery writes past
+   * its own lease, whether because it simply ran long (wall-clock — caught by
+   * the lease itself expiring and a new leader's acquire bumping the
+   * generation) or because a new leader already took over. Returns false
+   * — never throws — the instant this instance no longer holds the exact
+   * generation it acquired.
+   */
+  private async stillHoldsLease(generation: number): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<Array<{ ok: number }>>`
+      SELECT 1 AS ok FROM recovery_leases
+      WHERE id = ${RECOVERY_LEASE_ID}
+        AND lease_owner = ${this.instanceId}
+        AND lease_generation = ${generation}
+        AND lease_expires_at > NOW()
+    `;
+    return rows.length > 0;
+  }
+
+  /** Best-effort release, fenced on still holding the exact generation acquired — not required for correctness (the lease has a TTL), just lets the next interval tick elsewhere sooner. Never releases a lease a newer leader has since acquired. */
+  private async releaseLease(generation: number): Promise<void> {
     await this.prisma.recoveryLease.updateMany({
-      where: { id: RECOVERY_LEASE_ID, leaseOwner: this.instanceId },
+      where: { id: RECOVERY_LEASE_ID, leaseOwner: this.instanceId, leaseGeneration: generation },
       data: { leaseOwner: null, leaseExpiresAt: null },
     });
   }
 
   async recover(now: Date = new Date()): Promise<RunRecoverySummary> {
-    const acquired = await this.acquireLease(now, readRecoveryLeaseMs());
-    if (!acquired) {
+    const generation = await this.acquireLease(readRecoveryLeaseMs());
+    if (generation === null) {
       return { staleFound: 0, recovered: 0, stillPendingInBullMq: 0, errors: 0, lockSkipped: true };
     }
 
@@ -166,7 +201,19 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
       let recovered = 0;
       let stillPendingInBullMq = 0;
       let errors = 0;
+      let processed = 0;
       for (const run of candidates) {
+        // Bounded-batch guard (in place of a renewal heartbeat): re-verify
+        // leadership before every write so this pass's total duration can
+        // never exceed its own lease, and a former leader superseded by a
+        // new one stops immediately rather than continuing to issue writes.
+        if (!(await this.stillHoldsLease(generation))) {
+          this.logger.warn(
+            `Generation run recovery lost leadership (generation ${generation}) after processing ${processed}/${candidates.length} candidates this pass — stopping early; the remaining candidates are picked up next pass.`,
+          );
+          break;
+        }
+        processed += 1;
         try {
           const outcome = await this.recoverOne(run);
           if (outcome === 'recovered') recovered += 1;
@@ -186,7 +233,7 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
         lockSkipped: false,
       };
     } finally {
-      await this.releaseLease();
+      await this.releaseLease(generation);
     }
   }
 

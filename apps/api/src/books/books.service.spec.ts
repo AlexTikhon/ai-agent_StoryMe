@@ -11,7 +11,11 @@ import {
   GenerationExecutionService,
   StaleGenerationRunError,
 } from '../agent/generation-execution.service';
+import { InvalidGenerationInputSnapshotError } from '../agent/generation-input-snapshot';
+import type { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
+import type { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
+import type { GenerationOutcome } from '../agent/generation-outcome';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
 import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
@@ -39,6 +43,29 @@ function createMockAgentService(): jest.Mocked<AgentService> {
 
 function createMockGenerationExecutionService(): jest.Mocked<GenerationExecutionService> {
   return { applyFencedBookWrite: vi.fn() } as unknown as jest.Mocked<GenerationExecutionService>;
+}
+
+function createMockGenerationRunCoordinator(): jest.Mocked<GenerationRunCoordinator> {
+  return {
+    completeRun: vi.fn().mockResolvedValue(true),
+  } as unknown as jest.Mocked<GenerationRunCoordinator>;
+}
+
+/** Default: trusts the run's stored inputSnapshot is already current-shaped and echoes it back — snapshot versioning/legacy-migration itself is covered by generation-input-snapshot-backfill.service.spec.ts. */
+function createMockSnapshotBackfillService(): jest.Mocked<GenerationInputSnapshotBackfillService> {
+  return {
+    normalize: vi.fn(async (run: { inputSnapshot: unknown }) => run.inputSnapshot),
+  } as unknown as jest.Mocked<GenerationInputSnapshotBackfillService>;
+}
+
+/** A minimal completed GenerationOutcome — the shape AgentService.startBookGeneration now returns instead of a Book. */
+function makeOutcome(overrides: Partial<GenerationOutcome> = {}): GenerationOutcome {
+  return {
+    status: 'complete' as GenerationOutcome['status'],
+    completedStep: 'pdf_render' as GenerationOutcome['completedStep'],
+    bookUpdate: {},
+    ...overrides,
+  };
 }
 
 function createMockPdfStorage(): jest.Mocked<PdfStorage> {
@@ -139,7 +166,7 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     attempt: 1,
     leaseOwner: null,
     leaseExpiresAt: null,
-    leaseAttempt: 0,
+    deliveryToken: null,
     fencingVersion: 0,
     errorCode: null,
     errorMessage: null,
@@ -269,6 +296,8 @@ describe('BooksService', () => {
   let generationJobService: ReturnType<typeof createMockGenerationJobService>;
   let generationRunService: ReturnType<typeof createMockGenerationRunService>;
   let generationExecutionService: ReturnType<typeof createMockGenerationExecutionService>;
+  let generationRunCoordinator: ReturnType<typeof createMockGenerationRunCoordinator>;
+  let snapshotBackfill: ReturnType<typeof createMockSnapshotBackfillService>;
   let config: ReturnType<typeof createMockConfig>;
   let rateLimiter: ReturnType<typeof createMockRateLimiter>;
   let childPhotoProcessor: ReturnType<typeof createMockChildPhotoProcessor>;
@@ -302,6 +331,8 @@ describe('BooksService', () => {
     generationJobService = createMockGenerationJobService();
     generationRunService = createMockGenerationRunService();
     generationExecutionService = createMockGenerationExecutionService();
+    generationRunCoordinator = createMockGenerationRunCoordinator();
+    snapshotBackfill = createMockSnapshotBackfillService();
     config = createMockConfig();
     rateLimiter = createMockRateLimiter();
     childPhotoProcessor = createMockChildPhotoProcessor();
@@ -314,6 +345,8 @@ describe('BooksService', () => {
       generationJobService as never,
       generationRunService as never,
       generationExecutionService as never,
+      generationRunCoordinator as never,
+      snapshotBackfill as never,
       config,
       rateLimiter,
       childPhotoProcessor,
@@ -1202,6 +1235,22 @@ describe('BooksService', () => {
       expect(createCall.data.retryOfRunId).toBeUndefined();
     });
 
+    it("throws a predictable ConflictException with the stable GENERATION_INPUT_SNAPSHOT_INVALID code when the prior run's stored snapshot is malformed, rather than an unhandled 500", async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      generationRunService.findLatestForBook.mockResolvedValue(
+        makeGenerationRun({ id: 'prior-run-1', inputSnapshot: { this: 'is not valid' } }),
+      );
+      snapshotBackfill.normalize.mockRejectedValue(
+        new InvalidGenerationInputSnapshotError('prior-run-1', new Error('malformed')),
+      );
+
+      await expect(service.retryGeneration('u-1', 'b-1')).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'GENERATION_INPUT_SNAPSHOT_INVALID' }),
+      });
+      expect(prisma.generationRun.create).not.toHaveBeenCalled();
+    });
+
     describe('concurrency', () => {
       it('throws ConflictException (and never schedules a job) when a concurrent retry already won the Book status transition (P2025)', async () => {
         const book = makeBook({ status: STATUS_FAILED });
@@ -1397,7 +1446,7 @@ describe('BooksService', () => {
 
     it('calls AgentService.startBookGeneration with the execution context built from the claimed run', async () => {
       const ctx = makeCtx();
-      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
+      agentService.startBookGeneration.mockResolvedValue(makeOutcome());
 
       await service.runGenerationPipeline(ctx);
 
@@ -1405,28 +1454,20 @@ describe('BooksService', () => {
       expect(agentService.startBookGeneration).toHaveBeenCalledWith(ctx);
     });
 
-    it('on success: marks the run completed, clears Book.activeRunId, and sets Book.publishedRunId — guarded on the claimed fencingVersion', async () => {
+    it('on success: publishes the outcome via GenerationRunCoordinator.completeRun — the sole place Book.status is ever written', async () => {
       const ctx = makeCtx({ runId: 'run-1', bookId: 'b-1', fencingVersion: 3 });
-      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
+      const outcome = makeOutcome();
+      agentService.startBookGeneration.mockResolvedValue(outcome);
 
       await service.runGenerationPipeline(ctx);
 
-      expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
-        where: { id: 'run-1', status: 'running', fencingVersion: 3 },
-        data: { status: 'completed', completedAt: expect.any(Date) },
-      });
-      expect(prisma.book.updateMany).toHaveBeenCalledWith({
-        where: { id: 'b-1', activeRunId: 'run-1' },
-        data: { activeRunId: null, publishedRunId: 'run-1' },
-      });
+      expect(generationRunCoordinator.completeRun).toHaveBeenCalledWith(ctx, outcome);
     });
 
     it('on success: marks the legacy GenerationJob completed when one exists', async () => {
       const ctx = makeCtx();
-      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
+      agentService.startBookGeneration.mockResolvedValue(makeOutcome());
       generationJobService.findActive.mockResolvedValue(makeGenerationJob());
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
       await service.runGenerationPipeline(ctx);
 
@@ -1435,57 +1476,44 @@ describe('BooksService', () => {
       expect(generationJobService.markFailed).not.toHaveBeenCalled();
     });
 
-    it('logs the book status transition (e.g. -> complete)', async () => {
+    it('logs the pipeline outcome (e.g. -> complete)', async () => {
       const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       const ctx = makeCtx();
-      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
+      agentService.startBookGeneration.mockResolvedValue(makeOutcome());
 
       await service.runGenerationPipeline(ctx);
 
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('status -> complete'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('pipeline outcome -> complete'));
       logSpy.mockRestore();
     });
 
-    it('on an expected content failure (AgentService returns status=failed): marks the run failed with a safe errorCode, without touching Book.status (AgentService already wrote it)', async () => {
+    it('on an expected content failure (AgentService returns a failed outcome): publishes it via the coordinator, without writing Book itself', async () => {
       const ctx = makeCtx({ runId: 'run-1', bookId: 'b-1', fencingVersion: 0 });
-      agentService.startBookGeneration.mockResolvedValue(
-        makeBook({
-          status: STATUS_FAILED,
-          failedStep: 'image_gen' as Book['failedStep'],
-          errorMessage: 'OpenAI image request failed',
-        }),
-      );
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
+      const outcome = makeOutcome({
+        status: STATUS_FAILED as GenerationOutcome['status'],
+        errorCode: 'GENERATION_FAILED',
+        errorMessage: 'OpenAI image request failed',
+        failedStep: 'image_gen' as GenerationOutcome['failedStep'],
+      });
+      agentService.startBookGeneration.mockResolvedValue(outcome);
 
       await service.runGenerationPipeline(ctx);
 
-      expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
-        where: { id: 'run-1', status: 'running', fencingVersion: 0 },
-        data: {
-          status: 'failed',
-          failedAt: expect.any(Date),
-          errorCode: 'GENERATION_FAILED',
-          errorMessage: 'OpenAI image request failed',
-        },
-      });
-      expect(prisma.book.updateMany).toHaveBeenCalledWith({
-        where: { id: 'b-1', activeRunId: 'run-1' },
-        data: { activeRunId: null },
-      });
+      expect(generationRunCoordinator.completeRun).toHaveBeenCalledWith(ctx, outcome);
+      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
     });
 
     it('on an expected content failure: marks the legacy GenerationJob failed (with failedStep/errorMessage) when one exists', async () => {
       const ctx = makeCtx();
       agentService.startBookGeneration.mockResolvedValue(
-        makeBook({
-          status: STATUS_FAILED,
-          failedStep: 'image_gen' as Book['failedStep'],
+        makeOutcome({
+          status: STATUS_FAILED as GenerationOutcome['status'],
           errorMessage: 'OpenAI image request failed',
+          failedStep: 'image_gen' as GenerationOutcome['failedStep'],
         }),
       );
       generationJobService.findActive.mockResolvedValue(makeGenerationJob());
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
       await service.runGenerationPipeline(ctx);
 
@@ -1496,7 +1524,7 @@ describe('BooksService', () => {
       expect(generationJobService.markCompleted).not.toHaveBeenCalled();
     });
 
-    it('swallows StaleGenerationRunError from AgentService without touching GenerationRun/Book — a newer attempt already owns this run', async () => {
+    it('swallows StaleGenerationRunError from AgentService without calling the coordinator — a newer attempt already owns this run', async () => {
       const ctx = makeCtx();
       agentService.startBookGeneration.mockRejectedValue(
         new StaleGenerationRunError('run-1', 'layout' as never),
@@ -1504,29 +1532,16 @@ describe('BooksService', () => {
 
       await expect(service.runGenerationPipeline(ctx)).resolves.toBeUndefined();
 
-      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
-      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+      expect(generationRunCoordinator.completeRun).not.toHaveBeenCalled();
     });
 
-    it('completeRun is a no-op on Book when the fencing guard finds the run already superseded', async () => {
-      const ctx = makeCtx({ runId: 'run-1', bookId: 'b-1', fencingVersion: 1 });
-      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
-      // Recovery (or a later claim) already moved the run on — updateMany matches 0 rows.
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
-
-      await service.runGenerationPipeline(ctx);
-
-      expect(prisma.book.updateMany).not.toHaveBeenCalled();
-    });
-
-    it('on an unexpected/transient error: does not touch GenerationRun or Book, and rethrows so BullMQ retries', async () => {
+    it('on an unexpected/transient error: does not call the coordinator, and rethrows so BullMQ retries', async () => {
       const ctx = makeCtx();
       agentService.startBookGeneration.mockRejectedValue(new Error('unexpected pipeline crash'));
 
       await expect(service.runGenerationPipeline(ctx)).rejects.toThrow('unexpected pipeline crash');
 
-      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
-      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+      expect(generationRunCoordinator.completeRun).not.toHaveBeenCalled();
     });
 
     it('on an unexpected/transient error: marks the legacy GenerationJob failed (best-effort) but still rethrows', async () => {

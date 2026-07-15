@@ -14,4 +14,14 @@ export interface GenerationExecutionContext {
   readonly fencingVersion: number;
   readonly inputHash: string;
   readonly inputSnapshot: GenerationInputSnapshot;
+  /**
+   * Aborted by GenerationQueueProcessor's periodic heartbeat the moment it
+   * discovers a newer claim already owns this run — checked by AgentService
+   * at natural checkpoints (see AgentService.assertNotSuperseded) so a
+   * fenced-out attempt stops doing further provider/storage work as soon as
+   * possible, rather than only failing once its next DB write is rejected.
+   * Optional so tests/callers that never construct a real heartbeat loop
+   * (e.g. unit tests, retryGeneration's snapshot copy) don't need one.
+   */
+  readonly signal?: AbortSignal;
 }

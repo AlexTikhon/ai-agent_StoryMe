@@ -16,8 +16,9 @@ import {
   type ImageGenerationProvider,
   type ImageReference,
 } from '../images/image-generation-provider';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
+import { CHILD_PHOTO_INTEGRITY_MISMATCH } from '../books/child-photo.constants';
 import type {
   BookLayout,
   BookLayoutEntry,
@@ -40,8 +41,12 @@ import {
   MockCharacterProfileProvider,
   type CharacterProfileProvider,
 } from './character-profile-provider';
-import { GenerationExecutionService } from './generation-execution.service';
+import {
+  GenerationExecutionService,
+  StaleGenerationRunError,
+} from './generation-execution.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
+import type { GenerationOutcome } from './generation-outcome';
 
 // ── Layout engine constants ────────────────────────────────────────────────────
 
@@ -311,7 +316,7 @@ interface ResolvedGenerationInput {
   language: string;
   pageCount: number | undefined;
   educationalMessage: string | undefined;
-  childPhoto?: { assetKey: string; contentType: string };
+  childPhoto?: { assetKey: string; contentType: string; sha256: string; sizeBytes: number };
 }
 
 function isResumableBook(book: Book, inputHash: string): boolean {
@@ -345,6 +350,54 @@ export class AgentService {
   private readonly fallbackCharacterProfileProvider = new MockCharacterProfileProvider();
 
   /**
+   * Loads the uploaded child reference photo's bytes and verifies them
+   * against the sha256/sizeBytes recorded in the GenerationInputSnapshot at
+   * run-creation time before ever handing them to a vision provider. A
+   * mismatch — truncated bytes, a different file at the same key, or any
+   * other corruption/replacement — is never silently used: this is the one
+   * piece of a run's snapshot that is itself a *reference* into mutable
+   * storage rather than an inline value, so verifying it is what actually
+   * makes the "immutable input" guarantee (see GenerationInputSnapshot's own
+   * doc comment) hold for a photo, not just for the plain fields. Returns
+   * `{}` (no photo, no error) when nothing was ever uploaded; `{ photo }` on
+   * a verified match; `{ integrityError }` (photo omitted) when bytes were
+   * found but failed verification, logged at `error` with the stable
+   * CHILD_PHOTO_INTEGRITY_MISMATCH code — distinguishable from the ordinary
+   * "no bytes found at all" case, which only ever gets a `warn`. Either way,
+   * this never throws: like every other char_build sub-failure, a bad photo
+   * degrades to text-only character-profile generation rather than failing
+   * the whole book.
+   */
+  private async loadAndVerifyChildPhoto(
+    bookId: string,
+    childPhoto: ResolvedGenerationInput['childPhoto'],
+  ): Promise<{ photo?: { base64: string; contentType: string }; integrityError?: string }> {
+    if (!childPhoto) return {};
+
+    const bytes = await this.imageAssetStorage.getImageAsset(childPhoto.assetKey);
+    if (!bytes) {
+      this.logger.warn(
+        `Book ${bookId} has childPhoto asset "${childPhoto.assetKey}" but no bytes were found in image storage; building character profile without a photo.`,
+      );
+      return {};
+    }
+
+    if (bytes.length !== childPhoto.sizeBytes) {
+      const integrityError = `${CHILD_PHOTO_INTEGRITY_MISMATCH}: childPhoto asset "${childPhoto.assetKey}" for book ${bookId} is ${bytes.length} bytes, expected ${childPhoto.sizeBytes} — refusing to use it.`;
+      this.logger.error(integrityError);
+      return { integrityError };
+    }
+    const actualSha256 = createHash('sha256').update(bytes).digest('hex');
+    if (actualSha256 !== childPhoto.sha256) {
+      const integrityError = `${CHILD_PHOTO_INTEGRITY_MISMATCH}: childPhoto asset "${childPhoto.assetKey}" for book ${bookId} has sha256 ${actualSha256}, expected ${childPhoto.sha256} — refusing to use it.`;
+      this.logger.error(integrityError);
+      return { integrityError };
+    }
+
+    return { photo: { base64: bytes.toString('base64'), contentType: childPhoto.contentType } };
+  }
+
+  /**
    * Builds the book's CharacterProfile (from name/age/theme and, if
    * uploaded, the child's reference photo) and a character-sheet reference
    * image — the actual work behind the AgentStep.char_build step. Never
@@ -368,25 +421,12 @@ export class AgentService {
     const startedAt = Date.now();
     const { childName, childAge, theme, language } = input;
 
-    let photo: { base64: string; contentType: string } | undefined;
-    if (input.childPhoto) {
-      const bytes = await this.imageAssetStorage.getImageAsset(input.childPhoto.assetKey);
-      if (bytes) {
-        photo = {
-          base64: bytes.toString('base64'),
-          contentType: input.childPhoto.contentType,
-        };
-      } else {
-        this.logger.warn(
-          `Book ${bookId} has childPhoto asset "${input.childPhoto.assetKey}" but no bytes were found in image storage; building character profile without a photo.`,
-        );
-      }
-    }
+    const { photo, integrityError } = await this.loadAndVerifyChildPhoto(bookId, input.childPhoto);
 
     let providerName = this.characterProfileProvider.providerName ?? null;
     const modelName = this.characterProfileProvider.modelName ?? null;
     let characterProfile: CharacterProfile;
-    let error: string | undefined;
+    let error: string | undefined = integrityError;
     try {
       characterProfile = await this.characterProfileProvider.buildProfile({
         bookId,
@@ -696,6 +736,24 @@ export class AgentService {
   }
 
   /**
+   * Throws StaleGenerationRunError if the periodic heartbeat
+   * (GenerationQueueProcessor) has already discovered a newer claim owns this
+   * run and signaled cancellation via ctx.signal — checked at natural
+   * checkpoints before expensive/paid provider or storage work (image
+   * generation, PDF render) so a fenced-out attempt stops promptly instead of
+   * only discovering it's superseded once its next DB write is rejected.
+   * This is a best-effort, same-process optimization on top of — never a
+   * replacement for — the DB-level fencing every write already goes through;
+   * a run can still do a bounded amount of work between one heartbeat tick
+   * and the next.
+   */
+  private assertNotSuperseded(ctx: GenerationExecutionContext, step: AgentStep): void {
+    if (ctx.signal?.aborted) {
+      throw new StaleGenerationRunError(ctx.runId, step);
+    }
+  }
+
+  /**
    * Runs the full generation pipeline for one claimed GenerationRun. Every
    * generation-relevant input field (childName/childAge/theme/language/
    * pageCount/educationalMessage/childPhoto) comes from
@@ -707,8 +765,15 @@ export class AgentService {
    * GenerationExecutionService.applyFencedBookWrite so a newer claim/recovery
    * that has since superseded this attempt can never be overwritten by it
    * (see StaleGenerationRunError, which callers must let propagate).
+   *
+   * Returns a GenerationOutcome rather than writing Book.status=complete/
+   * failed itself — that terminal flip is applied by the caller
+   * (GenerationRunCoordinator.completeRun) atomically alongside the
+   * GenerationRun terminal transition, so there is no window where Book looks
+   * done but GenerationRun/activeRunId disagree (see GenerationOutcome's doc
+   * comment).
    */
-  async startBookGeneration(ctx: GenerationExecutionContext): Promise<Book> {
+  async startBookGeneration(ctx: GenerationExecutionContext): Promise<GenerationOutcome> {
     const book = await this.prisma.book.findUniqueOrThrow({ where: { id: ctx.bookId } });
     const traceId = randomUUID();
     const startedAt = Date.now();
@@ -731,6 +796,8 @@ export class AgentService {
         childPhoto: {
           assetKey: snapshot.childPhoto.assetKey,
           contentType: snapshot.childPhoto.contentType,
+          sha256: snapshot.childPhoto.sha256,
+          sizeBytes: snapshot.childPhoto.sizeBytes,
         },
       }),
     };
@@ -854,18 +921,6 @@ export class AgentService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
-        const failed = await this.generationExecutionService.applyFencedBookWrite(
-          ctx,
-          {
-            status: BookStatus.failed,
-            errorMessage: message,
-            failedStep: AgentStep.story_plan,
-            generationTimeMs: Date.now() - startedAt,
-            aiModelVersions,
-            ...characterProfileUpdateData,
-          },
-          AgentStep.story_plan,
-        );
         await this.prisma.agentLog.createMany({
           data: [
             {
@@ -894,7 +949,23 @@ export class AgentService {
             },
           ],
         });
-        return failed;
+        // Not persisted here — see GenerationOutcome's doc comment. The
+        // caller (GenerationRunCoordinator.completeRun) writes
+        // status/errorMessage/failedStep atomically alongside the
+        // GenerationRun terminal transition; generationTimeMs/aiModelVersions/
+        // the char_build progress ride along in the same write.
+        return {
+          status: BookStatus.failed,
+          completedStep: AgentStep.story_plan,
+          errorCode: 'GENERATION_FAILED',
+          errorMessage: message,
+          failedStep: AgentStep.story_plan,
+          bookUpdate: {
+            generationTimeMs: Date.now() - startedAt,
+            aiModelVersions,
+            ...characterProfileUpdateData,
+          },
+        };
       }
       storyDurationMs = Date.now() - startedAt;
     }
@@ -904,6 +975,13 @@ export class AgentService {
         ? `Book ${book.id}: reusing ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} planned illustrations from the prior run.`
         : `Story generated for book ${book.id}: ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} illustrations planned (cover + pages + back cover).`,
     );
+
+    // A superseded run (heartbeat found a newer claim already owns it) is
+    // signaled via ctx.signal — checked here, before the expensive/paid
+    // image-generation step, so a fenced-out attempt stops doing real
+    // provider/storage work as soon as it's detected, rather than only
+    // discovering it much later when its final write is rejected anyway.
+    this.assertNotSuperseded(ctx, AgentStep.image_gen);
 
     const imageStartedAt = Date.now();
 
@@ -1036,7 +1114,11 @@ export class AgentService {
       AgentStep.layout,
     );
 
-    // Phase 2: render PDF (pdf_render step)
+    // Phase 2: render PDF (pdf_render step) — checked again here for the same
+    // reason as before image generation: a superseded attempt must not keep
+    // doing storage/render work once it's been signaled.
+    this.assertNotSuperseded(ctx, AgentStep.pdf_render);
+
     let previewPdfUrl: string | null = null;
     let pdfRenderLogStatus: AgentLogStatus = AgentLogStatus.success;
     let pdfRenderError: string | undefined;
@@ -1138,25 +1220,19 @@ export class AgentService {
     };
     imageGenerationResult.resume = resumeDiagnostics;
 
-    const finalData: Prisma.BookUpdateInput = {
-      status: finalStatus,
+    // Not written here — see GenerationOutcome's doc comment. status/
+    // errorMessage/failedStep are applied by the caller
+    // (GenerationRunCoordinator.completeRun) atomically alongside the
+    // GenerationRun terminal transition; everything else below rides along in
+    // that same write.
+    const finalBookUpdate: Prisma.BookUpdateInput = {
       generationTimeMs: Date.now() - startedAt,
       aiModelVersions,
       imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
     };
     if (previewPdfUrl !== null) {
-      finalData.previewPdfUrl = previewPdfUrl;
+      finalBookUpdate.previewPdfUrl = previewPdfUrl;
     }
-    if (pdfRenderError) {
-      finalData.errorMessage = pdfRenderError;
-      finalData.failedStep = AgentStep.pdf_render;
-    }
-
-    const updated = await this.generationExecutionService.applyFencedBookWrite(
-      ctx,
-      finalData,
-      AgentStep.pdf_render,
-    );
 
     await this.prisma.agentLog.createMany({
       data: [
@@ -1266,6 +1342,15 @@ export class AgentService {
       ],
     });
 
-    return updated;
+    return {
+      status: finalStatus,
+      completedStep: AgentStep.pdf_render,
+      bookUpdate: finalBookUpdate,
+      ...(pdfRenderError && {
+        errorCode: 'GENERATION_FAILED',
+        errorMessage: pdfRenderError,
+        failedStep: AgentStep.pdf_render,
+      }),
+    };
   }
 }

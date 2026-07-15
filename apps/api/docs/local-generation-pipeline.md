@@ -1454,16 +1454,77 @@ regardless of field insertion order at any depth.
 
 Critically: **the pipeline consumes the snapshot, not the live Book row.**
 `GenerationQueueProcessor.process` builds a `GenerationExecutionContext`
-(`runId`, `bookId`, `fencingVersion`, `inputHash`, `inputSnapshot`) immediately
-after a successful claim and passes that — not a freshly-reloaded, possibly
-since-edited `Book` — into `AgentService.startBookGeneration(ctx)`, which
-resolves every generation-relevant field (`childName`, `childAge`, `theme`,
-`language`, `pageCount`, `educationalMessage`, the child photo) from
-`ctx.inputSnapshot`. The Book row is still loaded, but only for prior-progress
-fields (story plan/character card/etc., for idempotent resume) and identity —
-never for the input parameters themselves. This is what makes "edit the book,
-then retry" resume from the *pre-edit* input the retried run actually
-captured, not whatever the book looks like right now.
+(`runId`, `bookId`, `fencingVersion`, `inputHash`, `inputSnapshot`, `signal`)
+immediately after a successful claim and passes that — not a
+freshly-reloaded, possibly since-edited `Book` — into
+`AgentService.startBookGeneration(ctx)`, which resolves every
+generation-relevant field (`childName`, `childAge`, `theme`, `language`,
+`pageCount`, `educationalMessage`, the child photo) from `ctx.inputSnapshot`.
+The Book row is still loaded, but only for prior-progress fields (story
+plan/character card/etc., for idempotent resume) and identity — never for
+the input parameters themselves. This is what makes "edit the book, then
+retry" resume from the *pre-edit* input the retried run actually captured,
+not whatever the book looks like right now.
+
+#### Snapshot versioning + legacy backfill (Phase A.1)
+
+`generationInputSnapshotSchema` carries an optional `snapshotVersion` (current
+= `CURRENT_SNAPSHOT_VERSION`, 2) — optional so a snapshot that already
+structurally matches this shape but predates the field parses as current
+without a migration; the two shapes are already structurally distinguishable
+regardless of the tag. `legacyGenerationInputSnapshotSchemaV1` matches the
+exact pre-Phase-A shape: no `snapshotVersion`, a bare
+`childPhotoAssetKey`/`childPhotoContentType` instead of `childPhoto`'s full
+versioned identity object (this predates `Book.childPhotoSha256`/
+`childPhotoSizeBytes` existing at all).
+
+`GenerationInputSnapshotBackfillService.normalize(run)` — used by
+`GenerationQueueProcessor` (claiming) and `BooksService.retryGeneration`
+(copying a prior run's snapshot forward) instead of the plain
+`parseGenerationInputSnapshot` — tries the current schema first, and only on
+failure attempts the legacy one. A legacy snapshot with no photo normalizes
+with no I/O. A legacy snapshot *with* a photo reads the existing asset bytes
+once, computes sha256/size, and writes an **immutable versioned copy** under
+a fresh key (mirroring `uploadChildPhoto`'s own versioning invariant — the
+original bytes are never mutated or deleted), then persists the migrated
+snapshot back onto the run so this only ever happens once per run. If the
+legacy photo's bytes are missing from storage, this throws
+`InvalidGenerationInputSnapshotError` rather than silently treating the run
+as if it never had a photo — a legacy photo is never silently discarded just
+because the new digest columns are null. Safe to call on a run in any status
+(queued/running/failed/completed): it only ever reads+rewrites the
+`inputSnapshot` JSON column, never touches status/fencing.
+
+#### Invalid snapshot handling — finalize, don't burn retries
+
+A snapshot that fails both the current and legacy schema (truly malformed —
+never expected in practice, but not assumed impossible) is a *permanent*
+condition, not a transient one. `GenerationQueueProcessor.process` catches
+`InvalidGenerationInputSnapshotError` right after claiming and calls
+`GenerationRunCoordinator.failInvalidSnapshot` directly — finalizing
+`GenerationRun`/`Book` as failed with the stable
+`GENERATION_INPUT_SNAPSHOT_INVALID` code and a safe public message (never the
+raw Zod issue list) — and returns without rethrowing, so BullMQ never retries
+it. Earlier, this error propagated uncaught, so BullMQ retried a condition
+retrying could never fix, burning all attempts before landing on a generic
+`GENERATION_INFRASTRUCTURE_FAILURE` code that hid the real cause.
+`BooksService.retryGeneration` similarly catches this from
+`GenerationInputSnapshotBackfillService.normalize` and throws a predictable
+`ConflictException` (the same stable code) instead of an unhandled 500 —
+`regenerateBook` (which always builds a fresh snapshot from the book's
+current fields) is the escape hatch when a prior run's snapshot is
+corrupted.
+
+#### Child photo byte integrity
+
+`AgentService.loadAndVerifyChildPhoto` verifies a loaded child-photo asset's
+byte length and sha256 against the identity frozen in the snapshot before
+ever handing it to a vision provider — a mismatch (truncated bytes, a
+different file at the same key, any other corruption or replacement) is
+logged at `error` with the stable `CHILD_PHOTO_INTEGRITY_MISMATCH` code and
+the bytes are never used; generation degrades to text-only, the same
+graceful-degradation path a merely-missing asset already took (logged at
+`warn`, not `error`, so the two cases stay distinguishable in diagnostics).
 
 ### Fencing — every pipeline write, not just claim/complete
 
@@ -1487,46 +1548,106 @@ from `AgentService` as a quiet abandonment (log and return) — never a reason
 to rethrow and trigger a BullMQ retry, since whichever attempt actually owns
 the run now is responsible for finishing it.
 
-### Correct BullMQ redelivery ownership
+### Correct BullMQ redelivery ownership — delivery-token fencing (Phase A.1)
 
-`GenerationRunService.claim(runId, workerId, leaseMs, jobAttempt)`
-(`apps/api/src/agent/generation-run.service.ts`) succeeds when the run is
-still queued/running **and** at least one of: unleased; already leased to
-this same `workerId` (a retry landing on the same live process); the lease
-has wall-clock expired; or `jobAttempt` is strictly greater than the attempt
-currently holding the lease (`leaseAttempt` column). That last clause is the
-fix for a real bug: BullMQ only ever issues attempt N+1 after it has itself
-decided attempt N is done or stalled, so a strictly-higher attempt number is
-always safe to trust as "this delivery supersedes whatever is currently
-held" — independent of whether the DB lease happens to have wall-clock
-expired yet. Without it, a legitimate redelivery to a *different* worker
-before the old lease's expiry would fail to claim and `GenerationQueueProcessor`
-would silently treat that as a no-op success, permanently stranding the run.
-`GenerationRunService.heartbeat(runId, workerId, fencingVersion, leaseMs)` — a
-fenced lease extension called on an interval (`leaseMs / 3`) by
-`GenerationQueueProcessor` while it holds a claim — keeps a slow-but-alive
-real-generation run from being mistaken for abandoned by recovery.
+`GenerationRunService.claim(runId, deliveryToken, workerId, leaseMs)`
+(`apps/api/src/agent/generation-run.service.ts`) succeeds unconditionally
+whenever the run is still queued/running — no OR-clause to satisfy. Earlier
+this method fenced on `job.attemptsMade + 1` (a `leaseAttempt` column,
+requiring a strictly-higher attempt to reclaim); that was a real bug, since
+BullMQ's own **stalled-job recovery** can redeliver a job to a different
+worker without ever incrementing `attemptsMade` (confirmed directly against
+`moveStalledJobsToWait`'s Lua script — it only touches a separate stalled
+counter, never `attemptsMade`). A same-attempt-number stalled redelivery
+would fail that old OR-clause and `GenerationQueueProcessor` would silently
+treat it as a no-op, permanently stranding the run.
 
-### Atomic terminal transitions
+The fix: `deliveryToken` (the `token` BullMQ's Worker passes to
+`process(job, token)`, minted fresh on *every* lock acquisition, including a
+stalled redelivery) is the fencing identity now, not the attempt count. Every
+call to `claim()` represents BullMQ itself asserting "a worker holds this
+job's lock right now," so it always succeeds and unconditionally bumps
+`fencingVersion` + overwrites `deliveryToken`/`leaseOwner` — there is nothing
+to compare the previous delivery against at claim time. That previous
+delivery's in-flight writes are instead fenced out downstream:
+`GenerationRunService.heartbeat(runId, deliveryToken, fencingVersion, leaseMs)`
+— a lease-extension call on an interval (`leaseMs / 3`) fenced on **both**
+`deliveryToken` and `fencingVersion` — and every `applyFencedBookWrite`/
+`completeRun`/`failInvalidSnapshot` call, fenced on `fencingVersion` alone
+(sufficient on its own, since it's bumped on every claim; `deliveryToken` at
+the heartbeat layer is defense-in-depth on top of that). A stale delivery
+token can never heartbeat or write again once a newer claim has superseded
+it. See `test/integration/generation-queue-stalled-redelivery.integration.spec.ts`
+for this proven end-to-end against a real Redis/BullMQ Worker pair (one
+worker's lock is force-stalled via `skipLockRenewal`, the other's real
+BullMQ stalled-checker reclaims it with `attemptsMade` unchanged).
 
-`BooksService.completeRun` and `markRunPermanentlyFailedAfterExhaustedRetries`
-wrap their `GenerationRun` status write and the `Book.activeRunId`/
-`publishedRunId` update in one `$transaction` — a crash between the two is no
-longer possible; either both commit or neither does. On success,
-`Book.publishedRunId` is set so the last successful run stays published even
-if a later run is started and later fails.
+When a heartbeat call resolves `false` (this delivery has been superseded),
+`GenerationQueueProcessor` aborts an `AbortController` whose `signal` rides
+on `GenerationExecutionContext` — `AgentService.assertNotSuperseded` checks
+it at the two natural checkpoints before further paid/expensive work (image
+generation, PDF render) and throws `StaleGenerationRunError`, so a fenced-out
+attempt stops promptly instead of only discovering it's superseded once its
+next DB write is rejected. This is a same-process, best-effort optimization
+layered on top of — never a replacement for — the DB-level fencing every
+write already goes through independently.
 
-### Recovery leadership — a lease row, not a session advisory lock
+### Atomic terminal transitions — `GenerationRunCoordinator` (Phase A.1)
+
+`AgentService.startBookGeneration` never writes `Book.status = complete` or
+`failed` itself — it returns a typed `GenerationOutcome` (status + safe
+error fields + the rest of the Book update data, deliberately excluding
+those three fields). `GenerationRunCoordinator.completeRun` (extracted out of
+`BooksService` specifically so this exact production method — not a
+hand-copied mirror of it — is what integration tests exercise against real
+Postgres) is the *only* place those fields are ever written: one transaction
+that fences the `GenerationRun` terminal write on `fencingVersion`, and only
+if that holds, writes `Book.status`/`errorMessage`/`failedStep` +
+`activeRunId` (+`publishedRunId` on success) together. Earlier, AgentService
+wrote `Book.status` directly (still fenced, but as a *separate* transaction
+from the one that flipped `GenerationRun` to terminal and cleared
+`activeRunId`) — a crash between those two transactions left `Book` already
+showing `complete`/`failed` while `GenerationRun` was still `running` and
+`activeRunId` still pointed at it, which among other things left
+`findActiveForBook` blocking a legitimate retry/regenerate against a book
+that looked finished. `GenerationRunCoordinator.failInvalidSnapshot` follows
+the identical pattern for a permanently malformed `input_snapshot` (see
+below). A crash before either coordinator method's transaction commits
+leaves both `Book` and `GenerationRun` non-terminal; a crash after leaves
+both terminal and consistent — there is no in-between state either way.
+`markRunPermanentlyFailedAfterExhaustedRetries` (BullMQ attempts exhausted,
+no `AgentService` outcome to publish) follows the same fenced
+transaction shape inline in `BooksService`.
+
+### Recovery leadership — a lease row, not a session advisory lock (Phase A.1: server time + fencing generation)
 
 `GenerationRunRecoveryService` elects one leader per recovery pass via a
 single-row `RecoveryLease` (seeded by migration, id `generation_run_recovery`)
-and a plain conditional `updateMany` — **not**
+and a plain conditional row update — **not**
 `pg_try_advisory_lock`/`pg_advisory_unlock`. Session-scoped advisory locks
 require acquire/work/release to run on the same physical Postgres connection,
 a guarantee Prisma's pooled client does not make; getting that wrong either
 leaks the lock (wedging every future pass on that instance) or gives no real
 cross-instance guarantee at all. A plain row UPDATE has no such requirement.
-`recoverOne`'s own run-fail + Book-clear is likewise one transaction.
+
+Acquire/renew/expiry comparisons use PostgreSQL's own `NOW()` (via
+`$queryRaw`), never application `Date` — clock skew between instances (or
+between an instance and the DB) could otherwise let two instances disagree
+about whether a lease has actually expired. `leaseGeneration` increments on
+every successful acquire and is returned as a fencing token: instead of a
+renewal heartbeat, the recovery loop re-verifies (`stillHoldsLease`) that it
+still holds this exact generation before *every* candidate it processes —
+a bounded-batch guard that stops the pass early (leaving the rest for next
+time) the instant leadership is lost, whether because the pass simply ran
+long or because a new leader already took over. `releaseLease` is likewise
+fenced on the acquired generation, so it can never release a lease a newer
+leader has since acquired. `recoverOne`'s own run-fail + Book-clear is
+likewise one transaction, fenced on the `GenerationRun`'s own
+`fencingVersion` (independent of, and in addition to, the recovery lease
+itself). See the "RecoveryLease leadership across two instances" describe
+block in `test/integration/generation-fencing.integration.spec.ts` for
+deterministic, barrier-driven (not `Promise.all`-timing-dependent) coverage
+of both the mutual-exclusion and the fencing-generation invariants.
 
 ### Mutation races — CAS on Book, not read-then-write
 
@@ -1539,12 +1660,39 @@ generation has already begun.
 
 ### Known limitations (explicit, not yet built)
 
+**Scope honesty (Phase A.1):** every `GenerationRun`/`Book` *database write*
+in the generation pipeline is now fenced — claim, heartbeat, every
+`applyFencedBookWrite` call, `completeRun`, `failInvalidSnapshot`,
+`markRunPermanentlyFailedAfterExhaustedRetries`, and recovery's own fail path
+all condition on `fencingVersion` (and, for heartbeat, `deliveryToken` too),
+so a stale attempt's DB write is provably rejected, not just usually
+avoided. That is **not** the same claim as "a stale worker can do no harm at
+all." Two gaps remain, deliberately out of scope for this pass:
+
 - **Run-scoped artifact storage.** Generated images/PDFs are still keyed
   positionally (`imageAssetKey(bookId, kind, pageNumber)`), not
-  `books/{bookId}/runs/{runId}/...` — a regenerate can still only safely reuse
-  or overwrite bytes at the same key, and there is no `GenerationArtifact`
-  model or atomic "promote this run's output to published" step beyond
-  `Book.publishedRunId` itself.
+  `books/{bookId}/runs/{runId}/...`. A stale (superseded) attempt's
+  in-flight `ImageAssetStorage.saveImageAsset`/PDF-render calls are not
+  fenced by anything — `assertNotSuperseded` checks stop it from *starting*
+  new work promptly once its heartbeat detects supersession, but bytes it
+  already started writing before that point can still land at the same key
+  a newer attempt is also writing to. There is no `GenerationArtifact` model
+  or atomic "promote this run's output to published" step beyond
+  `Book.publishedRunId` itself. This needs run-scoped storage keys (Phase B)
+  before stale-worker safety extends to artifact writes, not just DB rows.
+- **`AgentLog` ownership.** Every pipeline step still writes `AgentLog` rows
+  unconditionally (`prisma.agentLog.createMany`, no fencing check) — a stale
+  attempt that got far enough to reach its own logging call still writes
+  diagnostics rows. This is low-risk (AgentLog is diagnostics, not
+  authoritative state, and nothing reads it as a source of truth for
+  status/content) but is explicitly not fenced today.
+
+Do not describe this phase as having made the pipeline fully safe against a
+stale/zombie worker in general — only its *database writes* are proven safe;
+artifact writes and AgentLog rows still rely on the same-process
+`assertNotSuperseded` best-effort check (or nothing at all) rather than a
+DB-level guarantee.
+
 - **`ImageAssetStorage` read-side identity** still probes a fixed set of
   extensions rather than persisting the exact key/content-type pair (fixed
   for the child photo specifically, via versioned keys — not fixed for
@@ -1562,6 +1710,13 @@ generation has already begun.
 - **`GenerationRun`** is missing the composite indexes
   (`status, leaseExpiresAt`), (`status, createdAt`), (`userId, status`),
   (`userId, createdAt`) that its query patterns above would benefit from.
+- **End-to-end retry-after-edit test coverage.** Each boundary in
+  `BooksService` → `GenerationRun` → `GenerationExecutionContext` →
+  `AgentService` provider arguments is covered individually (unit tests at
+  every layer, plus the real-Postgres fencing/snapshot integration suite),
+  but there is no single test driving a retry-after-edit scenario through
+  every layer in one run. Adding one is straightforward but was not done in
+  this pass — flagged here rather than silently left uncovered.
 
 ## Worker process separation
 

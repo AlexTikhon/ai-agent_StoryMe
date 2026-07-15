@@ -5,9 +5,15 @@ import { randomUUID } from 'node:crypto';
 import { QUEUES } from '../queue/queues.config';
 import { BooksService } from '../books/books.service';
 import { GenerationRunService, readGenerationRunLeaseMs } from './generation-run.service';
-import { parseGenerationInputSnapshot } from './generation-input-snapshot';
+import { InvalidGenerationInputSnapshotError } from './generation-input-snapshot';
+import { GenerationInputSnapshotBackfillService } from './generation-input-snapshot-backfill.service';
+import { GenerationRunCoordinator } from './generation-run-coordinator.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationQueueJobData } from './generation-queue.service';
+
+/** Safe, public-facing message for a run whose stored input_snapshot is permanently malformed — never the raw Zod issue list. */
+const INVALID_SNAPSHOT_PUBLIC_MESSAGE =
+  "This book's saved generation request is invalid and cannot be processed. Please start a new book, or contact support if this persists.";
 
 /**
  * Worker side of the durable generation queue. BullMQ's Worker is created by
@@ -18,61 +24,97 @@ import type { GenerationQueueJobData } from './generation-queue.service';
  * `apps/api/docs/local-generation-pipeline.md`.
  *
  * Every job is claimed via GenerationRunService.claim before any pipeline
- * work starts, passing this delivery's own BullMQ attempt number — a claim
- * that matches zero rows (the run is already terminal, or a strictly-newer
- * delivery already holds the lease) is treated as a normal no-op, not an
- * error, since it means there is genuinely nothing left for this delivery to
- * do (see "Generation runs" in docs/local-generation-pipeline.md). While a
- * claim is held, a heartbeat periodically extends its lease so a slow (but
- * genuinely alive) real-generation run is never mistaken for abandoned.
+ * work starts, keyed on this delivery's own BullMQ lock token (`token`,
+ * below) rather than its attempt number — a stalled-job redelivery can reuse
+ * the same attempt number, but never the same token (see GenerationRunService
+ * .claim's own doc comment). A claim that matches zero rows (the run is
+ * already terminal) is treated as a normal no-op, not an error. While a claim
+ * is held, a heartbeat periodically extends its lease — fenced on this same
+ * token plus fencingVersion — so a slow (but genuinely alive) real-generation
+ * run is never mistaken for abandoned, and a delivery a newer claim has
+ * superseded can never heartbeat.
  */
 @Injectable()
 @Processor(QUEUES.BOOK_GENERATION)
 export class GenerationQueueProcessor extends WorkerHost {
   private readonly logger = new Logger(GenerationQueueProcessor.name);
-  /** Stable per-process identity for lease ownership — lets a BullMQ retry landing on this same process re-claim its own still-live lease (see GenerationRunService.claim). */
+  /** Stable per-process identity, recorded on GenerationRun.leaseOwner purely for diagnostics — fencing itself is keyed entirely on the per-delivery token (see GenerationRunService.claim). */
   private readonly workerId = randomUUID();
 
   constructor(
     private readonly booksService: BooksService,
     private readonly generationRunService: GenerationRunService,
+    private readonly generationRunCoordinator: GenerationRunCoordinator,
+    private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
   ) {
     super();
   }
 
-  async process(job: Job<GenerationQueueJobData>): Promise<void> {
-    const jobAttempt = job.attemptsMade + 1;
+  async process(job: Job<GenerationQueueJobData>, token?: string): Promise<void> {
     const maxAttempts = job.opts.attempts ?? 1;
     this.logger.log(
-      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId} attempt=${jobAttempt}/${maxAttempts}`,
+      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId} attempt=${job.attemptsMade + 1}/${maxAttempts}`,
     );
+    if (!token) {
+      // BullMQ always supplies a lock token to a real Worker's processor —
+      // this would only happen from a misconfigured/non-standard invocation,
+      // which must never silently fence on an empty/shared token.
+      throw new Error(
+        `BullMQ invoked process() without a delivery token for job ${job.id} (run ${job.data.runId}) — refusing to claim without one.`,
+      );
+    }
 
     const leaseMs = readGenerationRunLeaseMs();
     const claimed = await this.generationRunService.claim(
       job.data.runId,
+      token,
       this.workerId,
       leaseMs,
-      jobAttempt,
     );
     if (!claimed) {
       this.logger.warn(
-        `Run ${job.data.runId} (book ${job.data.bookId}) could not be claimed — already terminal or a newer delivery holds it; treating as a no-op.`,
+        `Run ${job.data.runId} (book ${job.data.bookId}) could not be claimed — already terminal; treating as a no-op.`,
       );
       return;
     }
 
+    let inputSnapshot;
+    try {
+      inputSnapshot = await this.snapshotBackfill.normalize(claimed);
+    } catch (err) {
+      if (!(err instanceof InvalidGenerationInputSnapshotError)) throw err;
+      this.logger.error(
+        `Run ${claimed.id} (book ${claimed.bookId}) has a permanently malformed input_snapshot — finalizing as invalid without any BullMQ retry: ${err.message}`,
+      );
+      await this.generationRunCoordinator.failInvalidSnapshot(
+        { runId: claimed.id, bookId: claimed.bookId, fencingVersion: claimed.fencingVersion },
+        INVALID_SNAPSHOT_PUBLIC_MESSAGE,
+      );
+      return;
+    }
+
+    const abortController = new AbortController();
     const ctx: GenerationExecutionContext = {
       runId: claimed.id,
       bookId: claimed.bookId,
       fencingVersion: claimed.fencingVersion,
       inputHash: claimed.inputHash,
-      inputSnapshot: parseGenerationInputSnapshot(claimed.id, claimed.inputSnapshot),
+      inputSnapshot,
+      signal: abortController.signal,
     };
 
     const heartbeatIntervalMs = Math.max(1000, Math.floor(leaseMs / 3));
     const heartbeat = setInterval(() => {
       this.generationRunService
-        .heartbeat(ctx.runId, this.workerId, ctx.fencingVersion, leaseMs)
+        .heartbeat(ctx.runId, token, ctx.fencingVersion, leaseMs)
+        .then((stillOwned) => {
+          if (!stillOwned && !abortController.signal.aborted) {
+            this.logger.warn(
+              `Run ${ctx.runId} (book ${ctx.bookId}) heartbeat found it superseded by a newer delivery — signaling cancellation to the running pipeline.`,
+            );
+            abortController.abort();
+          }
+        })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           this.logger.error(`Heartbeat failed for run ${ctx.runId}: ${message}`);

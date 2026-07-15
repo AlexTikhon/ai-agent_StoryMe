@@ -132,7 +132,7 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
     const result = await service.startBookGeneration(ctx);
 
     expect(result.status).toBe('complete');
-    expect(result.previewPdfUrl).toBe(`/files/books/${TEST_BOOK_ID}/storybook.pdf`);
+    expect(result.bookUpdate.previewPdfUrl).toBe(`/files/books/${TEST_BOOK_ID}/storybook.pdf`);
 
     expect(savedBuffer).toBeDefined();
     const buf = savedBuffer!;

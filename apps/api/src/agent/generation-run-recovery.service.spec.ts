@@ -26,7 +26,7 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     attempt: 1,
     leaseOwner: 'worker-a',
     leaseExpiresAt: new Date('2026-01-01T00:00:00.000Z'),
-    leaseAttempt: 1,
+    deliveryToken: 'token-a',
     fencingVersion: 2,
     errorCode: null,
     errorMessage: null,
@@ -61,18 +61,37 @@ describe('readGenerationRunQueuedStaleMs / readGenerationRunRecoveryIntervalMs',
   });
 });
 
+/** `strings` is the tagged-template literal's TemplateStringsArray — join it to sniff which raw query this is without depending on exact whitespace. */
+function sqlOf(strings: unknown): string {
+  return Array.isArray(strings) ? strings.join('') : String(strings);
+}
+
 describe('GenerationRunRecoveryService', () => {
   let prisma: MockPrisma;
   let generationQueueService: jest.Mocked<GenerationQueueService>;
   let service: GenerationRunRecoveryService;
   const now = new Date('2026-01-01T01:00:00.000Z');
+  let leaseHeld: boolean;
+  let leaseGeneration: number;
 
   beforeEach(() => {
     prisma = createMockPrisma();
     generationQueueService = createMockGenerationQueueService(false);
     service = new GenerationRunRecoveryService(prisma as never, generationQueueService as never);
     prisma.$transaction.mockImplementation((cb: (tx: MockPrisma) => unknown) => cb(prisma));
-    // Lease acquired by default; individual tests override for the "lease busy" case.
+    // Lease acquired by default; individual tests override for the "lease busy" / "lost mid-pass" cases.
+    leaseHeld = true;
+    leaseGeneration = 7;
+    prisma.$queryRaw.mockImplementation((strings: unknown) => {
+      const sql = sqlOf(strings);
+      if (sql.includes('RETURNING lease_generation')) {
+        return Promise.resolve(leaseHeld ? [{ lease_generation: leaseGeneration }] : []);
+      }
+      if (sql.includes('SELECT 1 AS ok')) {
+        return Promise.resolve(leaseHeld ? [{ ok: 1 }] : []);
+      }
+      return Promise.resolve([]);
+    });
     prisma.recoveryLease.updateMany.mockResolvedValue({ count: 1 });
     prisma.generationRun.findMany.mockResolvedValue([]);
     prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
@@ -80,7 +99,7 @@ describe('GenerationRunRecoveryService', () => {
   });
 
   it('skips the whole pass (no queries, no writes) when the recovery lease is already held elsewhere', async () => {
-    prisma.recoveryLease.updateMany.mockResolvedValueOnce({ count: 0 });
+    leaseHeld = false;
 
     const summary = await service.recover(now);
 
@@ -94,15 +113,57 @@ describe('GenerationRunRecoveryService', () => {
     expect(prisma.generationRun.findMany).not.toHaveBeenCalled();
   });
 
-  it('always releases the recovery lease, even when a run fails to recover', async () => {
+  it('acquires the lease using PostgreSQL server time (NOW()) for both the expiry comparison and the new expiry, never an application Date', async () => {
+    await service.recover(now);
+
+    const acquireCall = prisma.$queryRaw.mock.calls.find((call) =>
+      sqlOf(call[0]).includes('RETURNING lease_generation'),
+    );
+    expect(acquireCall).toBeDefined();
+    const sql = sqlOf(acquireCall![0]);
+    expect(sql).toContain('NOW()');
+    // Every interpolated value is a plain string/number (instanceId, leaseMs,
+    // the fixed lease id) — never a `new Date()` standing in for "now".
+    expect(acquireCall!.slice(1).every((value) => !(value instanceof Date))).toBe(true);
+  });
+
+  it('always releases the recovery lease (fenced on the generation it acquired), even when a run fails to recover', async () => {
     const run = makeGenerationRun();
     prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
     generationQueueService.isJobStillPending.mockRejectedValue(new Error('redis blip'));
 
     await service.recover(now);
 
-    // Second call is the release — first is the acquire.
-    expect(prisma.recoveryLease.updateMany).toHaveBeenCalledTimes(2);
+    expect(prisma.recoveryLease.updateMany).toHaveBeenCalledWith({
+      where: { id: 'generation_run_recovery', leaseOwner: expect.any(String), leaseGeneration: 7 },
+      data: { leaseOwner: null, leaseExpiresAt: null },
+    });
+  });
+
+  it('stops processing further candidates (bounded batch) the moment stillHoldsLease reports leadership was lost, without erroring', async () => {
+    const runA = makeGenerationRun({ id: 'run-a', bookId: 'book-a' });
+    const runB = makeGenerationRun({ id: 'run-b', bookId: 'book-b' });
+    prisma.generationRun.findMany.mockResolvedValueOnce([runA, runB]).mockResolvedValueOnce([]);
+    generationQueueService.isJobStillPending.mockResolvedValue(false);
+    // Leadership is lost between processing runA and checking before runB.
+    let stillHoldsCalls = 0;
+    prisma.$queryRaw.mockImplementation((strings: unknown) => {
+      const sql = sqlOf(strings);
+      if (sql.includes('RETURNING lease_generation')) {
+        return Promise.resolve([{ lease_generation: leaseGeneration }]);
+      }
+      if (sql.includes('SELECT 1 AS ok')) {
+        stillHoldsCalls += 1;
+        return Promise.resolve(stillHoldsCalls === 1 ? [{ ok: 1 }] : []);
+      }
+      return Promise.resolve([]);
+    });
+
+    const summary = await service.recover(now);
+
+    expect(summary.staleFound).toBe(2);
+    expect(summary.recovered).toBe(1); // only runA was processed
+    expect(generationQueueService.isJobStillPending).toHaveBeenCalledTimes(1);
   });
 
   it('queries stale running runs by leaseExpiresAt (never bare updatedAt) and stale queued runs by createdAt cutoff', async () => {
@@ -192,7 +253,7 @@ describe('GenerationRunRecoveryService', () => {
 
   describe('onApplicationBootstrap', () => {
     it('runs one recovery pass immediately and never throws even if it rejects', async () => {
-      prisma.recoveryLease.updateMany.mockRejectedValue(new Error('connection refused'));
+      prisma.$queryRaw.mockRejectedValue(new Error('connection refused'));
 
       await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
 
