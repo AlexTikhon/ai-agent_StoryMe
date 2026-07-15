@@ -26,6 +26,7 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     attempt: 1,
     leaseOwner: 'worker-a',
     leaseExpiresAt: new Date('2026-01-01T00:00:00.000Z'),
+    leaseAttempt: 1,
     fencingVersion: 2,
     errorCode: null,
     errorMessage: null,
@@ -50,7 +51,9 @@ describe('readGenerationRunQueuedStaleMs / readGenerationRunRecoveryIntervalMs',
     expect(readGenerationRunQueuedStaleMs({ GENERATION_RUN_QUEUED_STALE_MS: 'nope' })).toBe(
       DEFAULT_GENERATION_RUN_QUEUED_STALE_MS,
     );
-    expect(readGenerationRunRecoveryIntervalMs({ GENERATION_RUN_RECOVERY_INTERVAL_MS: '-1' })).toBeGreaterThan(0);
+    expect(
+      readGenerationRunRecoveryIntervalMs({ GENERATION_RUN_RECOVERY_INTERVAL_MS: '-1' }),
+    ).toBeGreaterThan(0);
   });
 
   it('parses a valid positive value', () => {
@@ -68,31 +71,38 @@ describe('GenerationRunRecoveryService', () => {
     prisma = createMockPrisma();
     generationQueueService = createMockGenerationQueueService(false);
     service = new GenerationRunRecoveryService(prisma as never, generationQueueService as never);
-    // Lock acquired by default; individual tests override for the "lock busy" case.
-    prisma.$queryRaw.mockResolvedValue([{ locked: true }]);
+    prisma.$transaction.mockImplementation((cb: (tx: MockPrisma) => unknown) => cb(prisma));
+    // Lease acquired by default; individual tests override for the "lease busy" case.
+    prisma.recoveryLease.updateMany.mockResolvedValue({ count: 1 });
     prisma.generationRun.findMany.mockResolvedValue([]);
     prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
     prisma.book.updateMany.mockResolvedValue({ count: 1 });
   });
 
-  it('skips the whole pass (no queries, no writes) when the advisory lock is already held elsewhere', async () => {
-    prisma.$queryRaw.mockResolvedValueOnce([{ locked: false }]);
+  it('skips the whole pass (no queries, no writes) when the recovery lease is already held elsewhere', async () => {
+    prisma.recoveryLease.updateMany.mockResolvedValueOnce({ count: 0 });
 
     const summary = await service.recover(now);
 
-    expect(summary).toEqual({ staleFound: 0, recovered: 0, stillPendingInBullMq: 0, errors: 0, lockSkipped: true });
+    expect(summary).toEqual({
+      staleFound: 0,
+      recovered: 0,
+      stillPendingInBullMq: 0,
+      errors: 0,
+      lockSkipped: true,
+    });
     expect(prisma.generationRun.findMany).not.toHaveBeenCalled();
   });
 
-  it('always releases the advisory lock, even when a run fails to recover', async () => {
+  it('always releases the recovery lease, even when a run fails to recover', async () => {
     const run = makeGenerationRun();
     prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
     generationQueueService.isJobStillPending.mockRejectedValue(new Error('redis blip'));
 
     await service.recover(now);
 
-    // Second call to $queryRaw is the unlock — first is the lock acquire.
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    // Second call is the release — first is the acquire.
+    expect(prisma.recoveryLease.updateMany).toHaveBeenCalledTimes(2);
   });
 
   it('queries stale running runs by leaseExpiresAt (never bare updatedAt) and stale queued runs by createdAt cutoff', async () => {
@@ -124,7 +134,12 @@ describe('GenerationRunRecoveryService', () => {
   });
 
   it('fails a run (fenced) and clears Book.activeRunId when BullMQ no longer has its job pending', async () => {
-    const run = makeGenerationRun({ id: 'run-1', bookId: 'b-1', status: 'running' as GenerationRun['status'], fencingVersion: 2 });
+    const run = makeGenerationRun({
+      id: 'run-1',
+      bookId: 'b-1',
+      status: 'running' as GenerationRun['status'],
+      fencingVersion: 2,
+    });
     prisma.generationRun.findMany.mockResolvedValueOnce([run]).mockResolvedValueOnce([]);
     generationQueueService.isJobStillPending.mockResolvedValue(false);
 
@@ -177,7 +192,7 @@ describe('GenerationRunRecoveryService', () => {
 
   describe('onApplicationBootstrap', () => {
     it('runs one recovery pass immediately and never throws even if it rejects', async () => {
-      prisma.$queryRaw.mockRejectedValue(new Error('connection refused'));
+      prisma.recoveryLease.updateMany.mockRejectedValue(new Error('connection refused'));
 
       await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
 

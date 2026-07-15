@@ -7,6 +7,16 @@ import type { BooksService } from '../books/books.service';
 import type { GenerationRunService } from './generation-run.service';
 import type { GenerationQueueJobData } from './generation-queue.service';
 
+const VALID_SNAPSHOT = {
+  childName: 'Alex',
+  childAge: 6,
+  language: 'en',
+  theme: 'adventure',
+  educationalMessage: null,
+  pageCount: 6,
+  childPhoto: null,
+};
+
 function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRun {
   return {
     id: 'run-1',
@@ -14,13 +24,14 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     userId: 'u-1',
     kind: 'initial' as GenerationRun['kind'],
     status: 'running' as GenerationRun['status'],
-    inputSnapshot: {},
+    inputSnapshot: VALID_SNAPSHOT,
     inputHash: 'hash-1',
     retryOfRunId: null,
     currentStep: null,
     attempt: 1,
     leaseOwner: 'worker-1',
     leaseExpiresAt: new Date('2026-01-01T01:00:00.000Z'),
+    leaseAttempt: 1,
     fencingVersion: 1,
     errorCode: null,
     errorMessage: null,
@@ -40,9 +51,12 @@ function createMockBooksService(): jest.Mocked<BooksService> {
   } as unknown as jest.Mocked<BooksService>;
 }
 
-function createMockGenerationRunService(claimed: GenerationRun | null = makeGenerationRun()): jest.Mocked<GenerationRunService> {
+function createMockGenerationRunService(
+  claimed: GenerationRun | null = makeGenerationRun(),
+): jest.Mocked<GenerationRunService> {
   return {
     claim: vi.fn().mockResolvedValue(claimed),
+    heartbeat: vi.fn().mockResolvedValue(true),
   } as unknown as jest.Mocked<GenerationRunService>;
 }
 
@@ -56,18 +70,35 @@ describe('GenerationQueueProcessor', () => {
       const booksService = createMockBooksService();
       const claimed = makeGenerationRun();
       const generationRunService = createMockGenerationRunService(claimed);
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
 
       await processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' }));
 
-      expect(generationRunService.claim).toHaveBeenCalledWith('run-1', expect.any(String), expect.any(Number));
-      expect(booksService.runGenerationPipeline).toHaveBeenCalledWith('b-1', claimed);
+      expect(generationRunService.claim).toHaveBeenCalledWith(
+        'run-1',
+        expect.any(String),
+        expect.any(Number),
+        1,
+      );
+      expect(booksService.runGenerationPipeline).toHaveBeenCalledWith({
+        runId: claimed.id,
+        bookId: claimed.bookId,
+        fencingVersion: claimed.fencingVersion,
+        inputHash: claimed.inputHash,
+        inputSnapshot: VALID_SNAPSHOT,
+      });
     });
 
     it('is a no-op (does not call runGenerationPipeline) when the claim fails — already terminal or leased elsewhere', async () => {
       const booksService = createMockBooksService();
       const generationRunService = createMockGenerationRunService(null);
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
 
       await expect(
         processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' })),
@@ -80,19 +111,28 @@ describe('GenerationQueueProcessor', () => {
       const booksService = createMockBooksService();
       booksService.runGenerationPipeline.mockRejectedValue(new Error('unexpected'));
       const generationRunService = createMockGenerationRunService();
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
 
-      await expect(
-        processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' })),
-      ).rejects.toThrow('unexpected');
+      await expect(processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' }))).rejects.toThrow(
+        'unexpected',
+      );
     });
 
     it('logs the BullMQ job id, bookId, and runId when picking up a job', async () => {
       const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       const booksService = createMockBooksService();
       const generationRunService = createMockGenerationRunService();
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
-      const job = { ...makeJob({ bookId: 'b-1', runId: 'run-1' }), id: 'bullmq-42' } as Job<GenerationQueueJobData>;
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
+      const job = {
+        ...makeJob({ bookId: 'b-1', runId: 'run-1' }),
+        id: 'bullmq-42',
+      } as Job<GenerationQueueJobData>;
 
       await processor.process(job);
 
@@ -107,8 +147,14 @@ describe('GenerationQueueProcessor', () => {
     const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     const booksService = createMockBooksService();
     const generationRunService = createMockGenerationRunService();
-    const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
-    const job = { ...makeJob({ bookId: 'b-1', runId: 'run-1' }), id: 'bullmq-42' } as Job<GenerationQueueJobData>;
+    const processor = new GenerationQueueProcessor(
+      booksService as never,
+      generationRunService as never,
+    );
+    const job = {
+      ...makeJob({ bookId: 'b-1', runId: 'run-1' }),
+      id: 'bullmq-42',
+    } as Job<GenerationQueueJobData>;
 
     processor.onCompleted(job);
 
@@ -123,7 +169,10 @@ describe('GenerationQueueProcessor', () => {
       const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       const booksService = createMockBooksService();
       const generationRunService = createMockGenerationRunService();
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
 
       await processor.onFailed(undefined, new Error('Redis connection refused'));
 
@@ -137,7 +186,10 @@ describe('GenerationQueueProcessor', () => {
     it('does not finalize the run when more BullMQ attempts remain', async () => {
       const booksService = createMockBooksService();
       const generationRunService = createMockGenerationRunService();
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
       const job = {
         ...makeJob({ bookId: 'b-1', runId: 'run-1' }),
         attemptsMade: 1,
@@ -152,7 +204,10 @@ describe('GenerationQueueProcessor', () => {
     it('finalizes the run once every BullMQ attempt is exhausted', async () => {
       const booksService = createMockBooksService();
       const generationRunService = createMockGenerationRunService();
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
       const job = {
         ...makeJob({ bookId: 'b-1', runId: 'run-1' }),
         attemptsMade: 3,
@@ -161,15 +216,22 @@ describe('GenerationQueueProcessor', () => {
 
       await processor.onFailed(job, new Error('transient'));
 
-      expect(booksService.markRunPermanentlyFailedAfterExhaustedRetries).toHaveBeenCalledWith('run-1');
+      expect(booksService.markRunPermanentlyFailedAfterExhaustedRetries).toHaveBeenCalledWith(
+        'run-1',
+      );
     });
 
     it('swallows (logs, does not throw) a failure finalizing the exhausted run', async () => {
       const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       const booksService = createMockBooksService();
-      booksService.markRunPermanentlyFailedAfterExhaustedRetries.mockRejectedValue(new Error('db down'));
+      booksService.markRunPermanentlyFailedAfterExhaustedRetries.mockRejectedValue(
+        new Error('db down'),
+      );
       const generationRunService = createMockGenerationRunService();
-      const processor = new GenerationQueueProcessor(booksService as never, generationRunService as never);
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+      );
       const job = {
         ...makeJob({ bookId: 'b-1', runId: 'run-1' }),
         attemptsMade: 3,

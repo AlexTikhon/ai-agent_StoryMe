@@ -17,6 +17,9 @@ import {
   MockCharacterProfileProvider,
   type CharacterProfileProvider,
 } from './character-profile-provider';
+import { buildInputSnapshot } from './generation-input-snapshot';
+import type { GenerationExecutionContext } from './generation-execution-context';
+import type { GenerationExecutionService } from './generation-execution.service';
 
 vi.mock('../pdf/pdf-renderer', () => ({
   renderStorybookPdf: vi.fn(),
@@ -48,6 +51,8 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     bookLayout: null,
     childPhotoAssetKey: null,
     childPhotoContentType: null,
+    childPhotoSha256: null,
+    childPhotoSizeBytes: null,
     characterProfile: null,
     characterSheetAssetKey: null,
     chapters: null,
@@ -83,6 +88,34 @@ function makeBook(overrides: Partial<Book> = {}): Book {
   };
 }
 
+function ctxFor(book: Book, inputHash = 'hash-1'): GenerationExecutionContext {
+  return {
+    runId: 'run-1',
+    bookId: book.id,
+    fencingVersion: 0,
+    inputHash,
+    inputSnapshot: buildInputSnapshot(book),
+  };
+}
+
+/**
+ * Every test in this file builds a `book: Book` object directly and passes it
+ * to AgentService — startBookGeneration now takes a GenerationExecutionContext
+ * and reloads the Book row itself (see AgentService's own doc comment), so
+ * this seeds that reload with the exact same object the test constructed,
+ * keeping every existing test's "inject a book, assert on prisma.book.update"
+ * shape unchanged.
+ */
+function runGeneration(
+  targetService: AgentService,
+  mockPrisma: MockPrisma,
+  book: Book,
+  inputHash = 'hash-1',
+): Promise<Book> {
+  mockPrisma.book.findUniqueOrThrow.mockResolvedValue(book);
+  return targetService.startBookGeneration(ctxFor(book, inputHash));
+}
+
 describe('AgentService', () => {
   let service: AgentService;
   let prisma: MockPrisma;
@@ -100,6 +133,7 @@ describe('AgentService', () => {
   // would see getImageAsset return undefined regardless of what was "saved",
   // which used to make the missing-image validation impossible to test truthfully.
   let savedAssets: Map<string, Buffer>;
+  let generationExecutionService: GenerationExecutionService;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -116,6 +150,14 @@ describe('AgentService', () => {
       }),
       getImageAsset: vi.fn(async (key: string) => savedAssets.get(key)),
     };
+    // Fencing/claim/heartbeat correctness is covered by generation-execution.
+    // service.spec.ts and books.service.spec.ts — here it's a thin pass-through
+    // to prisma.book.update so this file's book-update assertions are unaffected.
+    generationExecutionService = {
+      applyFencedBookWrite: vi.fn((ctx: GenerationExecutionContext, data: unknown) =>
+        prisma.book.update({ where: { id: ctx.bookId }, data }),
+      ),
+    } as unknown as GenerationExecutionService;
     service = new AgentService(
       prisma as never,
       mockPdfStorage as unknown as PdfStorage,
@@ -123,6 +165,7 @@ describe('AgentService', () => {
       new MockStoryGenerationProvider(),
       new MockImageGenerationProvider(),
       new MockCharacterProfileProvider(),
+      generationExecutionService as never,
     );
     vi.mocked(renderStorybookPdf).mockResolvedValue(Buffer.from('%PDF-1.4 mock'));
     mockPdfStorage.savePreviewPdf.mockResolvedValue({
@@ -148,7 +191,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       expect(prisma.book.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -162,7 +205,7 @@ describe('AgentService', () => {
       const book = makeBook();
       const updatedBook = setupMocks();
 
-      const result = await service.startBookGeneration(book);
+      const result = await runGeneration(service, prisma, book);
 
       expect(result).toBe(updatedBook);
     });
@@ -171,7 +214,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book, 'the-run-inputhash');
+      await runGeneration(service, prisma, book, 'the-run-inputhash');
 
       expect(prisma.book.update).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -184,7 +227,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', childAge: 5 });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const card = updateArg?.data?.characterCard as Record<string, unknown>;
@@ -198,7 +241,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -212,7 +255,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -226,7 +269,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: 4 });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -238,7 +281,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: null });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -254,7 +297,7 @@ describe('AgentService', () => {
       });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -265,7 +308,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -281,7 +324,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -297,7 +340,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -317,7 +360,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -332,7 +375,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       expect(typeof updateArg?.data?.title).toBe('string');
@@ -343,7 +386,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
       const createManyArg = prisma.agentLog.createMany.mock.calls[0]?.[0];
@@ -369,7 +412,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -384,7 +427,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -402,7 +445,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -418,7 +461,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -434,7 +477,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Leo', theme: 'courage' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const card = updateArg?.data?.characterCard as Record<string, unknown>;
@@ -447,7 +490,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -460,7 +503,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -475,7 +518,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -489,7 +532,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -506,7 +549,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -519,7 +562,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -534,7 +577,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const plan = updateArg?.data?.storyPlan as Record<string, unknown>;
@@ -551,7 +594,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -563,7 +606,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -575,7 +618,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -586,7 +629,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -601,7 +644,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -616,7 +659,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -630,7 +673,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -644,7 +687,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -662,7 +705,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -676,13 +719,13 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       prisma.book.update.mockClear();
       prisma.agentLog.createMany.mockClear();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const firstArg = prisma.book.update.mock.calls[0]?.[0];
       const firstResult = firstArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -694,7 +737,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -708,7 +751,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -721,7 +764,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const coverCall = mockImageAssetStorage.saveImageAsset.mock.calls.find(
         (call) => call[0] === 'b-1/cover',
@@ -737,7 +780,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const saveOrder = mockImageAssetStorage.saveImageAsset.mock.invocationCallOrder[0]!;
       const renderOrder = vi.mocked(renderStorybookPdf).mock.invocationCallOrder[0]!;
@@ -758,7 +801,7 @@ describe('AgentService', () => {
         })
         .mockRejectedValueOnce(new Error('disk full'));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.status).toBe('failed');
@@ -781,7 +824,7 @@ describe('AgentService', () => {
         })
         .mockRejectedValueOnce(new Error('disk full'));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Image generation/save failed'));
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
@@ -819,6 +862,7 @@ describe('AgentService', () => {
           new MockStoryGenerationProvider(),
           failingImageProvider,
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
       }
 
@@ -828,7 +872,7 @@ describe('AgentService', () => {
         const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
         const failingService = makePartiallyFailingImageService(() => true);
 
-        await failingService.startBookGeneration(book);
+        await runGeneration(failingService, prisma, book);
 
         const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
         expect(secondCallArg?.data?.status).toBe('failed');
@@ -851,7 +895,7 @@ describe('AgentService', () => {
         setupMocks();
         const failingService = makePartiallyFailingImageService((id) => id === 'b-1-cover');
 
-        await failingService.startBookGeneration(book);
+        await runGeneration(failingService, prisma, book);
 
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
           'b-1/cover',
@@ -874,7 +918,7 @@ describe('AgentService', () => {
         setupMocks();
         const failingService = makePartiallyFailingImageService((id) => id === 'b-1-cover');
 
-        await failingService.startBookGeneration(book);
+        await runGeneration(failingService, prisma, book);
 
         const updateArg = prisma.book.update.mock.calls[0]?.[0];
         const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -889,7 +933,7 @@ describe('AgentService', () => {
         setupMocks();
         const failingService = makePartiallyFailingImageService(() => true);
 
-        await failingService.startBookGeneration(book);
+        await runGeneration(failingService, prisma, book);
 
         expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
         const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
@@ -937,9 +981,10 @@ describe('AgentService', () => {
           new MockStoryGenerationProvider(),
           new MockImageGenerationProvider(),
           makeFailingProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         // The pipeline is not aborted by a profile-provider failure — it still
         // reaches PDF rendering using a locally-built fallback profile.
@@ -971,9 +1016,10 @@ describe('AgentService', () => {
           new MockStoryGenerationProvider(),
           makeSheetFailingImageProvider(),
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
           'b-1/character-sheet',
@@ -1035,9 +1081,10 @@ describe('AgentService', () => {
           new MockStoryGenerationProvider(),
           provider,
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await referenceService.startBookGeneration(book);
+        await runGeneration(referenceService, prisma, book);
 
         const sheetReads = mockImageAssetStorage.getImageAsset.mock.calls.filter(
           (call) => call[0] === 'b-1/character-sheet',
@@ -1063,9 +1110,10 @@ describe('AgentService', () => {
           new MockStoryGenerationProvider(),
           provider,
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await referenceService.startBookGeneration(book);
+        await runGeneration(referenceService, prisma, book);
 
         const updateArg = prisma.book.update.mock.calls[0]?.[0];
         const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -1089,9 +1137,10 @@ describe('AgentService', () => {
           new MockStoryGenerationProvider(),
           provider,
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await referenceService.startBookGeneration(book);
+        await runGeneration(referenceService, prisma, book);
 
         expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('bytes could not be loaded'));
         for (const call of provider.generateImage.mock.calls) {
@@ -1122,9 +1171,10 @@ describe('AgentService', () => {
           new MockStoryGenerationProvider(),
           provider,
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await referenceService.startBookGeneration(book);
+        await runGeneration(referenceService, prisma, book);
 
         for (const call of provider.generateImage.mock.calls) {
           const input = call[0] as { characterReference?: unknown };
@@ -1142,7 +1192,7 @@ describe('AgentService', () => {
         const book = makeBook();
         setupMocks();
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         const updateArg = prisma.book.update.mock.calls[0]?.[0];
         const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -1195,10 +1245,11 @@ describe('AgentService', () => {
             new MockStoryGenerationProvider(),
             realProvider,
             new MockCharacterProfileProvider(),
+            generationExecutionService as never,
           );
           setupMocks();
 
-          await realService.startBookGeneration(book);
+          await runGeneration(realService, prisma, book);
 
           expect(realProvider.generateImage).toHaveBeenCalledTimes(2);
           // +1 for the char_build character-sheet save.
@@ -1227,7 +1278,7 @@ describe('AgentService', () => {
           const book = makeBook();
           setupMocks();
 
-          await service.startBookGeneration(book);
+          await runGeneration(service, prisma, book);
 
           const updateArg = prisma.book.update.mock.calls[0]?.[0];
           const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
@@ -1249,10 +1300,11 @@ describe('AgentService', () => {
             new MockStoryGenerationProvider(),
             realProvider,
             new MockCharacterProfileProvider(),
+            generationExecutionService as never,
           );
           setupMocks();
 
-          await realService.startBookGeneration(book);
+          await runGeneration(realService, prisma, book);
 
           expect(realProvider.generateImage).toHaveBeenCalledTimes(3);
         });
@@ -1265,7 +1317,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1277,7 +1329,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1288,7 +1340,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1299,7 +1351,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1313,7 +1365,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -1328,7 +1380,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1342,7 +1394,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1359,7 +1411,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1373,7 +1425,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1394,7 +1446,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1408,7 +1460,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const preview = updateArg?.data?.bookPreview as Record<string, unknown>;
@@ -1421,7 +1473,7 @@ describe('AgentService', () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const updateArg = prisma.book.update.mock.calls[0]?.[0];
       const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1432,7 +1484,7 @@ describe('AgentService', () => {
     it('bookLayout is deterministic for the same input', async () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
       const firstArg = prisma.book.update.mock.calls[0]?.[0];
       const firstLayout = firstArg?.data?.bookLayout as Record<string, unknown>;
       const firstEntries = (firstLayout.entries as Array<Record<string, unknown>>).map((e) => e.id);
@@ -1440,7 +1492,7 @@ describe('AgentService', () => {
       prisma.book.update.mockClear();
       prisma.agentLog.createMany.mockClear();
       setupMocks();
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
       const secondArg = prisma.book.update.mock.calls[0]?.[0];
       const secondLayout = secondArg?.data?.bookLayout as Record<string, unknown>;
       const secondEntries = (secondLayout.entries as Array<Record<string, unknown>>).map(
@@ -1456,7 +1508,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       expect(renderStorybookPdf).toHaveBeenCalledOnce();
     });
@@ -1467,7 +1519,7 @@ describe('AgentService', () => {
       const mockBuffer = Buffer.from('%PDF-1.4 mock');
       vi.mocked(renderStorybookPdf).mockResolvedValue(mockBuffer);
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       expect(mockPdfStorage.savePreviewPdf).toHaveBeenCalledWith('b-1', mockBuffer);
     });
@@ -1476,7 +1528,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data).toMatchObject({ status: 'complete' });
@@ -1486,7 +1538,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.previewPdfUrl).toBe('/files/books/b-1/storybook.pdf');
@@ -1496,7 +1548,7 @@ describe('AgentService', () => {
       const book = makeBook();
       const completedBook = setupMocks();
 
-      const result = await service.startBookGeneration(book);
+      const result = await runGeneration(service, prisma, book);
 
       expect(result).toBe(completedBook);
     });
@@ -1505,7 +1557,7 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
         Record<string, unknown>
@@ -1525,7 +1577,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(failedBook);
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.status).toBe('failed');
@@ -1540,7 +1592,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data).not.toHaveProperty('previewPdfUrl');
@@ -1555,7 +1607,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.errorMessage).toBe('PDFKit failure');
@@ -1571,7 +1623,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
         Record<string, unknown>
@@ -1590,7 +1642,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.status).not.toBe('complete');
@@ -1607,7 +1659,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.status).toBe('failed');
@@ -1622,7 +1674,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.status).not.toBe('complete');
@@ -1637,7 +1689,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data).not.toHaveProperty('previewPdfUrl');
@@ -1652,7 +1704,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const secondCallArg = prisma.book.update.mock.calls[1]?.[0];
       expect(secondCallArg?.data?.errorMessage).toBe('disk full');
@@ -1668,7 +1720,7 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await service.startBookGeneration(book);
+      await runGeneration(service, prisma, book);
 
       const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
         Record<string, unknown>
@@ -1692,6 +1744,7 @@ describe('AgentService', () => {
           failingProvider,
           new MockImageGenerationProvider(),
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
       }
 
@@ -1702,7 +1755,7 @@ describe('AgentService', () => {
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('LLM provider unavailable');
 
-        const result = await failingService.startBookGeneration(book);
+        const result = await runGeneration(failingService, prisma, book);
 
         expect(result).toBe(failedBook);
         expect(prisma.book.update).toHaveBeenCalledWith({
@@ -1725,7 +1778,7 @@ describe('AgentService', () => {
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('boom');
 
-        await failingService.startBookGeneration(book);
+        await runGeneration(failingService, prisma, book);
 
         expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(1);
         expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
@@ -1744,7 +1797,7 @@ describe('AgentService', () => {
         prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('bad prompt');
 
-        await failingService.startBookGeneration(book);
+        await runGeneration(failingService, prisma, book);
 
         expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
         const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
@@ -1773,9 +1826,10 @@ describe('AgentService', () => {
           { generateStory },
           new MockImageGenerationProvider(),
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await spyingService.startBookGeneration(book);
+        await runGeneration(spyingService, prisma, book);
 
         expect(generateStory).toHaveBeenCalledWith({
           bookId: 'b-1',
@@ -1795,7 +1849,7 @@ describe('AgentService', () => {
         const book = makeBook();
         setupMocks();
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
         expect(finalUpdateArg?.data?.generationTimeMs).toEqual(expect.any(Number));
@@ -1806,7 +1860,7 @@ describe('AgentService', () => {
         const book = makeBook();
         setupMocks();
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
           Record<string, unknown>
@@ -1821,7 +1875,7 @@ describe('AgentService', () => {
         const book = makeBook();
         setupMocks();
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
           Record<string, unknown>
@@ -1847,9 +1901,10 @@ describe('AgentService', () => {
           openaiStoryProvider,
           new MockImageGenerationProvider(),
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await openaiService.startBookGeneration(book);
+        await runGeneration(openaiService, prisma, book);
 
         const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
         expect(finalUpdateArg?.data?.aiModelVersions).toEqual({
@@ -1876,7 +1931,7 @@ describe('AgentService', () => {
         });
         setupMocks();
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         const updateArg = prisma.book.update.mock.calls[0]?.[0];
         const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1892,7 +1947,7 @@ describe('AgentService', () => {
         const book = makeBook({ childName: 'Maya', theme: 'friendship' });
         setupMocks();
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         const updateArg = prisma.book.update.mock.calls[0]?.[0];
         const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1924,7 +1979,7 @@ describe('AgentService', () => {
         const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: 12 });
         setupMocks();
 
-        await service.startBookGeneration(book);
+        await runGeneration(service, prisma, book);
 
         const updateArg = prisma.book.update.mock.calls[0]?.[0];
         const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -1968,9 +2023,10 @@ describe('AgentService', () => {
           noImageForPage2Provider,
           new MockImageGenerationProvider(),
           new MockCharacterProfileProvider(),
+          generationExecutionService as never,
         );
 
-        await serviceWithGap.startBookGeneration(book);
+        await runGeneration(serviceWithGap, prisma, book);
 
         const updateArg = prisma.book.update.mock.calls[0]?.[0];
         const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
@@ -2042,8 +2098,9 @@ describe('AgentService', () => {
         makeSpyStoryProvider(),
         makeSpyImageProvider(),
         makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
       );
-      await freshService.startBookGeneration(book, FIXED_INPUT_HASH);
+      await runGeneration(freshService, prisma, book, FIXED_INPUT_HASH);
       return prisma.book.update.mock.calls[0]?.[0]?.data as Record<string, unknown>;
     }
 
@@ -2105,9 +2162,10 @@ describe('AgentService', () => {
         storyProvider,
         imageProvider,
         profileProvider,
+        generationExecutionService as never,
       );
 
-      const result = await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       expect(storyProvider.generateStory).not.toHaveBeenCalled();
       expect(profileProvider.buildProfile).not.toHaveBeenCalled();
@@ -2143,9 +2201,10 @@ describe('AgentService', () => {
         storyProvider,
         imageProvider,
         profileProvider,
+        generationExecutionService as never,
       );
 
-      await resumeService.startBookGeneration(resumedBook, 'a-completely-different-input-hash');
+      await runGeneration(resumeService, prisma, resumedBook, 'a-completely-different-input-hash');
 
       // Story/character profile must be regenerated from scratch — reusing
       // them here is exactly the stale-content bug this hash gate fixes.
@@ -2172,9 +2231,10 @@ describe('AgentService', () => {
         makeSpyStoryProvider(),
         makeSpyImageProvider(),
         makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
       );
 
-      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
       const persistedResult = finalUpdateArg?.data?.imageGenerationResult as {
@@ -2214,9 +2274,10 @@ describe('AgentService', () => {
         makeSpyStoryProvider(),
         imageProvider,
         makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
       );
 
-      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
@@ -2242,9 +2303,10 @@ describe('AgentService', () => {
         makeSpyStoryProvider(),
         imageProvider,
         makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
       );
 
-      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
@@ -2275,9 +2337,10 @@ describe('AgentService', () => {
         storyProvider,
         imageProvider,
         profileProvider,
+        generationExecutionService as never,
       );
 
-      const result = await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       expect(storyProvider.generateStory).not.toHaveBeenCalled();
       expect(profileProvider.buildProfile).not.toHaveBeenCalled();
@@ -2305,9 +2368,10 @@ describe('AgentService', () => {
         makeSpyStoryProvider(),
         failingImageProvider,
         makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
       );
 
-      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       // The 7 previously valid assets are never re-requested or overwritten.
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
@@ -2352,9 +2416,10 @@ describe('AgentService', () => {
         makeSpyStoryProvider(),
         failingImageProvider,
         makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
       );
 
-      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
       const call = failingImageProvider.generateImage.mock.calls[0]![0] as {
@@ -2396,9 +2461,10 @@ describe('AgentService', () => {
         makeSpyStoryProvider(),
         failingImageProvider,
         makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
       );
 
-      await resumeService.startBookGeneration(resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
 
       const finalUpdateArg = prisma.book.update.mock.calls[1]?.[0];
       const result = finalUpdateArg?.data?.imageGenerationResult as {

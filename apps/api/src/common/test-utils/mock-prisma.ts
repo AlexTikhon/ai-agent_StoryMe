@@ -51,6 +51,7 @@ export function createMockPrisma(): DeepMockOf<PrismaService> {
     generationJob: mockModel(),
     generationRun: mockModel(),
     outboxEvent: mockModel(),
+    recoveryLease: mockModel(),
     userBookState: mockModel(),
     notification: mockModel(),
     $connect: vi.fn().mockResolvedValue(undefined),

@@ -7,6 +7,7 @@ import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationJobRecoveryService } from '../agent/generation-job-recovery.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import { GenerationRunRecoveryService } from '../agent/generation-run-recovery.service';
+import { GenerationExecutionService } from '../agent/generation-execution.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { OutboxDispatcherService } from '../outbox/outbox-dispatcher.service';
 import { BooksController } from './books.controller';
@@ -56,6 +57,7 @@ export class BooksModule {
       GenerationJobService,
       GenerationJobRecoveryService,
       GenerationRunService,
+      GenerationExecutionService,
       // Registered unconditionally, same reasoning as OutboxDispatcherService
       // below — recovery is safe and useful in every process, and its
       // Postgres advisory lock already ensures only one live instance runs a

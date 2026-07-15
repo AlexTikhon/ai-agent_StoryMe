@@ -10,6 +10,9 @@ import type { PdfStorage } from '../pdf/pdf-storage';
 import { MockStoryGenerationProvider } from './story-generation-provider';
 import { MockImageGenerationProvider } from '../images/image-generation-provider';
 import { MockCharacterProfileProvider } from './character-profile-provider';
+import { buildInputSnapshot } from './generation-input-snapshot';
+import type { GenerationExecutionContext } from './generation-execution-context';
+import type { GenerationExecutionService } from './generation-execution.service';
 
 // This file deliberately does NOT mock '../pdf/pdf-renderer' or
 // '../images/image-asset-storage' — it drives AgentService.startBookGeneration
@@ -43,6 +46,8 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     bookLayout: null,
     childPhotoAssetKey: null,
     childPhotoContentType: null,
+    childPhotoSha256: null,
+    childPhotoSizeBytes: null,
     characterProfile: null,
     characterSheetAssetKey: null,
     chapters: null,
@@ -100,6 +105,11 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
       },
     };
 
+    const generationExecutionService = {
+      applyFencedBookWrite: (ctx: GenerationExecutionContext, data: unknown) =>
+        prisma.book.update({ where: { id: ctx.bookId }, data }),
+    } as unknown as GenerationExecutionService;
+
     const service = new AgentService(
       prisma as never,
       pdfStorage as PdfStorage,
@@ -107,10 +117,19 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
       new MockStoryGenerationProvider(),
       new MockImageGenerationProvider(),
       new MockCharacterProfileProvider(),
+      generationExecutionService,
     );
 
     const book = makeBook();
-    const result = await service.startBookGeneration(book);
+    prisma.book.findUniqueOrThrow.mockResolvedValue(book);
+    const ctx: GenerationExecutionContext = {
+      runId: 'run-1',
+      bookId: book.id,
+      fencingVersion: 0,
+      inputHash: 'hash-1',
+      inputSnapshot: buildInputSnapshot(book),
+    };
+    const result = await service.startBookGeneration(ctx);
 
     expect(result.status).toBe('complete');
     expect(result.previewPdfUrl).toBe(`/files/books/${TEST_BOOK_ID}/storybook.pdf`);

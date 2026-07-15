@@ -347,8 +347,16 @@ model Book {
   // Both asset keys are ImageAssetStorage keys (see image-asset-storage.ts),
   // not URLs — resolved through the same local/cloud storage driver as
   // generated illustrations.
+  // Versioned: uploadChildPhoto mints a fresh key per upload rather than
+  // overwriting a fixed one, so an in-flight or already-snapshotted
+  // GenerationRun's referenced bytes can never be mutated by a later
+  // re-upload (see GenerationInputSnapshot.childPhoto). sha256/sizeBytes are
+  // recorded alongside so a run's input snapshot can carry a full immutable
+  // identity for the photo, not just a mutable key.
   childPhotoAssetKey       String?  @map("child_photo_asset_key")
   childPhotoContentType    String?  @map("child_photo_content_type")
+  childPhotoSha256         String?  @map("child_photo_sha256")
+  childPhotoSizeBytes      Int?     @map("child_photo_size_bytes")
   characterProfile         Json?    @map("character_profile")
   characterSheetAssetKey   String?  @map("character_sheet_asset_key")
   chapters              Json?
@@ -695,6 +703,14 @@ model GenerationRun {
   attempt        Int                 @default(1)
   leaseOwner     String?             @map("lease_owner")
   leaseExpiresAt DateTime?           @map("lease_expires_at")
+  // The BullMQ delivery attempt number (job.attemptsMade + 1) currently
+  // holding the lease. A claim from a strictly higher attempt always wins
+  // regardless of leaseExpiresAt — BullMQ only issues attempt N+1 after it
+  // has itself decided attempt N is done or stalled, so this is what lets a
+  // legitimate redelivery to a different worker reclaim the run instead of
+  // silently no-opping while the old lease hasn't yet wall-clock-expired
+  // (see GenerationRunService.claim).
+  leaseAttempt   Int                 @default(0) @map("lease_attempt")
   // Incremented on every guarded claim/heartbeat/recovery-forced-failure —
   // every mutation this run makes must condition its WHERE clause on the
   // fencingVersion it last observed, so a stale worker's late write matches
@@ -735,6 +751,22 @@ model OutboxEvent {
 
   @@index([status, createdAt])
   @@map("outbox_events")
+}
+
+// A single-row (id fixed, seeded by migration) lease used to elect one
+// leader instance per recovery pass across every live API/worker process,
+// without relying on Postgres session-scoped advisory locks — those require
+// acquire/work/release to happen on the same physical connection, a
+// guarantee Prisma's pooled client does not make (see
+// GenerationRunRecoveryService). Acquiring/releasing this lease is a plain
+// conditional row UPDATE, safe under any connection pooling.
+model RecoveryLease {
+  id             String    @id
+  leaseOwner     String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("recovery_leases")
 }
 
 // ═══════════════════════════════════════════

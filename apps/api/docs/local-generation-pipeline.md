@@ -1295,7 +1295,18 @@ automatically re-run.
     runs on boot, not on an interval. BullMQ's own stalled-job detection (see
     below) narrows this further but doesn't eliminate it.
 
-## Durable generation queue (Phase 3K)
+## Durable generation queue (Phase 3K) — superseded, see "Generation runs, fencing, and recovery" below
+
+**This section describes the original Phase 3K design and is now historical.**
+`GenerationJob` is no longer the dispatch/concurrency source of truth —
+`GenerationRun` (introduced in the "production-safety hardening" commit and
+hardened further in Phase A below) replaced it. `GenerationJob` rows are still
+created as a best-effort, non-authoritative diagnostics mirror (see
+`BooksService.createRunAndSchedule`), but nothing about ownership, retries, or
+recovery reads them anymore. The mechanics below (BullMQ queue/producer/worker
+shape, "why a durable queue at all") are still accurate in spirit; the
+specifics of what dispatches jobs and what a retry means are not — read the
+next section instead.
 
 Closes the gap Phase 3I/3J both flagged as future work: `GenerationTaskRunner`
 (Phase 3H), the in-process, in-memory scheduler, is gone. Every
@@ -1397,6 +1408,160 @@ endpoints, or `AgentService`'s pipeline changed — only what schedules and runs
     row.
   - ~~Worker still runs in-process with the API.~~ **Done — see "Worker
     process separation" below.**
+
+## Generation runs, fencing, and recovery (Phase 2 / Phase A)
+
+`GenerationRun` (`apps/api/prisma/schema.prisma`) is the sole source of truth
+for "is a generation attempt in flight for this book, and who owns it" —
+`GenerationJob` is kept only as a best-effort diagnostics mirror and must never
+be read for ownership, retry, or recovery decisions.
+
+### Creating a run — one transaction, outbox-dispatched
+
+`BooksService.createRunAndSchedule` (used by `startGeneration`/
+`retryGeneration`/`regenerateBook`) does three things in a single DB
+transaction: creates the `GenerationRun` row, transitions `Book.status`/
+`Book.activeRunId`, and writes an `OutboxEvent`. The actual BullMQ publish is
+**not** done inside that transaction — `OutboxDispatcherService` sweeps
+still-`pending` outbox rows on an interval (every process, API and worker
+both) and publishes them, using the run's own id as the BullMQ `jobId`. This
+is what makes "commit the run, then crash before publishing" impossible to
+lose: the event is already durable in Postgres, and any live process's next
+sweep re-publishes it (idempotently, since the jobId is stable).
+
+A hand-added partial unique index
+(`generation_runs_one_active_per_book`, `WHERE status IN ('queued','running')`)
+enforces "at most one active run per book" at the database level — this, not
+`Book.activeRunId`, is the actual source of truth for that invariant;
+`Book.activeRunId` is an application-level mirror of it.
+
+### Immutable input — `GenerationInputSnapshot`
+
+`apps/api/src/agent/generation-input-snapshot.ts` defines a Zod schema
+(`generationInputSnapshotSchema`) for `GenerationRun.inputSnapshot` — every
+read of a run's snapshot goes through `parseGenerationInputSnapshot(runId,
+value)`, which throws a stable-coded `InvalidGenerationInputSnapshotError`
+(`GENERATION_INPUT_SNAPSHOT_INVALID`) rather than trusting an unchecked cast
+of Prisma JSON. The uploaded child photo is identified immutably: `childPhoto`
+carries `{ assetKey, sha256, contentType, sizeBytes }`, not just a mutable
+key. `BooksService.uploadChildPhoto` mints a fresh, versioned
+`ImageAssetStorage` key (`childPhotoAssetKey(bookId, randomUUID())`) on every
+upload rather than overwriting a fixed one, so a later re-upload can never
+mutate bytes an already-created run's snapshot still references.
+`hashInputSnapshot` canonicalizes recursively (every nesting level's keys
+sorted, not just the top level) before hashing, so the hash is stable
+regardless of field insertion order at any depth.
+
+Critically: **the pipeline consumes the snapshot, not the live Book row.**
+`GenerationQueueProcessor.process` builds a `GenerationExecutionContext`
+(`runId`, `bookId`, `fencingVersion`, `inputHash`, `inputSnapshot`) immediately
+after a successful claim and passes that — not a freshly-reloaded, possibly
+since-edited `Book` — into `AgentService.startBookGeneration(ctx)`, which
+resolves every generation-relevant field (`childName`, `childAge`, `theme`,
+`language`, `pageCount`, `educationalMessage`, the child photo) from
+`ctx.inputSnapshot`. The Book row is still loaded, but only for prior-progress
+fields (story plan/character card/etc., for idempotent resume) and identity —
+never for the input parameters themselves. This is what makes "edit the book,
+then retry" resume from the *pre-edit* input the retried run actually
+captured, not whatever the book looks like right now.
+
+### Fencing — every pipeline write, not just claim/complete
+
+`GenerationExecutionService.applyFencedBookWrite(ctx, bookData, step)`
+(`apps/api/src/agent/generation-execution.service.ts`) is the only path
+`AgentService` uses to write to `Book` while a run executes. It runs one
+transaction: first a fenced `generationRun.updateMany` (`WHERE id, status =
+running, fencingVersion = ctx.fencingVersion`) that also records `currentStep`
+— if that matches zero rows, a newer claim or recovery has already superseded
+this attempt, and the method throws `StaleGenerationRunError` instead of
+writing `Book` at all. Only if that succeeds does it write `Book` (a plain
+unique-key update — safe because Postgres's row lock on the `GenerationRun`
+row, held for the duration of the transaction under READ COMMITTED, already
+serializes this against every other writer of that same row: a concurrent
+claim, heartbeat, `completeRun`, or recovery pass either waits for this
+transaction to commit and then correctly fails its own WHERE-clause
+re-check, or wins the race and makes this transaction's own check fail
+instead — there is no window where two attempts both believe they hold the
+fence). `BooksService.runGenerationPipeline` treats a `StaleGenerationRunError`
+from `AgentService` as a quiet abandonment (log and return) — never a reason
+to rethrow and trigger a BullMQ retry, since whichever attempt actually owns
+the run now is responsible for finishing it.
+
+### Correct BullMQ redelivery ownership
+
+`GenerationRunService.claim(runId, workerId, leaseMs, jobAttempt)`
+(`apps/api/src/agent/generation-run.service.ts`) succeeds when the run is
+still queued/running **and** at least one of: unleased; already leased to
+this same `workerId` (a retry landing on the same live process); the lease
+has wall-clock expired; or `jobAttempt` is strictly greater than the attempt
+currently holding the lease (`leaseAttempt` column). That last clause is the
+fix for a real bug: BullMQ only ever issues attempt N+1 after it has itself
+decided attempt N is done or stalled, so a strictly-higher attempt number is
+always safe to trust as "this delivery supersedes whatever is currently
+held" — independent of whether the DB lease happens to have wall-clock
+expired yet. Without it, a legitimate redelivery to a *different* worker
+before the old lease's expiry would fail to claim and `GenerationQueueProcessor`
+would silently treat that as a no-op success, permanently stranding the run.
+`GenerationRunService.heartbeat(runId, workerId, fencingVersion, leaseMs)` — a
+fenced lease extension called on an interval (`leaseMs / 3`) by
+`GenerationQueueProcessor` while it holds a claim — keeps a slow-but-alive
+real-generation run from being mistaken for abandoned by recovery.
+
+### Atomic terminal transitions
+
+`BooksService.completeRun` and `markRunPermanentlyFailedAfterExhaustedRetries`
+wrap their `GenerationRun` status write and the `Book.activeRunId`/
+`publishedRunId` update in one `$transaction` — a crash between the two is no
+longer possible; either both commit or neither does. On success,
+`Book.publishedRunId` is set so the last successful run stays published even
+if a later run is started and later fails.
+
+### Recovery leadership — a lease row, not a session advisory lock
+
+`GenerationRunRecoveryService` elects one leader per recovery pass via a
+single-row `RecoveryLease` (seeded by migration, id `generation_run_recovery`)
+and a plain conditional `updateMany` — **not**
+`pg_try_advisory_lock`/`pg_advisory_unlock`. Session-scoped advisory locks
+require acquire/work/release to run on the same physical Postgres connection,
+a guarantee Prisma's pooled client does not make; getting that wrong either
+leaks the lock (wedging every future pass on that instance) or gives no real
+cross-instance guarantee at all. A plain row UPDATE has no such requirement.
+`recoverOne`'s own run-fail + Book-clear is likewise one transaction.
+
+### Mutation races — CAS on Book, not read-then-write
+
+`update()`, `remove()`, and `uploadChildPhoto()` in `BooksService` use a
+conditional `updateMany` (`status` re-checked in the WHERE clause) rather than
+an unconditional `update()` after a separate status read — generation
+starting between the read and the write now makes the write match zero rows
+(reported as the same conflict) instead of silently mutating a book whose
+generation has already begun.
+
+### Known limitations (explicit, not yet built)
+
+- **Run-scoped artifact storage.** Generated images/PDFs are still keyed
+  positionally (`imageAssetKey(bookId, kind, pageNumber)`), not
+  `books/{bookId}/runs/{runId}/...` — a regenerate can still only safely reuse
+  or overwrite bytes at the same key, and there is no `GenerationArtifact`
+  model or atomic "promote this run's output to published" step beyond
+  `Book.publishedRunId` itself.
+- **`ImageAssetStorage` read-side identity** still probes a fixed set of
+  extensions rather than persisting the exact key/content-type pair (fixed
+  for the child photo specifically, via versioned keys — not fixed for
+  generated illustrations/character sheets). No delete/cleanup API exists yet.
+- **Generation limits** (`assertGenerationAllowed`) are check-then-act, not an
+  atomic reservation — a burst of concurrent requests can still transiently
+  exceed the configured caps before the DB-level partial unique index catches
+  the actual double-schedule.
+- **Outbox** has no dead-letter status, `nextAttemptAt`/backoff, or SKIP
+  LOCKED multi-dispatcher claim yet — a malformed/unsupported event is logged
+  and left `pending` rather than moved to a terminal state.
+- **`RedisModule` and `cache/RedisService`** are still two independent
+  `ioredis` connections; lease/outbox/recovery tuning env vars are still read
+  ad hoc via `process.env` rather than the validated `Env` schema.
+- **`GenerationRun`** is missing the composite indexes
+  (`status, leaseExpiresAt`), (`status, createdAt`), (`userId, status`),
+  (`userId, createdAt`) that its query patterns above would benefit from.
 
 ## Worker process separation
 

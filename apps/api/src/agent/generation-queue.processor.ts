@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { QUEUES } from '../queue/queues.config';
 import { BooksService } from '../books/books.service';
 import { GenerationRunService, readGenerationRunLeaseMs } from './generation-run.service';
+import { parseGenerationInputSnapshot } from './generation-input-snapshot';
+import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationQueueJobData } from './generation-queue.service';
 
 /**
@@ -16,11 +18,13 @@ import type { GenerationQueueJobData } from './generation-queue.service';
  * `apps/api/docs/local-generation-pipeline.md`.
  *
  * Every job is claimed via GenerationRunService.claim before any pipeline
- * work starts — a claim that matches zero rows (the run is already
- * terminal, or another live worker already holds its lease) is treated as a
- * normal no-op, not an error, since it means there is genuinely nothing left
- * for this delivery to do (see "Generation runs" in
- * docs/local-generation-pipeline.md).
+ * work starts, passing this delivery's own BullMQ attempt number — a claim
+ * that matches zero rows (the run is already terminal, or a strictly-newer
+ * delivery already holds the lease) is treated as a normal no-op, not an
+ * error, since it means there is genuinely nothing left for this delivery to
+ * do (see "Generation runs" in docs/local-generation-pipeline.md). While a
+ * claim is held, a heartbeat periodically extends its lease so a slow (but
+ * genuinely alive) real-generation run is never mistaken for abandoned.
  */
 @Injectable()
 @Processor(QUEUES.BOOK_GENERATION)
@@ -37,25 +41,50 @@ export class GenerationQueueProcessor extends WorkerHost {
   }
 
   async process(job: Job<GenerationQueueJobData>): Promise<void> {
-    const attempt = job.attemptsMade + 1;
+    const jobAttempt = job.attemptsMade + 1;
     const maxAttempts = job.opts.attempts ?? 1;
     this.logger.log(
-      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId} attempt=${attempt}/${maxAttempts}`,
+      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId} attempt=${jobAttempt}/${maxAttempts}`,
     );
 
+    const leaseMs = readGenerationRunLeaseMs();
     const claimed = await this.generationRunService.claim(
       job.data.runId,
       this.workerId,
-      readGenerationRunLeaseMs(),
+      leaseMs,
+      jobAttempt,
     );
     if (!claimed) {
       this.logger.warn(
-        `Run ${job.data.runId} (book ${job.data.bookId}) could not be claimed — already terminal or leased elsewhere; treating as a no-op.`,
+        `Run ${job.data.runId} (book ${job.data.bookId}) could not be claimed — already terminal or a newer delivery holds it; treating as a no-op.`,
       );
       return;
     }
 
-    await this.booksService.runGenerationPipeline(job.data.bookId, claimed);
+    const ctx: GenerationExecutionContext = {
+      runId: claimed.id,
+      bookId: claimed.bookId,
+      fencingVersion: claimed.fencingVersion,
+      inputHash: claimed.inputHash,
+      inputSnapshot: parseGenerationInputSnapshot(claimed.id, claimed.inputSnapshot),
+    };
+
+    const heartbeatIntervalMs = Math.max(1000, Math.floor(leaseMs / 3));
+    const heartbeat = setInterval(() => {
+      this.generationRunService
+        .heartbeat(ctx.runId, this.workerId, ctx.fencingVersion, leaseMs)
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.error(`Heartbeat failed for run ${ctx.runId}: ${message}`);
+        });
+    }, heartbeatIntervalMs);
+    heartbeat.unref?.();
+
+    try {
+      await this.booksService.runGenerationPipeline(ctx);
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 
   @OnWorkerEvent('completed')

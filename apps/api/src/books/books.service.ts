@@ -10,6 +10,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   BookStatus,
   GenerationJobType,
@@ -34,8 +35,14 @@ import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import {
+  GenerationExecutionService,
+  StaleGenerationRunError,
+} from '../agent/generation-execution.service';
+import type { GenerationExecutionContext } from '../agent/generation-execution-context';
+import {
   buildInputSnapshot,
   hashInputSnapshot,
+  parseGenerationInputSnapshot,
   type GenerationInputSnapshot,
 } from '../agent/generation-input-snapshot';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
@@ -97,6 +104,7 @@ export class BooksService {
     private readonly generationQueueService: GenerationQueueService,
     private readonly generationJobService: GenerationJobService,
     private readonly generationRunService: GenerationRunService,
+    private readonly generationExecutionService: GenerationExecutionService,
     private readonly config: ConfigService<Env, true>,
     @Inject(RATE_LIMITER_TOKEN) private readonly rateLimiter: RateLimiter,
     private readonly childPhotoProcessor: ChildPhotoProcessor,
@@ -197,13 +205,21 @@ export class BooksService {
    * ChildPhotoProcessor decodes the bytes for real (magic-byte/container
    * validation via sharp/libvips), enforces a pixel-count ceiling, and
    * re-encodes to strip EXIF/ICC/XMP metadata (including any GPS tag) before
-   * anything is persisted. Saved via ImageAssetStorage under
-   * childPhotoAssetKey(bookId), the same local/cloud driver generated
-   * illustrations use — never a publicly served path, and deleted only when
-   * the owning book is (see BooksService.remove and Phase 3's artifact
-   * cleanup work). AgentService reads it back during char_build to build the
-   * CharacterProfile; re-uploading before generation starts simply overwrites
-   * the previous photo.
+   * anything is persisted.
+   *
+   * Every upload mints a fresh, versioned ImageAssetStorage key
+   * (childPhotoAssetKey(bookId, version)) rather than overwriting a fixed
+   * one — a GenerationInputSnapshot freezes a specific version's key/digest,
+   * so re-uploading must never mutate bytes an already-created run may still
+   * reference (old versions are simply left as unreferenced objects for now;
+   * systematic cleanup is a later phase). The sha256 digest and byte size are
+   * recorded alongside so the run snapshot can carry a full immutable photo
+   * identity, not just a mutable key.
+   *
+   * The Book write is a conditional (CAS) update gated on the book still
+   * being in an editable status — the earlier `EDITABLE_BOOK_STATUSES` check
+   * above is a fast-path rejection, not the actual race guard, since
+   * generation could start between that read and this write.
    */
   async uploadChildPhoto(
     userId: string,
@@ -212,9 +228,7 @@ export class BooksService {
   ): Promise<BookDto> {
     const book = await this.findOwnedOrThrow(bookId, userId);
     if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
-      throw new ConflictException(
-        'Child photo cannot be uploaded while generation is in progress',
-      );
+      throw new ConflictException('Child photo cannot be uploaded while generation is in progress');
     }
     if (!file) {
       throw new BadRequestException(
@@ -223,14 +237,23 @@ export class BooksService {
     }
 
     const { buffer, contentType } = await this.childPhotoProcessor.process(file.buffer);
-
-    const key = childPhotoAssetKey(bookId);
+    const sha256 = createHash('sha256').update(buffer).digest('hex');
+    const key = childPhotoAssetKey(bookId, randomUUID());
     await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
 
-    const updated = await this.prisma.book.update({
-      where: { id: bookId },
-      data: { childPhotoAssetKey: key, childPhotoContentType: contentType },
+    const result = await this.prisma.book.updateMany({
+      where: { id: bookId, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
+      data: {
+        childPhotoAssetKey: key,
+        childPhotoContentType: contentType,
+        childPhotoSha256: sha256,
+        childPhotoSizeBytes: buffer.length,
+      },
     });
+    if (result.count === 0) {
+      throw new ConflictException('Child photo cannot be uploaded while generation is in progress');
+    }
+    const updated = await this.findOwnedOrThrow(bookId, userId);
     return toBookDto(updated);
   }
 
@@ -257,27 +280,45 @@ export class BooksService {
     return toBookDto(book);
   }
 
+  /**
+   * The initial status check below is a fast-path rejection for the common
+   * case (returns a clean 409 for an obviously-in-progress book without a
+   * wasted write attempt) — it is not what actually prevents the race
+   * against `createRunAndSchedule`'s status transition. The CAS `updateMany`
+   * (status re-checked in the WHERE clause) is: generation starting between
+   * this method's read and its write makes the write match zero rows, which
+   * is treated as the same conflict rather than silently mutating a book
+   * whose generation has already begun.
+   */
   async update(id: string, userId: string, dto: UpdateBookDto): Promise<BookDto> {
     const book = await this.findOwnedOrThrow(id, userId);
     if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
       throw new ConflictException('Book cannot be edited while generation is in progress');
     }
-    const updated = await this.prisma.book.update({
-      where: { id },
+    const result = await this.prisma.book.updateMany({
+      where: { id, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
       data: dto,
     });
+    if (result.count === 0) {
+      throw new ConflictException('Book cannot be edited while generation is in progress');
+    }
+    const updated = await this.findOwnedOrThrow(id, userId);
     return toBookDto(updated);
   }
 
+  /** See update()'s doc comment — same CAS reasoning applies to soft-delete. */
   async remove(id: string, userId: string): Promise<void> {
     const book = await this.findOwnedOrThrow(id, userId);
     if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
       throw new ConflictException('Book cannot be deleted while generation is in progress');
     }
-    await this.prisma.book.update({
-      where: { id },
+    const result = await this.prisma.book.updateMany({
+      where: { id, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
       data: { deletedAt: new Date() },
     });
+    if (result.count === 0) {
+      throw new ConflictException('Book cannot be deleted while generation is in progress');
+    }
   }
 
   /**
@@ -311,7 +352,7 @@ export class BooksService {
       );
     }
     const inputSnapshot = priorRun
-      ? (priorRun.inputSnapshot as unknown as GenerationInputSnapshot)
+      ? parseGenerationInputSnapshot(priorRun.id, priorRun.inputSnapshot)
       : buildInputSnapshot(book);
 
     const updated = await this.createRunAndSchedule({
@@ -497,38 +538,54 @@ export class BooksService {
    * Runs AgentService's pipeline for one claimed GenerationRun — invoked by
    * GenerationQueueProcessor (the BullMQ worker) only after
    * GenerationRunService.claim has already fenced this call in, outside any
-   * HTTP request. Reloads the book fresh from the database rather than
-   * trusting a caller-supplied object, since a durable queue job can run in a
-   * different process, or after a delay, from whenever it was enqueued.
+   * HTTP request. Builds the GenerationExecutionContext from the run's own
+   * validated inputSnapshot (never the live Book row's mutable fields — see
+   * GenerationExecutionContext's doc comment) and passes that through to
+   * AgentService.
    *
    * AgentService already marks the book failed for every failure it
    * anticipates (story generation, image generation, PDF render) — that is
    * treated as an ordinary, expected outcome here (`completeRun('failed')`).
-   * An error AgentService itself doesn't catch is, by construction,
-   * unexpected — a bug, a DB blip, a Redis hiccup — exactly the class BullMQ's
-   * own attempts/backoff (DEFAULT_JOB_OPTIONS, queue.module.ts) exists to
-   * retry: this rethrows rather than swallowing, so that retry actually
-   * happens, instead of every transient failure requiring the user to click
-   * retry manually. See GenerationQueueProcessor.onFailed for what happens
-   * once BullMQ's own attempts are exhausted.
+   * StaleGenerationRunError means a newer claim/recovery already superseded
+   * this attempt mid-pipeline — logged and swallowed, not rethrown, since
+   * whichever attempt owns the run now is responsible for its own
+   * completion; retrying would only race it. Any other error AgentService
+   * itself doesn't catch is, by construction, unexpected — a bug, a DB blip,
+   * a Redis hiccup — exactly the class BullMQ's own attempts/backoff
+   * (DEFAULT_JOB_OPTIONS, queue.module.ts) exists to retry: this rethrows
+   * rather than swallowing, so that retry actually happens, instead of every
+   * transient failure requiring the user to click retry manually. See
+   * GenerationQueueProcessor.onFailed for what happens once BullMQ's own
+   * attempts are exhausted.
    */
-  async runGenerationPipeline(bookId: string, run: GenerationRun): Promise<void> {
-    this.logger.log(`Starting generation pipeline — bookId=${bookId} runId=${run.id}`);
+  async runGenerationPipeline(ctx: GenerationExecutionContext): Promise<void> {
+    const { bookId, runId } = ctx;
+    this.logger.log(`Starting generation pipeline — bookId=${bookId} runId=${runId}`);
 
     const legacyJob = await this.generationJobService.findActive(bookId).catch(() => null);
     if (legacyJob) {
-      await this.markJob(this.generationJobService.markRunning(legacyJob.id), legacyJob.id, bookId, 'running');
+      await this.markJob(
+        this.generationJobService.markRunning(legacyJob.id),
+        legacyJob.id,
+        bookId,
+        'running',
+      );
     }
 
     let result: Book;
     try {
-      const book = await this.prisma.book.findUniqueOrThrow({ where: { id: bookId } });
-      result = await this.agentService.startBookGeneration(book, run.inputHash);
-      this.logger.log(`Book ${bookId} status ${book.status} -> ${result.status} (run ${run.id})`);
+      result = await this.agentService.startBookGeneration(ctx);
+      this.logger.log(`Book ${bookId} status -> ${result.status} (run ${runId})`);
     } catch (err) {
+      if (err instanceof StaleGenerationRunError) {
+        this.logger.warn(
+          `Run ${runId} (book ${bookId}) was superseded mid-pipeline — abandoning this attempt without touching Book/GenerationRun further: ${err.message}`,
+        );
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(
-        `Generation pipeline threw unexpectedly for run ${run.id} (book ${bookId}): ${message}`,
+        `Generation pipeline threw unexpectedly for run ${runId} (book ${bookId}): ${message}`,
       );
       if (legacyJob) {
         await this.markJob(
@@ -544,7 +601,7 @@ export class BooksService {
     }
 
     if (result.status === BookStatus.failed) {
-      await this.completeRun(run, 'failed', {
+      await this.completeRun(ctx, 'failed', {
         errorCode: 'GENERATION_FAILED',
         errorMessage: result.errorMessage ?? 'Generation failed',
       });
@@ -560,7 +617,7 @@ export class BooksService {
         );
       }
     } else {
-      await this.completeRun(run, 'completed');
+      await this.completeRun(ctx, 'completed');
       if (legacyJob) {
         await this.markJob(
           this.generationJobService.markCompleted(legacyJob.id),
@@ -573,57 +630,67 @@ export class BooksService {
   }
 
   /**
-   * Guarded terminal transition for a claimed run: only takes effect if the
-   * run is still `running` with the exact `fencingVersion` this worker
-   * observed at claim time — if recovery (or a later claim) already moved it
-   * on, this is a safe no-op, and Book.activeRunId/publishedRunId are left
-   * untouched too (their own update is guarded on `activeRunId = run.id`).
-   * On success, Book.publishedRunId is set — the last successful run stays
-   * published even if a later run is started and fails (invariant G); on
-   * failure, only activeRunId is cleared, `Book.status`/`errorMessage`/
-   * `failedStep` are left exactly as AgentService itself already wrote them.
+   * Guarded, atomic terminal transition for a claimed run: the GenerationRun
+   * status write and the Book.activeRunId/publishedRunId update happen in
+   * one transaction, so a crash between them can never leave a terminal run
+   * with Book still pointing at it as active. Only takes effect if the run
+   * is still `running` with the exact `fencingVersion` this worker observed
+   * at claim time — if recovery (or a later claim) already moved it on, the
+   * whole transaction is a no-op (Book is provably untouched, not just
+   * "probably" — see GenerationExecutionService.applyFencedBookWrite for why
+   * a fenced updateMany's row lock + WHERE re-check on the GenerationRun row
+   * is what actually enforces this, not best-effort ordering). On success,
+   * Book.publishedRunId is set — the last successful run stays published
+   * even if a later run is started and fails (invariant G); on failure, only
+   * activeRunId is cleared, `Book.status`/`errorMessage`/`failedStep` are
+   * left exactly as AgentService itself already wrote them.
    */
   private async completeRun(
-    run: GenerationRun,
+    ctx: GenerationExecutionContext,
     outcome: 'completed' | 'failed',
     failureDetails?: { errorCode: string; errorMessage: string },
   ): Promise<void> {
     const fenceWhere = {
-      id: run.id,
+      id: ctx.runId,
       status: GenerationRunStatus.running,
-      fencingVersion: run.fencingVersion,
+      fencingVersion: ctx.fencingVersion,
     };
-    const claimedStillValid =
-      outcome === 'completed'
-        ? await this.prisma.generationRun.updateMany({
-            where: fenceWhere,
-            data: { status: GenerationRunStatus.completed, completedAt: new Date() },
-          })
-        : await this.prisma.generationRun.updateMany({
-            where: fenceWhere,
-            data: {
-              status: GenerationRunStatus.failed,
-              failedAt: new Date(),
-              // completeRun('failed', ...) is only ever called with failureDetails set (see both call sites below).
-              errorCode: failureDetails?.errorCode ?? 'GENERATION_FAILED',
-              errorMessage: failureDetails?.errorMessage ?? 'Generation failed',
-            },
-          });
 
-    if (claimedStillValid.count === 0) {
-      this.logger.warn(
-        `Run ${run.id} (book ${run.bookId}) finished ${outcome} but its fencing guard found it already superseded — not touching Book.`,
-      );
-      return;
-    }
-
-    await this.prisma.book.updateMany({
-      where: { id: run.bookId, activeRunId: run.id },
-      data:
+    const claimedStillValid = await this.prisma.$transaction(async (tx) => {
+      const runUpdate =
         outcome === 'completed'
-          ? { activeRunId: null, publishedRunId: run.id }
-          : { activeRunId: null },
+          ? await tx.generationRun.updateMany({
+              where: fenceWhere,
+              data: { status: GenerationRunStatus.completed, completedAt: new Date() },
+            })
+          : await tx.generationRun.updateMany({
+              where: fenceWhere,
+              data: {
+                status: GenerationRunStatus.failed,
+                failedAt: new Date(),
+                // completeRun('failed', ...) is only ever called with failureDetails set (see both call sites below).
+                errorCode: failureDetails?.errorCode ?? 'GENERATION_FAILED',
+                errorMessage: failureDetails?.errorMessage ?? 'Generation failed',
+              },
+            });
+
+      if (runUpdate.count === 0) return false;
+
+      await tx.book.updateMany({
+        where: { id: ctx.bookId, activeRunId: ctx.runId },
+        data:
+          outcome === 'completed'
+            ? { activeRunId: null, publishedRunId: ctx.runId }
+            : { activeRunId: null },
+      });
+      return true;
     });
+
+    if (!claimedStillValid) {
+      this.logger.warn(
+        `Run ${ctx.runId} (book ${ctx.bookId}) finished ${outcome} but its fencing guard found it already superseded — not touching Book.`,
+      );
+    }
   }
 
   /**
@@ -642,21 +709,29 @@ export class BooksService {
     if (!run || run.status !== GenerationRunStatus.running) return;
 
     const safeMessage = 'Generation failed after repeated errors — please retry.';
-    const updated = await this.prisma.generationRun.updateMany({
-      where: { id: run.id, status: GenerationRunStatus.running, fencingVersion: run.fencingVersion },
-      data: {
-        status: GenerationRunStatus.failed,
-        failedAt: new Date(),
-        errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE',
-        errorMessage: safeMessage,
-      },
-    });
-    if (updated.count === 0) return;
+    const finalized = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.generationRun.updateMany({
+        where: {
+          id: run.id,
+          status: GenerationRunStatus.running,
+          fencingVersion: run.fencingVersion,
+        },
+        data: {
+          status: GenerationRunStatus.failed,
+          failedAt: new Date(),
+          errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE',
+          errorMessage: safeMessage,
+        },
+      });
+      if (updated.count === 0) return false;
 
-    await this.prisma.book.updateMany({
-      where: { id: run.bookId, activeRunId: run.id },
-      data: { activeRunId: null, status: BookStatus.failed, errorMessage: safeMessage },
+      await tx.book.updateMany({
+        where: { id: run.bookId, activeRunId: run.id },
+        data: { activeRunId: null, status: BookStatus.failed, errorMessage: safeMessage },
+      });
+      return true;
     });
+    if (!finalized) return;
 
     const legacyJob = await this.generationJobService.findActive(run.bookId).catch(() => null);
     if (legacyJob) {

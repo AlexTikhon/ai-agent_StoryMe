@@ -1,17 +1,17 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import {
-  BadRequestException,
-  ConflictException,
-  InternalServerErrorException,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma, type Book, type GenerationJob, type GenerationRun } from '@prisma/client';
 import { BooksService } from './books.service';
 import type { AgentService } from '../agent/agent.service';
 import type { GenerationQueueService } from '../agent/generation-queue.service';
 import type { GenerationJobService } from '../agent/generation-job.service';
 import type { GenerationRunService } from '../agent/generation-run.service';
+import {
+  GenerationExecutionService,
+  StaleGenerationRunError,
+} from '../agent/generation-execution.service';
+import type { GenerationExecutionContext } from '../agent/generation-execution-context';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
 import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
@@ -21,8 +21,24 @@ import type { UpdateBookDto } from './dto/update-book.dto';
 
 type MockPrisma = ReturnType<typeof createMockPrisma>;
 
+const EDITABLE_STATUSES = ['created', 'complete', 'failed', 'partial', 'cancelled'];
+
+const VALID_SNAPSHOT = {
+  childName: 'Mia',
+  childAge: 5,
+  language: 'en',
+  theme: 'friendship',
+  educationalMessage: null,
+  pageCount: null,
+  childPhoto: null,
+};
+
 function createMockAgentService(): jest.Mocked<AgentService> {
   return { startBookGeneration: vi.fn() } as unknown as jest.Mocked<AgentService>;
+}
+
+function createMockGenerationExecutionService(): jest.Mocked<GenerationExecutionService> {
+  return { applyFencedBookWrite: vi.fn() } as unknown as jest.Mocked<GenerationExecutionService>;
 }
 
 function createMockPdfStorage(): jest.Mocked<PdfStorage> {
@@ -116,13 +132,14 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     userId: 'u-1',
     kind: 'initial' as GenerationRun['kind'],
     status: 'queued' as GenerationRun['status'],
-    inputSnapshot: {},
+    inputSnapshot: VALID_SNAPSHOT,
     inputHash: 'hash-1',
     retryOfRunId: null,
     currentStep: null,
     attempt: 1,
     leaseOwner: null,
     leaseExpiresAt: null,
+    leaseAttempt: 0,
     fencingVersion: 0,
     errorCode: null,
     errorMessage: null,
@@ -146,7 +163,9 @@ function createMockGenerationRunService(): jest.Mocked<GenerationRunService> {
     findLatestForBook: vi.fn().mockResolvedValue(null),
     countActiveForUser: vi.fn().mockResolvedValue(0),
     countCreatedForUserSince: vi.fn().mockResolvedValue(0),
-    claim: vi.fn().mockResolvedValue(makeGenerationRun({ status: 'running' as GenerationRun['status'] })),
+    claim: vi
+      .fn()
+      .mockResolvedValue(makeGenerationRun({ status: 'running' as GenerationRun['status'] })),
   } as unknown as jest.Mocked<GenerationRunService>;
 }
 
@@ -165,7 +184,9 @@ function createMockConfig(overrides: Partial<typeof GENERATION_GUARD_ENV> = {}) 
 
 function createMockRateLimiter(allowed = true) {
   return {
-    consume: vi.fn().mockResolvedValue({ allowed, remaining: allowed ? 99 : 0, retryAfterMs: 1000 }),
+    consume: vi
+      .fn()
+      .mockResolvedValue({ allowed, remaining: allowed ? 99 : 0, retryAfterMs: 1000 }),
   } as never;
 }
 
@@ -247,6 +268,7 @@ describe('BooksService', () => {
   let generationQueueService: ReturnType<typeof createMockGenerationQueueService>;
   let generationJobService: ReturnType<typeof createMockGenerationJobService>;
   let generationRunService: ReturnType<typeof createMockGenerationRunService>;
+  let generationExecutionService: ReturnType<typeof createMockGenerationExecutionService>;
   let config: ReturnType<typeof createMockConfig>;
   let rateLimiter: ReturnType<typeof createMockRateLimiter>;
   let childPhotoProcessor: ReturnType<typeof createMockChildPhotoProcessor>;
@@ -279,6 +301,7 @@ describe('BooksService', () => {
     generationQueueService = createMockGenerationQueueService();
     generationJobService = createMockGenerationJobService();
     generationRunService = createMockGenerationRunService();
+    generationExecutionService = createMockGenerationExecutionService();
     config = createMockConfig();
     rateLimiter = createMockRateLimiter();
     childPhotoProcessor = createMockChildPhotoProcessor();
@@ -290,6 +313,7 @@ describe('BooksService', () => {
       generationQueueService as never,
       generationJobService as never,
       generationRunService as never,
+      generationExecutionService as never,
       config,
       rateLimiter,
       childPhotoProcessor,
@@ -401,17 +425,13 @@ describe('BooksService', () => {
       };
     }
 
-    it('decodes/re-encodes the file via ChildPhotoProcessor before saving, and persists the processor-reported content type', async () => {
+    it('decodes/re-encodes the file via ChildPhotoProcessor before saving, mints a fresh versioned key, and persists the digest/size alongside the processor-reported content type', async () => {
       const book = makeBook({ status: STATUS_CREATED });
-      const updated = makeBook({
-        status: STATUS_CREATED,
-        childPhotoAssetKey: 'b-1/child-photo',
-        childPhotoContentType: 'image/jpeg',
-      });
-      prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue(updated);
+      prisma.book.findFirst.mockResolvedValueOnce(book).mockResolvedValueOnce(book);
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
       const rawFile = makeFile({ mimetype: 'image/png' }); // claimed type — must not be trusted
       const processedBuffer = Buffer.from('processed-bytes');
+      const expectedSha256 = createHash('sha256').update(processedBuffer).digest('hex');
       childPhotoProcessor.process.mockResolvedValue({
         buffer: processedBuffer,
         contentType: 'image/jpeg',
@@ -420,16 +440,55 @@ describe('BooksService', () => {
       const result = await service.uploadChildPhoto('u-1', 'b-1', rawFile);
 
       expect(childPhotoProcessor.process).toHaveBeenCalledWith(rawFile.buffer);
+      const savedKey = imageAssetStorage.saveImageAsset.mock.calls[0]?.[0] as string;
+      expect(savedKey).toMatch(/^b-1\/child-photo-[0-9a-f-]+$/);
       expect(imageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
-        'b-1/child-photo',
+        savedKey,
         processedBuffer,
         'image/jpeg',
       );
-      expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1' },
-        data: { childPhotoAssetKey: 'b-1/child-photo', childPhotoContentType: 'image/jpeg' },
+      expect(prisma.book.updateMany).toHaveBeenCalledWith({
+        where: { id: 'b-1', userId: 'u-1', deletedAt: null, status: { in: EDITABLE_STATUSES } },
+        data: {
+          childPhotoAssetKey: savedKey,
+          childPhotoContentType: 'image/jpeg',
+          childPhotoSha256: expectedSha256,
+          childPhotoSizeBytes: processedBuffer.length,
+        },
       });
       expect(result.characterProfile).toBeNull();
+    });
+
+    it("mints a distinct key/digest on a second upload — re-uploading never mutates a prior version's bytes", async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
+      childPhotoProcessor.process.mockResolvedValue({
+        buffer: Buffer.from('bytes-v1'),
+        contentType: 'image/jpeg',
+      });
+
+      await service.uploadChildPhoto('u-1', 'b-1', makeFile());
+      const firstKey = imageAssetStorage.saveImageAsset.mock.calls[0]?.[0] as string;
+
+      childPhotoProcessor.process.mockResolvedValue({
+        buffer: Buffer.from('bytes-v2'),
+        contentType: 'image/png',
+      });
+      await service.uploadChildPhoto('u-1', 'b-1', makeFile());
+      const secondKey = imageAssetStorage.saveImageAsset.mock.calls[1]?.[0] as string;
+
+      expect(firstKey).not.toBe(secondKey);
+    });
+
+    it('throws ConflictException (CAS) when generation started between the read and the write', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.uploadChildPhoto('u-1', 'b-1', makeFile())).rejects.toThrow(
+        ConflictException,
+      );
     });
 
     it('propagates a BadRequestException from ChildPhotoProcessor (undecodable bytes / unsupported format / oversized) without saving anything', async () => {
@@ -443,7 +502,7 @@ describe('BooksService', () => {
         BadRequestException,
       );
       expect(imageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
-      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(prisma.book.updateMany).not.toHaveBeenCalled();
     });
 
     it('throws BadRequestException when no file is provided (multer rejected it)', async () => {
@@ -469,7 +528,7 @@ describe('BooksService', () => {
     it('allows re-uploading a photo for a complete book ahead of a regenerate', async () => {
       const book = makeBook({ status: STATUS_COMPLETE });
       prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue(book);
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
 
       await expect(service.uploadChildPhoto('u-1', 'b-1', makeFile())).resolves.toBeDefined();
     });
@@ -575,14 +634,14 @@ describe('BooksService', () => {
     it('updates and returns BookDto when status is created', async () => {
       const book = makeBook({ status: STATUS_CREATED });
       const updated = makeBook({ title: 'New Title', status: STATUS_CREATED });
-      prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue(updated);
+      prisma.book.findFirst.mockResolvedValueOnce(book).mockResolvedValueOnce(updated);
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
 
       const dto: UpdateBookDto = { title: 'New Title' };
       const result = await service.update('b-1', 'u-1', dto);
 
-      expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1' },
+      expect(prisma.book.updateMany).toHaveBeenCalledWith({
+        where: { id: 'b-1', userId: 'u-1', deletedAt: null, status: { in: EDITABLE_STATUSES } },
         data: dto,
       });
       expect(result.title).toBe('New Title');
@@ -593,19 +652,27 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.update('b-1', 'u-1', { title: 'X' })).rejects.toThrow(ConflictException);
-      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('throws ConflictException (CAS) when generation starts between the read and the write', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.update('b-1', 'u-1', { title: 'X' })).rejects.toThrow(ConflictException);
     });
 
     it('updates a complete book (edit-then-regenerate flow)', async () => {
       const book = makeBook({ status: STATUS_COMPLETE });
       const updated = makeBook({ title: 'New Title', status: STATUS_COMPLETE });
-      prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue(updated);
+      prisma.book.findFirst.mockResolvedValueOnce(book).mockResolvedValueOnce(updated);
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await service.update('b-1', 'u-1', { title: 'New Title' });
 
-      expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1' },
+      expect(prisma.book.updateMany).toHaveBeenCalledWith({
+        where: { id: 'b-1', userId: 'u-1', deletedAt: null, status: { in: EDITABLE_STATUSES } },
         data: { title: 'New Title' },
       });
       expect(result.title).toBe('New Title');
@@ -614,8 +681,8 @@ describe('BooksService', () => {
     it('updates a failed book', async () => {
       const book = makeBook({ status: STATUS_FAILED });
       const updated = makeBook({ title: 'New Title', status: STATUS_FAILED });
-      prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue(updated);
+      prisma.book.findFirst.mockResolvedValueOnce(book).mockResolvedValueOnce(updated);
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await service.update('b-1', 'u-1', { title: 'New Title' });
 
@@ -629,16 +696,14 @@ describe('BooksService', () => {
     it('soft-deletes by setting deletedAt when status is created', async () => {
       const book = makeBook({ status: STATUS_CREATED });
       prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue({ ...book, deletedAt: new Date() });
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
 
       await service.remove('b-1', 'u-1');
 
-      expect(prisma.book.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'b-1' },
-          data: expect.objectContaining({ deletedAt: expect.any(Date) }),
-        }),
-      );
+      expect(prisma.book.updateMany).toHaveBeenCalledWith({
+        where: { id: 'b-1', userId: 'u-1', deletedAt: null, status: { in: EDITABLE_STATUSES } },
+        data: { deletedAt: expect.any(Date) },
+      });
     });
 
     it('throws ConflictException when the book is actively generating', async () => {
@@ -646,19 +711,26 @@ describe('BooksService', () => {
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.remove('b-1', 'u-1')).rejects.toThrow(ConflictException);
-      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('throws ConflictException (CAS) when generation starts between the read and the write', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.remove('b-1', 'u-1')).rejects.toThrow(ConflictException);
     });
 
     it('soft-deletes a complete book', async () => {
       const book = makeBook({ status: STATUS_COMPLETE });
       prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue({ ...book, deletedAt: new Date() });
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
 
       await service.remove('b-1', 'u-1');
 
-      expect(prisma.book.update).toHaveBeenCalledWith(
+      expect(prisma.book.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'b-1' },
           data: expect.objectContaining({ deletedAt: expect.any(Date) }),
         }),
       );
@@ -667,11 +739,11 @@ describe('BooksService', () => {
     it('soft-deletes a failed book', async () => {
       const book = makeBook({ status: STATUS_FAILED });
       prisma.book.findFirst.mockResolvedValue(book);
-      prisma.book.update.mockResolvedValue({ ...book, deletedAt: new Date() });
+      prisma.book.updateMany.mockResolvedValue({ count: 1 });
 
       await service.remove('b-1', 'u-1');
 
-      expect(prisma.book.update).toHaveBeenCalled();
+      expect(prisma.book.updateMany).toHaveBeenCalled();
     });
 
     it('throws NotFoundException when book does not exist', async () => {
@@ -743,7 +815,9 @@ describe('BooksService', () => {
 
       await service.startGeneration('u-1', 'b-1');
 
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining(`${STATUS_CREATED} -> char_build`));
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`${STATUS_CREATED} -> char_build`),
+      );
       logSpy.mockRestore();
     });
 
@@ -1082,7 +1156,15 @@ describe('BooksService', () => {
     it('copies the prior run inputSnapshot verbatim and links retryOfRunId, ignoring the book row current fields', async () => {
       const book = makeBook({ status: STATUS_FAILED, theme: 'edited-after-failure-theme' });
       const cleared = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'run-1' });
-      const priorSnapshot = { childName: 'Mia', childAge: 5, language: 'en', theme: 'original-theme', educationalMessage: null, pageCount: null, childPhotoAssetKey: null, childPhotoContentType: null };
+      const priorSnapshot = {
+        childName: 'Mia',
+        childAge: 5,
+        language: 'en',
+        theme: 'original-theme',
+        educationalMessage: null,
+        pageCount: null,
+        childPhoto: null,
+      };
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.book.update.mockResolvedValue(cleared);
       generationRunService.findLatestForBook.mockResolvedValue(
@@ -1114,7 +1196,9 @@ describe('BooksService', () => {
           inputSnapshot: expect.objectContaining({ theme: 'friendship' }),
         }),
       });
-      const createCall = prisma.generationRun.create.mock.calls[0]?.[0] as { data: { retryOfRunId?: string } };
+      const createCall = prisma.generationRun.create.mock.calls[0]?.[0] as {
+        data: { retryOfRunId?: string };
+      };
       expect(createCall.data.retryOfRunId).toBeUndefined();
     });
 
@@ -1241,11 +1325,15 @@ describe('BooksService', () => {
       const cleared = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'run-1' });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.book.update.mockResolvedValue(cleared);
-      generationRunService.findLatestForBook.mockResolvedValue(makeGenerationRun({ id: 'some-prior-run' }));
+      generationRunService.findLatestForBook.mockResolvedValue(
+        makeGenerationRun({ id: 'some-prior-run' }),
+      );
 
       await service.regenerateBook('u-1', 'b-1');
 
-      const createCall = prisma.generationRun.create.mock.calls[0]?.[0] as { data: { retryOfRunId?: string } };
+      const createCall = prisma.generationRun.create.mock.calls[0]?.[0] as {
+        data: { retryOfRunId?: string };
+      };
       expect(createCall.data.retryOfRunId).toBeUndefined();
       // regenerateBook never even needs to look up run history, unlike retryGeneration.
       expect(generationRunService.findLatestForBook).not.toHaveBeenCalled();
@@ -1294,36 +1382,35 @@ describe('BooksService', () => {
   // ─── runGenerationPipeline ────────────────────────────────────────────────────
 
   describe('runGenerationPipeline', () => {
-    it('calls AgentService.startBookGeneration with the freshly-loaded book and the claimed run inputHash', async () => {
-      const claimed = makeGenerationRun({ status: 'running' as GenerationRun['status'], inputHash: 'run-input-hash' });
-      const book = makeBook({ status: STATUS_CHAR_BUILD });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(book);
+    function makeCtx(
+      overrides: Partial<GenerationExecutionContext> = {},
+    ): GenerationExecutionContext {
+      return {
+        runId: 'run-1',
+        bookId: 'b-1',
+        fencingVersion: 0,
+        inputHash: 'run-input-hash',
+        inputSnapshot: VALID_SNAPSHOT,
+        ...overrides,
+      };
+    }
+
+    it('calls AgentService.startBookGeneration with the execution context built from the claimed run', async () => {
+      const ctx = makeCtx();
       agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
 
-      await service.runGenerationPipeline('b-1', claimed);
-
-      expect(prisma.book.findUniqueOrThrow).toHaveBeenCalledWith({ where: { id: 'b-1' } });
-      expect(agentService.startBookGeneration).toHaveBeenCalledOnce();
-      expect(agentService.startBookGeneration).toHaveBeenCalledWith(book, 'run-input-hash');
-    });
-
-    it('reuses AgentService.startBookGeneration rather than duplicating pipeline logic', async () => {
-      const claimed = makeGenerationRun({ status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
-      agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
-
-      await service.runGenerationPipeline('b-1', claimed);
+      await service.runGenerationPipeline(ctx);
 
       expect(agentService.startBookGeneration).toHaveBeenCalledOnce();
+      expect(agentService.startBookGeneration).toHaveBeenCalledWith(ctx);
     });
 
     it('on success: marks the run completed, clears Book.activeRunId, and sets Book.publishedRunId — guarded on the claimed fencingVersion', async () => {
-      const claimed = makeGenerationRun({ id: 'run-1', bookId: 'b-1', fencingVersion: 3, status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx({ runId: 'run-1', bookId: 'b-1', fencingVersion: 3 });
       agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
-      await service.runGenerationPipeline('b-1', claimed);
+      await service.runGenerationPipeline(ctx);
 
       expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
         where: { id: 'run-1', status: 'running', fencingVersion: 3 },
@@ -1336,35 +1423,32 @@ describe('BooksService', () => {
     });
 
     it('on success: marks the legacy GenerationJob completed when one exists', async () => {
-      const claimed = makeGenerationRun({ status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx();
       agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
       generationJobService.findActive.mockResolvedValue(makeGenerationJob());
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
-      await service.runGenerationPipeline('b-1', claimed);
+      await service.runGenerationPipeline(ctx);
 
       expect(generationJobService.markRunning).toHaveBeenCalledWith('job-1');
       expect(generationJobService.markCompleted).toHaveBeenCalledWith('job-1');
       expect(generationJobService.markFailed).not.toHaveBeenCalled();
     });
 
-    it('logs the book status transition (e.g. char_build -> complete)', async () => {
+    it('logs the book status transition (e.g. -> complete)', async () => {
       const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-      const claimed = makeGenerationRun({ status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx();
       agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
-      await service.runGenerationPipeline('b-1', claimed);
+      await service.runGenerationPipeline(ctx);
 
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('char_build -> complete'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('status -> complete'));
       logSpy.mockRestore();
     });
 
     it('on an expected content failure (AgentService returns status=failed): marks the run failed with a safe errorCode, without touching Book.status (AgentService already wrote it)', async () => {
-      const claimed = makeGenerationRun({ id: 'run-1', bookId: 'b-1', fencingVersion: 0, status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx({ runId: 'run-1', bookId: 'b-1', fencingVersion: 0 });
       agentService.startBookGeneration.mockResolvedValue(
         makeBook({
           status: STATUS_FAILED,
@@ -1374,7 +1458,7 @@ describe('BooksService', () => {
       );
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
-      await service.runGenerationPipeline('b-1', claimed);
+      await service.runGenerationPipeline(ctx);
 
       expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
         where: { id: 'run-1', status: 'running', fencingVersion: 0 },
@@ -1392,8 +1476,7 @@ describe('BooksService', () => {
     });
 
     it('on an expected content failure: marks the legacy GenerationJob failed (with failedStep/errorMessage) when one exists', async () => {
-      const claimed = makeGenerationRun({ status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx();
       agentService.startBookGeneration.mockResolvedValue(
         makeBook({
           status: STATUS_FAILED,
@@ -1404,7 +1487,7 @@ describe('BooksService', () => {
       generationJobService.findActive.mockResolvedValue(makeGenerationJob());
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
 
-      await service.runGenerationPipeline('b-1', claimed);
+      await service.runGenerationPipeline(ctx);
 
       expect(generationJobService.markFailed).toHaveBeenCalledWith('job-1', {
         errorMessage: 'OpenAI image request failed',
@@ -1413,39 +1496,45 @@ describe('BooksService', () => {
       expect(generationJobService.markCompleted).not.toHaveBeenCalled();
     });
 
+    it('swallows StaleGenerationRunError from AgentService without touching GenerationRun/Book — a newer attempt already owns this run', async () => {
+      const ctx = makeCtx();
+      agentService.startBookGeneration.mockRejectedValue(
+        new StaleGenerationRunError('run-1', 'layout' as never),
+      );
+
+      await expect(service.runGenerationPipeline(ctx)).resolves.toBeUndefined();
+
+      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
+      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+    });
+
     it('completeRun is a no-op on Book when the fencing guard finds the run already superseded', async () => {
-      const claimed = makeGenerationRun({ id: 'run-1', bookId: 'b-1', fencingVersion: 1, status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx({ runId: 'run-1', bookId: 'b-1', fencingVersion: 1 });
       agentService.startBookGeneration.mockResolvedValue(makeBook({ status: STATUS_COMPLETE }));
       // Recovery (or a later claim) already moved the run on — updateMany matches 0 rows.
       prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
 
-      await service.runGenerationPipeline('b-1', claimed);
+      await service.runGenerationPipeline(ctx);
 
       expect(prisma.book.updateMany).not.toHaveBeenCalled();
     });
 
     it('on an unexpected/transient error: does not touch GenerationRun or Book, and rethrows so BullMQ retries', async () => {
-      const claimed = makeGenerationRun({ status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx();
       agentService.startBookGeneration.mockRejectedValue(new Error('unexpected pipeline crash'));
 
-      await expect(service.runGenerationPipeline('b-1', claimed)).rejects.toThrow(
-        'unexpected pipeline crash',
-      );
+      await expect(service.runGenerationPipeline(ctx)).rejects.toThrow('unexpected pipeline crash');
 
       expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
-      expect(prisma.book.update).not.toHaveBeenCalled();
       expect(prisma.book.updateMany).not.toHaveBeenCalled();
     });
 
     it('on an unexpected/transient error: marks the legacy GenerationJob failed (best-effort) but still rethrows', async () => {
-      const claimed = makeGenerationRun({ status: 'running' as GenerationRun['status'] });
-      prisma.book.findUniqueOrThrow.mockResolvedValue(makeBook({ status: STATUS_CHAR_BUILD }));
+      const ctx = makeCtx();
       agentService.startBookGeneration.mockRejectedValue(new Error('unexpected pipeline crash'));
       generationJobService.findActive.mockResolvedValue(makeGenerationJob());
 
-      await expect(service.runGenerationPipeline('b-1', claimed)).rejects.toThrow();
+      await expect(service.runGenerationPipeline(ctx)).rejects.toThrow();
 
       expect(generationJobService.markFailed).toHaveBeenCalledWith('job-1', {
         errorMessage: 'unexpected pipeline crash',

@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { BookStatus, GenerationRunStatus, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { GenerationQueueService } from './generation-queue.service';
@@ -6,15 +7,15 @@ import { GENERATION_INTERRUPTED_MESSAGE } from './generation-job-recovery.servic
 
 export const DEFAULT_GENERATION_RUN_QUEUED_STALE_MS = 5 * 60 * 1000;
 export const DEFAULT_GENERATION_RUN_RECOVERY_INTERVAL_MS = 60 * 1000;
+export const DEFAULT_RECOVERY_LEASE_MS = 5 * 60 * 1000;
 
 /**
- * Fixed key for a Postgres advisory lock (pg_try_advisory_lock takes a
- * bigint) — must stay stable and must not collide with any other
- * pg_advisory_lock user in this database. Scopes recovery to one live
- * instance at a time across every API/worker process, without any new
- * infrastructure dependency (Postgres is already required).
+ * Fixed singleton row id every live instance contends over to elect one
+ * recovery leader per pass — seeded by the Phase A migration
+ * (`INSERT ... ON CONFLICT DO NOTHING`) so there is no first-acquire race.
+ * See RecoveryLease in schema.prisma.
  */
-const RECOVERY_ADVISORY_LOCK_KEY = 782_340_01;
+const RECOVERY_LEASE_ID = 'generation_run_recovery';
 
 /** States BullMQ can report where the job is genuinely gone/exhausted, not merely momentarily quiet. */
 const ABANDONED_ERROR_CODE = 'GENERATION_ABANDONED';
@@ -41,6 +42,13 @@ export function readGenerationRunRecoveryIntervalMs(env: NodeJS.ProcessEnv = pro
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_GENERATION_RUN_RECOVERY_INTERVAL_MS;
 }
 
+/** Reads RECOVERY_LEASE_MS from env, falling back to a safe default when missing or malformed. */
+export function readRecoveryLeaseMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env['RECOVERY_LEASE_MS'];
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_RECOVERY_LEASE_MS;
+}
+
 /**
  * Reconciles GenerationRun rows abandoned by a process that died or
  * restarted mid-run, WITHOUT the flaw the old age-only
@@ -60,16 +68,22 @@ export function readGenerationRunRecoveryIntervalMs(env: NodeJS.ProcessEnv = pro
  * surviving past this window means dispatch itself is stuck, not that a
  * worker died mid-run.
  *
- * Runs behind a Postgres advisory lock (pg_try_advisory_lock) so only one
- * live API/worker instance executes a recovery pass at a time — no new
- * infrastructure dependency, Postgres is already required. Every write is a
- * fenced conditional update (`status` + `fencingVersion` in the WHERE
- * clause) so a run a live worker legitimately advanced between this pass's
- * SELECT and its UPDATE is left untouched (0 rows matched, not an error).
+ * Leadership is elected via a single-row RecoveryLease (a plain conditional
+ * UPDATE, correct under connection pooling) rather than a Postgres
+ * session-scoped advisory lock — pg_try_advisory_lock/pg_advisory_unlock
+ * require acquire/work/release to run on the same physical connection, a
+ * guarantee Prisma's pooled client does not make; getting that wrong either
+ * leaks the lock (permanently wedging future passes) or gives no real
+ * cross-instance guarantee at all. Every recovery write is still a fenced
+ * conditional update (`status` + `fencingVersion` in the WHERE clause, and
+ * the run/Book transition wrapped in one transaction) so a run a live worker
+ * legitimately advanced between this pass's SELECT and its UPDATE is left
+ * untouched (0 rows matched, not an error).
  */
 @Injectable()
 export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(GenerationRunRecoveryService.name);
+  private readonly instanceId = randomUUID();
   private timer: NodeJS.Timeout | undefined;
 
   constructor(
@@ -108,11 +122,32 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
     }
   }
 
+  /** Acquires the RecoveryLease for this instance — a plain conditional row UPDATE, so it's safe regardless of which pooled connection executes it. */
+  private async acquireLease(now: Date, leaseMs: number): Promise<boolean> {
+    const result = await this.prisma.recoveryLease.updateMany({
+      where: {
+        id: RECOVERY_LEASE_ID,
+        OR: [{ leaseOwner: null }, { leaseExpiresAt: { lt: now } }],
+      },
+      data: {
+        leaseOwner: this.instanceId,
+        leaseExpiresAt: new Date(now.getTime() + leaseMs),
+      },
+    });
+    return result.count > 0;
+  }
+
+  /** Best-effort release — not required for correctness (the lease has a TTL), just lets the next interval tick elsewhere sooner. */
+  private async releaseLease(): Promise<void> {
+    await this.prisma.recoveryLease.updateMany({
+      where: { id: RECOVERY_LEASE_ID, leaseOwner: this.instanceId },
+      data: { leaseOwner: null, leaseExpiresAt: null },
+    });
+  }
+
   async recover(now: Date = new Date()): Promise<RunRecoverySummary> {
-    const lockRows = await this.prisma.$queryRaw<{ locked: boolean }[]>`
-      SELECT pg_try_advisory_lock(${RECOVERY_ADVISORY_LOCK_KEY}) AS locked
-    `;
-    if (!lockRows[0]?.locked) {
+    const acquired = await this.acquireLease(now, readRecoveryLeaseMs());
+    if (!acquired) {
       return { staleFound: 0, recovered: 0, stillPendingInBullMq: 0, errors: 0, lockSkipped: true };
     }
 
@@ -143,9 +178,15 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
         }
       }
 
-      return { staleFound: candidates.length, recovered, stillPendingInBullMq, errors, lockSkipped: false };
+      return {
+        staleFound: candidates.length,
+        recovered,
+        stillPendingInBullMq,
+        errors,
+        lockSkipped: false,
+      };
     } finally {
-      await this.prisma.$queryRaw`SELECT pg_advisory_unlock(${RECOVERY_ADVISORY_LOCK_KEY})`;
+      await this.releaseLease();
     }
   }
 
@@ -158,30 +199,35 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
       return 'still-pending';
     }
 
-    const updated = await this.prisma.generationRun.updateMany({
-      where: { id: run.id, status: run.status, fencingVersion: run.fencingVersion },
-      data: {
-        status: GenerationRunStatus.failed,
-        failedAt: new Date(),
-        errorCode: ABANDONED_ERROR_CODE,
-        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-      },
-    });
-    if (updated.count === 0) {
-      // Something else (a live claim, a normal completion) already moved this
-      // run on between our SELECT and this UPDATE — not an error, just a lost race.
-      return 'still-pending';
-    }
+    const recovered = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.generationRun.updateMany({
+        where: { id: run.id, status: run.status, fencingVersion: run.fencingVersion },
+        data: {
+          status: GenerationRunStatus.failed,
+          failedAt: new Date(),
+          errorCode: ABANDONED_ERROR_CODE,
+          errorMessage: GENERATION_INTERRUPTED_MESSAGE,
+        },
+      });
+      if (updated.count === 0) {
+        // Something else (a live claim, a normal completion) already moved
+        // this run on between our SELECT and this UPDATE — not an error,
+        // just a lost race. Aborting the transaction leaves Book untouched.
+        return false;
+      }
 
-    await this.prisma.book.updateMany({
-      where: { id: run.bookId, activeRunId: run.id },
-      data: {
-        activeRunId: null,
-        status: BookStatus.failed,
-        failedStep: null,
-        errorMessage: GENERATION_INTERRUPTED_MESSAGE,
-      },
+      await tx.book.updateMany({
+        where: { id: run.bookId, activeRunId: run.id },
+        data: {
+          activeRunId: null,
+          status: BookStatus.failed,
+          failedStep: null,
+          errorMessage: GENERATION_INTERRUPTED_MESSAGE,
+        },
+      });
+      return true;
     });
-    return 'recovered';
+
+    return recovered ? 'recovered' : 'still-pending';
   }
 }

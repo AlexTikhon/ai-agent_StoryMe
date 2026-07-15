@@ -40,6 +40,8 @@ import {
   MockCharacterProfileProvider,
   type CharacterProfileProvider,
 } from './character-profile-provider';
+import { GenerationExecutionService } from './generation-execution.service';
+import type { GenerationExecutionContext } from './generation-execution-context';
 
 // ── Layout engine constants ────────────────────────────────────────────────────
 
@@ -296,6 +298,22 @@ function toGenerationProviderName(raw: string | undefined): GenerationProviderNa
  * ordinary first-time `generate` is byte-identical to before this feature
  * existed.
  */
+/**
+ * Generation-relevant input resolved once at the top of startBookGeneration
+ * from the run's immutable GenerationExecutionContext.inputSnapshot — never
+ * from the Book row's live columns, which may have been edited since this
+ * run was created (see GenerationExecutionContext's doc comment).
+ */
+interface ResolvedGenerationInput {
+  childName: string;
+  childAge: number;
+  theme: string;
+  language: string;
+  pageCount: number | undefined;
+  educationalMessage: string | undefined;
+  childPhoto?: { assetKey: string; contentType: string };
+}
+
 function isResumableBook(book: Book, inputHash: string): boolean {
   return (
     book.lastGenerationInputHash === inputHash &&
@@ -320,6 +338,7 @@ export class AgentService {
     private readonly imageGenerationProvider: ImageGenerationProvider,
     @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
     private readonly characterProfileProvider: CharacterProfileProvider,
+    private readonly generationExecutionService: GenerationExecutionService,
   ) {}
 
   /** Safe fallback profile provider used when the injected (possibly real) CharacterProfileProvider throws — never blocks the pipeline on a flaky vision call. */
@@ -335,7 +354,10 @@ export class AgentService {
    * whole book (matching the per-image failure tolerance elsewhere in this
    * pipeline).
    */
-  private async buildCharacterProfileAndSheet(book: Book): Promise<{
+  private async buildCharacterProfileAndSheet(
+    bookId: string,
+    input: ResolvedGenerationInput,
+  ): Promise<{
     characterProfile: CharacterProfile;
     characterSheetKey?: string;
     providerName: string | null;
@@ -344,22 +366,19 @@ export class AgentService {
     error?: string;
   }> {
     const startedAt = Date.now();
-    const childName = book.childName ?? 'Alex';
-    const childAge = book.childAge ?? 6;
-    const theme = book.theme ?? 'adventure';
-    const language = (book.language as string) ?? 'en';
+    const { childName, childAge, theme, language } = input;
 
     let photo: { base64: string; contentType: string } | undefined;
-    if (book.childPhotoAssetKey) {
-      const bytes = await this.imageAssetStorage.getImageAsset(book.childPhotoAssetKey);
+    if (input.childPhoto) {
+      const bytes = await this.imageAssetStorage.getImageAsset(input.childPhoto.assetKey);
       if (bytes) {
         photo = {
           base64: bytes.toString('base64'),
-          contentType: book.childPhotoContentType ?? 'image/jpeg',
+          contentType: input.childPhoto.contentType,
         };
       } else {
         this.logger.warn(
-          `Book ${book.id} has childPhotoAssetKey "${book.childPhotoAssetKey}" but no bytes were found in image storage; building character profile without a photo.`,
+          `Book ${bookId} has childPhoto asset "${input.childPhoto.assetKey}" but no bytes were found in image storage; building character profile without a photo.`,
         );
       }
     }
@@ -370,7 +389,7 @@ export class AgentService {
     let error: string | undefined;
     try {
       characterProfile = await this.characterProfileProvider.buildProfile({
-        bookId: book.id,
+        bookId,
         childName,
         childAge,
         theme,
@@ -380,10 +399,10 @@ export class AgentService {
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `Character profile provider failed for book ${book.id}: ${error}. Falling back to a generic profile.`,
+        `Character profile provider failed for book ${bookId}: ${error}. Falling back to a generic profile.`,
       );
       characterProfile = await this.fallbackCharacterProfileProvider.buildProfile({
-        bookId: book.id,
+        bookId,
         childName,
         childAge,
         theme,
@@ -396,17 +415,17 @@ export class AgentService {
     let characterSheetKey: string | undefined;
     try {
       const { buffer, contentType } = await this.imageGenerationProvider.generateCharacterSheet({
-        bookId: book.id,
+        bookId,
         characterProfile,
       });
-      const key = characterSheetAssetKey(book.id);
+      const key = characterSheetAssetKey(bookId);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
       characterSheetKey = key;
       characterProfile = { ...characterProfile, hasCharacterSheet: true };
     } catch (err) {
       const sheetError = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `Character sheet generation/save failed for book ${book.id}: ${sheetError}. Continuing without a character sheet reference image.`,
+        `Character sheet generation/save failed for book ${bookId}: ${sheetError}. Continuing without a character sheet reference image.`,
       );
     }
 
@@ -642,7 +661,7 @@ export class AgentService {
    * CharacterProfileProvider just to regenerate a sheet.
    */
   private async regenerateCharacterSheet(
-    book: Book,
+    bookId: string,
     characterProfile: CharacterProfile,
   ): Promise<{
     characterProfile: CharacterProfile;
@@ -653,10 +672,10 @@ export class AgentService {
     const startedAt = Date.now();
     try {
       const { buffer, contentType } = await this.imageGenerationProvider.generateCharacterSheet({
-        bookId: book.id,
+        bookId,
         characterProfile,
       });
-      const key = characterSheetAssetKey(book.id);
+      const key = characterSheetAssetKey(bookId);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
       return {
         characterProfile: { ...characterProfile, hasCharacterSheet: true },
@@ -666,7 +685,7 @@ export class AgentService {
     } catch (err) {
       const sheetError = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `Character sheet regeneration/save failed for book ${book.id} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
+        `Character sheet regeneration/save failed for book ${bookId} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
       );
       return {
         characterProfile: { ...characterProfile, hasCharacterSheet: false },
@@ -676,15 +695,45 @@ export class AgentService {
     }
   }
 
-  async startBookGeneration(book: Book, inputHash: string): Promise<Book> {
+  /**
+   * Runs the full generation pipeline for one claimed GenerationRun. Every
+   * generation-relevant input field (childName/childAge/theme/language/
+   * pageCount/educationalMessage/childPhoto) comes from
+   * `ctx.inputSnapshot` — the immutable copy frozen when the run was
+   * created — never from the Book row's live columns, which may have been
+   * edited since. The Book row is still loaded and read for prior-progress
+   * fields (story plan/character card/etc., for idempotent resume) and
+   * identity, and every write back to it goes through
+   * GenerationExecutionService.applyFencedBookWrite so a newer claim/recovery
+   * that has since superseded this attempt can never be overwritten by it
+   * (see StaleGenerationRunError, which callers must let propagate).
+   */
+  async startBookGeneration(ctx: GenerationExecutionContext): Promise<Book> {
+    const book = await this.prisma.book.findUniqueOrThrow({ where: { id: ctx.bookId } });
     const traceId = randomUUID();
     const startedAt = Date.now();
-    const childName = book.childName ?? 'Alex';
-    const childAge = book.childAge ?? 6;
-    const theme = book.theme ?? 'adventure';
-    const language = (book.language as string) ?? 'en';
-    const pageCount = book.pageCount ?? undefined;
-    const educationalMessage = book.educationalMessage ?? undefined;
+    const inputHash = ctx.inputHash;
+    const snapshot = ctx.inputSnapshot;
+    const childName = snapshot.childName ?? 'Alex';
+    const childAge = snapshot.childAge ?? 6;
+    const theme = snapshot.theme ?? 'adventure';
+    const language = snapshot.language ?? 'en';
+    const pageCount = snapshot.pageCount ?? undefined;
+    const educationalMessage = snapshot.educationalMessage ?? undefined;
+    const resolvedInput: ResolvedGenerationInput = {
+      childName,
+      childAge,
+      theme,
+      language,
+      pageCount,
+      educationalMessage,
+      ...(snapshot.childPhoto && {
+        childPhoto: {
+          assetKey: snapshot.childPhoto.assetKey,
+          contentType: snapshot.childPhoto.contentType,
+        },
+      }),
+    };
 
     const storyProviderName = this.storyGenerationProvider.providerName ?? null;
     const storyModelName = this.storyGenerationProvider.modelName ?? null;
@@ -748,7 +797,7 @@ export class AgentService {
         this.logger.warn(
           `Book ${book.id} has a character profile but its saved character-sheet bytes are ${priorSheetStatus} — regenerating only the character sheet, reusing the profile as-is.`,
         );
-        const sheetResult = await this.regenerateCharacterSheet(book, priorCharacterProfile!);
+        const sheetResult = await this.regenerateCharacterSheet(book.id, priorCharacterProfile!);
         charBuildResult = {
           ...sheetResult,
           providerName: profileProviderName,
@@ -756,7 +805,7 @@ export class AgentService {
         };
       }
     } else {
-      charBuildResult = await this.buildCharacterProfileAndSheet(book);
+      charBuildResult = await this.buildCharacterProfileAndSheet(book.id, resolvedInput);
     }
     const { characterProfile } = charBuildResult;
     const characterProfileUpdateData: Prisma.BookUpdateInput = {
@@ -805,9 +854,9 @@ export class AgentService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
-        const failed = await this.prisma.book.update({
-          where: { id: book.id },
-          data: {
+        const failed = await this.generationExecutionService.applyFencedBookWrite(
+          ctx,
+          {
             status: BookStatus.failed,
             errorMessage: message,
             failedStep: AgentStep.story_plan,
@@ -815,7 +864,8 @@ export class AgentService {
             aiModelVersions,
             ...characterProfileUpdateData,
           },
-        });
+          AgentStep.story_plan,
+        );
         await this.prisma.agentLog.createMany({
           data: [
             {
@@ -966,9 +1016,9 @@ export class AgentService {
     const layoutDurationMs = Date.now() - layoutStartedAt;
 
     // Phase 1: persist all layout data and advance status to 'layout'
-    await this.prisma.book.update({
-      where: { id: book.id },
-      data: {
+    await this.generationExecutionService.applyFencedBookWrite(
+      ctx,
+      {
         status: BookStatus.layout,
         title: storyPlanFinal.title,
         characterCard: characterCard as unknown as Prisma.InputJsonValue,
@@ -983,7 +1033,8 @@ export class AgentService {
         lastGenerationInputHash: inputHash,
         ...characterProfileUpdateData,
       },
-    });
+      AgentStep.layout,
+    );
 
     // Phase 2: render PDF (pdf_render step)
     let previewPdfUrl: string | null = null;
@@ -1101,10 +1152,11 @@ export class AgentService {
       finalData.failedStep = AgentStep.pdf_render;
     }
 
-    const updated = await this.prisma.book.update({
-      where: { id: book.id },
-      data: finalData,
-    });
+    const updated = await this.generationExecutionService.applyFencedBookWrite(
+      ctx,
+      finalData,
+      AgentStep.pdf_render,
+    );
 
     await this.prisma.agentLog.createMany({
       data: [

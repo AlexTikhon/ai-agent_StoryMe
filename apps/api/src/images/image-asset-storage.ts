@@ -234,14 +234,17 @@ export function imageAssetKey(
 }
 
 /**
- * Stable image asset key for a book's uploaded child reference photo. Stored
- * and read through the same local/cloud ImageAssetStorage driver as
- * generated illustrations (local dev path: tmp/images/<bookId>/child-photo.*,
- * never served over HTTP) — deliberately not a dedicated storage class, since
- * "safe non-public storage path" is already satisfied by this driver.
+ * Versioned image asset key for a book's uploaded child reference photo.
+ * `version` must be a fresh, unique value per upload (BooksService.
+ * uploadChildPhoto mints a randomUUID()) rather than a fixed suffix — a
+ * GenerationInputSnapshot freezes a specific version's key, so re-uploading a
+ * photo must never overwrite bytes an already-created (or in-flight) run may
+ * still reference. Stored and read through the same local/cloud
+ * ImageAssetStorage driver as generated illustrations (local dev path:
+ * tmp/images/<bookId>/child-photo-<version>.*, never served over HTTP).
  */
-export function childPhotoAssetKey(bookId: string): string {
-  return `${bookId}/child-photo`;
+export function childPhotoAssetKey(bookId: string, version: string): string {
+  return `${bookId}/child-photo-${version}`;
 }
 
 /** Stable image asset key for a book's generated character-sheet reference image. Not part of BookLayoutEntry — never rendered as its own PDF page. */
