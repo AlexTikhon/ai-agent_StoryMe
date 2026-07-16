@@ -31,9 +31,11 @@ function makeStorage(entries: ClaimArtifactStorageEntry[]): jest.Mocked<ImageAss
     getImageAsset: vi.fn(),
     copyImageAsset: vi.fn(),
     listClaimArtifacts: vi.fn().mockResolvedValue({ entries, nextCursor: null }),
-    deleteClaimArtifacts: vi.fn().mockImplementation((keys: string[]) =>
-      Promise.resolve(keys.map((key) => ({ key, outcome: 'deleted' as const }))),
-    ),
+    deleteClaimArtifacts: vi
+      .fn()
+      .mockImplementation((keys: string[]) =>
+        Promise.resolve(keys.map((key) => ({ key, outcome: 'deleted' as const }))),
+      ),
   } as unknown as jest.Mocked<ImageAssetStorage>;
 }
 
@@ -47,9 +49,11 @@ function makePdfStorage(entries: ClaimArtifactStorageEntry[]): jest.Mocked<PdfSt
     getClaimPreviewPdf: vi.fn(),
     claimPreviewPdfExists: vi.fn(),
     listClaimArtifacts: vi.fn().mockResolvedValue({ entries, nextCursor: null }),
-    deleteClaimArtifacts: vi.fn().mockImplementation((keys: string[]) =>
-      Promise.resolve(keys.map((key) => ({ key, outcome: 'deleted' as const }))),
-    ),
+    deleteClaimArtifacts: vi
+      .fn()
+      .mockImplementation((keys: string[]) =>
+        Promise.resolve(keys.map((key) => ({ key, outcome: 'deleted' as const }))),
+      ),
   } as unknown as jest.Mocked<PdfStorage>;
 }
 
@@ -466,6 +470,69 @@ describe('ClaimArtifactCleanupService.sweep', () => {
     }
   });
 
+  it('leaves a namespace incomplete (never deleted) when the object budget is reached mid-namespace, within a single page', async () => {
+    process.env['CLAIM_CLEANUP_DRY_RUN'] = 'false';
+    process.env['CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS'] = '1';
+    try {
+      // Both objects belong to the exact same (book-1, run-1, 1) namespace,
+      // returned in a single page — the budget cuts off after the first.
+      imageStorage.listClaimArtifacts.mockResolvedValue({
+        entries: [
+          entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD),
+          entry('images/books/book-1/runs/run-1/claims/1/page-1.png', OLD),
+        ],
+        nextCursor: null,
+      });
+      prisma.book.findMany.mockResolvedValue([]);
+      prisma.book.findUnique.mockResolvedValue(null);
+
+      const summary = await service.sweep(now);
+
+      expect(summary.truncated).toBe(true);
+      expect(summary.incompleteNamespaces).toBe(1);
+      expect(summary.namespacesConsidered).toBe(0);
+      expect(summary.deletedNamespaces).toBe(0);
+      expect(summary.dryRunEligibleNamespaces).toBe(0);
+      expect(imageStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+    } finally {
+      delete process.env['CLAIM_CLEANUP_DRY_RUN'];
+      delete process.env['CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS'];
+    }
+  });
+
+  it('leaves a namespace incomplete when the object budget is exhausted on the first driver, before the second driver (PDF) is ever listed — never reports it as fully deleted', async () => {
+    process.env['CLAIM_CLEANUP_DRY_RUN'] = 'false';
+    process.env['CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS'] = '1';
+    try {
+      imageStorage.listClaimArtifacts.mockResolvedValue({
+        entries: [entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD)],
+        nextCursor: null,
+      });
+      // If discovery incorrectly treated this namespace as complete, its
+      // (undiscovered) PDF would never be attempted, imageOutcomes would
+      // have zero failures, and the namespace would be falsely reported
+      // "deleted" with the PDF object silently left behind.
+      pdfStorage.listClaimArtifacts.mockResolvedValue({
+        entries: [entry('books/book-1/runs/run-1/claims/1/storyme-preview-book-1.pdf', OLD)],
+        nextCursor: null,
+      });
+      prisma.book.findMany.mockResolvedValue([]);
+      prisma.book.findUnique.mockResolvedValue(null);
+
+      const summary = await service.sweep(now);
+
+      expect(summary.incompleteNamespaces).toBe(1);
+      expect(summary.deletedNamespaces).toBe(0);
+      expect(summary.namespacesConsidered).toBe(0);
+      expect(pdfStorage.listClaimArtifacts).not.toHaveBeenCalled();
+      expect(imageStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+      expect(pdfStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+    } finally {
+      delete process.env['CLAIM_CLEANUP_DRY_RUN'];
+      delete process.env['CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS'];
+    }
+  });
+
   it('paginates discovery across multiple pages using the opaque cursor until nextCursor is null', async () => {
     imageStorage.listClaimArtifacts
       .mockResolvedValueOnce({
@@ -481,8 +548,152 @@ describe('ClaimArtifactCleanupService.sweep', () => {
     const summary = await service.sweep(now);
 
     expect(imageStorage.listClaimArtifacts).toHaveBeenCalledTimes(2);
-    expect(imageStorage.listClaimArtifacts).toHaveBeenNthCalledWith(2, expect.objectContaining({ cursor: 'cursor-1' }));
+    expect(imageStorage.listClaimArtifacts).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ cursor: 'cursor-1' }),
+    );
     expect(summary.namespacesConsidered).toBe(2);
+  });
+
+  it('correctly merges a single namespace whose objects span two pages of the same driver, without hitting any budget', async () => {
+    process.env['CLAIM_CLEANUP_DRY_RUN'] = 'false';
+    try {
+      imageStorage.listClaimArtifacts
+        .mockResolvedValueOnce({
+          entries: [entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD)],
+          nextCursor: 'cursor-1',
+        })
+        .mockResolvedValueOnce({
+          entries: [entry('images/books/book-1/runs/run-1/claims/1/page-1.png', OLD)],
+          nextCursor: null,
+        });
+      prisma.book.findMany.mockResolvedValue([]);
+      prisma.book.findUnique.mockResolvedValue(null);
+
+      const summary = await service.sweep(now);
+
+      expect(summary.incompleteNamespaces).toBe(0);
+      expect(summary.namespacesConsidered).toBe(1);
+      expect(summary.deletedNamespaces).toBe(1);
+      expect(imageStorage.deleteClaimArtifacts).toHaveBeenCalledWith([
+        'images/books/book-1/runs/run-1/claims/1/cover.png',
+      ]);
+      expect(imageStorage.deleteClaimArtifacts).toHaveBeenCalledWith([
+        'images/books/book-1/runs/run-1/claims/1/page-1.png',
+      ]);
+    } finally {
+      delete process.env['CLAIM_CLEANUP_DRY_RUN'];
+    }
+  });
+
+  it('bounds a pass and reports it incomplete (never falsely deleted) when a provider repeats the same cursor instead of advancing', async () => {
+    process.env['CLAIM_CLEANUP_DRY_RUN'] = 'false';
+    process.env['CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS'] = '5';
+    try {
+      // A misbehaving provider that keeps returning the same page/cursor
+      // forever — the object budget must still bound this pass rather than
+      // looping indefinitely, and the (repeatedly) discovered namespace must
+      // never be deleted from partial/duplicated data.
+      imageStorage.listClaimArtifacts.mockResolvedValue({
+        entries: [entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD)],
+        nextCursor: 'same-cursor-forever',
+      });
+      prisma.book.findMany.mockResolvedValue([]);
+      prisma.book.findUnique.mockResolvedValue(null);
+
+      const summary = await service.sweep(now);
+
+      expect(summary.incompleteNamespaces).toBe(1);
+      expect(summary.deletedNamespaces).toBe(0);
+      expect(imageStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+      expect(imageStorage.listClaimArtifacts).toHaveBeenCalledTimes(5);
+    } finally {
+      delete process.env['CLAIM_CLEANUP_DRY_RUN'];
+      delete process.env['CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS'];
+    }
+  });
+
+  it('stops processing further namespaces the instant leadership is lost mid-pass, leaving them for a later pass', async () => {
+    process.env['CLAIM_CLEANUP_DRY_RUN'] = 'false';
+    try {
+      imageStorage.listClaimArtifacts.mockResolvedValue({
+        entries: [
+          entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD),
+          entry('images/books/book-2/runs/run-2/claims/1/cover.png', OLD),
+        ],
+        nextCursor: null,
+      });
+      prisma.book.findMany.mockResolvedValue([]);
+      prisma.book.findUnique.mockResolvedValue(null);
+
+      let stillHoldsLeaseCalls = 0;
+      prisma.$queryRaw.mockImplementation((strings: unknown) => {
+        const sql = sqlOf(strings);
+        if (sql.includes('RETURNING lease_generation')) {
+          return Promise.resolve([{ lease_generation: 1 }]);
+        }
+        if (sql.includes('SELECT 1 AS ok')) {
+          stillHoldsLeaseCalls += 1;
+          // Held for the first namespace's recheck, lost by the second's.
+          return Promise.resolve(stillHoldsLeaseCalls === 1 ? [{ ok: 1 }] : []);
+        }
+        return Promise.resolve([]);
+      });
+
+      const summary = await service.sweep(now);
+
+      expect(summary.truncated).toBe(true);
+      expect(summary.deletedNamespaces).toBe(1);
+      expect(imageStorage.deleteClaimArtifacts).toHaveBeenCalledTimes(1);
+      expect(imageStorage.deleteClaimArtifacts).toHaveBeenCalledWith([
+        'images/books/book-1/runs/run-1/claims/1/cover.png',
+      ]);
+    } finally {
+      delete process.env['CLAIM_CLEANUP_DRY_RUN'];
+    }
+  });
+
+  it('revalidates and protects both drivers together — a Book pointer change protects the PDF deletion too, not just the image one', async () => {
+    process.env['CLAIM_CLEANUP_DRY_RUN'] = 'false';
+    try {
+      imageStorage.listClaimArtifacts.mockResolvedValue({
+        entries: [entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD)],
+        nextCursor: null,
+      });
+      pdfStorage.listClaimArtifacts.mockResolvedValue({
+        entries: [entry('books/book-1/runs/run-1/claims/1/storyme-preview-book-1.pdf', OLD)],
+        nextCursor: null,
+      });
+      // Bulk snapshot: unreferenced.
+      prisma.book.findMany.mockResolvedValue([
+        {
+          id: 'book-1',
+          activeRunId: null,
+          publishedRunId: null,
+          publishedRunFencingVersion: null,
+          lastGenerationRunId: null,
+          lastGenerationFencingVersion: null,
+        },
+      ]);
+      // Fresh read right before delete: now the active run (claimed again).
+      prisma.book.findUnique.mockResolvedValue({
+        id: 'book-1',
+        activeRunId: 'run-1',
+        publishedRunId: null,
+        publishedRunFencingVersion: null,
+        lastGenerationRunId: null,
+        lastGenerationFencingVersion: null,
+      });
+
+      const summary = await service.sweep(now);
+
+      expect(summary.protectedRevalidated).toBe(1);
+      expect(summary.deletedNamespaces).toBe(0);
+      expect(imageStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+      expect(pdfStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+    } finally {
+      delete process.env['CLAIM_CLEANUP_DRY_RUN'];
+    }
   });
 });
 
@@ -552,9 +763,7 @@ describe('ClaimArtifactCleanupService — scheduling', () => {
       return [];
     });
 
-    const runPass = (
-      service as unknown as { runPass: () => Promise<void> }
-    ).runPass.bind(service);
+    const runPass = (service as unknown as { runPass: () => Promise<void> }).runPass.bind(service);
 
     const firstPass = runPass();
     const secondPass = runPass();

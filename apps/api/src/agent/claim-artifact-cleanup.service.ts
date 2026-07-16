@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Book } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
@@ -158,10 +164,7 @@ interface NamespaceGroup {
 
 /** Why classifyProtection found a namespace protected — never returned for an eligible namespace (that's `null`, see classifyProtection). */
 export type ProtectionReason =
-  | 'protected_published'
-  | 'protected_resumable'
-  | 'protected_active_run'
-  | 'protected_retention';
+  'protected_published' | 'protected_resumable' | 'protected_active_run' | 'protected_retention';
 
 export interface ClaimCleanupSummary {
   ranAsLeader: boolean;
@@ -178,6 +181,17 @@ export interface ClaimCleanupSummary {
   dryRunEligibleNamespaces: number;
   partialFailureNamespaces: number;
   skippedDbErrorNamespaces: number;
+  /**
+   * Namespaces discovered this pass but never classified or deleted because
+   * their discovery was incomplete: either CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS
+   * was reached before both storage drivers finished listing (so a
+   * namespace's keys on the not-yet-scanned driver, or later in the same
+   * driver's own pagination, are unknown), or CLAIM_CLEANUP_MAX_NAMESPACES_PER_PASS
+   * was reached after full discovery completed. Always safe to skip — never
+   * counted as protected or eligible — and always picked up again on a later
+   * pass.
+   */
+  incompleteNamespaces: number;
   /** True when this pass hit CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS or CLAIM_CLEANUP_MAX_NAMESPACES_PER_PASS and stopped early — the remainder is picked up on a later pass. */
   truncated: boolean;
 }
@@ -209,7 +223,9 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
   /** Never throws — a cleanup failure is logged and the app still boots/keeps running. Disabled mode performs no work at all (not even the once-on-bootstrap pass), including no lease acquisition. */
   async onApplicationBootstrap(): Promise<void> {
     if (!readClaimCleanupEnabled()) {
-      this.logger.log('Claim artifact cleanup disabled (CLAIM_CLEANUP_ENABLED is not "true") — skipping.');
+      this.logger.log(
+        'Claim artifact cleanup disabled (CLAIM_CLEANUP_ENABLED is not "true") — skipping.',
+      );
       return;
     }
     assertClaimCleanupRetentionSafety();
@@ -230,7 +246,9 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
 
   private async runPass(): Promise<void> {
     if (this.runningPass) {
-      this.logger.warn('Claim artifact cleanup pass skipped — a previous pass in this process is still running.');
+      this.logger.warn(
+        'Claim artifact cleanup pass skipped — a previous pass in this process is still running.',
+      );
       return;
     }
     this.runningPass = true;
@@ -242,13 +260,16 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       }
       this.logger.log(
         `Claim artifact cleanup (dryRun=${summary.dryRun}): discovered ${summary.discoveredObjects} object(s), ` +
-          `${summary.malformedObjects} malformed/skipped, ${summary.namespacesConsidered} namespace(s) considered — ` +
+          `${summary.malformedObjects} malformed/skipped, ${summary.namespacesConsidered} namespace(s) considered, ` +
+          `${summary.incompleteNamespaces} incomplete (skipped, limits) — ` +
           `protected: ${summary.protectedPublished} published, ${summary.protectedResumable} resumable, ` +
           `${summary.protectedActiveRun} active-run, ${summary.protectedRetention} within retention, ` +
           `${summary.protectedRevalidated} revalidated at delete time; ` +
           `${summary.deletedNamespaces} deleted, ${summary.dryRunEligibleNamespaces} dry-run eligible, ` +
           `${summary.partialFailureNamespaces} partial failure(s), ${summary.skippedDbErrorNamespaces} skipped (DB error)` +
-          (summary.truncated ? ' — pass truncated at its per-pass limit, remainder picked up next pass' : ''),
+          (summary.truncated
+            ? ' — pass truncated at its per-pass limit, remainder picked up next pass'
+            : ''),
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -307,6 +328,7 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       dryRunEligibleNamespaces: 0,
       partialFailureNamespaces: 0,
       skippedDbErrorNamespaces: 0,
+      incompleteNamespaces: 0,
       truncated: false,
     };
 
@@ -320,7 +342,11 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
     }
   }
 
-  private async sweepAsLeader(now: Date, dryRun: boolean, generation: number): Promise<ClaimCleanupSummary> {
+  private async sweepAsLeader(
+    now: Date,
+    dryRun: boolean,
+    generation: number,
+  ): Promise<ClaimCleanupSummary> {
     const pageSize = readClaimCleanupPageSize();
     const maxObjects = readClaimCleanupMaxObjectsPerPass();
     const maxNamespaces = readClaimCleanupMaxNamespacesPerPass();
@@ -330,20 +356,37 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
     let discoveredObjects = 0;
     let malformedObjects = 0;
     let truncated = false;
+    // Set only when CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS is hit before BOTH
+    // drivers reached natural exhaustion (nextCursor === null). Drivers are
+    // scanned one at a time (images, then PDF) — hitting the budget while
+    // scanning the first driver means the second is never meaningfully
+    // listed at all this pass, and hitting it mid-page can split a single
+    // namespace's own objects across the cutoff. Either way, every group
+    // collected so far this pass is of unknown completeness: it may be
+    // missing keys a later page or the other driver would have contributed,
+    // which would also make its latestModified understate the namespace's
+    // true age. None of this pass's groups may be classified/deleted when
+    // this is set (see the discoveryIncomplete branch below) — they are
+    // simply retried whole on a later pass.
+    let discoveryIncomplete = false;
 
-    const drivers: Array<{ storage: ImageAssetStorage | PdfStorage; field: 'imageKeys' | 'pdfKeys' }> = [
+    const drivers: Array<{
+      storage: ImageAssetStorage | PdfStorage;
+      field: 'imageKeys' | 'pdfKeys';
+    }> = [
       { storage: this.imageAssetStorage, field: 'imageKeys' },
       { storage: this.pdfStorage, field: 'pdfKeys' },
     ];
 
-    for (const { storage, field } of drivers) {
+    driverLoop: for (const { storage, field } of drivers) {
       let cursor: string | null = null;
       do {
         const page: ClaimArtifactListPage = await storage.listClaimArtifacts({ cursor, pageSize });
         for (const entry of page.entries) {
           if (discoveredObjects >= maxObjects) {
             truncated = true;
-            break;
+            discoveryIncomplete = true;
+            break driverLoop;
           }
           discoveredObjects += 1;
           this.classifyEntry(entry, field, groups, () => {
@@ -353,14 +396,20 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
         cursor = page.nextCursor;
         if (discoveredObjects >= maxObjects) {
           truncated = true;
-          break;
+          discoveryIncomplete = true;
+          break driverLoop;
         }
       } while (cursor);
     }
 
     let namespaceEntries = Array.from(groups.values());
-    if (namespaceEntries.length > maxNamespaces) {
+    let incompleteNamespaces = 0;
+    if (discoveryIncomplete) {
+      incompleteNamespaces = namespaceEntries.length;
+      namespaceEntries = [];
+    } else if (namespaceEntries.length > maxNamespaces) {
       truncated = true;
+      incompleteNamespaces = namespaceEntries.length - maxNamespaces;
       namespaceEntries = namespaceEntries.slice(0, maxNamespaces);
     }
 
@@ -384,7 +433,9 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       dbFailed = true;
       booksById = new Map();
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Claim artifact cleanup: failed to read Book rows this pass — skipping all deletions: ${message}`);
+      this.logger.error(
+        `Claim artifact cleanup: failed to read Book rows this pass — skipping all deletions: ${message}`,
+      );
     }
 
     const summary: ClaimCleanupSummary = {
@@ -402,6 +453,7 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       dryRunEligibleNamespaces: 0,
       partialFailureNamespaces: 0,
       skippedDbErrorNamespaces: 0,
+      incompleteNamespaces,
       truncated,
     };
 
@@ -491,7 +543,11 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       onMalformed();
       return;
     }
-    const groupKey = claimArtifactNamespaceGroupKey(parsed.bookId, parsed.runId, parsed.fencingVersion);
+    const groupKey = claimArtifactNamespaceGroupKey(
+      parsed.bookId,
+      parsed.runId,
+      parsed.fencingVersion,
+    );
     let group = groups.get(groupKey);
     if (!group) {
       group = {
@@ -505,7 +561,10 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       groups.set(groupKey, group);
     }
     group[field].push(entry.key);
-    if (entry.lastModified && (!group.latestModified || entry.lastModified > group.latestModified)) {
+    if (
+      entry.lastModified &&
+      (!group.latestModified || entry.lastModified > group.latestModified)
+    ) {
       group.latestModified = entry.lastModified;
     }
   }
@@ -518,10 +577,16 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
     retentionMs: number,
   ): ProtectionReason | null {
     if (book) {
-      if (book.publishedRunId === group.runId && book.publishedRunFencingVersion === group.fencingVersion) {
+      if (
+        book.publishedRunId === group.runId &&
+        book.publishedRunFencingVersion === group.fencingVersion
+      ) {
         return 'protected_published';
       }
-      if (book.lastGenerationRunId === group.runId && book.lastGenerationFencingVersion === group.fencingVersion) {
+      if (
+        book.lastGenerationRunId === group.runId &&
+        book.lastGenerationFencingVersion === group.fencingVersion
+      ) {
         return 'protected_resumable';
       }
       if (book.activeRunId === group.runId) {
