@@ -1,5 +1,4 @@
-import { readdir, stat, unlink } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { readdir, stat, lstat, unlink } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import type {
   ClaimArtifactDeleteOutcome,
@@ -130,13 +129,71 @@ async function safeStat(path: string): Promise<{ size: number; mtime: Date } | u
 }
 
 /**
+ * TOCTOU defense for deleteLocalClaimArtifacts: `resolve(root, ...key.split('/'))`
+ * is pure string manipulation and never touches the filesystem, so
+ * `resolvedPath.startsWith(resolvedRoot)` proves nothing about what a
+ * subsequent `unlink(resolvedPath)` will actually operate on. The OS resolves
+ * every directory component of that path fresh at unlink time — if an
+ * ancestor directory this process created (e.g. the `{bookId}`, `{runId}`, or
+ * `{fencingVersion}` segment) was replaced with a symlink or a Windows
+ * junction between listing and deletion, the unlink follows it and can delete
+ * a file outside the configured storage root even though the resolved string
+ * looked safe. Verified empirically (see Phase C security hardening notes):
+ * on both Windows (junction, no elevation required) and Linux (plain
+ * symlink), swapping an ancestor directory and then unlinking the
+ * originally-listed path deletes the attacker's target, not the real file.
+ *
+ * This walks every directory segment from `root` down to the key's parent
+ * with `lstat` (never `stat`/`existsSync`, which dereference symlinks) and
+ * requires each to still be a real, non-symlink directory. A symlink or
+ * junction at any level reports `isDirectory() === false` under `lstat`
+ * (the link entry itself is inspected, not its target), so this reliably
+ * detects the swap without following it.
+ *
+ * This does not close the race completely: Node's public fs API has no
+ * `openat`/`unlinkat`-style call that pins an unlink to a previously-verified
+ * directory handle, so there remains an unavoidable single-syscall gap
+ * between this last check and the `unlink` call below. Closing that
+ * completely would require a native addon (explicitly out of scope). What
+ * this does guarantee: the window is a single syscall, not the full
+ * discovery-to-deletion pass, and any ancestor swap that happens to land
+ * inside that window is still bounded by the same check failing on the next
+ * retried pass — it can never succeed silently as a 'deleted' outcome.
+ */
+async function verifyRealDirectoryChain(
+  root: string,
+  dirSegments: readonly string[],
+): Promise<'ok' | 'missing' | 'suspicious'> {
+  let current = resolve(root);
+  for (const segment of dirSegments) {
+    current = join(current, segment);
+    let entryStat;
+    try {
+      entryStat = await lstat(current);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+      // Any other lstat failure (permission, I/O, unexpected type) fails
+      // closed as suspicious rather than being treated as "doesn't exist".
+      return 'suspicious';
+    }
+    if (!entryStat.isDirectory()) return 'suspicious';
+  }
+  return 'ok';
+}
+
+/**
  * Deletes an exact set of already-listed local claim-artifact keys, shared by
- * LocalImageAssetStorage/LocalPdfStorage. Defense in depth, not the primary
+ * LocalImageAssetStorage/LocalPdfStorage. Defense in depth, not the only
  * safety mechanism (ClaimArtifactCleanupService validates every key via
  * parseClaimArtifactStorageKey before it ever reaches here): re-parses each
- * key and re-resolves it against `root`, refusing to unlink anything whose
- * resolved path falls outside `root` — a key that fails either check is
- * reported 'failed', never silently skipped or, worse, deleted anyway.
+ * key, re-resolves it against `root`, and — see verifyRealDirectoryChain above
+ * — re-verifies with `lstat` immediately before acting that every ancestor
+ * directory is still a real directory and the leaf is still a plain file.
+ * Never uses `existsSync`/`stat` for these checks, since both dereference
+ * symlinks and would report "exists" for a swapped ancestor pointing at a
+ * real file elsewhere. A key that fails any check is reported 'failed'
+ * (suspicious, retried next pass) or 'not_found' (genuinely gone, idempotent)
+ * — never silently skipped, and never deleted anyway.
  */
 export async function deleteLocalClaimArtifacts(
   root: string,
@@ -150,20 +207,64 @@ export async function deleteLocalClaimArtifacts(
       outcomes.push({ key, outcome: 'failed', error: 'Key does not match claim artifact grammar' });
       continue;
     }
-    const resolvedPath = resolve(root, ...key.split('/'));
+    const segments = key.split('/');
+    const resolvedPath = resolve(root, ...segments);
     if (!resolvedPath.startsWith(resolvedRoot)) {
       outcomes.push({ key, outcome: 'failed', error: 'Resolved path escapes storage root' });
       continue;
     }
-    if (!existsSync(resolvedPath)) {
+
+    const chain = await verifyRealDirectoryChain(root, segments.slice(0, -1));
+    if (chain === 'missing') {
       outcomes.push({ key, outcome: 'not_found' });
       continue;
     }
+    if (chain === 'suspicious') {
+      outcomes.push({
+        key,
+        outcome: 'failed',
+        error:
+          'An ancestor directory for this key is no longer a plain directory (symlink, junction, or ' +
+          'unexpected type) — refusing to delete; will be retried on a later pass',
+      });
+      continue;
+    }
+
+    let leafStat;
+    try {
+      leafStat = await lstat(resolvedPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        outcomes.push({ key, outcome: 'not_found' });
+      } else {
+        outcomes.push({
+          key,
+          outcome: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      continue;
+    }
+    if (!leafStat.isFile()) {
+      outcomes.push({
+        key,
+        outcome: 'failed',
+        error:
+          'Path no longer resolves to a plain file (symlink or unexpected type) — refusing to delete; ' +
+          'will be retried on a later pass',
+      });
+      continue;
+    }
+
     try {
       await unlink(resolvedPath);
       outcomes.push({ key, outcome: 'deleted' });
     } catch (err) {
-      outcomes.push({ key, outcome: 'failed', error: err instanceof Error ? err.message : String(err) });
+      outcomes.push({
+        key,
+        outcome: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

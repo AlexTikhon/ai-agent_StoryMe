@@ -2084,6 +2084,186 @@ never a side effect of a successful storage write.
   and worker services for this range of slices together, not as an
   independently-rolled pair.
 
+## Phase C — Orphaned claim-artifact cleanup: operations runbook
+
+Closes the "no cleanup of unpublished orphan claim objects" limitation Phase B
+(Slice B4) explicitly left open (see above). `ClaimArtifactCleanupService`
+(`src/agent/claim-artifact-cleanup.service.ts`) is a storage-listing sweeper —
+it lists whatever claim-scoped keys currently exist in `ImageAssetStorage`/
+`PdfStorage`, groups them into `(bookId, runId, fencingVersion)` namespaces,
+and deletes only the ones no live Book pointer (published, resumable, or
+active-run) references and that are older than `CLAIM_CLEANUP_RETENTION_MS`.
+
+**Cleanup is not required for generation correctness.** No read path
+(publish, resume, copy-forward, PDF preview) depends on this service ever
+running. An orphaned claim namespace that is never cleaned up simply
+occupies storage forever — it is never read, never blocks a future run, and
+never causes a book to fail. This service is pure storage-cost hygiene, safe
+to leave off indefinitely and safe to enable at any later time with no
+migration or backfill step.
+
+**Default state: disabled AND dry-run.** Both `CLAIM_CLEANUP_ENABLED=false`
+and `CLAIM_CLEANUP_DRY_RUN=true` (the default when unset) must be true for
+this service to do nothing at all — with `CLAIM_CLEANUP_ENABLED` unset/false
+it never even runs its once-on-bootstrap pass or acquires its lease. A
+deployment that never touches these two variables is byte-for-byte
+unaffected by this feature existing.
+
+### Recommended rollout
+
+1. **Deploy with the feature disabled** (`CLAIM_CLEANUP_ENABLED` unset, or
+   explicitly `"false"`). Confirms the new code path ships with zero runtime
+   behavior change.
+2. **Enable dry-run on one environment**: `CLAIM_CLEANUP_ENABLED="true"`,
+   `CLAIM_CLEANUP_DRY_RUN="true"` (the default — leaving it unset also works).
+   The service now runs its full discovery/classification pass on a real
+   schedule but only ever counts, never deletes or acquires the lease for
+   writing (dry-run skips the pre-delete DB revalidation and
+   `deleteNamespace` entirely).
+3. **Observe pass summaries for at least one full `CLAIM_CLEANUP_INTERVAL_MS`
+   interval** (default 30 minutes) before touching anything else. Each pass
+   logs one line at `info` level from `ClaimArtifactCleanupService`, e.g.:
+   `Claim artifact cleanup (dryRun=true): discovered N object(s), M
+   malformed/skipped, ... protected: ... dry-run eligible, ...`.
+4. **Confirm the protected/eligible/malformed counts look sane** before
+   enabling real deletion:
+   - `protectedPublished` / `protectedResumable` / `protectedActiveRun` /
+     `protectedRetention` — expected, healthy protection; these namespaces
+     are never touched regardless of dry-run.
+   - `dryRunEligibleNamespaces` — what _would_ be deleted if dry-run were
+     off. Spot-check a few of these bookIds/runIds against what you expect
+     to be genuinely orphaned (failed/superseded runs) before trusting the
+     number.
+   - `malformedObjects` — storage keys that didn't parse as the claim-key
+     grammar at all; should be 0 in practice (every key this service ever
+     writes matches the grammar by construction). A nonzero count here is
+     worth investigating on its own, not something to enable deletion past.
+   - `incompleteNamespaces` — namespaces discovered but deliberately never
+     classified this pass because discovery itself was cut off mid-way by
+     `CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS`/`CLAIM_CLEANUP_MAX_NAMESPACES_PER_PASS`
+     (see "Per-pass bounds" below). Always safe/expected to be nonzero on a
+     large or growing storage tree — it means "retried whole next pass,"
+     never "silently dropped."
+5. **Enable real deletion on one instance/environment first**:
+   `CLAIM_CLEANUP_DRY_RUN="false"` (leaving `CLAIM_CLEANUP_ENABLED="true"`).
+   The app refuses to boot with a clear error (`assertClaimCleanupRetentionSafety`)
+   if `CLAIM_CLEANUP_RETENTION_MS` is not comfortably above `RECOVERY_LEASE_MS`
+   — see "Retention vs. lease timing" below — so a misconfigured retention
+   window cannot silently reach production.
+6. **Expand gradually** — roll the same `CLAIM_CLEANUP_DRY_RUN="false"`
+   setting out to the remaining environments/instances only after the first
+   one has run several real passes with `deletedNamespaces` /
+   `partialFailureNamespaces` counts matching expectations and no unexpected
+   errors in logs.
+
+### Retention vs. lease timing
+
+`CLAIM_CLEANUP_RETENTION_MS` (default 24h) is the _only_ thing that protects
+a namespace a live-but-momentarily-stale worker is still writing to — there
+is no per-namespace DB row recording "in progress," only the namespace's own
+storage-reported `lastModified`. This must stay safely above the window in
+which `GenerationRunRecoveryService` could still be waiting to notice a
+worker has gone stale, i.e. `RECOVERY_LEASE_MS` (default 5 minutes).
+`assertClaimCleanupRetentionSafety` enforces `CLAIM_CLEANUP_RETENTION_MS` is
+at least 10× `RECOVERY_LEASE_MS` at boot and throws (refusing to schedule
+any work) otherwise — this ratio is deliberately generous, not a tight bound,
+so do not lower `CLAIM_CLEANUP_RETENTION_MS` to just barely clear it.
+
+### Leadership and per-pass bounds
+
+Exactly one instance runs a given pass, elected via the same fencing-token
+`RecoveryLease` row mechanism `GenerationRunRecoveryService` uses (a plain
+conditional `UPDATE ... WHERE lease_owner IS NULL OR lease_expires_at < NOW()`,
+safe under Prisma's pooled connections — see "Recovery leadership" above),
+under its own dedicated lease id (`claim_artifact_cleanup`, seeded by
+migration `20260716000000_phase_c_claim_cleanup_lease`) so the two sweeps
+never contend for the same row and can run concurrently on the same or
+different instances (verified in
+`test/integration/claim-artifact-cleanup-lease.integration.spec.ts`).
+Leadership is re-checked before every namespace deletion during a real
+(non-dry-run) pass, so a pass that outlives its own lease (long pass, lost
+leadership to a new instance) stops immediately rather than continuing to
+delete past its authority — the remainder is picked up by whichever instance
+holds the lease on the next scheduled pass.
+
+Two independent caps bound a single pass's work so it can never run
+unboundedly long or touch unboundedly many namespaces at once:
+`CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS` (default 10,000 raw storage objects
+listed across both drivers) and `CLAIM_CLEANUP_MAX_NAMESPACES_PER_PASS`
+(default 200 namespaces classified/deleted). Hitting either stops the pass
+early (`truncated: true` in the summary) — anything not reached this pass is
+simply retried whole on the next scheduled interval.
+
+### Partial failures and malformed/incomplete namespace warnings
+
+A namespace's deletion is only ever reported `deleted` when _every_ key in
+it (across both the image and PDF drivers) is confirmed deleted or already
+absent. Any single key failure — a permission error, a disk error, or the
+new TOCTOU defense below refusing a suspicious path — marks the whole
+namespace `partial_failure` and logs a `warn`-level line naming the specific
+failed keys; only those still-outstanding keys are retried on a later pass
+(already-deleted keys in the same namespace are not re-attempted, since a
+prior partial pass may have already removed them).
+
+`incompleteNamespaces` (see step 4 above) means discovery itself was cut off
+before both storage drivers finished listing — those namespace groups are
+never classified or deleted at all this pass (not even reported as
+protected or eligible), since their true key set/age isn't fully known yet.
+
+### Rollback
+
+Set `CLAIM_CLEANUP_ENABLED="false"` (or simply revert to leaving it unset)
+and restart/redeploy. **Rollback never requires a database rollback or
+migration down** — the seeded `recovery_leases` row for
+`claim_artifact_cleanup` is inert with the service disabled, and no other
+schema object depends on this feature.
+
+**Deleted orphan artifacts are intentionally not restorable by this
+feature.** There is no soft-delete, quarantine, or undo — `deleteNamespace`
+issues real `unlink`/`DeleteObjectsCommand` calls. This is acceptable because
+a namespace only ever becomes eligible after it is confirmed unreferenced by
+any live Book pointer and older than the retention window (see above); if a
+deletion turns out to have been unwanted, the only recovery path is
+regenerating the book, not undoing this service's work.
+
+**No real S3/R2 smoke test runs automatically as part of this feature or
+its rollout.** `pnpm --filter @book/api test`/`test:integration` never touch
+a real bucket — cloud-driver behavior is covered by mocked-client unit tests
+(`image-asset-storage.claim-cleanup.spec.ts`,
+`pdf-storage.claim-cleanup.spec.ts`) only. Verifying against a real S3/R2
+bucket, if ever needed, is exactly the existing manual, explicitly-invoked
+`pnpm --filter @book/api smoke:pdf-storage` convention (see
+`docs/pdf-storage-smoke-test.md`) — never something CI or this service runs
+on its own.
+
+### Local-filesystem deletion hardening (TOCTOU defense)
+
+`deleteLocalClaimArtifacts` (`src/agent/claim-artifact-local-walk.ts`), used
+by both `LocalImageAssetStorage` and `LocalPdfStorage`, re-verifies with
+`lstat` — immediately before acting, never `existsSync`/`stat`, which
+dereference symlinks — that every ancestor directory in a previously-listed
+key's path is still a real, non-symlink directory and that the leaf is still
+a plain file. This closes a real time-of-check-to-time-of-use gap: a plain
+string-based "resolved path starts with the configured root" check (the
+pre-existing defense) proves nothing about what an `unlink` call will
+actually touch if an ancestor directory was swapped for a symlink/junction
+between listing and deletion — verified concretely (see
+`claim-artifact-local-walk.spec.ts`) on both Windows (a directory junction,
+creatable without elevation) and Linux (a plain symlink, creatable by any
+unprivileged user) by watching an out-of-root sentinel file actually get
+deleted through the naive path-string check alone.
+
+A suspicious ancestor/leaf is reported `failed` (skipped, retried next pass)
+never `deleted`; a key that legitimately disappeared (idempotent concurrent
+cleanup) is still reported `not_found`. **Residual limitation, stated
+precisely**: Node's public `fs` API has no `openat`/`unlinkat`-equivalent
+that pins an unlink to a directory handle verified moments earlier, so a
+single-syscall gap remains between the last `lstat` check and the `unlink`
+call itself — closing that completely would require a native addon, out of
+scope for this stack. This does not weaken cloud storage in any way
+(`CloudPdfStorage`/`CloudImageAssetStorage` never touch a local filesystem,
+so this class of race does not apply to them).
+
 ## Worker process separation
 
 Closes the last limitation Phase 3K flagged: `GenerationQueueProcessor` no
