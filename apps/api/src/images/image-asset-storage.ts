@@ -13,6 +13,7 @@ import type { ImageBufferResolver } from '../pdf/pdf-renderer';
 import { readCloudConfig, type CloudPdfStorageConfig } from '../pdf/pdf-storage';
 import {
   claimArtifactBasePath,
+  type ClaimArtifactNamespace,
   type GenerationArtifactNamespace,
 } from '../agent/generation-artifact-namespace';
 
@@ -398,7 +399,7 @@ const VALID_IMAGE_ASSET_KIND_SLUGS: Record<'cover' | 'page' | 'back_cover', stri
  */
 export function claimImageAssetKey(
   bookId: string,
-  namespace: Extract<GenerationArtifactNamespace, { kind: 'claim' }>,
+  namespace: ClaimArtifactNamespace,
   kind: 'cover' | 'page' | 'back_cover',
   pageNumber?: number,
 ): string {
@@ -420,9 +421,40 @@ export function claimImageAssetKey(
 /** Claim-scoped counterpart to characterSheetAssetKey (Phase B, Slice B1). Not yet used by any production write or read path — see claimImageAssetKey's doc comment. */
 export function claimCharacterSheetAssetKey(
   bookId: string,
-  namespace: Extract<GenerationArtifactNamespace, { kind: 'claim' }>,
+  namespace: ClaimArtifactNamespace,
 ): string {
   return `${claimArtifactBasePath(bookId, namespace)}/character-sheet`;
+}
+
+/**
+ * Resolves the right image-asset key for *any* resolved
+ * GenerationArtifactNamespace — legacy or claim — without the caller having
+ * to branch on `namespace.kind` itself. Phase B, Slice B3's copy-forward
+ * algorithm uses this to compute a *source* key (which may legitimately be
+ * legacy, a prior claim of the same run, or a different run entirely) — the
+ * *current* key a claim is writing to is always built directly via
+ * claimImageAssetKey, since AgentService always executes as a claim, never
+ * as 'legacy'.
+ */
+export function imageKeyForNamespace(
+  bookId: string,
+  namespace: GenerationArtifactNamespace,
+  kind: 'cover' | 'page' | 'back_cover',
+  pageNumber?: number,
+): string {
+  return namespace.kind === 'legacy'
+    ? imageAssetKey(bookId, kind, pageNumber)
+    : claimImageAssetKey(bookId, namespace, kind, pageNumber);
+}
+
+/** Character-sheet counterpart to imageKeyForNamespace — see its doc comment. */
+export function characterSheetKeyForNamespace(
+  bookId: string,
+  namespace: GenerationArtifactNamespace,
+): string {
+  return namespace.kind === 'legacy'
+    ? characterSheetAssetKey(bookId)
+    : claimCharacterSheetAssetKey(bookId, namespace);
 }
 
 /**
@@ -441,11 +473,18 @@ export function claimCharacterSheetAssetKey(
  * storage nothing was ever saved to (e.g. the standalone `pnpm render:pdf`
  * sample script, which renders a hardcoded layout without going through
  * AgentService or ImageAssetStorage at all).
+ *
+ * Phase B, Slice B3: reads exclusively from `namespace`, the claim currently
+ * executing — never a source/prior namespace. Copy-forward (see
+ * generation-claim-artifacts.ts) already made the current claim
+ * self-contained before this is called, so the PDF renderer must never
+ * cross-reference a source claim's bytes directly.
  */
 export async function buildImageBufferResolver(
   storage: ImageAssetStorage,
   bookId: string,
   entries: readonly BookLayoutEntry[],
+  namespace: ClaimArtifactNamespace,
 ): Promise<ImageBufferResolver> {
   const buffers = new Map<string, Buffer>();
 
@@ -453,7 +492,7 @@ export async function buildImageBufferResolver(
     entries
       .filter((entry) => entry.imageBlock)
       .map(async (entry) => {
-        const key = imageAssetKey(bookId, entry.kind, entry.pageNumber);
+        const key = claimImageAssetKey(bookId, namespace, entry.kind, entry.pageNumber);
         const buffer = await storage.getImageAsset(key);
         if (buffer) buffers.set(entry.id, buffer);
       }),

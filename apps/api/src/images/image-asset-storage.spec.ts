@@ -671,19 +671,30 @@ describe('buildImageBufferResolver integration with renderStorybookPdf', () => {
     };
   }
 
+  const CLAIM_ROOT = resolve(process.cwd(), 'tmp', 'images', 'books', TEST_BOOK_ID);
+
   afterEach(async () => {
     if (existsSync(TEST_DIR)) {
       await rm(TEST_DIR, { recursive: true });
     }
+    if (existsSync(CLAIM_ROOT)) {
+      await rm(CLAIM_ROOT, { recursive: true });
+    }
   });
 
-  it('embeds real bytes for a saved image asset', async () => {
+  const NAMESPACE = { kind: 'claim' as const, runId: 'run-integration-1', fencingVersion: 1 };
+
+  it('embeds real bytes for a saved image asset, reading only from the current claim namespace', async () => {
     const storage = new LocalImageAssetStorage();
     const bookId = TEST_BOOK_ID;
-    await storage.saveImageAsset(imageAssetKey(bookId, 'cover'), VALID_PNG, 'image/png');
+    await storage.saveImageAsset(
+      claimImageAssetKey(bookId, NAMESPACE, 'cover'),
+      VALID_PNG,
+      'image/png',
+    );
 
     const entries = [makeCoverEntry(bookId)];
-    const resolveImageBuffer = await buildImageBufferResolver(storage, bookId, entries);
+    const resolveImageBuffer = await buildImageBufferResolver(storage, bookId, entries, NAMESPACE);
     const buf = await renderStorybookPdf(makeLayout(bookId, entries), { resolveImageBuffer });
 
     expect(buf.toString('latin1')).toContain('/Subtype /Image');
@@ -694,7 +705,21 @@ describe('buildImageBufferResolver integration with renderStorybookPdf', () => {
     const bookId = TEST_BOOK_ID;
 
     const entries = [makeCoverEntry(bookId)];
-    const resolveImageBuffer = await buildImageBufferResolver(storage, bookId, entries);
+    const resolveImageBuffer = await buildImageBufferResolver(storage, bookId, entries, NAMESPACE);
+    const buf = await renderStorybookPdf(makeLayout(bookId, entries), { resolveImageBuffer });
+
+    expect(buf.toString('latin1')).not.toContain('/Subtype /Image');
+  });
+
+  it('never reads a legacy positional key even when one exists for the same entry', async () => {
+    const storage = new LocalImageAssetStorage();
+    const bookId = TEST_BOOK_ID;
+    // Legacy bytes at the plain positional key — must never be picked up by
+    // a namespace-scoped resolver (Phase B, Slice B3).
+    await storage.saveImageAsset(imageAssetKey(bookId, 'cover'), VALID_PNG, 'image/png');
+
+    const entries = [makeCoverEntry(bookId)];
+    const resolveImageBuffer = await buildImageBufferResolver(storage, bookId, entries, NAMESPACE);
     const buf = await renderStorybookPdf(makeLayout(bookId, entries), { resolveImageBuffer });
 
     expect(buf.toString('latin1')).not.toContain('/Subtype /Image');

@@ -4,8 +4,8 @@ import { renderStorybookPdf, type ImageBufferResolver } from '../pdf/pdf-rendere
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import {
   buildImageBufferResolver,
-  characterSheetAssetKey,
-  imageAssetKey,
+  claimCharacterSheetAssetKey,
+  claimImageAssetKey,
   IMAGE_ASSET_STORAGE_TOKEN,
   type ImageAssetStorage,
 } from '../images/image-asset-storage';
@@ -47,6 +47,13 @@ import {
 } from './generation-execution.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationOutcome } from './generation-outcome';
+import {
+  claimNamespace,
+  resolveLastGenerationNamespace,
+  type ClaimArtifactNamespace,
+  type GenerationArtifactNamespace,
+} from './generation-artifact-namespace';
+import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generation-claim-artifacts';
 
 // ── Layout engine constants ────────────────────────────────────────────────────
 
@@ -410,6 +417,7 @@ export class AgentService {
   private async buildCharacterProfileAndSheet(
     bookId: string,
     input: ResolvedGenerationInput,
+    currentNamespace: ClaimArtifactNamespace,
   ): Promise<{
     characterProfile: CharacterProfile;
     characterSheetKey?: string;
@@ -458,7 +466,7 @@ export class AgentService {
         bookId,
         characterProfile,
       });
-      const key = characterSheetAssetKey(bookId);
+      const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
       characterSheetKey = key;
       characterProfile = { ...characterProfile, hasCharacterSheet: true };
@@ -554,6 +562,7 @@ export class AgentService {
     characterCard: CharacterCard,
     images: GeneratedImageEntry[],
     characterReference: ImageReference | undefined,
+    currentNamespace: ClaimArtifactNamespace,
   ): Promise<{
     generatedCount: number;
     failedCount: number;
@@ -593,7 +602,7 @@ export class AgentService {
               characterCard,
               ...(characterReference && { characterReference }),
             });
-          const key = imageAssetKey(bookId, image.kind, image.pageNumber);
+          const key = claimImageAssetKey(bookId, currentNamespace, image.kind, image.pageNumber);
           await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
           generatedCount++;
           if (usedReference) usedCharacterReference = true;
@@ -636,59 +645,83 @@ export class AgentService {
     };
   }
 
-  /** True when `key` names an existing, non-empty asset in ImageAssetStorage — the "storage key exists AND file is non-empty" validation idempotent resume requires before trusting a prior save. */
-  private async imageAssetIsValid(key: string | null | undefined): Promise<boolean> {
-    if (!key) return false;
-    const buffer = await this.imageAssetStorage.getImageAsset(key);
-    return buffer != null && buffer.length > 0;
-  }
-
-  /** Classifies whether a book's character-sheet reference image is usable as-is: 'missing' if none was ever intended/keyed, 'invalid' if keyed but unreadable/empty, 'valid' otherwise. */
-  private async classifyCharacterSheetAsset(
+  /**
+   * Classifies whether a book's character-sheet reference image is usable,
+   * copying it forward from `sourceNamespace` into `currentNamespace` first
+   * when the current claim doesn't already have a valid one (Phase B, Slice
+   * B3 — see generation-claim-artifacts.ts). `sourceNamespace` must be
+   * `null` whenever copy-forward must not be attempted (the run's input
+   * changed since the source JSON was produced — see `resumable` at this
+   * method's call site): 'missing'/'invalid' if none was ever
+   * intended/keyed or is unreadable/empty even after that attempt, 'valid'
+   * (with the current-claim key) otherwise.
+   */
+  private async resolveCharacterSheetForClaim(
+    bookId: string,
     profile: CharacterProfile,
-    sheetKey: string | null | undefined,
-  ): Promise<'valid' | 'missing' | 'invalid'> {
-    if (!profile.hasCharacterSheet) return 'missing';
-    if (!sheetKey) return 'invalid';
-    return (await this.imageAssetIsValid(sheetKey)) ? 'valid' : 'invalid';
+    currentNamespace: ClaimArtifactNamespace,
+    sourceNamespace: GenerationArtifactNamespace | null,
+  ): Promise<{ status: 'valid' | 'missing' | 'invalid'; key?: string }> {
+    if (!profile.hasCharacterSheet) return { status: 'missing' };
+    const resolution = await resolveCharacterSheetArtifact({
+      storage: this.imageAssetStorage,
+      bookId,
+      currentNamespace,
+      sourceNamespace,
+    });
+    if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
+      return { status: 'valid', key: resolution.key };
+    }
+    return { status: resolution.sourceStatus === 'invalid' ? 'invalid' : 'missing' };
   }
 
   /**
    * Splits a book's planned image entries (cover/pages/back_cover) into
-   * those with already-valid saved bytes (reusable as-is, no provider call
-   * needed) and those that need a fresh generateImage call — either because
-   * nothing was ever saved for that entry, or a prior save left zero bytes.
-   * On a brand-new book nothing is saved yet, so every entry naturally lands
-   * in `toGenerate` — this is also the ordinary fresh-generation path, not
-   * just resume.
+   * those with already-valid current-claim bytes or a successfully
+   * copied-forward source (reusable as-is, no provider call needed) and
+   * those that need a fresh generateImage call — either because no source
+   * was ever saved for that entry, a prior save left zero bytes, or no
+   * source applies at all (Phase B, Slice B3 — see
+   * generation-claim-artifacts.ts). On a brand-new book/claim nothing is
+   * saved yet and `sourceNamespace` is `null`, so every entry naturally
+   * lands in `toGenerate` — this is also the ordinary fresh-generation path,
+   * not just resume.
    */
   private async classifyImageAssets(
     bookId: string,
     images: GeneratedImageEntry[],
+    currentNamespace: ClaimArtifactNamespace,
+    sourceNamespace: GenerationArtifactNamespace | null,
   ): Promise<{
     reusable: GeneratedImageEntry[];
     toGenerate: GeneratedImageEntry[];
     missing: GeneratedImageEntry[];
     invalid: GeneratedImageEntry[];
   }> {
-    const buffers = await Promise.all(
-      images.map((image) =>
-        this.imageAssetStorage.getImageAsset(imageAssetKey(bookId, image.kind, image.pageNumber)),
-      ),
-    );
     const reusable: GeneratedImageEntry[] = [];
     const toGenerate: GeneratedImageEntry[] = [];
     const missing: GeneratedImageEntry[] = [];
     const invalid: GeneratedImageEntry[] = [];
-    images.forEach((image, i) => {
-      const buffer = buffers[i];
-      if (buffer != null && buffer.length > 0) {
-        reusable.push(image);
-      } else {
-        toGenerate.push(image);
-        (buffer == null ? missing : invalid).push(image);
-      }
-    });
+
+    await Promise.all(
+      images.map(async (image) => {
+        const resolution = await resolveImageArtifact({
+          storage: this.imageAssetStorage,
+          bookId,
+          currentNamespace,
+          sourceNamespace,
+          kind: image.kind,
+          pageNumber: image.pageNumber,
+        });
+        if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
+          reusable.push(image);
+        } else {
+          toGenerate.push(image);
+          (resolution.sourceStatus === 'invalid' ? invalid : missing).push(image);
+        }
+      }),
+    );
+
     return { reusable, toGenerate, missing, invalid };
   }
 
@@ -703,6 +736,7 @@ export class AgentService {
   private async regenerateCharacterSheet(
     bookId: string,
     characterProfile: CharacterProfile,
+    currentNamespace: ClaimArtifactNamespace,
   ): Promise<{
     characterProfile: CharacterProfile;
     characterSheetKey?: string;
@@ -715,7 +749,7 @@ export class AgentService {
         bookId,
         characterProfile,
       });
-      const key = characterSheetAssetKey(bookId);
+      const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
       return {
         characterProfile: { ...characterProfile, hasCharacterSheet: true },
@@ -811,6 +845,23 @@ export class AgentService {
       image: this.modelLabel(this.imageGenerationProvider),
     };
 
+    // Phase B, Slice B3: this attempt's own claim namespace — every new
+    // character sheet/image this run writes lands here, never derived from
+    // Book.activeRunId, a fresh DB read, or any other source (see
+    // generation-artifact-namespace.ts's ClaimArtifactNamespace doc
+    // comment). Resolved unconditionally, alongside `sourceNamespace`
+    // (below), before the resumability check — a malformed partial pointer
+    // on `book` must fail loudly regardless of whether this run ends up
+    // reusing anything.
+    const currentNamespace = claimNamespace(ctx.runId, ctx.fencingVersion);
+    // The namespace backing whatever resumable JSON currently sits on
+    // `book` — a prior claim of this same run (redelivery), a claim from
+    // the run being retried, or `{ kind: 'legacy' }` for a pre-Phase-B row.
+    // Only ever consulted as a copy-forward *source* below, gated on
+    // `resumable` (see copyForwardSourceNamespace) — never trusted as this
+    // run's own ownership.
+    const sourceNamespace = resolveLastGenerationNamespace(book);
+
     // Idempotent resume (see "Idempotent resume" in
     // apps/api/docs/local-generation-pipeline.md): a retry against a book
     // that previously made it past Phase 1 of a run already carries a full
@@ -819,10 +870,26 @@ export class AgentService {
     // this yet, so `resumable` is false and every branch below falls through
     // to the original from-scratch behavior.
     const resumable = isResumableBook(book, inputHash);
+    // Copy-forward must never run when the input changed since the source
+    // JSON was produced — bytes at `sourceNamespace` were planned for the
+    // *old* story/theme (see resolveImageArtifact's doc comment) — so every
+    // entry falls straight through to fresh generation into
+    // `currentNamespace` instead of copying anything old forward. A valid
+    // *current-claim* artifact is still reused either way (see
+    // resolveCharacterSheetForClaim/classifyImageAssets below) — that's
+    // same-claim re-entry idempotency, not copy-forward, and is never gated
+    // on `resumable`.
+    const copyForwardSourceNamespace = resumable ? sourceNamespace : null;
     const priorCharacterProfile = book.characterProfile as unknown as CharacterProfile | null;
-    const priorSheetStatus = priorCharacterProfile
-      ? await this.classifyCharacterSheetAsset(priorCharacterProfile, book.characterSheetAssetKey)
-      : 'missing';
+    const priorSheet = priorCharacterProfile
+      ? await this.resolveCharacterSheetForClaim(
+          book.id,
+          priorCharacterProfile,
+          currentNamespace,
+          copyForwardSourceNamespace,
+        )
+      : ({ status: 'missing' } as const);
+    const priorSheetStatus = priorSheet.status;
     const canReuseCharacterProfile = resumable && priorCharacterProfile != null;
 
     // char_build: build the CharacterProfile (+ character-sheet reference
@@ -849,8 +916,7 @@ export class AgentService {
         skippedCharacterSheetGeneration = priorCharacterProfile!.hasCharacterSheet;
         charBuildResult = {
           characterProfile: priorCharacterProfile!,
-          ...(priorCharacterProfile!.hasCharacterSheet &&
-            book.characterSheetAssetKey && { characterSheetKey: book.characterSheetAssetKey }),
+          ...(priorSheet.key !== undefined && { characterSheetKey: priorSheet.key }),
           providerName: profileProviderName,
           modelName: profileModelName,
           durationMs: 0,
@@ -864,7 +930,11 @@ export class AgentService {
         this.logger.warn(
           `Book ${book.id} has a character profile but its saved character-sheet bytes are ${priorSheetStatus} — regenerating only the character sheet, reusing the profile as-is.`,
         );
-        const sheetResult = await this.regenerateCharacterSheet(book.id, priorCharacterProfile!);
+        const sheetResult = await this.regenerateCharacterSheet(
+          book.id,
+          priorCharacterProfile!,
+          currentNamespace,
+        );
         charBuildResult = {
           ...sheetResult,
           providerName: profileProviderName,
@@ -872,7 +942,11 @@ export class AgentService {
         };
       }
     } else {
-      charBuildResult = await this.buildCharacterProfileAndSheet(book.id, resolvedInput);
+      charBuildResult = await this.buildCharacterProfileAndSheet(
+        book.id,
+        resolvedInput,
+        currentNamespace,
+      );
     }
     const { characterProfile } = charBuildResult;
     const characterProfileUpdateData: Prisma.BookUpdateInput = {
@@ -990,32 +1064,26 @@ export class AgentService {
     const characterReferenceAvailable = characterReference !== undefined;
 
     // Idempotent resume: only call the image provider for entries whose
-    // saved bytes are missing or invalid; entries with valid existing bytes
-    // are reused untouched. On a fresh book nothing is saved yet, so every
-    // entry naturally lands in `imagesNeedingGeneration` — this is also the
-    // ordinary fresh-generation path, not just resume.
-    //
-    // Gated on `resumable`, not called unconditionally: ImageAssetStorage
-    // keys are positional (imageAssetKey(bookId, kind, pageNumber) — e.g.
-    // "<bookId>/page-3"), not content- or run-scoped (that's Phase 3's
-    // run-namespaced artifact storage). When the input changed (!resumable),
-    // any bytes already sitting at those keys were produced for the *old*
-    // story/theme and must never be reused just because a page with the same
-    // number happens to exist in the new plan too — every entry is treated
-    // as needing fresh generation instead.
+    // current-claim bytes are missing or invalid and no source copy-forward
+    // resolves them either; entries with a valid current-claim asset (or a
+    // valid, successfully copy-forwarded source one — see
+    // classifyImageAssets/generation-claim-artifacts.ts) are reused
+    // untouched. On a fresh book/claim nothing is saved yet and
+    // `copyForwardSourceNamespace` is `null` unless resumable, so every
+    // entry naturally lands in `imagesNeedingGeneration` on a from-scratch
+    // run — this is also the ordinary fresh-generation path, not just
+    // resume.
     const {
       reusable: reusableImages,
       toGenerate: imagesNeedingGeneration,
       missing: missingImagesBefore,
       invalid: invalidImagesBefore,
-    } = resumable
-      ? await this.classifyImageAssets(book.id, imageGenerationResult.images)
-      : {
-          reusable: [] as GeneratedImageEntry[],
-          toGenerate: imageGenerationResult.images,
-          missing: imageGenerationResult.images,
-          invalid: [] as GeneratedImageEntry[],
-        };
+    } = await this.classifyImageAssets(
+      book.id,
+      imageGenerationResult.images,
+      currentNamespace,
+      copyForwardSourceNamespace,
+    );
 
     if (reusableImages.length > 0) {
       this.logger.log(
@@ -1037,6 +1105,7 @@ export class AgentService {
         characterCard,
         imagesNeedingGeneration,
         characterReference,
+        currentNamespace,
       );
 
     const rateLimitDiagnostics = this.imageGenerationProvider.getRateLimitDiagnostics?.();
@@ -1109,6 +1178,13 @@ export class AgentService {
         // these fields are never set) since this is the only point at which
         // isResumableBook could ever become true for this hash.
         lastGenerationInputHash: inputHash,
+        // Phase B, Slice B3: the exact claim namespace backing the JSON
+        // above, persisted in the same fenced transaction as that JSON — see
+        // resolveLastGenerationNamespace's doc comment. Never written on the
+        // earlier failure path (no complete resumable JSON set exists yet
+        // there) or from any other Book write in this file.
+        lastGenerationRunId: ctx.runId,
+        lastGenerationFencingVersion: ctx.fencingVersion,
         ...characterProfileUpdateData,
       },
       AgentStep.layout,
@@ -1129,6 +1205,7 @@ export class AgentService {
         this.imageAssetStorage,
         book.id,
         bookLayout.entries,
+        currentNamespace,
       );
       assertAllImagesResolved(this.logger, book.id, bookLayout, resolveImageBuffer);
       this.logger.log(
@@ -1167,7 +1244,15 @@ export class AgentService {
     if (afterSheetStatus !== 'valid') missingAssetsAfterRetry.push('character_sheet');
     if (pdfRenderError) {
       missingAssetsAfterRetry.push('pdf');
-      const afterImages = await this.classifyImageAssets(book.id, imageGenerationResult.images);
+      // Re-checks current-claim state only — no further copy-forward attempt
+      // (`sourceNamespace: null`), since the first classifyImageAssets pass
+      // above already resolved every reusable/copied entry for this claim.
+      const afterImages = await this.classifyImageAssets(
+        book.id,
+        imageGenerationResult.images,
+        currentNamespace,
+        null,
+      );
       missingAssetsAfterRetry.push(
         ...afterImages.missing.map(imageAssetLabel),
         ...afterImages.invalid.map(imageAssetLabel),

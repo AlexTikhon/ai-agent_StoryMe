@@ -22,7 +22,10 @@ import type { GenerationExecutionService } from './generation-execution.service'
 // in the rendered PDF, not just that each boundary is individually correct.
 
 const TEST_BOOK_ID = 'test-agent-local-pipeline-001';
-const TEST_IMAGES_DIR = resolve(process.cwd(), 'tmp', 'images', TEST_BOOK_ID);
+// Claim-scoped image keys (Phase B, Slice B3) live under
+// tmp/images/books/<bookId>/runs/<runId>/claims/<fencingVersion>/... — not
+// directly under tmp/images/<bookId>/ (the legacy positional path).
+const TEST_IMAGES_DIR = resolve(process.cwd(), 'tmp', 'images', 'books', TEST_BOOK_ID);
 
 function makeBook(overrides: Partial<Book> = {}): Book {
   return {
@@ -125,7 +128,7 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
     const ctx: GenerationExecutionContext = {
       runId: 'run-1',
       bookId: book.id,
-      fencingVersion: 0,
+      fencingVersion: 1,
       inputHash: 'hash-1',
       inputSnapshot: buildInputSnapshot(book),
     };

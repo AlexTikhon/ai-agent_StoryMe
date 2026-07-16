@@ -22,6 +22,39 @@ import { buildInputSnapshot } from './generation-input-snapshot';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationExecutionService } from './generation-execution.service';
 import type { GenerationOutcome } from './generation-outcome';
+import {
+  claimImageAssetKey,
+  claimCharacterSheetAssetKey,
+  imageAssetKey,
+  characterSheetAssetKey,
+} from '../images/image-asset-storage';
+import { InvalidGenerationArtifactPointerError } from './generation-artifact-namespace';
+
+// Phase B, Slice B3: every test defaults to executing as claim (RUN_1, fencingVersion 1) —
+// see ctxFor. The "idempotent resume" suite below deliberately claims a *second*,
+// distinct run (RUN_2) for a resumed attempt, matching how a real retry/regenerate
+// always executes under a new GenerationRun/claim, never the same one — so those
+// tests genuinely exercise copy-forward from RUN_1 (source) into RUN_2 (current),
+// not same-key idempotent reuse.
+const RUN_1 = 'run-1';
+const RUN_2 = 'run-2';
+
+function claimNs(runId: string, fencingVersion = 1) {
+  return { kind: 'claim' as const, runId, fencingVersion };
+}
+
+function imgKey(
+  runId: string,
+  kind: 'cover' | 'page' | 'back_cover',
+  pageNumber?: number,
+  fencingVersion = 1,
+): string {
+  return claimImageAssetKey('b-1', claimNs(runId, fencingVersion), kind, pageNumber);
+}
+
+function sheetKey(runId: string, fencingVersion = 1): string {
+  return claimCharacterSheetAssetKey('b-1', claimNs(runId, fencingVersion));
+}
 
 vi.mock('../pdf/pdf-renderer', () => ({
   renderStorybookPdf: vi.fn(),
@@ -90,13 +123,18 @@ function makeBook(overrides: Partial<Book> = {}): Book {
   };
 }
 
-function ctxFor(book: Book, inputHash = 'hash-1'): GenerationExecutionContext {
+function ctxFor(
+  book: Book,
+  inputHash = 'hash-1',
+  ctxOverrides: Partial<GenerationExecutionContext> = {},
+): GenerationExecutionContext {
   return {
-    runId: 'run-1',
+    runId: RUN_1,
     bookId: book.id,
-    fencingVersion: 0,
+    fencingVersion: 1,
     inputHash,
     inputSnapshot: buildInputSnapshot(book),
+    ...ctxOverrides,
   };
 }
 
@@ -113,9 +151,10 @@ function runGeneration(
   mockPrisma: MockPrisma,
   book: Book,
   inputHash = 'hash-1',
+  ctxOverrides: Partial<GenerationExecutionContext> = {},
 ): Promise<GenerationOutcome> {
   mockPrisma.book.findUniqueOrThrow.mockResolvedValue(book);
-  return targetService.startBookGeneration(ctxFor(book, inputHash));
+  return targetService.startBookGeneration(ctxFor(book, inputHash, ctxOverrides));
 }
 
 describe('AgentService', () => {
@@ -128,6 +167,7 @@ describe('AgentService', () => {
   let mockImageAssetStorage: {
     saveImageAsset: ReturnType<typeof vi.fn>;
     getImageAsset: ReturnType<typeof vi.fn>;
+    copyImageAsset: ReturnType<typeof vi.fn>;
   };
   // Backs mockImageAssetStorage so getImageAsset actually reflects what
   // saveImageAsset stored, the same round-trip contract LocalImageAssetStorage
@@ -151,6 +191,15 @@ describe('AgentService', () => {
         return { key, path: key, contentType: 'image/png' as const };
       }),
       getImageAsset: vi.fn(async (key: string) => savedAssets.get(key)),
+      // Mirrors LocalImageAssetStorage/CloudImageAssetStorage.copyImageAsset
+      // (Phase B, Slice B2): resolves undefined only for a genuinely missing
+      // source, otherwise copies the same bytes to the destination key.
+      copyImageAsset: vi.fn(async (sourceKey: string, destinationKey: string) => {
+        const buffer = savedAssets.get(sourceKey);
+        if (buffer == null) return undefined;
+        savedAssets.set(destinationKey, buffer);
+        return { key: destinationKey, path: destinationKey, contentType: 'image/png' as const };
+      }),
     };
     // Fencing/claim/heartbeat correctness is covered by generation-execution.
     // service.spec.ts and books.service.spec.ts — here it's a thin pass-through
@@ -770,7 +819,7 @@ describe('AgentService', () => {
       await runGeneration(service, prisma, book);
 
       const coverCall = mockImageAssetStorage.saveImageAsset.mock.calls.find(
-        (call) => call[0] === 'b-1/cover',
+        (call) => call[0] === imgKey(RUN_1, 'cover'),
       );
       expect(coverCall).toBeDefined();
       const [, buffer, contentType] = coverCall!;
@@ -798,8 +847,8 @@ describe('AgentService', () => {
       // per-image) call.
       mockImageAssetStorage.saveImageAsset
         .mockResolvedValueOnce({
-          key: 'b-1/character-sheet',
-          path: 'b-1/character-sheet',
+          key: sheetKey(RUN_1),
+          path: sheetKey(RUN_1),
           contentType: 'image/png' as const,
         })
         .mockRejectedValueOnce(new Error('disk full'));
@@ -820,8 +869,8 @@ describe('AgentService', () => {
       // per-image) call.
       mockImageAssetStorage.saveImageAsset
         .mockResolvedValueOnce({
-          key: 'b-1/character-sheet',
-          path: 'b-1/character-sheet',
+          key: sheetKey(RUN_1),
+          path: sheetKey(RUN_1),
           contentType: 'image/png' as const,
         })
         .mockRejectedValueOnce(new Error('disk full'));
@@ -884,7 +933,7 @@ describe('AgentService', () => {
         // illustration generation is what's failing here.
         expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(1);
         expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
-          'b-1/character-sheet',
+          sheetKey(RUN_1),
           expect.any(Buffer),
           'image/png',
         );
@@ -899,12 +948,12 @@ describe('AgentService', () => {
         const result = await runGeneration(failingService, prisma, book);
 
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
-          'b-1/cover',
+          imgKey(RUN_1, 'cover'),
           expect.anything(),
           expect.anything(),
         );
         const pageOneCall = mockImageAssetStorage.saveImageAsset.mock.calls.find(
-          (call) => call[0] === 'b-1/page-1',
+          (call) => call[0] === imgKey(RUN_1, 'page', 1),
         );
         expect(pageOneCall).toBeDefined();
 
@@ -1022,7 +1071,7 @@ describe('AgentService', () => {
         await runGeneration(service, prisma, book);
 
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
-          'b-1/character-sheet',
+          sheetKey(RUN_1),
           expect.anything(),
           expect.anything(),
         );
@@ -1247,7 +1296,7 @@ describe('AgentService', () => {
         await runGeneration(referenceService, prisma, book);
 
         const sheetReads = mockImageAssetStorage.getImageAsset.mock.calls.filter(
-          (call) => call[0] === 'b-1/character-sheet',
+          (call) => call[0] === sheetKey(RUN_1),
         );
         expect(sheetReads).toHaveLength(1);
 
@@ -1288,7 +1337,7 @@ describe('AgentService', () => {
         const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
         const provider = makeReferenceAwareImageProvider();
         mockImageAssetStorage.getImageAsset.mockImplementation(async (key: string) =>
-          key === 'b-1/character-sheet' ? undefined : savedAssets.get(key),
+          key === sheetKey(RUN_1) ? undefined : savedAssets.get(key),
         );
         const referenceService = new AgentService(
           prisma as never,
@@ -1881,7 +1930,7 @@ describe('AgentService', () => {
 
         expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(1);
         expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
-          'b-1/character-sheet',
+          sheetKey(RUN_1),
           expect.any(Buffer),
           'image/png',
         );
@@ -2135,6 +2184,48 @@ describe('AgentService', () => {
     });
   });
 
+  // ── Phase B, Slice B3: claim-scoped artifact pointer ──────────────────────
+  describe('claim-scoped artifact pointer (Book.lastGenerationRunId/lastGenerationFencingVersion)', () => {
+    it('atomically persists lastGenerationRunId/lastGenerationFencingVersion alongside the resumable JSON at the Phase 1 write', async () => {
+      const book = makeBook();
+      const layoutBook = makeBook({ status: 'layout' as Book['status'] });
+      const completedBook = makeBook({
+        status: 'complete' as Book['status'],
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      });
+      prisma.book.update.mockResolvedValueOnce(layoutBook).mockResolvedValueOnce(completedBook);
+      prisma.agentLog.createMany.mockResolvedValue({ count: 9 });
+
+      await runGeneration(service, prisma, book, 'the-run-inputhash', {
+        runId: 'run-42',
+        fencingVersion: 7,
+      });
+
+      expect(prisma.book.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            lastGenerationRunId: 'run-42',
+            lastGenerationFencingVersion: 7,
+            lastGenerationInputHash: 'the-run-inputhash',
+          }),
+        }),
+      );
+    });
+
+    it('throws — never silently falls back to legacy — when Book carries a malformed partial artifact pointer', async () => {
+      const book = makeBook({
+        lastGenerationRunId: 'some-run-id',
+        lastGenerationFencingVersion: null,
+      });
+      prisma.book.findUniqueOrThrow.mockResolvedValue(book);
+
+      await expect(service.startBookGeneration(ctxFor(book))).rejects.toThrow(
+        InvalidGenerationArtifactPointerError,
+      );
+      expect(prisma.book.update).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Idempotent resume of a partially generated book ───────────────────────
   describe('idempotent resume (retrying a book that already has some generated assets)', () => {
     // Simulates a real retry's inputHash — copied verbatim from the failed
@@ -2216,6 +2307,13 @@ describe('AgentService', () => {
         characterProfile: persisted.characterProfile as Book['characterProfile'],
         characterSheetAssetKey: (persisted.characterSheetAssetKey as string | undefined) ?? null,
         lastGenerationInputHash: (persisted.lastGenerationInputHash as string | undefined) ?? null,
+        // The Book pointer Phase 1 now persists atomically alongside the
+        // resumable JSON (Phase B, Slice B3) — this is what lets a resumed
+        // attempt (a different claim, RUN_2 below) resolve RUN_1's claim as
+        // its copy-forward source instead of guessing from a positional key.
+        lastGenerationRunId: (persisted.lastGenerationRunId as string | undefined) ?? null,
+        lastGenerationFencingVersion:
+          (persisted.lastGenerationFencingVersion as number | undefined) ?? null,
         ...overrides,
       });
     }
@@ -2244,7 +2342,7 @@ describe('AgentService', () => {
 
     it('reuses the cover and all six page images, makes exactly one image-provider call for back_cover, renders the PDF, and completes', async () => {
       const persisted = await generateFreshBook();
-      savedAssets.delete('b-1/back-cover');
+      savedAssets.delete(imgKey(RUN_1, 'back_cover'));
       setupResumeMocks();
 
       const resumedBook = makeResumedBook(persisted);
@@ -2261,7 +2359,9 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_2,
+      });
 
       expect(storyProvider.generateStory).not.toHaveBeenCalled();
       expect(profileProvider.buildProfile).not.toHaveBeenCalled();
@@ -2270,11 +2370,17 @@ describe('AgentService', () => {
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
         expect.objectContaining({ entry: expect.objectContaining({ kind: 'back_cover' }) }),
       );
+      // The 7 reused images plus the character sheet are copy-forwarded from
+      // RUN_1 (never through saveImageAsset); only the regenerated
+      // back_cover is freshly saved, and it lands under RUN_2 — the current
+      // claim, not RUN_1.
+      expect(mockImageAssetStorage.copyImageAsset).toHaveBeenCalledTimes(8);
       expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
-        'b-1/back-cover',
+        imgKey(RUN_2, 'back_cover'),
         expect.any(Buffer),
         expect.any(String),
       );
+      expect(savedAssets.get(imgKey(RUN_2, 'cover'))).toBeDefined();
       expect(renderStorybookPdf).toHaveBeenCalled();
       expect(result.status).toBe('complete');
     });
@@ -2300,7 +2406,9 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      await runGeneration(resumeService, prisma, resumedBook, 'a-completely-different-input-hash');
+      await runGeneration(resumeService, prisma, resumedBook, 'a-completely-different-input-hash', {
+        runId: RUN_2,
+      });
 
       // Story/character profile must be regenerated from scratch — reusing
       // them here is exactly the stale-content bug this hash gate fixes.
@@ -2308,15 +2416,113 @@ describe('AgentService', () => {
       expect(profileProvider.buildProfile).toHaveBeenCalledOnce();
       expect(imageProvider.generateCharacterSheet).toHaveBeenCalledOnce();
       // Every planned image is regenerated too (cover + 6 pages + back
-      // cover = 8) — old bytes at the same positional keys (e.g.
-      // "b-1/page-3") were produced for the *old* story and must never be
-      // silently reused for the new one.
+      // cover = 8) — even though RUN_1's claim (a valid, distinct copy-forward
+      // source per Book.lastGenerationRunId/FencingVersion) still has every
+      // byte present, a changed input must never copy any of it forward into
+      // RUN_2's claim.
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(8);
+      expect(mockImageAssetStorage.copyImageAsset).not.toHaveBeenCalled();
+      for (const key of [
+        imgKey(RUN_2, 'cover'),
+        ...Array.from({ length: 6 }, (_, i) => imgKey(RUN_2, 'page', i + 1)),
+        imgKey(RUN_2, 'back_cover'),
+      ]) {
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
+          key,
+          expect.any(Buffer),
+          expect.any(String),
+        );
+      }
+    });
+
+    it('copies a valid legacy-positional source image and character sheet into the current claim namespace for a book that predates Phase B (both pointer fields null)', async () => {
+      const persisted = await generateFreshBook();
+      const imageResult = persisted.imageGenerationResult as {
+        images: Array<{ kind: 'cover' | 'page' | 'back_cover'; pageNumber?: number }>;
+      };
+      // Legacy positional bytes — pre-Phase-B rows never had a claim
+      // namespace at all, so the source lives at the plain
+      // imageAssetKey/characterSheetAssetKey path, not under books/.../claims/....
+      for (const image of imageResult.images) {
+        savedAssets.set(
+          imageAssetKey('b-1', image.kind, image.pageNumber),
+          Buffer.from(`legacy-${image.kind}-${image.pageNumber ?? ''}`),
+        );
+      }
+      savedAssets.set(characterSheetAssetKey('b-1'), Buffer.from('legacy-sheet'));
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted, {
+        lastGenerationRunId: null,
+        lastGenerationFencingVersion: null,
+      });
+      const storyProvider = makeSpyStoryProvider();
+      const profileProvider = makeSpyCharacterProfileProvider();
+      const imageProvider = makeSpyImageProvider();
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        storyProvider,
+        imageProvider,
+        profileProvider,
+        generationExecutionService as never,
+      );
+
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_2,
+      });
+
+      expect(storyProvider.generateStory).not.toHaveBeenCalled();
+      expect(imageProvider.generateImage).not.toHaveBeenCalled();
+      expect(imageProvider.generateCharacterSheet).not.toHaveBeenCalled();
+      expect(mockImageAssetStorage.copyImageAsset).toHaveBeenCalledWith(
+        imageAssetKey('b-1', 'cover'),
+        imgKey(RUN_2, 'cover'),
+      );
+      expect(mockImageAssetStorage.copyImageAsset).toHaveBeenCalledWith(
+        characterSheetAssetKey('b-1'),
+        sheetKey(RUN_2),
+      );
+      expect(savedAssets.get(imgKey(RUN_2, 'cover'))).toBeDefined();
+      expect(result.status).toBe('complete');
+    });
+
+    it('copies from a prior claim of the same run (a stalled-redelivery reclaim bumps fencingVersion, not runId)', async () => {
+      const persisted = await generateFreshBook();
+      setupResumeMocks();
+
+      const resumedBook = makeResumedBook(persisted);
+      const imageProvider = makeSpyImageProvider();
+      const resumeService = new AgentService(
+        prisma as never,
+        mockPdfStorage as unknown as PdfStorage,
+        mockImageAssetStorage as unknown as ImageAssetStorage,
+        makeSpyStoryProvider(),
+        imageProvider,
+        makeSpyCharacterProfileProvider(),
+        generationExecutionService as never,
+      );
+
+      // Same runId as the source claim (RUN_1), but a higher fencingVersion —
+      // exactly what GenerationRunService.claim produces on a stalled
+      // redelivery of the same GenerationRun.
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_1,
+        fencingVersion: 2,
+      });
+
+      expect(imageProvider.generateImage).not.toHaveBeenCalled();
+      expect(mockImageAssetStorage.copyImageAsset).toHaveBeenCalledWith(
+        imgKey(RUN_1, 'cover', undefined, 1),
+        imgKey(RUN_1, 'cover', undefined, 2),
+      );
+      expect(result.status).toBe('complete');
     });
 
     it('folds resumeMode/reusedImageCount/regeneratedImageCount/skipped* diagnostics onto imageGenerationResult.resume', async () => {
       const persisted = await generateFreshBook();
-      savedAssets.delete('b-1/back-cover');
+      savedAssets.delete(imgKey(RUN_1, 'back_cover'));
       setupResumeMocks();
 
       const resumedBook = makeResumedBook(persisted);
@@ -2330,7 +2536,9 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_2,
+      });
 
       const persistedResult = result.bookUpdate.imageGenerationResult as unknown as {
         resume?: Record<string, unknown>;
@@ -2355,7 +2563,7 @@ describe('AgentService', () => {
 
     it('treats a database asset record whose local file is missing as invalid and regenerates it', async () => {
       const persisted = await generateFreshBook();
-      savedAssets.delete('b-1/page-3');
+      savedAssets.delete(imgKey(RUN_1, 'page', 3));
       setupResumeMocks();
 
       const resumedBook = makeResumedBook(persisted, {
@@ -2372,7 +2580,7 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, { runId: RUN_2 });
 
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
@@ -2384,7 +2592,7 @@ describe('AgentService', () => {
 
     it('treats a zero-byte local file as invalid and regenerates it', async () => {
       const persisted = await generateFreshBook();
-      savedAssets.set('b-1/page-5', Buffer.alloc(0));
+      savedAssets.set(imgKey(RUN_1, 'page', 5), Buffer.alloc(0));
       setupResumeMocks();
 
       const resumedBook = makeResumedBook(persisted, {
@@ -2401,7 +2609,7 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, { runId: RUN_2 });
 
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
@@ -2435,18 +2643,25 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_2,
+      });
 
       expect(storyProvider.generateStory).not.toHaveBeenCalled();
       expect(profileProvider.buildProfile).not.toHaveBeenCalled();
       expect(imageProvider.generateCharacterSheet).not.toHaveBeenCalled();
       expect(imageProvider.generateImage).not.toHaveBeenCalled();
+      // A complete mixture: every entry here is copy-forwarded (cover + 6
+      // pages + back_cover + the character sheet = 9), leaving RUN_2 a
+      // single self-contained claim assembled entirely from RUN_1's bytes.
+      expect(mockImageAssetStorage.copyImageAsset).toHaveBeenCalledTimes(9);
+      expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalled();
       expect(result.status).toBe('complete');
     });
 
     it('leaves valid existing assets untouched when the regenerated asset fails again', async () => {
       const persisted = await generateFreshBook();
-      savedAssets.delete('b-1/back-cover');
+      savedAssets.delete(imgKey(RUN_1, 'back_cover'));
       setupResumeMocks();
 
       const resumedBook = makeResumedBook(persisted);
@@ -2466,23 +2681,30 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const result = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_2,
+      });
 
-      // The 7 previously valid assets are never re-requested or overwritten.
+      // The 7 previously valid assets are copy-forwarded, never re-requested
+      // from the provider or written via saveImageAsset.
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
-        'b-1/cover',
+        imgKey(RUN_2, 'cover'),
         expect.anything(),
         expect.anything(),
       );
       for (let n = 1; n <= 6; n++) {
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
-          `b-1/page-${n}`,
+          imgKey(RUN_2, 'page', n),
           expect.anything(),
           expect.anything(),
         );
       }
-      expect(savedAssets.get('b-1/cover')).toBeDefined();
+      // Both the source (RUN_1) and the copied-forward current claim (RUN_2)
+      // have the cover bytes — copy-forward for the other entries completed
+      // independently of the back_cover provider failure.
+      expect(savedAssets.get(imgKey(RUN_1, 'cover'))).toBeDefined();
+      expect(savedAssets.get(imgKey(RUN_2, 'cover'))).toBeDefined();
       expect(result.status).toBe('failed');
       expect(result.failedStep).toBe('pdf_render');
       warnSpy.mockRestore();
@@ -2492,7 +2714,7 @@ describe('AgentService', () => {
 
     it('passes the stored character-reference bytes to the resumed back_cover request and reports character-reference-edit mode even though the request failed', async () => {
       const persisted = await generateFreshBook();
-      savedAssets.delete('b-1/back-cover');
+      savedAssets.delete(imgKey(RUN_1, 'back_cover'));
       setupResumeMocks();
 
       const resumedBook = makeResumedBook(persisted);
@@ -2513,16 +2735,19 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      const outcome = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const outcome = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_2,
+      });
 
       expect(failingImageProvider.generateImage).toHaveBeenCalledTimes(1);
       const call = failingImageProvider.generateImage.mock.calls[0]![0] as {
         characterReference?: { buffer: Buffer };
       };
       expect(call.characterReference).toBeDefined();
-      expect(call.characterReference!.buffer.equals(savedAssets.get('b-1/character-sheet')!)).toBe(
-        true,
-      );
+      // Read back from RUN_2 — the current claim's copied-forward sheet —
+      // never RUN_1 directly, proving the reference passed to the provider
+      // came from the self-contained current claim.
+      expect(call.characterReference!.buffer.equals(savedAssets.get(sheetKey(RUN_2))!)).toBe(true);
 
       const result = outcome.bookUpdate.imageGenerationResult as unknown as {
         imageGenerationMode?: string;
@@ -2536,7 +2761,7 @@ describe('AgentService', () => {
 
     it('records a safe per-asset imageFailures diagnostic for the failed resumed back_cover request', async () => {
       const persisted = await generateFreshBook();
-      savedAssets.delete('b-1/back-cover');
+      savedAssets.delete(imgKey(RUN_1, 'back_cover'));
       setupResumeMocks();
 
       const resumedBook = makeResumedBook(persisted);
@@ -2557,7 +2782,9 @@ describe('AgentService', () => {
         generationExecutionService as never,
       );
 
-      const outcome = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH);
+      const outcome = await runGeneration(resumeService, prisma, resumedBook, FIXED_INPUT_HASH, {
+        runId: RUN_2,
+      });
 
       const result = outcome.bookUpdate.imageGenerationResult as unknown as {
         imageFailures?: Array<Record<string, unknown>>;

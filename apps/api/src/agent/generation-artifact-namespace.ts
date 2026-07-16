@@ -64,7 +64,7 @@ const SAFE_SEGMENT_PATTERN = /^[\w-]+$/;
  * claim), so 0 or negative can never correspond to a real claim that wrote
  * anything.
  */
-export function claimNamespace(runId: string, fencingVersion: number): GenerationArtifactNamespace {
+export function claimNamespace(runId: string, fencingVersion: number): ClaimArtifactNamespace {
   if (!SAFE_SEGMENT_PATTERN.test(runId)) {
     throw new InvalidGenerationArtifactPointerError(
       `Invalid runId for artifact namespace: "${runId}"`,
@@ -128,6 +128,26 @@ export function resolveLastGenerationNamespace(
     );
   }
   return claimNamespace(runId, fencingVersion);
+}
+
+/**
+ * Structural equality for two namespaces — both `'legacy'`, or both `'claim'`
+ * with the same exact `(runId, fencingVersion)`. Used by the Phase B, Slice
+ * B3 copy-forward algorithm to decide whether a resolved source namespace is
+ * actually distinct from the current claim (see AgentService): when they're
+ * equal, "check the source" and "check the current claim" would read the
+ * exact same key, so there's nothing to copy forward.
+ */
+export function namespacesEqual(
+  a: GenerationArtifactNamespace,
+  b: GenerationArtifactNamespace,
+): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'legacy') return true;
+  return (
+    a.runId === (b as ClaimArtifactNamespace).runId &&
+    a.fencingVersion === (b as ClaimArtifactNamespace).fencingVersion
+  );
 }
 
 /**

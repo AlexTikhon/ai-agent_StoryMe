@@ -1768,17 +1768,19 @@ so a stale attempt's DB write is provably rejected, not just usually
 avoided. That is **not** the same claim as "a stale worker can do no harm at
 all." Two gaps remain, deliberately out of scope for this pass:
 
-- **Run-scoped artifact storage.** Generated images/PDFs are still keyed
-  positionally (`imageAssetKey(bookId, kind, pageNumber)`), not
-  `books/{bookId}/runs/{runId}/...`. A stale (superseded) attempt's
-  in-flight `ImageAssetStorage.saveImageAsset`/PDF-render calls are not
-  fenced by anything — `assertNotSuperseded` checks stop it from _starting_
-  new work promptly once its heartbeat detects supersession, but bytes it
-  already started writing before that point can still land at the same key
-  a newer attempt is also writing to. There is no `GenerationArtifact` model
-  or atomic "promote this run's output to published" step beyond
-  `Book.publishedRunId` itself. This needs run-scoped storage keys (Phase B)
-  before stale-worker safety extends to artifact writes, not just DB rows.
+- **Run-scoped artifact storage.** _Closed for images/character sheets by
+  Phase B, Slice B3 — see that section below._ PDFs are still keyed
+  positionally (`pdfStorage.savePreviewPdf(bookId, buffer)`), not
+  `books/{bookId}/runs/{runId}/...`; a stale (superseded) attempt's in-flight
+  PDF-render/save call is not fenced by anything — `assertNotSuperseded`
+  checks stop it from _starting_ new work promptly once its heartbeat
+  detects supersession, but a PDF it already started writing before that
+  point can still land at the same shared key a newer attempt is also
+  writing to. There is no `GenerationArtifact` model or atomic "promote this
+  run's output to published" step beyond `Book.publishedRunId` itself. This
+  needs Phase B, Slice B4 (claim-scoped PDF storage + publication wiring)
+  before stale-worker safety extends to the PDF write, not just images/DB
+  rows.
 - **`AgentLog` ownership.** Every pipeline step still writes `AgentLog` rows
   unconditionally (`prisma.agentLog.createMany`, no fencing check) — a stale
   attempt that got far enough to reach its own logging call still writes
@@ -1905,6 +1907,78 @@ yet. This section describes what B2 actually shipped.)
   itself — actually calling `copyImageAsset` from a retry path — is not
   active yet; that, along with the `AgentService`/PDF pipeline cutover and
   publication wiring, is deferred to a later slice.
+
+**Slice B3** is the `AgentService` image/character-sheet cutover:
+character sheets and generated illustrations are now claim-scoped and
+self-contained via copy-forward. PDF storage is intentionally **not** cut
+over yet — that remains B4.
+
+- **Every write is namespaced.** `AgentService.startBookGeneration` resolves
+  `currentNamespace = claimNamespace(ctx.runId, ctx.fencingVersion)` once, at
+  the top, straight from `GenerationExecutionContext` — never from
+  `Book.activeRunId`, a fresh `GenerationRun` read, BullMQ's delivery token,
+  or any other derived source. Every new character-sheet or cover/page/
+  back-cover image this run saves is written under `currentNamespace` via
+  `claimCharacterSheetAssetKey`/`claimImageAssetKey` — `characterSheetAssetKey`/
+  `imageAssetKey` (the legacy positional builders) are no longer called from
+  any production write path.
+- **Copy-forward-or-generate** (`generation-claim-artifacts.ts`,
+  `resolveImageArtifact`/`resolveCharacterSheetArtifact`) is the shared
+  algorithm behind every character sheet and generated image:
+  1. A valid current-claim artifact is always reused directly — same-claim
+     re-entry is idempotent, with no copy or provider call.
+  2. Otherwise, if the Book is resumable (`isResumableBook` — the run's
+     `inputHash` still matches `Book.lastGenerationInputHash`) and the
+     resolved source namespace differs from the current claim, the exact
+     source key is inspected and copied forward with B2's
+     `copyImageAsset` (a server-side/`fs.copyFile` copy, never routed
+     through this process's memory), then the destination is re-read to
+     confirm it landed intact.
+  3. Otherwise — no source applies, the run's input changed since the
+     source JSON was produced, or the source is missing/empty/invalid/
+     disappears mid-copy — the caller generates a fresh artifact straight
+     into `currentNamespace`. A genuinely missing source is never confused
+     with an operational failure: `copyImageAsset`/`getImageAsset` errors
+     (permission, network, malformed metadata) propagate unchanged rather
+     than being reclassified as "missing" or silently treated as a
+     successful reuse.
+- **The source namespace is resolved from typed Book pointers, never a
+  stored key string.** `resolveLastGenerationNamespace(book)` (B1) reads
+  `Book.lastGenerationRunId`/`lastGenerationFencingVersion`: both set means
+  a prior claim of the current run (after a stalled redelivery) or the run
+  being retried; both null means legacy positional storage; a malformed
+  partial pair throws `InvalidGenerationArtifactPointerError` instead of
+  silently falling back to legacy. `Book.characterSheetAssetKey`, retained
+  for compatibility/diagnostics, is written with whatever key the current
+  claim actually resolved to — it is never read back as an ownership
+  source now that the typed namespace pointer exists.
+- **The current claim becomes self-contained.** After copy-forward and any
+  fresh generation, every image the PDF renderer needs lives under
+  `currentNamespace` — `buildImageBufferResolver` now takes the current
+  `ClaimArtifactNamespace` explicitly and reads exclusively from it, never
+  from a source/prior claim, so the render step can never cross-reference a
+  stale or foreign claim's bytes.
+- **The Phase 1 fenced write is the one atomic pointer update.** The same
+  `applyFencedBookWrite` call that persists `storyPlan`/`characterCard`/
+  `bookPreview`/`imageGenerationResult`/`bookLayout`/`lastGenerationInputHash`
+  now also writes `lastGenerationRunId: ctx.runId` and
+  `lastGenerationFencingVersion: ctx.fencingVersion` in the same transaction
+  — the pointer can never point at a claim whose resumable JSON didn't
+  actually land, and a stale claim whose Phase 1 fence fails leaves both
+  fields (and everything else in that write) untouched.
+- **Legacy sources remain readable during rollout.** A book with both
+  pointer fields null resolves to `{ kind: 'legacy' }`, whose keys
+  (`imageAssetKey`/`characterSheetAssetKey`) are still readable as a
+  copy-forward source — old rows keep working without a backfill.
+- **PDF storage is the one remaining shared-key gap.** `startBookGeneration`
+  still calls the legacy `pdfStorage.savePreviewPdf(bookId, buffer)` (a
+  positional, non-claim-scoped key) after rendering — B2's
+  `saveClaimPreviewPdf`/`getClaimPreviewPdf`/`claimPreviewPdfExists` are not
+  wired in yet. Preview/download behavior (`GET /api/books/:id/pdf/preview`)
+  is unchanged. This means image/character-sheet writes are now
+  stale-worker-safe, but the final PDF save is not — closing that gap, along
+  with switching `GenerationRunCoordinator`'s published-artifact pointers, is
+  B4.
 
 ## Worker process separation
 
