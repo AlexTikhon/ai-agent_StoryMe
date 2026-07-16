@@ -152,6 +152,45 @@ export const envSchema = z
     // storage without a second set of credentials.
     IMAGE_STORAGE_DRIVER: z.enum(['local', 's3', 'r2']).default('local'),
 
+    // ─── Orphaned claim-artifact cleanup (Phase C) ──────────────────────────
+    // Storage-listing sweeper that deletes claim-scoped image/PDF artifacts
+    // (see generation-artifact-namespace.ts) once nothing references them
+    // anymore — see ClaimArtifactCleanupService for the full protection
+    // predicate. Disabled and dry-run by default: an operator must
+    // explicitly opt into both real scheduling AND real deletion.
+    CLAIM_CLEANUP_ENABLED: z.enum(['true', 'false']).default('false'),
+    CLAIM_CLEANUP_DRY_RUN: z.enum(['true', 'false']).default('true'),
+    // How long (ms) a claim namespace must sit untouched (by the storage
+    // driver's own reported lastModified) before it's even eligible for
+    // deletion, regardless of any DB pointer. Must comfortably exceed every
+    // generation-side lease this project uses (RECOVERY_LEASE_MS,
+    // GenerationRun's own per-attempt lease) — otherwise a namespace an
+    // in-flight run is still writing to, but which no Book pointer has been
+    // updated to reference yet, could look "old enough" and get deleted out
+    // from under that run. Defaults to 24h, generously above every lease
+    // default in this project (all measured in minutes).
+    CLAIM_CLEANUP_RETENTION_MS: z.coerce.number().int().positive().default(86_400_000),
+    // How often (ms) a new sweep pass starts. Defaults to 30 minutes.
+    CLAIM_CLEANUP_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000),
+    // Dedicated RecoveryLease row TTL (ms) this service's leader election
+    // uses — see the "claim_artifact_cleanup" lease id, distinct from
+    // GenerationRunRecoveryService's "generation_run_recovery" lease so the
+    // two sweeps never contend for the same row. Defaults to 10 minutes.
+    CLAIM_CLEANUP_LEASE_MS: z.coerce.number().int().positive().default(600_000),
+    // Requested page size per storage list call — every driver additionally
+    // clamps this to its own provider limit (S3/R2: 1000 keys per
+    // ListObjectsV2 call).
+    CLAIM_CLEANUP_PAGE_SIZE: z.coerce.number().int().positive().default(500),
+    // Safety caps bounding a single pass's work: total raw objects listed
+    // across both storage drivers, and total namespaces classified/deleted,
+    // before the pass stops early and leaves the remainder for the next
+    // scheduled pass.
+    CLAIM_CLEANUP_MAX_OBJECTS_PER_PASS: z.coerce.number().int().positive().default(10_000),
+    CLAIM_CLEANUP_MAX_NAMESPACES_PER_PASS: z.coerce.number().int().positive().default(200),
+    // How many deleteClaimArtifacts calls for one namespace may be in
+    // flight at once (bounded parallelism, not a raw throughput target).
+    CLAIM_CLEANUP_DELETE_CONCURRENCY: z.coerce.number().int().positive().default(5),
+
     // Stripe (optional in dev)
     STRIPE_SECRET_KEY: z.string().optional(),
     STRIPE_WEBHOOK_SECRET: z.string().optional(),

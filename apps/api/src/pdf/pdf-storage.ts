@@ -12,6 +12,19 @@ import {
   type ClaimArtifactNamespace,
   type PublishedPdfNamespace,
 } from '../agent/generation-artifact-namespace';
+import type {
+  ClaimArtifactDeleteOutcome,
+  ClaimArtifactListPage,
+  ClaimArtifactListParams,
+} from '../agent/claim-artifact-key';
+import {
+  deleteLocalClaimArtifacts,
+  listLocalClaimArtifacts,
+} from '../agent/claim-artifact-local-walk';
+import {
+  deleteCloudClaimArtifacts,
+  listCloudClaimArtifacts,
+} from '../agent/claim-artifact-cloud';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
@@ -51,6 +64,24 @@ export interface PdfStorage {
     namespace: ClaimArtifactNamespace,
   ): Promise<PreviewPdfResult | null>;
   claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean>;
+
+  /**
+   * Phase C — lists raw, driver-native keys of every claim-scoped PDF this
+   * driver holds (scoped to the "books/" claim root; never the legacy
+   * "books/<bookId>/storybook.pdf" or "previews/" positional keys — see
+   * listLocalClaimArtifacts's own doc comment). Bounded to one page per
+   * call; `nextCursor` is opaque and must be passed back verbatim to
+   * continue. Used exclusively by ClaimArtifactCleanupService.
+   */
+  listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage>;
+
+  /**
+   * Deletes an exact set of raw keys previously returned by
+   * listClaimArtifacts, one outcome per key so a partial batch failure stays
+   * observable and the caller can retry just the failed keys on a later
+   * pass.
+   */
+  deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]>;
 }
 
 export const PDF_STORAGE_TOKEN = 'PDF_STORAGE';
@@ -130,6 +161,15 @@ export class LocalPdfStorage implements PdfStorage {
 
   async claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean> {
     return existsSync(this.claimPath(bookId, namespace));
+  }
+
+  async listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage> {
+    const booksRoot = join(TMP_ROOT, 'books');
+    return listLocalClaimArtifacts(booksRoot, '', params);
+  }
+
+  async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
+    return deleteLocalClaimArtifacts(TMP_ROOT, keys);
   }
 }
 
@@ -306,6 +346,14 @@ export class CloudPdfStorage implements PdfStorage {
 
   async claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean> {
     return this.pdfObjectExists(claimPreviewPdfKey(bookId, namespace));
+  }
+
+  async listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage> {
+    return listCloudClaimArtifacts(this.client, this.bucket, 'books/', params);
+  }
+
+  async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
+    return deleteCloudClaimArtifacts(this.client, this.bucket, keys);
   }
 }
 

@@ -7,6 +7,7 @@ import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationJobRecoveryService } from '../agent/generation-job-recovery.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import { GenerationRunRecoveryService } from '../agent/generation-run-recovery.service';
+import { ClaimArtifactCleanupService } from '../agent/claim-artifact-cleanup.service';
 import { GenerationExecutionService } from '../agent/generation-execution.service';
 import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
 import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
@@ -67,6 +68,11 @@ export class BooksModule {
       // Postgres advisory lock already ensures only one live instance runs a
       // pass at a time.
       GenerationRunRecoveryService,
+      // Registered unconditionally, same reasoning as GenerationRunRecoveryService
+      // above — the sweep is a no-op unless CLAIM_CLEANUP_ENABLED=true, and its
+      // own dedicated RecoveryLease row ensures only one live instance runs a
+      // pass at a time even with both API and worker registering it.
+      ClaimArtifactCleanupService,
       OutboxService,
       // Registered unconditionally (not gated on enableGenerationWorker) —
       // the outbox sweep is safe and useful in every process, API included,

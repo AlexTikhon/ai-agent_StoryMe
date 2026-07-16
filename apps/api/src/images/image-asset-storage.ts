@@ -16,6 +16,19 @@ import {
   type ClaimArtifactNamespace,
   type GenerationArtifactNamespace,
 } from '../agent/generation-artifact-namespace';
+import type {
+  ClaimArtifactDeleteOutcome,
+  ClaimArtifactListPage,
+  ClaimArtifactListParams,
+} from '../agent/claim-artifact-key';
+import {
+  deleteLocalClaimArtifacts,
+  listLocalClaimArtifacts,
+} from '../agent/claim-artifact-local-walk';
+import {
+  deleteCloudClaimArtifacts,
+  listCloudClaimArtifacts,
+} from '../agent/claim-artifact-cloud';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
@@ -56,6 +69,25 @@ export interface ImageAssetStorage {
    * network, malformed metadata) propagate.
    */
   copyImageAsset(sourceKey: string, destinationKey: string): Promise<ImageAssetRef | undefined>;
+
+  /**
+   * Phase C — lists raw, driver-native keys of every claim-scoped image
+   * artifact this driver holds (scoped to the "images/books/" claim root;
+   * never legacy positional keys — see listLocalClaimArtifacts's own doc
+   * comment). Bounded to one page per call; `nextCursor` is opaque and must
+   * be passed back verbatim to continue. Used exclusively by
+   * ClaimArtifactCleanupService — no other caller should ever need raw
+   * storage keys.
+   */
+  listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage>;
+
+  /**
+   * Deletes an exact set of raw keys previously returned by
+   * listClaimArtifacts, one outcome per key so a partial batch failure stays
+   * observable and the caller can retry just the failed keys on a later
+   * pass.
+   */
+  deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]>;
 }
 
 export const IMAGE_ASSET_STORAGE_TOKEN = 'IMAGE_ASSET_STORAGE';
@@ -153,6 +185,15 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
     await mkdir(destinationDir, { recursive: true });
     await copyFile(sourcePath, destinationPath);
     return { key: destinationKey, path: destinationPath, contentType };
+  }
+
+  async listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage> {
+    const booksRoot = join(TMP_ROOT, 'images', 'books');
+    return listLocalClaimArtifacts(booksRoot, 'images', params);
+  }
+
+  async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
+    return deleteLocalClaimArtifacts(TMP_ROOT, keys);
   }
 }
 
@@ -318,6 +359,14 @@ export class CloudImageAssetStorage implements ImageAssetStorage {
       );
     }
     return { key: destinationKey, path: destinationCloudKey, contentType };
+  }
+
+  async listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage> {
+    return listCloudClaimArtifacts(this.client, this.bucket, 'images/books/', params);
+  }
+
+  async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
+    return deleteCloudClaimArtifacts(this.client, this.bucket, keys);
   }
 }
 
