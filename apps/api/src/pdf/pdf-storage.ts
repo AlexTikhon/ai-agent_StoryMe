@@ -10,6 +10,7 @@ import {
 import {
   claimArtifactBasePath,
   type ClaimArtifactNamespace,
+  type PublishedPdfNamespace,
 } from '../agent/generation-artifact-namespace';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
@@ -157,6 +158,36 @@ export function objectKey(bookId: string): string {
 export function claimPreviewPdfKey(bookId: string, namespace: ClaimArtifactNamespace): string {
   validateBookId(bookId);
   return `${claimArtifactBasePath(bookId, namespace)}/storyme-preview-${bookId}.pdf`;
+}
+
+/**
+ * Reads the exact published PDF for a book, dispatching on the discriminated
+ * `PublishedPdfNamespace` (see resolvePublishedPdfNamespace) instead of a
+ * boolean `useLegacy` flag — every production PDF read path (Phase B, Slice
+ * B4) goes through this rather than branching on the namespace shape itself.
+ * Never falls back to the legacy key when a claim namespace is present but
+ * its object is missing — a `null` result there means "not found", not
+ * "try somewhere else".
+ */
+export async function getPublishedPreviewPdf(
+  storage: PdfStorage,
+  bookId: string,
+  namespace: PublishedPdfNamespace,
+): Promise<PreviewPdfResult | null> {
+  if (namespace.kind === 'not_ready') return null;
+  if (namespace.kind === 'legacy') return storage.getPreviewPdf(bookId);
+  return storage.getClaimPreviewPdf(bookId, namespace);
+}
+
+/** Existence-check counterpart to getPublishedPreviewPdf — see its doc comment. */
+export async function publishedPreviewPdfExists(
+  storage: PdfStorage,
+  bookId: string,
+  namespace: PublishedPdfNamespace,
+): Promise<boolean> {
+  if (namespace.kind === 'not_ready') return false;
+  if (namespace.kind === 'legacy') return storage.previewPdfExists(bookId);
+  return storage.claimPreviewPdfExists(bookId, namespace);
 }
 
 /** True for the S3-shaped "object not found" errors returned by GetObject/HeadObject. */

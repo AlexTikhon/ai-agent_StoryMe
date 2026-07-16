@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
 import { renderStorybookPdf, type ImageBufferResolver } from '../pdf/pdf-renderer';
-import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
+import { PDF_STORAGE_TOKEN, publishedPreviewPdfExists, type PdfStorage } from '../pdf/pdf-storage';
 import {
   buildImageBufferResolver,
   claimCharacterSheetAssetKey,
@@ -50,6 +50,7 @@ import type { GenerationOutcome } from './generation-outcome';
 import {
   claimNamespace,
   resolveLastGenerationNamespace,
+  resolvePublishedPdfNamespace,
   type ClaimArtifactNamespace,
   type GenerationArtifactNamespace,
 } from './generation-artifact-namespace';
@@ -1213,7 +1214,12 @@ export class AgentService {
       );
       const buffer = await renderStorybookPdf(bookLayout, { resolveImageBuffer });
       this.logger.log(`PDF rendered for book ${book.id}: ${buffer.length} bytes.`);
-      const saved = await this.pdfStorage.savePreviewPdf(book.id, buffer);
+      // Phase B, Slice B4: every new PDF is written under this attempt's own
+      // claim namespace, never the legacy shared key — a successful write
+      // here does not itself publish anything (see GenerationRunCoordinator.
+      // completeRun, the only publication boundary); a claim whose later DB
+      // completion loses the fence leaves this write an unpublished orphan.
+      const saved = await this.pdfStorage.saveClaimPreviewPdf(book.id, currentNamespace, buffer);
       previewPdfUrl = saved.url;
     } catch (err) {
       pdfRenderLogStatus = AgentLogStatus.error;
@@ -1264,10 +1270,17 @@ export class AgentService {
       ...imageGenerationResult.images.map(imageAssetLabel),
       'pdf',
     ];
+    // Phase B, Slice B4: what was actually *published* for this book before
+    // this attempt started — resolved through the same namespace pointer
+    // every other production PDF read goes through (see
+    // resolvePublishedPdfNamespace), never the legacy key directly. `book`
+    // here is the row loaded at the top of this method, so this reflects
+    // pre-attempt state regardless of what this claim itself writes below.
+    const publishedNamespaceBefore = resolvePublishedPdfNamespace(book);
     const pdfStatusBefore: 'valid' | 'missing' | 'invalid' =
-      book.previewPdfUrl == null
+      publishedNamespaceBefore.kind === 'not_ready'
         ? 'missing'
-        : (await this.pdfStorage.previewPdfExists(book.id))
+        : (await publishedPreviewPdfExists(this.pdfStorage, book.id, publishedNamespaceBefore))
           ? 'valid'
           : 'invalid';
     const validExistingAssets = [

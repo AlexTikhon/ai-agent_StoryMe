@@ -29,7 +29,7 @@ describe('GenerationRunCoordinator', () => {
   });
 
   describe('completeRun', () => {
-    it('on success: transitions GenerationRun to completed and Book to complete, publishedRunId, and returns "applied"', async () => {
+    it('on success: transitions GenerationRun to completed and Book to complete, atomically setting both publishedRunId and publishedRunFencingVersion, and returns "applied"', async () => {
       const outcome = makeOutcome();
 
       const result = await coordinator.completeRun(
@@ -49,11 +49,12 @@ describe('GenerationRunCoordinator', () => {
           status: 'complete',
           activeRunId: null,
           publishedRunId: 'run-1',
+          publishedRunFencingVersion: 3,
         },
       });
     });
 
-    it('on an expected content failure: transitions both to failed, never sets publishedRunId', async () => {
+    it('on an expected content failure: transitions both to failed, never sets either published pointer field', async () => {
       const outcome = makeOutcome({
         status: 'failed' as GenerationOutcome['status'],
         errorCode: 'GENERATION_FAILED',
@@ -78,6 +79,7 @@ describe('GenerationRunCoordinator', () => {
         data: Record<string, unknown>;
       };
       expect(bookCall.data['publishedRunId']).toBeUndefined();
+      expect(bookCall.data['publishedRunFencingVersion']).toBeUndefined();
       expect(bookCall.data['status']).toBe('failed');
       expect(bookCall.data['failedStep']).toBe('image_gen');
     });

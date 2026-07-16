@@ -6,6 +6,7 @@ import {
   LEGACY_NAMESPACE,
   resolveLastGenerationNamespace,
   resolvePublishedNamespace,
+  resolvePublishedPdfNamespace,
 } from './generation-artifact-namespace';
 
 const RUN_A = '11111111-1111-1111-1111-111111111111';
@@ -93,6 +94,66 @@ describe('resolvePublishedNamespace', () => {
   it('throws when publishedRunFencingVersion is set but publishedRunId is null', () => {
     expect(() =>
       resolvePublishedNamespace({ publishedRunId: null, publishedRunFencingVersion: 3 }),
+    ).toThrow(InvalidGenerationArtifactPointerError);
+  });
+});
+
+/**
+ * Phase B, Slice B4 — the one resolver every production PDF read/existence
+ * path must go through. Layers previewPdfUrl on top of resolvePublishedNamespace
+ * purely to disambiguate its "both fields null" case into "pre-GenerationRun
+ * legacy publication" vs. "not ready" — never as an ownership signal on its
+ * own (a claim/legacy pointer always wins when present, regardless of
+ * previewPdfUrl's value).
+ */
+describe('resolvePublishedPdfNamespace', () => {
+  it('resolves to the exact claim when both published pointer fields are set, regardless of previewPdfUrl', () => {
+    expect(
+      resolvePublishedPdfNamespace({
+        publishedRunId: RUN_A,
+        publishedRunFencingVersion: 3,
+        previewPdfUrl: '/files/books/b-1/runs/run-a/claims/3/storyme-preview-b-1.pdf',
+      }),
+    ).toEqual({ kind: 'claim', runId: RUN_A, fencingVersion: 3 });
+  });
+
+  it('resolves to legacy for a pre-Phase-B published run (publishedRunId set, fencingVersion null)', () => {
+    expect(
+      resolvePublishedPdfNamespace({
+        publishedRunId: RUN_A,
+        publishedRunFencingVersion: null,
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      }),
+    ).toEqual(LEGACY_NAMESPACE);
+  });
+
+  it('resolves to legacy for a pre-GenerationRun Book with only previewPdfUrl set (both published fields null)', () => {
+    expect(
+      resolvePublishedPdfNamespace({
+        publishedRunId: null,
+        publishedRunFencingVersion: null,
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      }),
+    ).toEqual(LEGACY_NAMESPACE);
+  });
+
+  it('resolves to not_ready when both published fields and previewPdfUrl are null', () => {
+    expect(
+      resolvePublishedPdfNamespace({
+        publishedRunId: null,
+        publishedRunFencingVersion: null,
+        previewPdfUrl: null,
+      }),
+    ).toEqual({ kind: 'not_ready' });
+  });
+
+  it('throws the stable invariant error for publishedRunId null with a non-null fencingVersion — never falls back to legacy', () => {
+    expect(() =>
+      resolvePublishedPdfNamespace({
+        publishedRunId: null,
+        publishedRunFencingVersion: 2,
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+      }),
     ).toThrow(InvalidGenerationArtifactPointerError);
   });
 });

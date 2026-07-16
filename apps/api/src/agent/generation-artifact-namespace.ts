@@ -176,3 +176,33 @@ export function resolvePublishedNamespace(
   }
   return fencingVersion == null ? LEGACY_NAMESPACE : claimNamespace(runId, fencingVersion);
 }
+
+/**
+ * resolvePublishedNamespace's three "no exact claim pointer" outcomes
+ * collapsed into one: a real publication exists but predates Phase B
+ * (`null` from that function, `previewPdfUrl` set — pre-GenerationRun or
+ * pre-Phase-B), or nothing has ever been published for this book at all
+ * (`null` from that function, `previewPdfUrl` unset). `resolvePublishedNamespace`
+ * alone cannot tell these two apart — both look like "both pointer fields
+ * null" to it — so this is the one place that distinction is made, instead of
+ * every PDF read call site (BooksService.getPreviewPdfBuffer/
+ * getGenerationDiagnostics, AgentService's pre-render diagnostics) repeating
+ * the same null-state matrix independently (Phase B, Slice B4).
+ */
+export type PublishedPdfNamespace = GenerationArtifactNamespace | { readonly kind: 'not_ready' };
+
+/**
+ * The single resolver every production PDF read/existence path must go
+ * through (see this type's own doc comment for why). Never infers ownership
+ * from activeRunId, lastGenerationRunId/lastGenerationFencingVersion, the
+ * latest GenerationRun, or Book.status alone — only the published pointer
+ * pair, with previewPdfUrl used strictly to disambiguate the "both pointer
+ * fields null" case, never as an ownership signal in its own right.
+ */
+export function resolvePublishedPdfNamespace(
+  book: Pick<Book, 'publishedRunId' | 'publishedRunFencingVersion' | 'previewPdfUrl'>,
+): PublishedPdfNamespace {
+  const namespace = resolvePublishedNamespace(book);
+  if (namespace != null) return namespace;
+  return book.previewPdfUrl != null ? LEGACY_NAMESPACE : { kind: 'not_ready' };
+}

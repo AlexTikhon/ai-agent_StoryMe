@@ -101,10 +101,12 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
     prisma.agentLog.createMany.mockResolvedValue({ count: 9 });
 
     let savedBuffer: Buffer | undefined;
-    const pdfStorage: Pick<PdfStorage, 'savePreviewPdf'> = {
-      savePreviewPdf: async (bookId: string, buffer: Buffer) => {
+    const pdfStorage: Pick<PdfStorage, 'saveClaimPreviewPdf'> = {
+      saveClaimPreviewPdf: async (bookId: string, namespace, buffer: Buffer) => {
         savedBuffer = buffer;
-        return { url: `/files/books/${bookId}/storybook.pdf` };
+        return {
+          url: `/files/books/${bookId}/runs/${namespace.runId}/claims/${namespace.fencingVersion}/storyme-preview-${bookId}.pdf`,
+        };
       },
     };
 
@@ -135,7 +137,9 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
     const result = await service.startBookGeneration(ctx);
 
     expect(result.status).toBe('complete');
-    expect(result.bookUpdate.previewPdfUrl).toBe(`/files/books/${TEST_BOOK_ID}/storybook.pdf`);
+    expect(result.bookUpdate.previewPdfUrl).toBe(
+      `/files/books/${TEST_BOOK_ID}/runs/run-1/claims/1/storyme-preview-${TEST_BOOK_ID}.pdf`,
+    );
 
     expect(savedBuffer).toBeDefined();
     const buf = savedBuffer!;

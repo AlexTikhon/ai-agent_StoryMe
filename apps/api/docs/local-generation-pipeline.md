@@ -1769,18 +1769,18 @@ avoided. That is **not** the same claim as "a stale worker can do no harm at
 all." Two gaps remain, deliberately out of scope for this pass:
 
 - **Run-scoped artifact storage.** _Closed for images/character sheets by
-  Phase B, Slice B3 — see that section below._ PDFs are still keyed
-  positionally (`pdfStorage.savePreviewPdf(bookId, buffer)`), not
-  `books/{bookId}/runs/{runId}/...`; a stale (superseded) attempt's in-flight
-  PDF-render/save call is not fenced by anything — `assertNotSuperseded`
-  checks stop it from _starting_ new work promptly once its heartbeat
-  detects supersession, but a PDF it already started writing before that
-  point can still land at the same shared key a newer attempt is also
-  writing to. There is no `GenerationArtifact` model or atomic "promote this
-  run's output to published" step beyond `Book.publishedRunId` itself. This
-  needs Phase B, Slice B4 (claim-scoped PDF storage + publication wiring)
-  before stale-worker safety extends to the PDF write, not just images/DB
-  rows.
+  Phase B, Slice B3, and for PDFs by Slice B4 — see those sections below._
+  Every new PDF is now written under `books/{bookId}/runs/{runId}/claims/
+  {fencingVersion}/...` (`pdfStorage.saveClaimPreviewPdf`), never the legacy
+  shared key, and `GenerationRunCoordinator.completeRun` is the single fenced
+  transaction that atomically promotes one claim's `(runId, fencingVersion)`
+  to `Book.publishedRunId`/`publishedRunFencingVersion` on success. A stale
+  (superseded) attempt's in-flight PDF-render/save call can still finish
+  writing its own object after being superseded, but that write can never
+  land at the namespace a newer or already-published attempt owns — it can
+  only ever produce an unpublished orphan under its own claim. There is
+  still no `GenerationArtifact` model or cleanup for those orphan objects
+  (explicitly out of scope for B4 — see its own "Known limitations" below).
 - **`AgentLog` ownership.** Every pipeline step still writes `AgentLog` rows
   unconditionally (`prisma.agentLog.createMany`, no fencing check) — a stale
   attempt that got far enough to reach its own logging call still writes
@@ -1970,15 +1970,94 @@ over yet — that remains B4.
   pointer fields null resolves to `{ kind: 'legacy' }`, whose keys
   (`imageAssetKey`/`characterSheetAssetKey`) are still readable as a
   copy-forward source — old rows keep working without a backfill.
-- **PDF storage is the one remaining shared-key gap.** `startBookGeneration`
-  still calls the legacy `pdfStorage.savePreviewPdf(bookId, buffer)` (a
-  positional, non-claim-scoped key) after rendering — B2's
-  `saveClaimPreviewPdf`/`getClaimPreviewPdf`/`claimPreviewPdfExists` are not
-  wired in yet. Preview/download behavior (`GET /api/books/:id/pdf/preview`)
-  is unchanged. This means image/character-sheet writes are now
-  stale-worker-safe, but the final PDF save is not — closing that gap, along
-  with switching `GenerationRunCoordinator`'s published-artifact pointers, is
-  B4.
+- **PDF storage was the one remaining shared-key gap after B3.**
+  `startBookGeneration` still called the legacy
+  `pdfStorage.savePreviewPdf(bookId, buffer)` (a positional, non-claim-scoped
+  key) after rendering — B2's `saveClaimPreviewPdf`/`getClaimPreviewPdf`/
+  `claimPreviewPdfExists` were not wired in yet. Closing that gap, along with
+  switching `GenerationRunCoordinator`'s published-artifact pointers, is B4.
+
+**Slice B4** is the PDF cutover and the read-side publication boundary: every
+new PDF is claim-scoped, and publication — the moment a claim's artifacts
+become the ones actually served — is a single fenced coordinator transaction,
+never a side effect of a successful storage write.
+
+- **Every new PDF write is claim-scoped.**
+  `AgentService.startBookGeneration` saves the rendered buffer via
+  `pdfStorage.saveClaimPreviewPdf(book.id, currentNamespace, buffer)` —
+  `currentNamespace`, the same `claimNamespace(ctx.runId, ctx.fencingVersion)`
+  B3 already resolves for images/character sheets. The legacy
+  `savePreviewPdf(bookId, buffer)` is no longer called from any generation
+  path. A successful write here does **not** itself publish anything — it is
+  just bytes sitting at `books/{bookId}/runs/{runId}/claims/{fencingVersion}/
+  storyme-preview-{bookId}.pdf`, readable only once something resolves that
+  exact namespace as published.
+- **Publication is the one fenced coordinator transaction, not a storage
+  event.** `GenerationRunCoordinator.completeRun` is the only place
+  `Book.publishedRunId`/`publishedRunFencingVersion` are ever set, and it sets
+  both together, atomically, in the same fenced transaction as the
+  `GenerationRun` terminal write and the rest of `Book`'s completion update —
+  never independently, never from `AgentService` or `PdfStorage`. A `stale_
+  fence` or `book_mirror_mismatch` outcome leaves both pointer fields exactly
+  as they were (the latter via a full transaction rollback, `GenerationRun`
+  included); only an `'applied'` success ever moves them, and only to the
+  exact `(ctx.runId, ctx.fencingVersion)` this attempt was fenced on. A run
+  that fails after writing its own claim-scoped PDF (crash, storage error, a
+  later fence loss) simply leaves that object an unpublished orphan — the
+  previously published `(runId, fencingVersion)`, if any, is untouched.
+- **One resolver decides what's published — `resolvePublishedPdfNamespace`**
+  (`generation-artifact-namespace.ts`), layered on B1's
+  `resolvePublishedNamespace` plus `Book.previewPdfUrl` (used strictly to
+  disambiguate, never as an ownership signal by itself). Never consults
+  `activeRunId`, `lastGenerationRunId`/`lastGenerationFencingVersion`, the
+  latest `GenerationRun`, `Book.status` alone, or a storage-existence probe
+  to decide ownership — only the published pointer pair below (plus the one
+  disambiguating read of `previewPdfUrl`):
+
+| publishedRunId | publishedRunFencingVersion | previewPdfUrl | Resolves to |
+| --- | --- | --- | --- |
+| set | set | — | `{ kind: 'claim', runId, fencingVersion }` — the exact published claim |
+| set | `null` | — | `{ kind: 'legacy' }` — pre-Phase-B completion |
+| `null` | `null` | set | `{ kind: 'legacy' }` — pre-`GenerationRun` completion |
+| `null` | `null` | `null` | `{ kind: 'not_ready' }` — nothing published yet |
+| `null` | set | — | throws `InvalidGenerationArtifactPointerError` — never falls back to legacy |
+
+- **Every production PDF read/existence path resolves through it.**
+  `BooksService.getPreviewPdfBuffer` (the `GET /api/books/:id/pdf/preview`
+  handler's backing method), `BooksService.getGenerationDiagnostics`'s
+  `pdfStorage.keyPresent`/`previewAvailable` fields, and `AgentService`'s own
+  pre-render "was a PDF already published before this attempt" diagnostics
+  check all call `resolvePublishedPdfNamespace(book)` and then dispatch
+  through the discriminated-namespace helpers `getPublishedPreviewPdf`/
+  `publishedPreviewPdfExists` (`pdf-storage.ts`) — never a boolean
+  `useLegacy` flag, never a direct `pdfStorage.getPreviewPdf`/
+  `previewPdfExists` call outside those two dispatchers. A claim-scoped
+  publication whose object is missing reports the existing not-found/storage-
+  inconsistency behavior; it never silently falls back to the legacy key.
+- **External behavior is unchanged.** The endpoint URL, ownership/auth
+  checks, response `Content-Type`, download filename
+  (`storyme-preview-{bookId}.pdf`), `BookDto`/diagnostics shape, and frontend
+  link construction are all identical regardless of which namespace actually
+  served the bytes — the frontend never learns a `runId` or
+  `fencingVersion` exists.
+- **`previewPdfUrl` stays a storage marker, never the ownership authority.**
+  `AgentService` still writes it (now to the claim-scoped URL
+  `saveClaimPreviewPdf` returns) only on success, and only as part of the
+  `GenerationOutcome.bookUpdate` the coordinator applies inside the same
+  fenced transaction that decides whether this attempt's outcome is applied
+  at all — a failed or superseded attempt's `bookUpdate` never carries
+  `previewPdfUrl`, so it can never overwrite a prior successful marker with
+  an unpublished claim's path.
+- **Legacy PDFs remain fully readable.** `savePreviewPdf`/`getPreviewPdf`/
+  `previewPdfExists` are untouched and still used for both flavors of legacy
+  publication in the table above — no migration, backfill, or behavior change
+  for any row that predates this slice.
+- **Known limitations (B4 explicitly does not build):** no cleanup/deletion
+  of unpublished orphan claim objects (a failed or superseded claim's PDF
+  simply sits at its own namespace forever); no `GenerationArtifact` model;
+  no change to `AgentLog` fencing or outbox dispatch. Cleanup of orphaned
+  claim-scoped artifacts (images, character sheets, and now PDFs) remains
+  future work across all of Phase B, not something this slice attempts.
 
 ## Worker process separation
 

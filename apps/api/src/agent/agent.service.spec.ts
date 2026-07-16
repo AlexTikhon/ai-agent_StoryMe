@@ -163,6 +163,9 @@ describe('AgentService', () => {
   let mockPdfStorage: {
     savePreviewPdf: ReturnType<typeof vi.fn>;
     previewPdfExists: ReturnType<typeof vi.fn>;
+    saveClaimPreviewPdf: ReturnType<typeof vi.fn>;
+    getClaimPreviewPdf: ReturnType<typeof vi.fn>;
+    claimPreviewPdfExists: ReturnType<typeof vi.fn>;
   };
   let mockImageAssetStorage: {
     saveImageAsset: ReturnType<typeof vi.fn>;
@@ -183,6 +186,9 @@ describe('AgentService', () => {
     mockPdfStorage = {
       savePreviewPdf: vi.fn(),
       previewPdfExists: vi.fn().mockResolvedValue(false),
+      saveClaimPreviewPdf: vi.fn(),
+      getClaimPreviewPdf: vi.fn(),
+      claimPreviewPdfExists: vi.fn().mockResolvedValue(false),
     };
     savedAssets = new Map<string, Buffer>();
     mockImageAssetStorage = {
@@ -222,6 +228,12 @@ describe('AgentService', () => {
     mockPdfStorage.savePreviewPdf.mockResolvedValue({
       url: '/files/books/b-1/storybook.pdf',
       path: '/api/tmp/books/b-1/storybook.pdf',
+    });
+    // Phase B, Slice B4: AgentService now writes PDFs under the current
+    // claim's namespace, never the legacy key — see saveClaimPreviewPdf below.
+    mockPdfStorage.saveClaimPreviewPdf.mockResolvedValue({
+      url: '/files/books/b-1/runs/run-1/claims/1/storyme-preview-b-1.pdf',
+      path: '/api/tmp/books/b-1/runs/run-1/claims/1/storyme-preview-b-1.pdf',
     });
   });
 
@@ -1721,7 +1733,7 @@ describe('AgentService', () => {
       expect(renderStorybookPdf).toHaveBeenCalledOnce();
     });
 
-    it('calls pdfStorage.savePreviewPdf with the book id and the rendered buffer', async () => {
+    it('calls pdfStorage.saveClaimPreviewPdf with the book id, the current claim namespace, and the rendered buffer', async () => {
       const book = makeBook();
       setupMocks();
       const mockBuffer = Buffer.from('%PDF-1.4 mock');
@@ -1729,7 +1741,38 @@ describe('AgentService', () => {
 
       await runGeneration(service, prisma, book);
 
-      expect(mockPdfStorage.savePreviewPdf).toHaveBeenCalledWith('b-1', mockBuffer);
+      expect(mockPdfStorage.saveClaimPreviewPdf).toHaveBeenCalledWith(
+        'b-1',
+        claimNs(RUN_1, 1),
+        mockBuffer,
+      );
+    });
+
+    it('never calls the legacy pdfStorage.savePreviewPdf for a new generation', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      await runGeneration(service, prisma, book);
+
+      expect(mockPdfStorage.savePreviewPdf).not.toHaveBeenCalled();
+    });
+
+    it('two claims of the same run use distinct PDF keys (fencingVersion, not just runId, disambiguates)', async () => {
+      const book = makeBook();
+      setupMocks();
+      await runGeneration(service, prisma, book, 'hash-1', { runId: RUN_1, fencingVersion: 1 });
+      const firstNamespace = mockPdfStorage.saveClaimPreviewPdf.mock.calls[0]?.[1];
+
+      mockPdfStorage.saveClaimPreviewPdf.mockClear();
+      prisma.book.update.mockClear();
+      prisma.agentLog.createMany.mockClear();
+      setupMocks();
+      await runGeneration(service, prisma, book, 'hash-1', { runId: RUN_1, fencingVersion: 2 });
+      const secondNamespace = mockPdfStorage.saveClaimPreviewPdf.mock.calls[0]?.[1];
+
+      expect(firstNamespace).toEqual(claimNs(RUN_1, 1));
+      expect(secondNamespace).toEqual(claimNs(RUN_1, 2));
+      expect(firstNamespace).not.toEqual(secondNamespace);
     });
 
     it('resolves a completed GenerationOutcome on success', async () => {
@@ -1748,7 +1791,9 @@ describe('AgentService', () => {
 
       const result = await runGeneration(service, prisma, book);
 
-      expect(result.bookUpdate.previewPdfUrl).toBe('/files/books/b-1/storybook.pdf');
+      expect(result.bookUpdate.previewPdfUrl).toBe(
+        '/files/books/b-1/runs/run-1/claims/1/storyme-preview-b-1.pdf',
+      );
     });
 
     it('pdf_render AgentLog entry has status success on happy path', async () => {
@@ -1822,10 +1867,10 @@ describe('AgentService', () => {
 
     // ── Phase 2M: Storage failure ─────────────────────────────────────────────
 
-    it('marks book as failed when pdfStorage.savePreviewPdf throws', async () => {
+    it('marks book as failed when pdfStorage.saveClaimPreviewPdf throws', async () => {
       const book = makeBook();
       setupMocks();
-      mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('disk full'));
+      mockPdfStorage.saveClaimPreviewPdf.mockRejectedValue(new Error('disk full'));
 
       const result = await runGeneration(service, prisma, book);
 
@@ -1835,7 +1880,7 @@ describe('AgentService', () => {
     it('does not mark book complete when storage fails', async () => {
       const book = makeBook();
       setupMocks();
-      mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('storage error'));
+      mockPdfStorage.saveClaimPreviewPdf.mockRejectedValue(new Error('storage error'));
 
       const result = await runGeneration(service, prisma, book);
 
@@ -1845,7 +1890,7 @@ describe('AgentService', () => {
     it('does not persist previewPdfUrl when storage fails', async () => {
       const book = makeBook();
       setupMocks();
-      mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('storage error'));
+      mockPdfStorage.saveClaimPreviewPdf.mockRejectedValue(new Error('storage error'));
 
       const result = await runGeneration(service, prisma, book);
 
@@ -1855,7 +1900,7 @@ describe('AgentService', () => {
     it('persists errorMessage and failedStep when storage fails', async () => {
       const book = makeBook();
       setupMocks();
-      mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('disk full'));
+      mockPdfStorage.saveClaimPreviewPdf.mockRejectedValue(new Error('disk full'));
 
       const result = await runGeneration(service, prisma, book);
 
@@ -1866,7 +1911,7 @@ describe('AgentService', () => {
     it('pdf_render AgentLog entry has status error when storage fails', async () => {
       const book = makeBook();
       setupMocks();
-      mockPdfStorage.savePreviewPdf.mockRejectedValue(new Error('write failed'));
+      mockPdfStorage.saveClaimPreviewPdf.mockRejectedValue(new Error('write failed'));
       prisma.book.update.mockReset();
       prisma.book.update
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
@@ -2328,9 +2373,9 @@ describe('AgentService', () => {
       prisma.book.update.mockResolvedValueOnce(layoutBook).mockResolvedValueOnce(completedBook);
       prisma.agentLog.createMany.mockReset();
       prisma.agentLog.createMany.mockResolvedValue({ count: 9 });
-      mockPdfStorage.savePreviewPdf.mockResolvedValue({
-        url: '/files/books/b-1/storybook.pdf',
-        path: '/api/tmp/books/b-1/storybook.pdf',
+      mockPdfStorage.saveClaimPreviewPdf.mockResolvedValue({
+        url: '/files/books/b-1/runs/run-2/claims/1/storyme-preview-b-1.pdf',
+        path: '/api/tmp/books/b-1/runs/run-2/claims/1/storyme-preview-b-1.pdf',
       });
       vi.mocked(renderStorybookPdf).mockResolvedValue(Buffer.from('%PDF-1.4 mock'));
       // Clears call history left over from generateFreshBook() above (the

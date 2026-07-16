@@ -300,12 +300,39 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.activeRunId).toBe(run.id); // unchanged
       expect(reloadedBook.publishedRunId).toBeNull();
+      expect(reloadedBook.publishedRunFencingVersion).toBeNull();
       expect(reloadedBook.status).not.toBe('complete');
       const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
       expect(reloadedRun.status).toBe(GenerationRunStatus.running);
     });
 
-    it('returns "book_mirror_mismatch" and rolls back the ENTIRE transaction (GenerationRun included, provably still `running` in the DB) when the run fence holds but Book.activeRunId has drifted', async () => {
+    it('leaves an existing published pointer untouched when a later regeneration attempt fails on a stale fence', async () => {
+      const priorRunId = randomUUID();
+      const book = await createUserAndBook({
+        status: 'complete',
+        publishedRunId: priorRunId,
+        publishedRunFencingVersion: 5,
+      });
+      const run = await createRun(book, { fencingVersion: 3 });
+
+      const result = await coordinator.completeRun(
+        {
+          runId: run.id,
+          bookId: book.id,
+          fencingVersion: 999,
+          inputHash: run.inputHash,
+          inputSnapshot: buildInputSnapshot(book),
+        },
+        completedOutcome(),
+      );
+
+      expect(result).toBe('stale_fence');
+      const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
+      expect(reloadedBook.publishedRunId).toBe(priorRunId);
+      expect(reloadedBook.publishedRunFencingVersion).toBe(5);
+    });
+
+    it('returns "book_mirror_mismatch" and rolls back the ENTIRE transaction (GenerationRun included, provably still `running` in the DB), leaving both published pointer fields untouched, when the run fence holds but Book.activeRunId has drifted', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 3 });
       // Break the mirror invariant directly, simulating some other bug having
@@ -332,9 +359,11 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(reloadedRun.status).toBe(GenerationRunStatus.running);
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.status).not.toBe('complete');
+      expect(reloadedBook.publishedRunId).toBeNull();
+      expect(reloadedBook.publishedRunFencingVersion).toBeNull();
     });
 
-    it('atomically publishes Book.status=complete, GenerationRun.status=completed, activeRunId, and publishedRunId together on success', async () => {
+    it('atomically publishes Book.status=complete, GenerationRun.status=completed, activeRunId, publishedRunId, AND publishedRunFencingVersion together on success', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 3 });
 
@@ -353,6 +382,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.activeRunId).toBeNull();
       expect(reloadedBook.publishedRunId).toBe(run.id);
+      expect(reloadedBook.publishedRunFencingVersion).toBe(3);
       expect(reloadedBook.status).toBe('complete');
       expect(reloadedBook.previewPdfUrl).toBe('/files/books/b-1/storybook.pdf');
       const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
@@ -381,6 +411,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(reloadedBook.failedStep).toBe('pdf_render');
       expect(reloadedBook.activeRunId).toBeNull();
       expect(reloadedBook.publishedRunId).toBeNull(); // never set on failure
+      expect(reloadedBook.publishedRunFencingVersion).toBeNull(); // never set on failure
       const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
       expect(reloadedRun.status).toBe(GenerationRunStatus.failed);
       expect(reloadedRun.errorMessage).toBe('PDF render crashed');

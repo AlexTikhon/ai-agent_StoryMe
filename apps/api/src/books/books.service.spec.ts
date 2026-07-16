@@ -18,6 +18,7 @@ import type { GenerationExecutionContext } from '../agent/generation-execution-c
 import type { GenerationOutcome } from '../agent/generation-outcome';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
+import { InvalidGenerationArtifactPointerError } from '../agent/generation-artifact-namespace';
 import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { CreateBookDto } from './dto/create-book.dto';
@@ -74,6 +75,9 @@ function createMockPdfStorage(): jest.Mocked<PdfStorage> {
     savePreviewPdf: vi.fn(),
     getPreviewPdf: vi.fn(),
     previewPdfExists: vi.fn().mockResolvedValue(false),
+    saveClaimPreviewPdf: vi.fn(),
+    getClaimPreviewPdf: vi.fn(),
+    claimPreviewPdfExists: vi.fn().mockResolvedValue(false),
   } as unknown as jest.Mocked<PdfStorage>;
 }
 
@@ -1680,7 +1684,7 @@ describe('BooksService', () => {
       filename: 'storyme-preview-b-1.pdf',
     };
 
-    it('returns PDF buffer for a complete book with previewPdfUrl and existing file', async () => {
+    it('returns PDF buffer for a complete book with previewPdfUrl and existing file (pre-GenerationRun legacy publication)', async () => {
       const book = makeBook({ previewPdfUrl: '/files/books/b-1/storybook.pdf' });
       prisma.book.findFirst.mockResolvedValue(book);
       pdfStorage.getPreviewPdf.mockResolvedValue(PDF_RESULT);
@@ -1688,6 +1692,7 @@ describe('BooksService', () => {
       const result = await service.getPreviewPdfBuffer('b-1', 'u-1');
 
       expect(pdfStorage.getPreviewPdf).toHaveBeenCalledWith('b-1');
+      expect(pdfStorage.getClaimPreviewPdf).not.toHaveBeenCalled();
       expect(result.contentType).toBe('application/pdf');
       expect(result.buffer).toBe(PDF_RESULT.buffer);
       expect(result.filename).toBe('storyme-preview-b-1.pdf');
@@ -1712,12 +1717,13 @@ describe('BooksService', () => {
       expect(pdfStorage.getPreviewPdf).not.toHaveBeenCalled();
     });
 
-    it('throws ConflictException when previewPdfUrl is null', async () => {
+    it('throws ConflictException when previewPdfUrl is null and no published pointer exists (not ready)', async () => {
       const book = makeBook({ previewPdfUrl: null });
       prisma.book.findFirst.mockResolvedValue(book);
 
       await expect(service.getPreviewPdfBuffer('b-1', 'u-1')).rejects.toThrow(ConflictException);
       expect(pdfStorage.getPreviewPdf).not.toHaveBeenCalled();
+      expect(pdfStorage.getClaimPreviewPdf).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when storage returns null (file missing)', async () => {
@@ -1736,6 +1742,85 @@ describe('BooksService', () => {
       const err = await service.getPreviewPdfBuffer('b-1', 'u-1').catch((e: unknown) => e);
       expect(err instanceof NotFoundException).toBe(true);
       expect(String((err as NotFoundException).message)).not.toMatch(/[A-Za-z]:\\|\/tmp\//);
+    });
+
+    it('reads the exact published claim namespace when publishedRunId/publishedRunFencingVersion are both set', async () => {
+      const book = makeBook({
+        previewPdfUrl: '/files/books/b-1/runs/run-9/claims/2/storyme-preview-b-1.pdf',
+        publishedRunId: 'run-9',
+        publishedRunFencingVersion: 2,
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      pdfStorage.getClaimPreviewPdf.mockResolvedValue(PDF_RESULT);
+
+      const result = await service.getPreviewPdfBuffer('b-1', 'u-1');
+
+      expect(pdfStorage.getClaimPreviewPdf).toHaveBeenCalledWith('b-1', {
+        kind: 'claim',
+        runId: 'run-9',
+        fencingVersion: 2,
+      });
+      expect(pdfStorage.getPreviewPdf).not.toHaveBeenCalled();
+      expect(result.contentType).toBe('application/pdf');
+      expect(result.filename).toBe('storyme-preview-b-1.pdf');
+    });
+
+    it('never falls back to the legacy PDF when a complete claim pointer is present but its object is missing', async () => {
+      const book = makeBook({
+        previewPdfUrl: '/files/books/b-1/runs/run-9/claims/2/storyme-preview-b-1.pdf',
+        publishedRunId: 'run-9',
+        publishedRunFencingVersion: 2,
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      pdfStorage.getClaimPreviewPdf.mockResolvedValue(null);
+      pdfStorage.getPreviewPdf.mockResolvedValue(PDF_RESULT); // would be wrong bytes to serve
+
+      await expect(service.getPreviewPdfBuffer('b-1', 'u-1')).rejects.toThrow(NotFoundException);
+      expect(pdfStorage.getPreviewPdf).not.toHaveBeenCalled();
+    });
+
+    it('reads the legacy PDF for a pre-Phase-B publication (publishedRunId set, publishedRunFencingVersion null)', async () => {
+      const book = makeBook({
+        previewPdfUrl: '/files/books/b-1/storybook.pdf',
+        publishedRunId: 'run-legacy',
+        publishedRunFencingVersion: null,
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      pdfStorage.getPreviewPdf.mockResolvedValue(PDF_RESULT);
+
+      const result = await service.getPreviewPdfBuffer('b-1', 'u-1');
+
+      expect(pdfStorage.getPreviewPdf).toHaveBeenCalledWith('b-1');
+      expect(pdfStorage.getClaimPreviewPdf).not.toHaveBeenCalled();
+      expect(result.buffer).toBe(PDF_RESULT.buffer);
+    });
+
+    it('throws the stable invariant error for an invalid partial published pointer (publishedRunId null, fencingVersion set)', async () => {
+      const book = makeBook({
+        previewPdfUrl: null,
+        publishedRunId: null,
+        publishedRunFencingVersion: 4,
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+
+      await expect(service.getPreviewPdfBuffer('b-1', 'u-1')).rejects.toThrow(
+        InvalidGenerationArtifactPointerError,
+      );
+    });
+
+    it('preserves the download filename and content type regardless of which namespace served the bytes', async () => {
+      const book = makeBook({
+        previewPdfUrl: '/files/books/b-1/runs/run-9/claims/2/storyme-preview-b-1.pdf',
+        publishedRunId: 'run-9',
+        publishedRunFencingVersion: 2,
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      pdfStorage.getClaimPreviewPdf.mockResolvedValue(PDF_RESULT);
+
+      const result = await service.getPreviewPdfBuffer('b-1', 'u-1');
+
+      expect(result.filename).toBe('storyme-preview-b-1.pdf');
+      expect(result.contentType).toBe('application/pdf');
     });
   });
 
@@ -1811,7 +1896,7 @@ describe('BooksService', () => {
       });
     });
 
-    it('reports pdfStorage.previewAvailable=true when previewPdfUrl is set and the storage backend confirms the object exists', async () => {
+    it('reports pdfStorage.previewAvailable=true when previewPdfUrl is set and the storage backend confirms the object exists (legacy publication)', async () => {
       const book = makeBook({
         status: STATUS_COMPLETE,
         previewPdfUrl: '/files/books/b-1/storybook.pdf',
@@ -1823,6 +1908,7 @@ describe('BooksService', () => {
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');
 
       expect(pdfStorage.previewPdfExists).toHaveBeenCalledWith('b-1');
+      expect(pdfStorage.claimPreviewPdfExists).not.toHaveBeenCalled();
       expect(result.pdfStorage).toEqual({
         driver: 'local',
         keyPresent: true,
@@ -1845,6 +1931,32 @@ describe('BooksService', () => {
         driver: 'local',
         keyPresent: true,
         previewAvailable: false,
+      });
+    });
+
+    it('checks the exact published claim namespace (not the legacy key) when publishedRunId/publishedRunFencingVersion are both set', async () => {
+      const book = makeBook({
+        status: STATUS_COMPLETE,
+        previewPdfUrl: '/files/books/b-1/runs/run-9/claims/2/storyme-preview-b-1.pdf',
+        publishedRunId: 'run-9',
+        publishedRunFencingVersion: 2,
+      });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.agentLog.findMany.mockResolvedValue([]);
+      pdfStorage.claimPreviewPdfExists.mockResolvedValue(true);
+
+      const result = await service.getGenerationDiagnostics('b-1', 'u-1');
+
+      expect(pdfStorage.claimPreviewPdfExists).toHaveBeenCalledWith('b-1', {
+        kind: 'claim',
+        runId: 'run-9',
+        fencingVersion: 2,
+      });
+      expect(pdfStorage.previewPdfExists).not.toHaveBeenCalled();
+      expect(result.pdfStorage).toEqual({
+        driver: 'local',
+        keyPresent: true,
+        previewAvailable: true,
       });
     });
 

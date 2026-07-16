@@ -21,6 +21,8 @@ import {
   assertPdfStorageSupportsWorker,
   claimPreviewPdfKey,
   objectKey,
+  getPublishedPreviewPdf,
+  publishedPreviewPdfExists,
 } from './pdf-storage';
 import {
   InvalidGenerationArtifactPointerError,
@@ -648,5 +650,65 @@ describe('CloudPdfStorage claim-scoped methods (Phase B, Slice B2)', () => {
       storage.saveClaimPreviewPdf('book-1', legacyAsClaim, Buffer.from('%PDF')),
     ).rejects.toThrow(InvalidGenerationArtifactPointerError);
     expect(sendMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Phase B, Slice B4 — the discriminated-namespace dispatch every production
+ * PDF read path goes through instead of a boolean useLegacy flag. Exercised
+ * here against a real LocalPdfStorage (not a mock) so the routing itself —
+ * not just the branch logic — is proven.
+ */
+describe('getPublishedPreviewPdf / publishedPreviewPdfExists (Phase B, Slice B4)', () => {
+  const RUN_A = '11111111-1111-1111-1111-111111111111';
+  const claim = { kind: 'claim' as const, runId: RUN_A, fencingVersion: 1 };
+  let storage: LocalPdfStorage;
+
+  beforeEach(() => {
+    storage = new LocalPdfStorage();
+  });
+
+  afterEach(async () => {
+    if (existsSync(TEST_DIR)) await rm(TEST_DIR, { recursive: true });
+  });
+
+  it('reads the claim-scoped object for a claim namespace, never the legacy key', async () => {
+    const claimBuffer = Buffer.from('%PDF-1.4 claim bytes');
+    const legacyBuffer = Buffer.from('%PDF-1.4 legacy bytes — must not be served');
+    await storage.saveClaimPreviewPdf(TEST_BOOK_ID, claim, claimBuffer);
+    await storage.savePreviewPdf(TEST_BOOK_ID, legacyBuffer);
+
+    const result = await getPublishedPreviewPdf(storage, TEST_BOOK_ID, claim);
+
+    expect(result!.buffer.equals(claimBuffer)).toBe(true);
+    await expect(publishedPreviewPdfExists(storage, TEST_BOOK_ID, claim)).resolves.toBe(true);
+  });
+
+  it('returns null/false for a claim namespace whose object is missing, never falling back to the legacy object', async () => {
+    const legacyBuffer = Buffer.from('%PDF-1.4 legacy bytes — must not be served');
+    await storage.savePreviewPdf(TEST_BOOK_ID, legacyBuffer);
+
+    await expect(getPublishedPreviewPdf(storage, TEST_BOOK_ID, claim)).resolves.toBeNull();
+    await expect(publishedPreviewPdfExists(storage, TEST_BOOK_ID, claim)).resolves.toBe(false);
+  });
+
+  it('reads the legacy object for the legacy namespace', async () => {
+    const legacyBuffer = Buffer.from('%PDF-1.4 legacy bytes');
+    await storage.savePreviewPdf(TEST_BOOK_ID, legacyBuffer);
+
+    const result = await getPublishedPreviewPdf(storage, TEST_BOOK_ID, LEGACY_NAMESPACE);
+
+    expect(result!.buffer.equals(legacyBuffer)).toBe(true);
+    await expect(publishedPreviewPdfExists(storage, TEST_BOOK_ID, LEGACY_NAMESPACE)).resolves.toBe(
+      true,
+    );
+  });
+
+  it('returns null/false for not_ready without touching storage', async () => {
+    const result = await getPublishedPreviewPdf(storage, TEST_BOOK_ID, { kind: 'not_ready' });
+    expect(result).toBeNull();
+    await expect(
+      publishedPreviewPdfExists(storage, TEST_BOOK_ID, { kind: 'not_ready' }),
+    ).resolves.toBe(false);
   });
 });

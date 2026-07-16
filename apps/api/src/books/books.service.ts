@@ -49,7 +49,13 @@ import {
   InvalidGenerationInputSnapshotError,
   type GenerationInputSnapshot,
 } from '../agent/generation-input-snapshot';
-import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
+import {
+  getPublishedPreviewPdf,
+  publishedPreviewPdfExists,
+  PDF_STORAGE_TOKEN,
+  type PdfStorage,
+} from '../pdf/pdf-storage';
+import { resolvePublishedPdfNamespace } from '../agent/generation-artifact-namespace';
 import { RATE_LIMITER_TOKEN, type RateLimiter } from '../rate-limit/rate-limiter.interface';
 import {
   childPhotoAssetKey,
@@ -737,10 +743,15 @@ export class BooksService {
     userId: string,
   ): Promise<{ buffer: Buffer; contentType: 'application/pdf'; filename: string }> {
     const book = await this.findOwnedOrThrow(bookId, userId);
-    if (!book.previewPdfUrl) {
+    const namespace = resolvePublishedPdfNamespace(book);
+    if (namespace.kind === 'not_ready') {
       throw new ConflictException('PDF not ready — book generation is not complete');
     }
-    const result = await this.pdfStorage.getPreviewPdf(bookId);
+    // Reads the exact published namespace only — a claim-scoped publication
+    // missing its object is reported as the existing not-found/storage
+    // inconsistency below, never silently served from the legacy key (Phase
+    // B, Slice B4).
+    const result = await getPublishedPreviewPdf(this.pdfStorage, bookId, namespace);
     if (!result) {
       throw new NotFoundException('PDF file not found in storage');
     }
@@ -753,7 +764,12 @@ export class BooksService {
     userId: string,
   ): Promise<GenerationDiagnosticsDto> {
     const book = await this.findOwnedOrThrow(bookId, userId);
-    const keyPresent = book.previewPdfUrl != null;
+    // Phase B, Slice B4: the same published-namespace resolution every other
+    // production PDF read goes through — keyPresent reflects whether a
+    // publication (claim or legacy) actually exists, not previewPdfUrl alone
+    // (previewPdfUrl is a storage marker, not the ownership authority).
+    const namespace = resolvePublishedPdfNamespace(book);
+    const keyPresent = namespace.kind !== 'not_ready';
     const [logs, latestJob, previewAvailable, queue] = await Promise.all([
       this.prisma.agentLog.findMany({
         where: { bookId },
@@ -761,10 +777,12 @@ export class BooksService {
         take: 20,
       }),
       this.generationJobService.findLatest(bookId),
-      // Only worth checking the storage backend if the book even claims a
-      // PDF was saved — avoids a network/disk round-trip for every book that
-      // hasn't reached that step yet.
-      keyPresent ? this.pdfStorage.previewPdfExists(bookId) : Promise.resolve(false),
+      // Only worth checking the storage backend if a publication actually
+      // exists — avoids a network/disk round-trip for every book that hasn't
+      // reached that step yet.
+      keyPresent
+        ? publishedPreviewPdfExists(this.pdfStorage, bookId, namespace)
+        : Promise.resolve(false),
       this.generationQueueService.getQueueDiagnostics(),
     ]);
     return buildGenerationDiagnostics(

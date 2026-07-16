@@ -143,7 +143,10 @@ export class GenerationRunCoordinator {
    *      best-effort one);
    *   2. only if that held, applies `outcome.bookUpdate` plus
    *      status/errorMessage/failedStep to Book, clears activeRunId, and —
-   *      only on success — sets publishedRunId.
+   *      only on success — atomically sets both publishedRunId AND
+   *      publishedRunFencingVersion together (Phase B, Slice B4 — see
+   *      resolvePublishedNamespace's doc comment for why the pair, not just
+   *      publishedRunId, must always move together).
    *
    * This is the ONLY place a GenerationRun's own `completed`/`failed`
    * transition is ever paired with Book.status becoming `complete`/`failed`
@@ -160,7 +163,10 @@ export class GenerationRunCoordinator {
       ...(outcome.errorMessage !== undefined && { errorMessage: outcome.errorMessage }),
       ...(outcome.failedStep !== undefined && { failedStep: outcome.failedStep }),
       activeRunId: null,
-      ...(outcome.status === BookStatus.complete && { publishedRunId: ctx.runId }),
+      ...(outcome.status === BookStatus.complete && {
+        publishedRunId: ctx.runId,
+        publishedRunFencingVersion: ctx.fencingVersion,
+      }),
     };
 
     const result = await this.runFencedTerminalTransition({
