@@ -2058,6 +2058,31 @@ never a side effect of a successful storage write.
   no change to `AgentLog` fencing or outbox dispatch. Cleanup of orphaned
   claim-scoped artifacts (images, character sheets, and now PDFs) remains
   future work across all of Phase B, not something this slice attempts.
+- **Deployment constraint: worker and API fleets must upgrade to Slices
+  B1–B4 atomically, not on a rolling/mixed basis.** A pre-B4 worker's
+  `completeRun` equivalent only ever set `publishedRunId` on success — it has
+  no `publishedRunFencingVersion` field to write, and a Prisma partial
+  `update` leaves an unlisted column exactly as it was. If a book was already
+  published under a claim pointer by a post-B4 worker
+  (`publishedRunFencingVersion` non-null) and a later run on that same book
+  is then completed by a still-running pre-B4 worker, the result is
+  `publishedRunId` pointing at the new run while `publishedRunFencingVersion`
+  is left at the old run's stale value — a pair that doesn't identify any
+  claim either run actually wrote, so `resolvePublishedPdfNamespace` resolves
+  a claim-scoped path nothing was ever saved to and `GET /pdf/preview` 404s
+  for a book that did finish generating (bytes sit unreachable at the legacy
+  key the old worker actually wrote to). The same hazard applies one slice
+  earlier to `lastGenerationRunId`/`lastGenerationFencingVersion`: a pre-B3
+  worker's Phase 1 write updates `lastGenerationInputHash` (pre-Phase-B) but
+  not the two B3 pointer fields, so a subsequent retry's copy-forward can
+  read a stale, unrelated claim as its source — silently reusing an older
+  generation's images rather than failing loudly. Both directions are safe
+  (old-publishes-old, new-publishes-new, and old-then-legacy-read/new-then-
+  claim-read all resolve correctly — see the rollout-compatibility tests in
+  `pdf-publication.integration.spec.ts`); only an old completion landing
+  _after_ a newer claim-scoped one on the same book is unsafe. Deploy the API
+  and worker services for this range of slices together, not as an
+  independently-rolled pair.
 
 ## Worker process separation
 
