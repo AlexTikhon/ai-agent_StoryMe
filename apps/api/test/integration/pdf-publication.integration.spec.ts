@@ -103,6 +103,7 @@ describe('PDF publication (Phase B, Slice B4 — real Postgres + local storage)'
       status: 'complete' as GenerationOutcome['status'],
       completedStep: 'pdf_render' as GenerationOutcome['completedStep'],
       bookUpdate: {},
+      agentLogs: [],
       ...overrides,
     };
   }
@@ -115,6 +116,7 @@ describe('PDF publication (Phase B, Slice B4 — real Postgres + local storage)'
       errorMessage: 'boom',
       failedStep: 'pdf_render' as GenerationOutcome['failedStep'],
       bookUpdate: {},
+      agentLogs: [],
       ...overrides,
     };
   }

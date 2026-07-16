@@ -996,8 +996,25 @@ export class AgentService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
-        await this.prisma.agentLog.createMany({
-          data: [
+        // Not persisted here — see GenerationOutcome's doc comment. Both the
+        // AgentLog rows below and status/errorMessage/failedStep are applied
+        // by the caller (GenerationRunCoordinator.completeRun) atomically
+        // alongside the GenerationRun terminal transition, so a stale/
+        // superseded claim that reaches this catch block still writes zero
+        // AgentLog rows; generationTimeMs/aiModelVersions/the char_build
+        // progress ride along in the same write.
+        return {
+          status: BookStatus.failed,
+          completedStep: AgentStep.story_plan,
+          errorCode: 'GENERATION_FAILED',
+          errorMessage: message,
+          failedStep: AgentStep.story_plan,
+          bookUpdate: {
+            generationTimeMs: Date.now() - startedAt,
+            aiModelVersions,
+            ...characterProfileUpdateData,
+          },
+          agentLogs: [
             {
               bookId: book.id,
               agent: 'LocalPipelineAgent',
@@ -1023,23 +1040,6 @@ export class AgentService {
               durationMs: Date.now() - startedAt,
             },
           ],
-        });
-        // Not persisted here — see GenerationOutcome's doc comment. The
-        // caller (GenerationRunCoordinator.completeRun) writes
-        // status/errorMessage/failedStep atomically alongside the
-        // GenerationRun terminal transition; generationTimeMs/aiModelVersions/
-        // the char_build progress ride along in the same write.
-        return {
-          status: BookStatus.failed,
-          completedStep: AgentStep.story_plan,
-          errorCode: 'GENERATION_FAILED',
-          errorMessage: message,
-          failedStep: AgentStep.story_plan,
-          bookUpdate: {
-            generationTimeMs: Date.now() - startedAt,
-            aiModelVersions,
-            ...characterProfileUpdateData,
-          },
         };
       }
       storyDurationMs = Date.now() - startedAt;
@@ -1332,113 +1332,117 @@ export class AgentService {
       finalBookUpdate.previewPdfUrl = previewPdfUrl;
     }
 
-    await this.prisma.agentLog.createMany({
-      data: [
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.char_build,
-          status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          provider: charBuildResult.providerName,
-          model: charBuildResult.modelName,
-          durationMs: charBuildResult.durationMs,
-          ...(charBuildResult.error && { error: charBuildResult.error }),
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.story_plan,
-          status: AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          provider: storyProviderName,
-          model: storyModelName,
-          durationMs: storyDurationMs,
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.page_plan,
-          status: AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          provider: storyProviderName,
-          model: storyModelName,
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.story_draft,
-          status: AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          provider: storyProviderName,
-          model: storyModelName,
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.illust_plan,
-          status: AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          provider: storyProviderName,
-          model: storyModelName,
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.preview_ready,
-          status: AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          provider: storyProviderName,
-          model: storyModelName,
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.image_gen,
-          // Truthful, not optimistic: a run whose only attempted image(s)
-          // failed must not be recorded as 'success' just because the step
-          // itself didn't throw (see "Diagnose and Fix Failed Resumed
-          // Back-Cover Generation"). AgentLogStatus has no dedicated
-          // 'partial' value, so any failedCount > 0 — whether every attempt
-          // failed or only some — is recorded as 'error', with the safe
-          // summary message below explaining exactly how many succeeded.
-          status: failedCount > 0 ? AgentLogStatus.error : AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          provider: imageProviderName,
-          model: imageModelName,
-          durationMs: imageDurationMs,
-          ...(failedCount > 0 && {
-            error: `${failedCount} of ${imagesNeedingGeneration.length} attempted image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
-          }),
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.layout,
-          status: AgentLogStatus.success,
-          attempt: 1,
-          traceId,
-          durationMs: layoutDurationMs,
-        },
-        {
-          bookId: book.id,
-          agent: 'LocalPipelineAgent',
-          step: AgentStep.pdf_render,
-          status: pdfRenderLogStatus,
-          attempt: 1,
-          traceId,
-          durationMs: pdfDurationMs,
-          ...(pdfRenderError && { error: pdfRenderError }),
-        },
-      ],
-    });
+    // Not persisted here — see GenerationOutcome's doc comment. The caller
+    // (GenerationRunCoordinator.completeRun) writes these rows atomically
+    // inside the same fenced transaction as the terminal Book/GenerationRun
+    // write, so a stale/superseded claim that made it all the way through
+    // the pipeline still writes zero AgentLog rows if its fencing check then
+    // fails.
+    const agentLogs: Prisma.AgentLogCreateManyInput[] = [
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.char_build,
+        status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        provider: charBuildResult.providerName,
+        model: charBuildResult.modelName,
+        durationMs: charBuildResult.durationMs,
+        ...(charBuildResult.error && { error: charBuildResult.error }),
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.story_plan,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        provider: storyProviderName,
+        model: storyModelName,
+        durationMs: storyDurationMs,
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.page_plan,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        provider: storyProviderName,
+        model: storyModelName,
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.story_draft,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        provider: storyProviderName,
+        model: storyModelName,
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.illust_plan,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        provider: storyProviderName,
+        model: storyModelName,
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.preview_ready,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        provider: storyProviderName,
+        model: storyModelName,
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.image_gen,
+        // Truthful, not optimistic: a run whose only attempted image(s)
+        // failed must not be recorded as 'success' just because the step
+        // itself didn't throw (see "Diagnose and Fix Failed Resumed
+        // Back-Cover Generation"). AgentLogStatus has no dedicated
+        // 'partial' value, so any failedCount > 0 — whether every attempt
+        // failed or only some — is recorded as 'error', with the safe
+        // summary message below explaining exactly how many succeeded.
+        status: failedCount > 0 ? AgentLogStatus.error : AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        provider: imageProviderName,
+        model: imageModelName,
+        durationMs: imageDurationMs,
+        ...(failedCount > 0 && {
+          error: `${failedCount} of ${imagesNeedingGeneration.length} attempted image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
+        }),
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.layout,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        durationMs: layoutDurationMs,
+      },
+      {
+        bookId: book.id,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.pdf_render,
+        status: pdfRenderLogStatus,
+        attempt: 1,
+        traceId,
+        durationMs: pdfDurationMs,
+        ...(pdfRenderError && { error: pdfRenderError }),
+      },
+    ];
 
     return {
       status: finalStatus,
@@ -1449,6 +1453,7 @@ export class AgentService {
         errorMessage: pdfRenderError,
         failedStep: AgentStep.pdf_render,
       }),
+      agentLogs,
     };
   }
 }

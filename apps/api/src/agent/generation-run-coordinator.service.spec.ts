@@ -12,6 +12,16 @@ function makeOutcome(overrides: Partial<GenerationOutcome> = {}): GenerationOutc
     status: 'complete' as GenerationOutcome['status'],
     completedStep: 'pdf_render' as GenerationOutcome['completedStep'],
     bookUpdate: { previewPdfUrl: '/files/books/b-1/storybook.pdf' },
+    agentLogs: [
+      {
+        bookId: 'b-1',
+        agent: 'LocalPipelineAgent',
+        step: 'pdf_render' as GenerationOutcome['completedStep'],
+        status: 'success',
+        attempt: 1,
+        traceId: 'trace-1',
+      },
+    ],
     ...overrides,
   };
 }
@@ -84,7 +94,47 @@ describe('GenerationRunCoordinator', () => {
       expect(bookCall.data['failedStep']).toBe('image_gen');
     });
 
-    it('returns "stale_fence" and never touches Book when the GenerationRun fencing check finds this attempt already superseded', async () => {
+    it('persists outcome.agentLogs via tx.agentLog.createMany only after the GenerationRun fence and Book mirror check both hold', async () => {
+      const outcome = makeOutcome({
+        agentLogs: [
+          {
+            bookId: 'b-1',
+            agent: 'LocalPipelineAgent',
+            step: 'char_build' as GenerationOutcome['completedStep'],
+            status: 'success',
+            attempt: 1,
+            traceId: 'trace-42',
+          },
+          {
+            bookId: 'b-1',
+            agent: 'LocalPipelineAgent',
+            step: 'pdf_render' as GenerationOutcome['completedStep'],
+            status: 'success',
+            attempt: 1,
+            traceId: 'trace-42',
+          },
+        ],
+      });
+
+      const result = await coordinator.completeRun(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 3 },
+        outcome,
+      );
+
+      expect(result).toBe('applied');
+      expect(prisma.agentLog.createMany).toHaveBeenCalledWith({ data: outcome.agentLogs });
+    });
+
+    it('never calls tx.agentLog.createMany when outcome.agentLogs is empty', async () => {
+      await coordinator.completeRun(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 3 },
+        makeOutcome({ agentLogs: [] }),
+      );
+
+      expect(prisma.agentLog.createMany).not.toHaveBeenCalled();
+    });
+
+    it('returns "stale_fence" and never touches Book or AgentLog when the GenerationRun fencing check finds this attempt already superseded', async () => {
       prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
 
       const result = await coordinator.completeRun(
@@ -94,6 +144,7 @@ describe('GenerationRunCoordinator', () => {
 
       expect(result).toBe('stale_fence');
       expect(prisma.book.updateMany).not.toHaveBeenCalled();
+      expect(prisma.agentLog.createMany).not.toHaveBeenCalled();
     });
 
     it('logs a warning (not an error) for stale_fence — an expected race, not a bug', async () => {
@@ -109,7 +160,7 @@ describe('GenerationRunCoordinator', () => {
       warnSpy.mockRestore();
     });
 
-    it('returns "book_mirror_mismatch" (distinct from stale_fence) and logs at error severity when the run fence holds but Book.activeRunId no longer matches', async () => {
+    it('returns "book_mirror_mismatch" (distinct from stale_fence), never calls tx.agentLog.createMany, and logs at error severity when the run fence holds but Book.activeRunId no longer matches', async () => {
       const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
       prisma.book.updateMany.mockResolvedValue({ count: 0 });
@@ -121,6 +172,7 @@ describe('GenerationRunCoordinator', () => {
 
       expect(result).toBe('book_mirror_mismatch');
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('mirror invariant is broken'));
+      expect(prisma.agentLog.createMany).not.toHaveBeenCalled();
       errorSpy.mockRestore();
     });
 

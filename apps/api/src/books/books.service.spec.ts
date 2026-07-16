@@ -65,6 +65,7 @@ function makeOutcome(overrides: Partial<GenerationOutcome> = {}): GenerationOutc
     status: 'complete' as GenerationOutcome['status'],
     completedStep: 'pdf_render' as GenerationOutcome['completedStep'],
     bookUpdate: {},
+    agentLogs: [],
     ...overrides,
   };
 }

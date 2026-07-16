@@ -446,15 +446,13 @@ describe('AgentService', () => {
       expect(updateArg?.data?.title).toContain('Mia');
     });
 
-    it('writes nine AgentLog records all sharing the same traceId', async () => {
+    it('returns nine AgentLog records on the outcome, all sharing the same traceId', async () => {
       const book = makeBook();
       setupMocks();
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
-      const createManyArg = prisma.agentLog.createMany.mock.calls[0]?.[0];
-      const entries = createManyArg?.data as Array<Record<string, unknown>>;
+      const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
       expect(entries).toHaveLength(9);
       expect(entries[0]?.step).toBe('char_build');
       expect(entries[1]?.step).toBe('story_plan');
@@ -994,12 +992,9 @@ describe('AgentService', () => {
         setupMocks();
         const failingService = makePartiallyFailingImageService(() => true);
 
-        await runGeneration(failingService, prisma, book);
+        const result = await runGeneration(failingService, prisma, book);
 
-        expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         const imageGenEntry = entries.find((e) => e.step === 'image_gen');
         expect(imageGenEntry?.status).toBe('error');
         expect(imageGenEntry?.error).toEqual(expect.stringContaining('failed to generate'));
@@ -1045,7 +1040,7 @@ describe('AgentService', () => {
           generationExecutionService as never,
         );
 
-        await runGeneration(service, prisma, book);
+        const result = await runGeneration(service, prisma, book);
 
         // The pipeline is not aborted by a profile-provider failure — it still
         // reaches PDF rendering using a locally-built fallback profile.
@@ -1056,9 +1051,7 @@ describe('AgentService', () => {
         expect(persistedProfile.childName).toBe('Mia');
         expect(persistedProfile.consistencyPrompt).toBeTruthy();
 
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         const charBuildEntry = entries.find((e) => e.step === 'char_build');
         expect(charBuildEntry?.status).toBe('error');
         expect(charBuildEntry?.provider).toBe('mock');
@@ -1080,7 +1073,7 @@ describe('AgentService', () => {
           generationExecutionService as never,
         );
 
-        await runGeneration(service, prisma, book);
+        const result = await runGeneration(service, prisma, book);
 
         expect(mockImageAssetStorage.saveImageAsset).not.toHaveBeenCalledWith(
           sheetKey(RUN_1),
@@ -1098,9 +1091,7 @@ describe('AgentService', () => {
 
         // The profile step itself succeeded — only the sheet (a best-effort
         // consistency aid) failed, so char_build is not marked errored.
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         const charBuildEntry = entries.find((e) => e.step === 'char_build');
         expect(charBuildEntry?.status).toBe('success');
         warnSpy.mockRestore();
@@ -1178,7 +1169,7 @@ describe('AgentService', () => {
           generationExecutionService as never,
         );
 
-        await runGeneration(service, prisma, book);
+        const result = await runGeneration(service, prisma, book);
 
         expect(profileProvider.buildProfile).toHaveBeenCalledWith(
           expect.objectContaining({ photo: undefined }),
@@ -1186,9 +1177,7 @@ describe('AgentService', () => {
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),
         );
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         const charBuildEntry = entries.find((e) => e.step === 'char_build');
         expect(charBuildEntry?.error).toContain('CHILD_PHOTO_INTEGRITY_MISMATCH');
         errorSpy.mockRestore();
@@ -1800,11 +1789,9 @@ describe('AgentService', () => {
       const book = makeBook();
       setupMocks();
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-        Record<string, unknown>
-      >;
+      const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
       const pdfEntry = entries.find((e) => e.step === 'pdf_render');
       expect(pdfEntry?.status).toBe('success');
     });
@@ -1845,11 +1832,9 @@ describe('AgentService', () => {
       setupMocks();
       vi.mocked(renderStorybookPdf).mockRejectedValue(new Error('render error'));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-        Record<string, unknown>
-      >;
+      const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
       const pdfEntry = entries.find((e) => e.step === 'pdf_render');
       expect(pdfEntry?.status).toBe('error');
       expect(typeof pdfEntry?.error).toBe('string');
@@ -1917,11 +1902,9 @@ describe('AgentService', () => {
         .mockResolvedValueOnce(makeBook({ status: 'layout' as Book['status'] }))
         .mockResolvedValueOnce(makeBook({ status: 'failed' as Book['status'] }));
 
-      await runGeneration(service, prisma, book);
+      const result = await runGeneration(service, prisma, book);
 
-      const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-        Record<string, unknown>
-      >;
+      const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
       const pdfEntry = entries.find((e) => e.step === 'pdf_render');
       expect(pdfEntry?.status).toBe('error');
       expect(pdfEntry?.error).toBe('write failed');
@@ -1947,7 +1930,6 @@ describe('AgentService', () => {
 
       it('resolves a failed GenerationOutcome with the provider error message, without writing status/errorMessage/failedStep to Book itself', async () => {
         const book = makeBook();
-        prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('LLM provider unavailable');
 
         const result = await runGeneration(failingService, prisma, book);
@@ -1968,7 +1950,6 @@ describe('AgentService', () => {
 
       it('does not attempt to save per-page/cover image assets, build layout, or render a PDF (the char_build character sheet still saves, independent of story generation)', async () => {
         const book = makeBook();
-        prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('boom');
 
         await runGeneration(failingService, prisma, book);
@@ -1984,17 +1965,13 @@ describe('AgentService', () => {
         expect(prisma.book.update).not.toHaveBeenCalled();
       });
 
-      it('writes a char_build AgentLog entry plus a story_plan AgentLog entry with status error', async () => {
+      it('returns a char_build AgentLog entry plus a story_plan AgentLog entry with status error on the outcome', async () => {
         const book = makeBook();
-        prisma.agentLog.createMany.mockResolvedValue({ count: 1 });
         const failingService = makeFailingService('bad prompt');
 
-        await runGeneration(failingService, prisma, book);
+        const result = await runGeneration(failingService, prisma, book);
 
-        expect(prisma.agentLog.createMany).toHaveBeenCalledOnce();
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         expect(entries).toHaveLength(2);
         const charBuildEntry = entries.find((e) => e.step === 'char_build');
         expect(charBuildEntry?.status).toBe('success');
@@ -2051,11 +2028,9 @@ describe('AgentService', () => {
         const book = makeBook();
         setupMocks();
 
-        await runGeneration(service, prisma, book);
+        const result = await runGeneration(service, prisma, book);
 
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         const storyEntry = entries.find((e) => e.step === 'story_plan');
         const imageEntry = entries.find((e) => e.step === 'image_gen');
         expect(storyEntry?.provider).toBe('mock');
@@ -2066,11 +2041,9 @@ describe('AgentService', () => {
         const book = makeBook();
         setupMocks();
 
-        await runGeneration(service, prisma, book);
+        const result = await runGeneration(service, prisma, book);
 
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         for (const step of ['story_plan', 'image_gen', 'layout', 'pdf_render']) {
           const entry = entries.find((e) => e.step === step);
           expect(entry?.durationMs).toEqual(expect.any(Number));
@@ -2101,9 +2074,7 @@ describe('AgentService', () => {
           story: 'gpt-4o-mini',
           image: 'mock',
         });
-        const entries = prisma.agentLog.createMany.mock.calls[0]?.[0]?.data as Array<
-          Record<string, unknown>
-        >;
+        const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
         const storyEntry = entries.find((e) => e.step === 'story_plan');
         expect(storyEntry?.provider).toBe('openai');
         expect(storyEntry?.model).toBe('gpt-4o-mini');

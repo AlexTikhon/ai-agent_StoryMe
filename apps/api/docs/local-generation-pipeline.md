@@ -1781,18 +1781,18 @@ all." Two gaps remain, deliberately out of scope for this pass:
   only ever produce an unpublished orphan under its own claim. There is
   still no `GenerationArtifact` model or cleanup for those orphan objects
   (explicitly out of scope for B4 — see its own "Known limitations" below).
-- **`AgentLog` ownership.** Every pipeline step still writes `AgentLog` rows
-  unconditionally (`prisma.agentLog.createMany`, no fencing check) — a stale
-  attempt that got far enough to reach its own logging call still writes
-  diagnostics rows. This is low-risk (AgentLog is diagnostics, not
-  authoritative state, and nothing reads it as a source of truth for
-  status/content) but is explicitly not fenced today.
+- **`AgentLog` ownership.** _Closed by Phase D — see its own section below._
+  `AgentService` no longer writes `AgentLog` rows itself; it returns them on
+  `GenerationOutcome.agentLogs`, and `GenerationRunCoordinator.completeRun`
+  persists them inside the same fenced transaction as the terminal Book/
+  GenerationRun write, so a stale/superseded claim writes zero AgentLog rows.
 
 Do not describe this phase as having made the pipeline fully safe against a
-stale/zombie worker in general — only its _database writes_ are proven safe;
-artifact writes and AgentLog rows still rely on the same-process
-`assertNotSuperseded` best-effort check (or nothing at all) rather than a
-DB-level guarantee.
+stale/zombie worker in general — only its _database writes_ (which, as of
+Phase D, includes AgentLog) are proven safe; claim artifact writes (images,
+character sheets, PDFs) still rely on the same-process `assertNotSuperseded`
+best-effort check (or nothing at all) rather than a DB-level guarantee — see
+Phase D's own "Known limitations" below for the precise residual gap.
 
 - **`ImageAssetStorage` read-side identity** still probes a fixed set of
   extensions rather than persisting the exact key/content-type pair (fixed
@@ -2263,6 +2263,94 @@ call itself — closing that completely would require a native addon, out of
 scope for this stack. This does not weaken cloud storage in any way
 (`CloudPdfStorage`/`CloudImageAssetStorage` never touch a local filesystem,
 so this class of race does not apply to them).
+
+## Phase D — generation-claim-owned `AgentLog` persistence
+
+Closes the "`AgentLog` ownership" limitation Phase A explicitly left open (see
+above): before this phase, `AgentService.startBookGeneration` called
+`prisma.agentLog.createMany` directly, unconditionally, at two points in the
+pipeline (the story-generation-failure early return, and the final success/
+failure return) — a stale or superseded claim that made it far enough to
+reach either call still wrote its `AgentLog` rows, even though every other
+durable write it attempted was already correctly fenced.
+
+**The fix moves persistence, not computation.** `AgentService` still builds
+the exact same `AgentLog` row shapes it always did — same steps, same
+`traceId`, same provider/model/duration fields, same safe error text — but no
+longer calls Prisma at all. Instead it returns those rows as
+`GenerationOutcome.agentLogs` (`generation-outcome.ts`), and
+`GenerationRunCoordinator`'s existing `runFencedTerminalTransition` helper
+(`generation-run-coordinator.service.ts`, the single choke point every
+terminal GenerationRun/Book transition already went through — see its own
+doc comment) inserts them via `tx.agentLog.createMany` as the _last_
+statement inside the same transaction as the fenced `GenerationRun` write and
+the Book mirror write, and only after both have held. Concretely:
+
+1. `GenerationRun.updateMany` fenced on `(id, status: 'running',
+   fencingVersion)` — 0 rows matched means this claim is stale; the
+   transaction returns `'stale_fence'` immediately and the AgentLog insert is
+   never reached.
+2. `Book.updateMany` fenced on `(id, activeRunId)` — 0 rows matched means the
+   run/Book mirror invariant is broken; the transaction throws
+   `BookMirrorMismatchError`, which rolls back the entire transaction
+   (including step 1's already-applied `GenerationRun` write) — the AgentLog
+   insert is again never reached, and nothing from step 1 survives either.
+3. Only once both above have matched does `tx.agentLog.createMany` run (and
+   is skipped entirely — no query at all — when `agentLogs` is empty, which
+   is only ever the case for a caller that has no outcome to report, e.g.
+   `failInvalidSnapshot`/`failAbandoned`, neither of which ever ran
+   `AgentService` in the first place).
+
+This means a stale/superseded claim now writes **zero** `AgentLog` rows,
+exactly like it writes no other durable state — the diagnostics rows for a
+book's generation history are exactly the rows the currently-accepted claim
+produced, nothing from an attempt that lost the fencing race.
+
+**Retry history stays append-only.** Nothing about this change touches how
+prior claims' already-committed `AgentLog` rows are read or cleaned up — see
+"`AgentLog` history is untouched" under Startup recovery, and the "Retry
+history" notes under Generation diagnostics — a newer accepted run's rows are
+simply inserted alongside older ones, keyed by their own distinct `traceId`;
+this phase only closes the gap where a _non_-accepted run's rows could have
+been inserted at all.
+
+**No schema migration.** `AgentLog`'s shape (`prisma/schema.prisma`) is
+unchanged — this phase is purely about _when_ and _by whom_ rows get
+inserted, not what they contain.
+
+**Verified behavior:**
+
+- An accepted successful run's nine `AgentLog` rows, and an accepted failed/
+  partial run's truthful error rows, are byte-for-byte the same as before
+  this phase (`agent.service.spec.ts` — every prior assertion on row shape
+  was migrated from asserting `prisma.agentLog.createMany`'s call arguments
+  directly to asserting the returned `GenerationOutcome.agentLogs`, since
+  `AgentService` itself no longer calls Prisma).
+- `GenerationRunCoordinator.completeRun` persists `outcome.agentLogs` only on
+  `'applied'`, never on `'stale_fence'` or `'book_mirror_mismatch'`
+  (`generation-run-coordinator.service.spec.ts`, unit-level with a mocked
+  Prisma; `generation-fencing.integration.spec.ts`, against a real Postgres).
+- A deterministic real-Postgres race — a run reclaimed by a newer delivery
+  (`GenerationRunService.claim` bumping `fencingVersion`) mid-pipeline —
+  proves the old claim's `completeRun` call is rejected and writes zero
+  `AgentLog` rows, while the new claim's own completion writes only its own
+  rows (`generation-fencing.integration.spec.ts`). Built from explicit,
+  sequentially-awaited claim/complete steps, not `Promise.all` timing, so the
+  interleaving is exact rather than probabilistic.
+- The `book_mirror_mismatch` rollback test additionally proves the AgentLog
+  insert itself — the last statement in the transaction — never commits when
+  an earlier statement in the same transaction throws.
+
+**Residual limitation, stated precisely:** claim _artifact_ writes (images,
+character sheets, PDFs, via `ImageAssetStorage`/`PdfStorage`) still are not
+DB-fenced — they rely only on the same-process, best-effort
+`assertNotSuperseded` check (see Phase B's own limitations) or nothing at
+all, and a stale claim's in-flight artifact write can still land as an
+unpublished orphan object even after this phase. `AgentLog` was the only
+piece of state in this codebase that was both (a) written directly by
+`AgentService` outside of `applyFencedBookWrite`/`GenerationRunCoordinator`
+and (b) a genuine DB row rather than a storage object — closing it here does
+not change the storage-side picture at all.
 
 ## Worker process separation
 

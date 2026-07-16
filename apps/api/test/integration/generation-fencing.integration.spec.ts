@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  AgentLogStatus,
   AgentStep,
   GenerationRunStatus,
   type Prisma,
@@ -265,6 +266,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
         status: 'complete' as GenerationOutcome['status'],
         completedStep: 'pdf_render' as GenerationOutcome['completedStep'],
         bookUpdate: { previewPdfUrl: '/files/books/b-1/storybook.pdf' },
+        agentLogs: [],
         ...overrides,
       };
     }
@@ -277,11 +279,24 @@ describe('Generation pipeline fencing (real Postgres)', () => {
         errorMessage: 'boom',
         failedStep: 'pdf_render' as GenerationOutcome['failedStep'],
         bookUpdate: {},
+        agentLogs: [],
         ...overrides,
       };
     }
 
-    it('returns "stale_fence" and leaves Book and GenerationRun completely untouched when the fencing guard fails inside the transaction', async () => {
+    /** One representative AgentLog row for `bookId`, tagged with `traceId` so a test can identify exactly which attempt's row (if any) actually made it into the DB. */
+    function agentLogRow(bookId: string, traceId: string): Prisma.AgentLogCreateManyInput {
+      return {
+        bookId,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.pdf_render,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+      };
+    }
+
+    it('returns "stale_fence", leaves Book and GenerationRun completely untouched, and persists zero AgentLog rows when the fencing guard fails inside the transaction', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 3 });
 
@@ -293,7 +308,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
           inputHash: run.inputHash,
           inputSnapshot: buildInputSnapshot(book),
         },
-        completedOutcome(),
+        completedOutcome({ agentLogs: [agentLogRow(book.id, 'trace-stale-fence')] }),
       );
 
       expect(result).toBe('stale_fence');
@@ -304,6 +319,61 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(reloadedBook.status).not.toBe('complete');
       const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
       expect(reloadedRun.status).toBe(GenerationRunStatus.running);
+      const logs = await prisma.agentLog.findMany({ where: { bookId: book.id } });
+      expect(logs).toHaveLength(0);
+    });
+
+    it("a claim reclaimed by a newer delivery (fencingVersion bumped) rejects the old claim's completeRun with zero AgentLog rows written, then the newer claim's own completion persists only its own AgentLog rows — proven against the real DB, not just the in-process return value", async () => {
+      const book = await createUserAndBook();
+      const run = await createRun(book, {
+        fencingVersion: 1,
+        leaseOwner: 'worker-a',
+        deliveryToken: 'delivery-token-a',
+      });
+      const runService = new GenerationRunService(prisma);
+      const staleCtx = {
+        runId: run.id,
+        bookId: book.id,
+        fencingVersion: run.fencingVersion,
+        inputHash: run.inputHash,
+        inputSnapshot: buildInputSnapshot(book),
+      };
+
+      // A newer delivery reclaims the run — a stalled-job redelivery or
+      // recovery reclaim — before worker-a's own in-flight pipeline attempt
+      // has finished, bumping fencingVersion out from under it.
+      const reclaimed = await runService.claim(run.id, 'token-b', 'worker-b', 60_000);
+      expect(reclaimed?.fencingVersion).toBe(2);
+
+      // worker-a's pipeline finishes and calls completeRun with the AgentLog
+      // rows it built from the fencingVersion=1 context it originally
+      // observed at claim time — its fencing check must fail before any of
+      // those rows are ever inserted.
+      const staleResult = await coordinator.completeRun(
+        staleCtx,
+        completedOutcome({ agentLogs: [agentLogRow(book.id, 'trace-stale-worker-a')] }),
+      );
+      expect(staleResult).toBe('stale_fence');
+      const logsAfterStale = await prisma.agentLog.findMany({ where: { bookId: book.id } });
+      expect(logsAfterStale).toHaveLength(0);
+
+      // worker-b's own (current) claim then completes normally — its logs,
+      // and only its logs, are the ones that persist.
+      const currentCtx = {
+        runId: run.id,
+        bookId: book.id,
+        fencingVersion: 2,
+        inputHash: run.inputHash,
+        inputSnapshot: buildInputSnapshot(book),
+      };
+      const currentResult = await coordinator.completeRun(
+        currentCtx,
+        completedOutcome({ agentLogs: [agentLogRow(book.id, 'trace-current-worker-b')] }),
+      );
+      expect(currentResult).toBe('applied');
+      const logsAfterCurrent = await prisma.agentLog.findMany({ where: { bookId: book.id } });
+      expect(logsAfterCurrent).toHaveLength(1);
+      expect(logsAfterCurrent[0]?.traceId).toBe('trace-current-worker-b');
     });
 
     it('leaves an existing published pointer untouched when a later regeneration attempt fails on a stale fence', async () => {
@@ -332,7 +402,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(reloadedBook.publishedRunFencingVersion).toBe(5);
     });
 
-    it('returns "book_mirror_mismatch" and rolls back the ENTIRE transaction (GenerationRun included, provably still `running` in the DB), leaving both published pointer fields untouched, when the run fence holds but Book.activeRunId has drifted', async () => {
+    it('returns "book_mirror_mismatch" and rolls back the ENTIRE transaction (GenerationRun AND the AgentLog insert included, provably still `running`/absent in the DB), leaving both published pointer fields untouched, when the run fence holds but Book.activeRunId has drifted', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 3 });
       // Break the mirror invariant directly, simulating some other bug having
@@ -348,7 +418,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
           inputHash: run.inputHash,
           inputSnapshot: buildInputSnapshot(book),
         },
-        completedOutcome(),
+        completedOutcome({ agentLogs: [agentLogRow(book.id, 'trace-mirror-mismatch')] }),
       );
 
       expect(result).toBe('book_mirror_mismatch');
@@ -361,9 +431,15 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(reloadedBook.status).not.toBe('complete');
       expect(reloadedBook.publishedRunId).toBeNull();
       expect(reloadedBook.publishedRunFencingVersion).toBeNull();
+      // The AgentLog insert is the last statement in the transaction — never
+      // reached at all here (the throw happens before it), but this also
+      // proves the transaction genuinely rolled back rather than partially
+      // committing, for the one write type that comes last.
+      const logs = await prisma.agentLog.findMany({ where: { bookId: book.id } });
+      expect(logs).toHaveLength(0);
     });
 
-    it('atomically publishes Book.status=complete, GenerationRun.status=completed, activeRunId, publishedRunId, AND publishedRunFencingVersion together on success', async () => {
+    it('atomically publishes Book.status=complete, GenerationRun.status=completed, activeRunId, publishedRunId, publishedRunFencingVersion, AND the outcome.agentLogs rows together on success', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book, { fencingVersion: 3 });
 
@@ -375,7 +451,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
           inputHash: run.inputHash,
           inputSnapshot: buildInputSnapshot(book),
         },
-        completedOutcome(),
+        completedOutcome({ agentLogs: [agentLogRow(book.id, 'trace-applied-success')] }),
       );
 
       expect(result).toBe('applied');
@@ -385,6 +461,9 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(reloadedBook.publishedRunFencingVersion).toBe(3);
       expect(reloadedBook.status).toBe('complete');
       expect(reloadedBook.previewPdfUrl).toBe('/files/books/b-1/storybook.pdf');
+      const logs = await prisma.agentLog.findMany({ where: { bookId: book.id } });
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.traceId).toBe('trace-applied-success');
       const reloadedRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
       expect(reloadedRun.status).toBe(GenerationRunStatus.completed);
     });

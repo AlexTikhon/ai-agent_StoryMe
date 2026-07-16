@@ -105,6 +105,15 @@ export class GenerationRunCoordinator {
     bookId: string;
     runId: string;
     bookData: Prisma.BookUpdateInput;
+    /**
+     * AgentLog rows to persist alongside this transition — only ever
+     * inserted after both the GenerationRun fence and the Book mirror check
+     * above have held, and inside the very same transaction, so a stale or
+     * superseded claim (whichever check fails first) writes zero AgentLog
+     * rows, exactly like it writes no other durable state (see
+     * GenerationOutcome.agentLogs's doc comment).
+     */
+    agentLogs?: readonly Prisma.AgentLogCreateManyInput[];
   }): Promise<CoordinatorOutcome> {
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -123,6 +132,13 @@ export class GenerationRunCoordinator {
             `GenerationRun ${params.runId} (book ${params.bookId}) passed its fencing check, but Book.activeRunId no longer pointed at it — the run/Book mirror invariant is broken. Rolling back the entire transaction rather than leaving GenerationRun terminal while Book stays stuck.`,
           );
         }
+
+        if (params.agentLogs && params.agentLogs.length > 0) {
+          await tx.agentLog.createMany({
+            data: params.agentLogs as Prisma.AgentLogCreateManyInput[],
+          });
+        }
+
         return 'applied';
       });
     } catch (err) {
@@ -192,6 +208,7 @@ export class GenerationRunCoordinator {
       bookId: ctx.bookId,
       runId: ctx.runId,
       bookData,
+      agentLogs: outcome.agentLogs,
     });
 
     if (result === 'stale_fence') {
