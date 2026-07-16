@@ -41,8 +41,14 @@ match between API and web** or every request 401s.
 
 ## What it does not do yet
 
-- **No payments/credits enforcement.** `User.credits` and Stripe fields exist
-  in the schema but nothing in the API charges credits or calls Stripe.
+- **No payments/credits enforcement.** Phase E1 added an internal credit
+  accounting foundation (`GET /api/credits/balance`,
+  `GET /api/credits/transactions`, an atomic `CreditsService` ledger — see
+  "Phase E1: Credit accounting foundation" in
+  [docs/deployment-readiness.md](docs/deployment-readiness.md)), but **no API
+  path deducts credits for a generation run yet**, and Stripe itself
+  (checkout, webhooks, subscriptions, refunds) is still entirely
+  unimplemented.
 - ~~No queue-backed generation.~~ Generation now runs on a durable
   BullMQ/Redis-backed queue (`GenerationQueueService`/`GenerationQueueProcessor`),
   not in-process — Redis is on the critical path for scheduling generation.
@@ -124,7 +130,9 @@ publicly.
 
 ## Known post-MVP TODOs
 
-- Wire credit deduction and Stripe billing.
+- Wire credit deduction into the generation flow and build Stripe billing
+  (checkout, webhooks, subscriptions, refunds) on top of the Phase E1 credit
+  accounting foundation.
 - Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial
   generation recovery, user-initiated cancellation) or should be dropped.
 - `prisma:seed` was removed as a package script (previously pointed at a

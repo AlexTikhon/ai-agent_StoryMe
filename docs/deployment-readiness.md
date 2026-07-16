@@ -69,6 +69,91 @@ were needed. See [Production readiness summary](#production-readiness-summary)
 below for the current three-tier blocker/recommendation/enhancement
 breakdown.
 
+## Phase E1: Credit accounting foundation {#phase-e1-credits}
+
+Built the internal credit accounting foundation the first post-MVP TODO
+("wire credit deduction and Stripe billing") needs — scoped to the ledger
+itself only. **No API path deducts a credit for a generation run yet, and
+Stripe (checkout, webhooks, subscriptions, refunds) remains entirely
+unimplemented** — this phase is purely the safe-to-build-on primitive
+underneath both.
+
+`User.credits` remains the canonical current balance (never derived by
+summing `credit_transactions`, since existing users start with the
+schema-default balance and may have no historical ledger rows at all).
+`CreditsService` (`apps/api/src/credits/credits.service.ts`) is the only code
+path allowed to write it:
+
+- **`deduct`** atomically verifies sufficient balance, decrements it, stamps
+  `creditsUpdatedAt`, and inserts one negative `CreditTransaction` row with
+  the exact resulting `balanceAfter` — all inside one interactive Prisma
+  transaction. The balance check is a conditional `updateMany` (`WHERE id =
+  ? AND credits >= ?`), the same pattern `GenerationRunService.claim` already
+  uses for fenced concurrent writes: Postgres's row lock serializes
+  concurrent debits against the same user, so a losing debit's `WHERE`
+  re-evaluates against the winner's already-committed balance and correctly
+  fails closed rather than racing to a negative balance.
+- **`add`** atomically increments the balance (no balance guard — a
+  credit/grant can't fail on balance alone) and inserts one positive ledger
+  row.
+- Both reject a zero/negative/non-integer `amount` before touching the DB
+  (`BadRequestException`).
+- An unknown `userId` raises `NotFoundException`; a real user with
+  insufficient balance raises a stable `402 { code: 'INSUFFICIENT_CREDITS' }`
+  — the two are never confused, since the conditional `updateMany` matching
+  zero rows triggers a second read to tell them apart.
+- If the ledger insert fails for any reason (including the idempotency
+  constraint below), the whole transaction — including the balance mutation
+  that already ran earlier in it — rolls back. Verified against real Postgres
+  by forcing a `CreditTransaction.bookId` foreign-key violation mid-transaction
+  (`credits.integration.spec.ts`).
+
+**Idempotency**: `credit_transactions.idempotency_key` (nullable, unique —
+Phase E1 migration `20260716190000_phase_e1_credit_idempotency_key`) exists
+now so a future Stripe webhook redelivery or a client-retried refund can
+never double-mutate the balance. Deliberately not a check-then-insert design:
+a pre-check read is only a fast-path (avoids the DB round-trip for a
+same-process replay), but the actual guarantee is the unique constraint
+itself — two genuinely concurrent calls with the same key may both pass the
+balance check, but only one `CreditTransaction` insert can win; the loser's
+whole transaction (including its own balance mutation) rolls back and the
+caller transparently re-fetches and returns the winner's row. Proven against
+real Postgres with two calls fired via `Promise.all` (not sequenced) on the
+same key.
+
+**Endpoints** (`apps/api/src/credits/credits.controller.ts`, behind the
+existing `AuthModeGuard`):
+
+- `GET /api/credits/balance` → `{ balance, creditsUpdatedAt }`
+- `GET /api/credits/transactions?cursor=&limit=&direction=` → cursor-paginated
+  `CreditTransactionDto[]` (stable `createdAt desc, id desc` order, `limit`
+  clamped to `[1, 100]`, default 20; `direction` optionally filters to
+  `debit` (`amount < 0`) or `credit` (`amount > 0`))
+
+Ownership is derived exclusively from the authenticated user
+(`@CurrentUser()`) — neither endpoint accepts a `userId` from the query or
+body, so a caller can never read another user's balance or ledger.
+`CreditTransactionDto` omits `stripePaymentId`/`idempotencyKey`, neither safe
+to expose to the owning user.
+
+**Not in scope for this phase** (unchanged from before): no code path
+deducts credits when a book is created or generated, no Stripe dependency,
+checkout flow, webhook handler, subscription/refund logic, or frontend
+change. The existing schema-default starter-credit behavior (`User.credits`
+defaults to `3`) is unchanged. No Redis caching was added — `GET
+/api/credits/balance` reads straight from Postgres; the old aspirational
+`API_SPEC.md` §19 called for a 30s Redis cache, but this phase doesn't wire
+one (see [§13.2](auth-architecture.md#132-why-in-memory-not-redis) for why
+this codebase treats Redis-backed caching as a deliberate follow-up, not a
+default).
+
+Verified: `pnpm --filter @book/api typecheck`, `pnpm --filter @book/api test`
+(1191 tests), `pnpm --filter @book/api test:integration` (60 tests,
+including 7 new real-Postgres credit tests), the Phase E1 migration applied
+cleanly to a live local Postgres and is idempotent on re-run (`prisma migrate
+deploy` reports "No pending migrations to apply" the second time), and
+`eslint --max-warnings 0` on every changed file.
+
 ## Production readiness summary {#production-readiness-summary}
 
 ### MVP blockers (must fix before any deploy)
@@ -110,8 +195,11 @@ real transactional email provider are all done end-to-end.
 - **OAuth** (Google/Apple) — schema already reserves `oauthProvider`/
   `oauthId`; documented as a follow-up auth method, not a blocker for the
   current email/password + JWT flow.
-- **Payments/credits enforcement** — `User.credits` and Stripe fields exist
-  in the schema but nothing charges credits or calls Stripe yet.
+- **Payments/credits enforcement** — Phase E1 built the internal credit
+  accounting foundation (see [Phase E1](#phase-e1-credits) above), but
+  **nothing yet deducts a credit for a generation run**, and Stripe itself
+  (checkout, webhooks, subscriptions, refunds) remains entirely
+  unimplemented.
 - **Cancellation / partial-completion flow** — `BookStatus.Cancelled` and
   `BookStatus.Partial` are reserved schema states with no code path that
   produces them yet.

@@ -2,6 +2,7 @@ import { DynamicModule, Module } from '@nestjs/common';
 import { AuthModule } from './auth/auth.module';
 import { BooksModule, type BooksModuleOptions } from './books/books.module';
 import { CacheModule } from './cache/cache.module';
+import { CreditsModule } from './credits/credits.module';
 import { EnvModule } from './config/env.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
@@ -41,6 +42,7 @@ export class AppModule {
         UsersModule,
         AuthModule,
         BooksModule.register(options),
+        CreditsModule,
       ],
     };
   }

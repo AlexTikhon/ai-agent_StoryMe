@@ -585,6 +585,15 @@ model CreditTransaction {
   balanceAfter    Int          @map("balance_after")
   reason          CreditReason
   stripePaymentId String?      @map("stripe_payment_id")
+  // Phase E1: caller-supplied dedupe key for a mutation that must apply at
+  // most once (a future Stripe webhook redelivery, a refund retried after a
+  // timeout, etc.) — nullable/unique so most rows (which have no idempotency
+  // requirement) leave it null while any row that does supply one gets a
+  // DB-enforced single-insert guarantee. CreditsService relies on this unique
+  // constraint itself to resolve a concurrent duplicate request (the second
+  // insert fails and its whole transaction, including the balance mutation,
+  // rolls back) — never a check-then-insert race.
+  idempotencyKey  String?      @unique @map("idempotency_key")
   createdAt       DateTime     @default(now()) @map("created_at")
 
   user            User         @relation(fields: [userId], references: [id])
