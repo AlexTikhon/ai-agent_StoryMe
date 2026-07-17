@@ -306,6 +306,113 @@ test:integration`, `pnpm --filter @book/web typecheck`, `pnpm --filter
 on every changed file. No automated test contacts Stripe or renders raw
 card/payment details — Stripe Checkout remains fully hosted.
 
+## Phase F2: CI production-safety gates and integration coverage {#phase-f2-ci}
+
+Phase F1 added the `preflight:deploy` tool (see
+[§3.4](private-demo-deploy.md#pre-deploy-preflight-check)) but nothing
+actually ran it in CI, and `.github/workflows/ci.yml` provisioned real
+Postgres/Redis service containers only to run `pnpm test` — which never
+included `apps/api`'s real-Postgres/Redis suite
+(`vitest.integration.config.ts`, invoked explicitly via
+`pnpm --filter @book/api test:integration`, kept out of the default `pnpm
+test` run — see that file's own doc comment). Phase F2 closes both gaps and
+makes every critical check its own named, required CI job — no application
+behavior changed.
+
+### Checks now enforced in CI
+
+`.github/workflows/ci.yml` now runs six independent jobs:
+
+| Job (required-check name) | What it proves | Needs |
+|---|---|---|
+| **Lint, Format & Typecheck** | `prettier --check`, `eslint --max-warnings 0` (both packages), `tsc --noEmit` (both packages — `apps/web`'s `tsconfig.json` already includes `**/*.ts`/`**/*.tsx` with no test-file exclusion, so its 22 `*.test.ts(x)` files are typechecked today; `apps/api`'s `tsconfig.json` deliberately excludes `test/**`, `**/*.spec.ts` — unchanged, not weakened) | — |
+| **Unit Tests** | `pnpm test` (turbo → both packages' `vitest run`) — no Postgres/Redis service containers, no Stripe/OpenAI/Resend/S3/R2 network access. `DATABASE_URL`/`REDIS_URL` are syntactically valid but unreachable placeholders (`envSchema` only requires they parse as `postgresql://`/`redis://` URLs; nothing in this job opens a connection) | — |
+| **Integration Tests (Postgres + Redis)** | Real `postgres:16-alpine` + `redis:7-alpine` service containers; applies `prisma migrate deploy` to a fresh CI-only database, re-runs it to prove idempotency (asserts the second run's output contains "No pending migrations"), then `pnpm --filter @book/api test:integration` | — |
+| **Deployment Preflight** | `pnpm --filter @book/api preflight:deploy:ci-check` (see below) | — |
+| **Build (apps)** | `pnpm build` (turbo → `next build` + `tsc`) with a structurally valid placeholder `NEXT_PUBLIC_API_URL` (includes the required `/api` suffix) | Lint, Format & Typecheck |
+| **Docker Build (API)** | `docker build -f apps/api/Dockerfile` succeeds, tagged `storyme-api:ci-<sha>` — **built only, never pushed, no registry auth** | Lint, Format & Typecheck |
+
+All jobs carry `timeout-minutes` so a hung integration test or Docker build
+can't consume a runner indefinitely, and the workflow has top-level
+`permissions: contents: read` (no job escalates this) plus a
+`concurrency` group that cancels a superseded run on the same branch/PR.
+
+**Deployment Preflight job detail**: reuses the exact Phase F1 CLI —
+`apps/api/scripts/preflight-deploy.ts` — as a real subprocess, not a
+CI-only reimplementation. The wrapper
+(`apps/api/scripts/preflight-deploy-ci-fixtures.ts`, run via
+`pnpm --filter @book/api preflight:deploy:ci-check`) exercises three
+checked-in, deterministic, no-network fixture environments:
+
+1. a fully valid `--role=api` production env → must exit `0`
+2. a fully valid `--role=worker` production env → must exit `0`
+3. the same api env with `AUTH_MODE=dev` (a real incident class — see
+   [Dev-auth warning](#phase-5d-dev-auth)) → must exit non-zero, must name
+   the failing check (`auth_mode_not_jwt`) in its output, and must **not**
+   contain any of the fixture's injected credential values (proven with a
+   distinctive marker string planted in every secret-shaped fixture var and
+   asserted absent from stdout/stderr) — this is the same "never print a
+   secret" guarantee `preflight-deploy-checks.ts` documents at the type
+   level, now checked at the CLI's actual output.
+
+### CI migration verification vs. a real release migration hook
+
+**What CI now proves**: `prisma migrate deploy` applies cleanly to a
+throwaway, CI-only Postgres database created fresh for that run, and a
+second `prisma migrate deploy` against the same now-migrated database
+reports no pending migrations — i.e. the migration set is internally
+consistent and idempotent as of this commit.
+
+**What CI does not do** (per this phase's explicit scope): it never touches
+any real staging or production database, there are no repository/cloud
+secrets, and no external provider is contacted. The
+[Migration command](#migration-command) section below is unchanged — a real
+deploy still requires a human (or a separate, approval-protected release
+pipeline with real staging/production `DATABASE_URL` credentials) to run
+`pnpm --filter @book/api prisma:migrate:deploy` against the target database
+as its own step, before the new version starts serving traffic. Wiring that
+real hook up is the one item Phase F2 deliberately leaves undone — see
+[Suggested next phase](#suggested-next-phase) below.
+
+### Recommended branch-protection required checks
+
+For a PR to be mergeable, require these exact job names (GitHub matches on
+the job's `name:`, not its YAML key):
+
+- `Lint, Format & Typecheck`
+- `Unit Tests`
+- `Integration Tests (Postgres + Redis)`
+- `Deployment Preflight`
+- `Build (apps)`
+- `Docker Build (API)`
+
+### No external network access from CI
+
+No CI job contacts Stripe, OpenAI, Resend, S3, or R2. Every provider that
+could make a real network call is forced into its deterministic mock/console
+path in every job that runs application code
+(`STORY_GENERATION_PROVIDER=mock`, `IMAGE_GENERATION_PROVIDER=mock`,
+`EMAIL_PROVIDER=console`, `STRIPE_BILLING_ENABLED=false`); the Deployment
+Preflight job's fixtures set `EMAIL_PROVIDER=resend`/`PDF_STORAGE_DRIVER=r2`
+to reach a *passing* preflight result, but `preflight-deploy.ts` itself
+never opens a network connection regardless of which provider values are
+present — it only parses and cross-checks env vars (see its own doc
+comment). The Docker Build job builds an image and stops; it never runs
+`docker push` or authenticates to any registry.
+
+### Known pre-existing gap surfaced by this phase
+
+`pnpm format:check` (newly run as an explicit CI step) currently fails on
+~45 files predating this phase (docs and several `apps/api/src` files, going
+back at least to the Phase B/C claim-artifact-cleanup work) — `format:check`
+was never part of CI before Phase F2, so this drift was never enforced.
+Phase F2 deliberately did not bulk-reformat those files (out of scope for a
+CI-safety change, and `git diff --check`-sized). Until a dedicated
+formatting pass fixes them, the **Lint, Format & Typecheck** required check
+will fail on `main` and on every PR that doesn't happen to touch those
+files — branch protection should not be turned on for that check until this
+is resolved separately.
+
 ## Production readiness summary {#production-readiness-summary}
 
 ### MVP blockers (must fix before any deploy)
@@ -1212,8 +1319,11 @@ pnpm --filter @book/api prisma:migrate:deploy
 Run this as a separate release/deploy step, against the production database,
 **before** starting the new API version — the Docker image intentionally
 does not run it (see [Known blockers](#known-blockers) above). This is the
-same command CI uses (`.github/workflows/ci.yml`), just pointed at
-`DATABASE_URL` for the target environment instead of the CI database.
+same command CI's "Integration Tests" job runs (`.github/workflows/ci.yml`,
+twice, to prove idempotency — see [Phase F2](#phase-f2-ci)), just pointed at
+`DATABASE_URL` for the target environment instead of the throwaway CI
+database — CI verifies the migrations are safe to apply, it does not apply
+them to any real environment.
 
 **Rollback caution**: `prisma migrate deploy` only applies forward
 migrations — there is no automated rollback. Prisma migrations in this repo
@@ -1221,11 +1331,19 @@ are plain SQL (`apps/api/prisma/migrations/*/migration.sql`); reverting a bad
 migration in production means writing and applying a new forward migration
 that undoes the change, not running the old one backwards.
 
-## Suggested next phase
+## Suggested next phase {#suggested-next-phase}
 
-1. Add the migration-deploy step to whatever deploy pipeline is chosen (CI
-   job, release script, or platform release-phase hook), since the container
-   itself intentionally doesn't run it.
+1. Wire a real, approval-protected migration/release hook with actual
+   staging/production `DATABASE_URL` credentials into whatever deploy
+   platform is chosen (Railway/Fly/Render release-phase hook, or a separate
+   manually-triggered deploy workflow) — this remains the one external step
+   [Phase F2](#phase-f2-ci) deliberately does not add. CI ([Phase
+   F2](#phase-f2-ci)) now proves the migration set applies cleanly and
+   idempotently to a *throwaway CI database* on every push/PR, which is real
+   coverage but not a substitute for this: the container itself still
+   intentionally never runs `prisma migrate deploy` (see [Known
+   blockers](#known-blockers) above), and no CI job holds or is meant to
+   hold real production credentials.
 2. ~~A real transactional email provider behind `EmailService`~~ **Resolved
    in Phase 6H** — `ResendEmailService` is available behind
    `EMAIL_PROVIDER=resend`; a real deploy just needs `RESEND_API_KEY` and
