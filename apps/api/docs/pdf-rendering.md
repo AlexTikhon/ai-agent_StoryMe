@@ -63,7 +63,7 @@ Covers image handling in `renderStorybookPdf` / `renderImageBlock` in
 
 `renderStorybookPdf(layout, options?)` accepts an optional
 `options.resolveImageBuffer: (imageBlock, entry) => Buffer | undefined`. This
-is the *only* way the renderer ever gets image bytes:
+is the _only_ way the renderer ever gets image bytes:
 
 - It is called synchronously, once per image block, purely in-process.
 - Returning `undefined` (or omitting the option entirely) means "no bytes
@@ -95,7 +95,7 @@ below.
 
 `AgentService.startBookGeneration` calls `renderStorybookPdf` with a
 `resolveImageBuffer` option (via `buildImageBufferResolver`, see below), and
-now *does* save real image bytes for every generated image entry before
+now _does_ save real image bytes for every generated image entry before
 rendering — see "Local mock image producer" below — so images embed for
 real, end-to-end, during book generation. Only the standalone
 `scripts/render-pdf.ts` sample script (used by `pnpm render:pdf`) still
@@ -140,7 +140,7 @@ itself (as opposed to a storage-save failure) is treated more strictly —
 see "Failure behavior" in `local-generation-pipeline.md`.
 
 `generateMockImagePng` itself is explicitly **not** real AI image
-generation — it exists so the pipeline has *some* real, embeddable image
+generation — it exists so the pipeline has _some_ real, embeddable image
 bytes to prove the storage → resolver → renderer path end-to-end. A real
 `OpenAIImageGenerationProvider` (behind the same `ImageGenerationProvider`
 interface) also exists and is used when `IMAGE_GENERATION_PROVIDER_TOKEN=openai`

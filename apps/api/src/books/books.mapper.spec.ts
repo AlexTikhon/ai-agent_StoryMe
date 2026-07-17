@@ -131,7 +131,9 @@ describe('toBookDto', () => {
   });
 
   it('passes through a characterCard that matches the expected shape', () => {
-    const book = makeBook({ characterCard: VALID_CHARACTER_CARD as unknown as Book['characterCard'] });
+    const book = makeBook({
+      characterCard: VALID_CHARACTER_CARD as unknown as Book['characterCard'],
+    });
 
     const dto = toBookDto(book);
 
@@ -148,7 +150,9 @@ describe('toBookDto', () => {
   });
 
   it('degrades a characterCard with the wrong shape entirely (e.g. an array) to null', () => {
-    const book = makeBook({ characterCard: ['not', 'an', 'object'] as unknown as Book['characterCard'] });
+    const book = makeBook({
+      characterCard: ['not', 'an', 'object'] as unknown as Book['characterCard'],
+    });
 
     const dto = toBookDto(book);
 

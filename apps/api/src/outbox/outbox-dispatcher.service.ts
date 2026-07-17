@@ -75,12 +75,16 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
 
   private async dispatchOne(event: OutboxEvent): Promise<void> {
     if (event.aggregateType !== 'generation_run') {
-      this.logger.warn(`Skipping outbox event ${event.id} with unknown aggregateType "${event.aggregateType}".`);
+      this.logger.warn(
+        `Skipping outbox event ${event.id} with unknown aggregateType "${event.aggregateType}".`,
+      );
       return;
     }
     const payload = event.payload as { bookId?: unknown; runId?: unknown };
     if (typeof payload.bookId !== 'string' || typeof payload.runId !== 'string') {
-      this.logger.error(`Outbox event ${event.id} has a malformed payload — skipping without dispatching.`);
+      this.logger.error(
+        `Outbox event ${event.id} has a malformed payload — skipping without dispatching.`,
+      );
       return;
     }
     try {
@@ -88,7 +92,9 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
       await this.outboxService.markDispatched(event.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to dispatch outbox event ${event.id} (run ${payload.runId}): ${message}`);
+      this.logger.error(
+        `Failed to dispatch outbox event ${event.id} (run ${payload.runId}): ${message}`,
+      );
       await this.outboxService.recordAttemptFailure(event.id).catch(() => undefined);
     }
   }

@@ -25,10 +25,7 @@ import {
   deleteLocalClaimArtifacts,
   listLocalClaimArtifacts,
 } from '../agent/claim-artifact-local-walk';
-import {
-  deleteCloudClaimArtifacts,
-  listCloudClaimArtifacts,
-} from '../agent/claim-artifact-cloud';
+import { deleteCloudClaimArtifacts, listCloudClaimArtifacts } from '../agent/claim-artifact-cloud';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 

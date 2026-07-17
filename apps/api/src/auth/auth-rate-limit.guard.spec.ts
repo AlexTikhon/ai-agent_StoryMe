@@ -124,7 +124,10 @@ describe('AuthRateLimitGuard', () => {
       const guard = new AuthRateLimitGuard(rateLimiter, createConfig(60_000, 2));
 
       const { context: first } = createContext({ ip: '1.2.3.4', body: { email: 'a@example.com' } });
-      const { context: second } = createContext({ ip: '1.2.3.4', body: { email: 'b@example.com' } });
+      const { context: second } = createContext({
+        ip: '1.2.3.4',
+        body: { email: 'b@example.com' },
+      });
       const { context: third } = createContext({ ip: '1.2.3.4', body: { email: 'c@example.com' } });
 
       await guard.canActivate(first);

@@ -20,7 +20,7 @@ path allowed to write it.
   `creditsUpdatedAt`, and inserts one negative `CreditTransaction` row with
   the exact resulting `balanceAfter` — all inside one interactive Prisma
   transaction. The balance check is a conditional `updateMany` (`WHERE id = ?
-  AND credits >= ?`): Postgres's row lock serializes concurrent debits
+AND credits >= ?`): Postgres's row lock serializes concurrent debits
   against the same user, so a losing debit's `WHERE` re-evaluates against the
   winner's already-committed balance and correctly fails closed rather than
   racing to a negative balance.
@@ -212,11 +212,11 @@ packages — a client sends a `packageId` and nothing else; it can never
 influence which Stripe Price, quantity, currency, or credit amount gets
 charged/granted:
 
-| `packageId` | Credits | Price ID env var |
-| --- | --- | --- |
-| `starter` | 10 | `STRIPE_PRICE_ID_STARTER` |
-| `pro` | 30 | `STRIPE_PRICE_ID_PRO` |
-| `bundle` | 100 | `STRIPE_PRICE_ID_BUNDLE` |
+| `packageId` | Credits | Price ID env var          |
+| ----------- | ------- | ------------------------- |
+| `starter`   | 10      | `STRIPE_PRICE_ID_STARTER` |
+| `pro`       | 30      | `STRIPE_PRICE_ID_PRO`     |
+| `bundle`    | 100     | `STRIPE_PRICE_ID_BUNDLE`  |
 
 `BillingConfigService` resolves a `packageId` against this catalog and the
 live env config (`billing-config.service.ts`) — an unknown id, or a known id
@@ -335,7 +335,7 @@ creditsService.add({
 
 The idempotency key is derived **only from the Checkout Session id**, never
 from the delivered event's own `event.id` — so a redelivery of the same
-event, a genuinely concurrent pair of webhook deliveries, and a *different*
+event, a genuinely concurrent pair of webhook deliveries, and a _different_
 Stripe event id that happens to reference the same session (Stripe can emit
 more than one event per session in some flows) all converge on the exact
 same key and therefore the exact same single `CreditTransaction` row, via
@@ -352,7 +352,7 @@ committed. This deliberately **contradicts** the "always return 200 to
 Stripe even on internal errors" guidance in the older, aspirational
 `BACKEND_DESIGN.md` §7.4 and `API_SPEC.md` §20 — those documents predate any
 real implementation and describe a design this codebase does not follow.
-Only a *business-logic* "nothing to grant" outcome (unpaid session, unknown
+Only a _business-logic_ "nothing to grant" outcome (unpaid session, unknown
 package, mismatched price, etc. — see "Payment verification" above) returns
 2xx; a failure that could have left a payment ungranted never does.
 

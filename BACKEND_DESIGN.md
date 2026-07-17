@@ -1,5 +1,7 @@
 # Backend Technical Design
+
 ## StoryMe — Implementation Reference for Senior Backend Engineers
+
 **Version 1.0 | Backend Architecture Document**
 **Prepared by: Principal Backend Architect | Date: June 2026**
 
@@ -35,9 +37,10 @@ This section defines the contract between the backend and the Next.js BFF. It is
 All API responses from the NestJS backend follow a consistent envelope. The BFF may flatten this before forwarding to the browser, but the NestJS→BFF contract is:
 
 **Success:**
+
 ```json
 {
-  "data": { /* payload */ },
+  "data": {/* payload */},
   "meta": {
     "requestId": "req_abc123",
     "timestamp": "2026-06-30T12:00:00Z"
@@ -46,6 +49,7 @@ All API responses from the NestJS backend follow a consistent envelope. The BFF 
 ```
 
 **Error:**
+
 ```json
 {
   "error": {
@@ -58,6 +62,7 @@ All API responses from the NestJS backend follow a consistent envelope. The BFF 
 ```
 
 **Validation error (422):**
+
 ```json
 {
   "error": {
@@ -76,21 +81,21 @@ The frontend error handling layer maps `error.code` to localized user-facing mes
 
 ## 1.2 HTTP Status Code Contract
 
-| Scenario | HTTP Status | Notes |
-|---|---|---|
-| Success (read) | 200 | Standard GET, no body omitted |
-| Success (created) | 201 | POST that creates a resource |
-| Success (async job started) | 202 | Book creation — job accepted |
-| Success (no content) | 204 | DELETE, logout |
-| Bad request / invalid format | 400 | Malformed JSON, missing required fields |
-| Unauthenticated | 401 | No token or token expired |
-| Forbidden (plan gate) | 403 | Valid auth, insufficient plan |
-| Not found | 404 | Resource does not exist or is not owned by user |
-| Conflict | 409 | Duplicate resource (duplicate email on signup) |
-| Validation error | 422 | Field-level validation failures |
-| Rate limited | 429 | With `Retry-After` header (seconds) |
-| Server error | 500 | Unexpected; Sentry auto-notified |
-| Gateway timeout (AI provider) | 504 | Upstream AI call timed out |
+| Scenario                      | HTTP Status | Notes                                           |
+| ----------------------------- | ----------- | ----------------------------------------------- |
+| Success (read)                | 200         | Standard GET, no body omitted                   |
+| Success (created)             | 201         | POST that creates a resource                    |
+| Success (async job started)   | 202         | Book creation — job accepted                    |
+| Success (no content)          | 204         | DELETE, logout                                  |
+| Bad request / invalid format  | 400         | Malformed JSON, missing required fields         |
+| Unauthenticated               | 401         | No token or token expired                       |
+| Forbidden (plan gate)         | 403         | Valid auth, insufficient plan                   |
+| Not found                     | 404         | Resource does not exist or is not owned by user |
+| Conflict                      | 409         | Duplicate resource (duplicate email on signup)  |
+| Validation error              | 422         | Field-level validation failures                 |
+| Rate limited                  | 429         | With `Retry-After` header (seconds)             |
+| Server error                  | 500         | Unexpected; Sentry auto-notified                |
+| Gateway timeout (AI provider) | 504         | Upstream AI call timed out                      |
 
 **Critical rule:** Never return a 200 with an error in the body. Status codes carry meaning and the BFF/frontend error interceptor depends on them.
 
@@ -101,7 +106,7 @@ All list endpoints use cursor-based pagination. No offset/limit pagination. Resp
 ```json
 {
   "data": {
-    "items": [ /* array of items */ ],
+    "items": [/* array of items */],
     "nextCursor": "eyJpZCI6InV1aWQiLCJjcmVhdGVkQXQiOiIyMDI2In0=",
     "hasMore": true,
     "total": 47
@@ -119,26 +124,28 @@ All list endpoints use cursor-based pagination. No offset/limit pagination. Resp
 
 The BFF's token relay depends on these exact cookie properties:
 
-| Property | Value |
-|---|---|
-| Name | `storyme_refresh` |
-| HttpOnly | `true` |
-| Secure | `true` (production); `false` (development) |
-| SameSite | `Strict` |
-| Path | `/api/auth` (scoped to auth routes only) |
-| MaxAge | 604800 (7 days in seconds) |
-| Domain | `.storyme.app` (includes BFF on `storyme.app`) |
+| Property | Value                                          |
+| -------- | ---------------------------------------------- |
+| Name     | `storyme_refresh`                              |
+| HttpOnly | `true`                                         |
+| Secure   | `true` (production); `false` (development)     |
+| SameSite | `Strict`                                       |
+| Path     | `/api/auth` (scoped to auth routes only)       |
+| MaxAge   | 604800 (7 days in seconds)                     |
+| Domain   | `.storyme.app` (includes BFF on `storyme.app`) |
 
 The BFF reads this cookie server-side to call `/api/auth/refresh`. The cookie must never be readable by JavaScript (`HttpOnly: true`).
 
 ## 1.5 CORS Configuration
 
 The NestJS API allows requests from:
+
 - `https://storyme.app` (production)
 - `https://staging.storyme.app`
 - `http://localhost:3000` (development)
 
 **CORS settings:**
+
 ```
 Access-Control-Allow-Origin: [above origins, dynamically matched]
 Access-Control-Allow-Credentials: true
@@ -161,6 +168,7 @@ Retry-After: 60
 ```
 
 Rate limits:
+
 - General API: 100 requests / minute per authenticated user
 - Book creation: 5 requests / hour for free users; 20 / hour for paid
 - Auth endpoints (login, signup): 10 requests / 15 minutes per IP
@@ -176,28 +184,28 @@ The frontend subscribes to generation progress via SSE (see `FRONTEND_DESIGN.md 
 interface WsProgressEvent {
   type: 'book:progress' | 'book:complete' | 'book:error' | 'page:ready';
   bookId: string;
-  step?: string;               // current agent step name
-  pageNumber?: number;         // set on 'page:ready' events
-  pageImageUrl?: string;       // CDN URL of completed page image
-  percentComplete?: number;    // 0–100
-  error?: string;              // set on 'book:error'
-  result?: BookResult;         // set on 'book:complete'
+  step?: string; // current agent step name
+  pageNumber?: number; // set on 'page:ready' events
+  pageImageUrl?: string; // CDN URL of completed page image
+  percentComplete?: number; // 0–100
+  error?: string; // set on 'book:error'
+  result?: BookResult; // set on 'book:complete'
 }
 ```
 
 **Progress milestones** the frontend displays:
 
-| Step | Label shown in UI | Approximate % |
-|---|---|---|
-| `char_build` | "Getting to know {childName}…" | 5% |
-| `story_plan` | "Planning the adventure…" | 15% |
-| `chapter_gen` | "Writing the story…" | 35% |
-| `illust_plan` | "Imagining the illustrations…" | 45% |
-| `image_gen` | "Painting the pages…" | 70% |
-| `qa_review` | "Checking every detail…" | 85% |
-| `layout` | "Laying out the book…" | 92% |
-| `pdf_render` | "Almost ready…" | 98% |
-| `complete` | "Your book is ready!" | 100% |
+| Step          | Label shown in UI              | Approximate % |
+| ------------- | ------------------------------ | ------------- |
+| `char_build`  | "Getting to know {childName}…" | 5%            |
+| `story_plan`  | "Planning the adventure…"      | 15%           |
+| `chapter_gen` | "Writing the story…"           | 35%           |
+| `illust_plan` | "Imagining the illustrations…" | 45%           |
+| `image_gen`   | "Painting the pages…"          | 70%           |
+| `qa_review`   | "Checking every detail…"       | 85%           |
+| `layout`      | "Laying out the book…"         | 92%           |
+| `pdf_render`  | "Almost ready…"                | 98%           |
+| `complete`    | "Your book is ready!"          | 100%          |
 
 **`page:ready` event:** Emitted for each completed page image during `image_gen`. The frontend uses this to show a live preview of pages as they appear. This is what makes the cover preview visible at ~40% progress.
 
@@ -205,12 +213,12 @@ interface WsProgressEvent {
 
 The frontend constructs CDN URLs using these patterns. They must remain stable across deployments:
 
-| Asset | Pattern | Notes |
-|---|---|---|
-| Cover thumbnail | `cdn.storyme.app/books/{bookId}/cover-thumb.webp` | Public, no auth |
+| Asset               | Pattern                                                | Notes           |
+| ------------------- | ------------------------------------------------------ | --------------- |
+| Cover thumbnail     | `cdn.storyme.app/books/{bookId}/cover-thumb.webp`      | Public, no auth |
 | Page image (reader) | `cdn.storyme.app/books/{bookId}/images/page-{NN}.webp` | Public, no auth |
-| PDF download | Signed URL via `/api/books/{id}/download/pdf` | 24h expiry |
-| Preview PDF | Signed URL via `/api/books/{id}/download/preview` | 24h expiry |
+| PDF download        | Signed URL via `/api/books/{id}/download/pdf`          | 24h expiry      |
+| Preview PDF         | Signed URL via `/api/books/{id}/download/preview`      | 24h expiry      |
 
 Page numbers in CDN paths are zero-padded to 2 digits: `page-01.webp`, `page-12.webp`, not `page-1.webp`.
 
@@ -429,6 +437,7 @@ All exceptions are caught by the global `HttpExceptionFilter` and `ValidationExc
 ## 2.4 Dependency Injection Architecture
 
 NestJS's DI container manages all services. Key rules:
+
 - Services are `@Injectable()` and registered in their feature module
 - The `AppModule` imports all feature modules
 - Circular dependencies are forbidden; if detected during development, it signals a module boundary violation that must be resolved by restructuring
@@ -512,6 +521,7 @@ CreateBookRequest
 ## 3.2 Agent Base Class
 
 All agents extend `BaseAgent` which provides:
+
 - Structured logging (agent name, book ID, step, duration, token usage, cost)
 - OpenTelemetry span creation for distributed tracing
 - Retry budget tracking (reads from the job's attempt count)
@@ -520,18 +530,18 @@ All agents extend `BaseAgent` which provides:
 
 ```typescript
 abstract class BaseAgent<TInput, TOutput> {
-  abstract name: AgentStep
-  abstract schema: ZodSchema<TOutput>
-  abstract execute(input: TInput, ctx: AgentContext): Promise<TOutput>
+  abstract name: AgentStep;
+  abstract schema: ZodSchema<TOutput>;
+  abstract execute(input: TInput, ctx: AgentContext): Promise<TOutput>;
 
-  async run(job: Job<AgentJob<TInput>>): Promise<TOutput>
-    // 1. Start OTel span
-    // 2. Call this.execute()
-    // 3. Validate output against this.schema
-    // 4. Persist output to DB
-    // 5. Publish progress event to Redis pub/sub
-    // 6. End OTel span
-    // throws on validation failure → BullMQ retries
+  async run(job: Job<AgentJob<TInput>>): Promise<TOutput>;
+  // 1. Start OTel span
+  // 2. Call this.execute()
+  // 3. Validate output against this.schema
+  // 4. Persist output to DB
+  // 5. Publish progress event to Redis pub/sub
+  // 6. End OTel span
+  // throws on validation failure → BullMQ retries
 }
 ```
 
@@ -543,9 +553,11 @@ abstract class BaseAgent<TInput, TOutput> {
 
 **Critical output — the visualAnchor:**
 A single dense string, 50–80 words, that describes the child visually in image-prompt-ready language. Example:
+
 > `"Emma, a cheerful 6-year-old girl with curly red hair adorned with small freckles across her nose, bright green eyes, wearing blue denim dungarees over a yellow striped shirt and yellow rain boots, always smiling"`
 
 This string is prepended verbatim to every image prompt in the book. It is the primary mechanism for character visual consistency. It must be:
+
 - Free of subjective adjectives ("beautiful", "cute") — those bias image models
 - Rich in objective visual detail (colors, textures, clothing, accessories)
 - Grammatically structured as a noun phrase, not a sentence
@@ -562,27 +574,28 @@ The system prompt instructs Claude to extract and normalize visual attributes fr
 
 ```typescript
 interface StoryPlan {
-  title: string
-  synopsis: string        // 3–5 sentences; used on book cover
-  chapters: ChapterOutline[]
-  educationalTheme: string
-  moralArc: string
-  targetFleischKincaidGrade: number  // age - 4
-  illustratableScenes: string[]      // one per page spread
+  title: string;
+  synopsis: string; // 3–5 sentences; used on book cover
+  chapters: ChapterOutline[];
+  educationalTheme: string;
+  moralArc: string;
+  targetFleischKincaidGrade: number; // age - 4
+  illustratableScenes: string[]; // one per page spread
 }
 
 interface ChapterOutline {
-  chapterNumber: number
-  title: string
-  summary: string        // 2–3 sentences
-  scenes: SceneOutline[]
-  emotionalBeat: string  // the emotional tone of this chapter
+  chapterNumber: number;
+  title: string;
+  summary: string; // 2–3 sentences
+  scenes: SceneOutline[];
+  emotionalBeat: string; // the emotional tone of this chapter
 }
 ```
 
 **Extended thinking rationale:** Story coherence requires planning the full arc before committing to any chapter. Extended thinking allows Claude to reason through the narrative structure, identify potential plot holes, and ensure the educational goal is organically embedded before producing the final structured output. Cost impact: +$0.04/book.
 
 **Output validation:** The Zod schema ensures:
+
 - `chapters.length` matches `bookLength / avgPagesPerChapter`
 - `illustratableScenes.length` equals `bookLength` (one scene per page)
 - `targetFleischKincaidGrade` is between 0 and 8
@@ -596,21 +609,22 @@ interface ChapterOutline {
 
 ```typescript
 interface Chapter {
-  chapterNumber: number
-  pages: Page[]
-  nextChapterHandoffSummary: string  // 200-token summary for context chaining
+  chapterNumber: number;
+  pages: Page[];
+  nextChapterHandoffSummary: string; // 200-token summary for context chaining
 }
 
 interface Page {
-  pageNumber: number
-  textContent: string        // the page text (50–100 words per page)
-  readingLevel: number       // Flesch-Kincaid grade level
-  illustrableSceneHint: string  // brief scene description for prompt generator
+  pageNumber: number;
+  textContent: string; // the page text (50–100 words per page)
+  readingLevel: number; // Flesch-Kincaid grade level
+  illustrableSceneHint: string; // brief scene description for prompt generator
 }
 ```
 
 **Context window management:**
 Each ChapterWriter worker receives only:
+
 1. A fixed system prompt (~500 tokens)
 2. The character card (~300 tokens)
 3. The story plan (chapter outline only, ~400 tokens)
@@ -630,19 +644,20 @@ After the agent produces text, a post-processing step calculates the Flesch-Kinc
 
 ```typescript
 interface ImagePrompt {
-  pageNumber: number
-  sceneDescription: string     // what is happening
-  characterPosition: string    // where the character is in the frame
-  emotionalTone: string        // facial expression and body language
-  environment: string          // setting, lighting, time of day
-  styleTokens: string[]        // consistent style tags ["children's book illustration", "watercolor", ...]
-  negativePrompt: string       // what to avoid (violence, scary elements, adult content)
-  aspectRatio: string          // "2:3" for portrait pages, "3:2" for spread
+  pageNumber: number;
+  sceneDescription: string; // what is happening
+  characterPosition: string; // where the character is in the frame
+  emotionalTone: string; // facial expression and body language
+  environment: string; // setting, lighting, time of day
+  styleTokens: string[]; // consistent style tags ["children's book illustration", "watercolor", ...]
+  negativePrompt: string; // what to avoid (violence, scary elements, adult content)
+  aspectRatio: string; // "2:3" for portrait pages, "3:2" for spread
 }
 ```
 
 **Style token catalog:**
 Style tokens are sourced from a curated catalog keyed on the user's selected `IllustrationStyle`:
+
 - `watercolor`: `["watercolor illustration", "soft brushstrokes", "translucent washes", "children's picture book", "warm palette"]`
 - `comic`: `["bold outlines", "flat colors", "comic book style", "vibrant", "energetic composition"]`
 - `3d_cartoon`: `["3D render", "Pixar style", "subsurface scattering", "soft lighting", "expressive faces"]`
@@ -673,16 +688,17 @@ When a user has uploaded a reference photo and a LoRA has been trained (see §3.
 
 ```typescript
 interface GeneratedImage {
-  pageNumber: number
-  r2Key: string           // r2://books/{bookId}/images/page-{NN}.png
-  cdnUrl: string          // https://cdn.storyme.app/books/{bookId}/images/page-{NN}.webp
-  seed: bigint            // stored for deterministic regen
-  modelVersion: string    // "flux-1.1-pro" or "dall-e-3"
-  generationMs: number
+  pageNumber: number;
+  r2Key: string; // r2://books/{bookId}/images/page-{NN}.png
+  cdnUrl: string; // https://cdn.storyme.app/books/{bookId}/images/page-{NN}.webp
+  seed: bigint; // stored for deterministic regen
+  modelVersion: string; // "flux-1.1-pro" or "dall-e-3"
+  generationMs: number;
 }
 ```
 
 **fal.ai call parameters:**
+
 ```json
 {
   "model": "fal-ai/flux/dev",
@@ -696,11 +712,13 @@ interface GeneratedImage {
 ```
 
 **Fallback logic:**
+
 1. Call fal.ai
 2. If fal.ai returns an error or times out (>30s): call DALL-E 3 via OpenAI API
 3. If both fail: mark page as `image_failed`; QA agent may force regen
 
 **Image post-processing (after generation):**
+
 1. Download raw PNG from fal.ai
 2. Upload original PNG to R2: `books/{bookId}/images/page-{NN}.png`
 3. Convert to WebP at 90% quality using Sharp (Node.js image processing)
@@ -717,20 +735,21 @@ interface GeneratedImage {
 
 ```typescript
 interface QualityScore {
-  pageNumber: number
-  passed: boolean
+  pageNumber: number;
+  passed: boolean;
   scores: {
-    ageAppropriateness: number   // 0–10
-    characterConsistency: number // 0–10
-    textImageAlignment: number   // 0–10
-    readingLevel: number         // 0–10
-  }
-  flags: ('regenerate_image' | 'regenerate_text' | 'regenerate_both')[]
-  notes: string
+    ageAppropriateness: number; // 0–10
+    characterConsistency: number; // 0–10
+    textImageAlignment: number; // 0–10
+    readingLevel: number; // 0–10
+  };
+  flags: ('regenerate_image' | 'regenerate_text' | 'regenerate_both')[];
+  notes: string;
 }
 ```
 
 **QA thresholds:**
+
 - `ageAppropriateness < 7` → `regenerate_image` (mandatory — safety critical)
 - `characterConsistency < 6` → `regenerate_image`
 - `textImageAlignment < 5` → `regenerate_image`
@@ -749,19 +768,20 @@ Pages that fail QA are re-queued into the appropriate agent queue (`agent:image-
 
 ```typescript
 interface PageLayout {
-  pageNumber: number
-  template: LayoutTemplate        // 'full-bleed' | 'text-bottom' | 'text-top' | 'text-side'
-  imageRegion: BoundingBox        // percentage-based
-  textRegion: BoundingBox
-  fontFamily: string              // from book language + age lookup table
-  fontSize: number                // pt units
-  lineHeight: number
-  textColor: string               // hex
-  backgroundDecoration?: string   // r2 key of decorative border SVG
+  pageNumber: number;
+  template: LayoutTemplate; // 'full-bleed' | 'text-bottom' | 'text-top' | 'text-side'
+  imageRegion: BoundingBox; // percentage-based
+  textRegion: BoundingBox;
+  fontFamily: string; // from book language + age lookup table
+  fontSize: number; // pt units
+  lineHeight: number;
+  textColor: string; // hex
+  backgroundDecoration?: string; // r2 key of decorative border SVG
 }
 ```
 
 **Layout template selection rules:**
+
 - Pages 1, 3: `full-bleed` (dramatic opening spreads)
 - Even pages (reader-right): `text-bottom` (image above text)
 - Odd pages (reader-left): `text-side` (image right, text left)
@@ -770,6 +790,7 @@ interface PageLayout {
 - Pages with <30 words: `full-bleed` (let the image breathe)
 
 **Font selection by age:**
+
 - Age 2–4: Andika, 24pt, 1.8 line height
 - Age 5–7: Plus Jakarta Sans, 18pt, 1.6 line height
 - Age 8–10: Plus Jakarta Sans, 14pt, 1.5 line height
@@ -820,18 +841,19 @@ All provider calls are wrapped in a `ProviderClient` abstraction that handles th
 Every AI API call records its token/image count and USD cost in `agent_logs`. After pipeline completion, the Orchestrator aggregates all agent logs for the book and writes the total to `books.total_cost_usd`. This drives the cost dashboard in `/api/admin/stats`.
 
 **Approximate per-book cost targets (32-page book):**
-| Agent | Model | Estimated Cost |
-|---|---|---|
-| CharacterBuilder | Claude Sonnet | $0.01 |
-| StoryPlanner | Claude Opus + thinking | $0.06 |
-| ChapterWriter × 8 | Claude Sonnet | $0.08 |
-| IllustPromptGen × 32 | Claude Sonnet | $0.05 |
-| CharConsistency | Claude Sonnet | $0.02 |
-| ImageGen × 32 | Flux 1.1 Pro | $0.32 |
-| QualityReview × 32 | Claude Sonnet + GPT-4o Vision | $0.15 |
-| LayoutAgent × 32 | Claude Haiku | $0.01 |
-| PDFRender | Server compute only | $0.00 |
-| **Total** | | **~$0.70** |
+
+| Agent                | Model                         | Estimated Cost |
+| -------------------- | ----------------------------- | -------------- |
+| CharacterBuilder     | Claude Sonnet                 | $0.01          |
+| StoryPlanner         | Claude Opus + thinking        | $0.06          |
+| ChapterWriter × 8    | Claude Sonnet                 | $0.08          |
+| IllustPromptGen × 32 | Claude Sonnet                 | $0.05          |
+| CharConsistency      | Claude Sonnet                 | $0.02          |
+| ImageGen × 32        | Flux 1.1 Pro                  | $0.32          |
+| QualityReview × 32   | Claude Sonnet + GPT-4o Vision | $0.15          |
+| LayoutAgent × 32     | Claude Haiku                  | $0.01          |
+| PDFRender            | Server compute only           | $0.00          |
+| **Total**            |                               | **~$0.70**     |
 
 ---
 
@@ -845,32 +867,32 @@ All queues are backed by Redis 7 via BullMQ. The queue names are the canonical i
 // common/constants/queues.ts
 export const QUEUES = {
   ORCHESTRATE: 'book:orchestrate',
-  CHAR_BUILD:  'agent:char-build',
-  STORY_PLAN:  'agent:story-plan',
+  CHAR_BUILD: 'agent:char-build',
+  STORY_PLAN: 'agent:story-plan',
   CHAPTER_WRITE: 'agent:chapter-write',
   ILLUST_PROMPT: 'agent:illust-prompt',
-  IMAGE_GEN:   'agent:image-gen',
-  QA_REVIEW:   'agent:qa-review',
-  LAYOUT:      'agent:layout',
-  PDF_RENDER:  'agent:pdf-render',
+  IMAGE_GEN: 'agent:image-gen',
+  QA_REVIEW: 'agent:qa-review',
+  LAYOUT: 'agent:layout',
+  PDF_RENDER: 'agent:pdf-render',
   NOTIFICATIONS: 'notifications',
-} as const
+} as const;
 ```
 
 ## 4.2 Worker Concurrency
 
-| Queue | Workers | Concurrency per Worker | Total Concurrency |
-|---|---|---|---|
-| `book:orchestrate` | 1 | 10 | 10 |
-| `agent:char-build` | 2 | 5 | 10 |
-| `agent:story-plan` | 2 | 3 | 6 |
-| `agent:chapter-write` | 4 | 5 | 20 |
-| `agent:illust-prompt` | 4 | 5 | 20 |
-| `agent:image-gen` | 4 | 3 | 12 (rate-limited to 50/min) |
-| `agent:qa-review` | 4 | 3 | 12 |
-| `agent:layout` | 4 | 3 | 12 |
-| `agent:pdf-render` | 2 | 2 | 4 (memory-intensive) |
-| `notifications` | 1 | 10 | 10 |
+| Queue                 | Workers | Concurrency per Worker | Total Concurrency           |
+| --------------------- | ------- | ---------------------- | --------------------------- |
+| `book:orchestrate`    | 1       | 10                     | 10                          |
+| `agent:char-build`    | 2       | 5                      | 10                          |
+| `agent:story-plan`    | 2       | 3                      | 6                           |
+| `agent:chapter-write` | 4       | 5                      | 20                          |
+| `agent:illust-prompt` | 4       | 5                      | 20                          |
+| `agent:image-gen`     | 4       | 3                      | 12 (rate-limited to 50/min) |
+| `agent:qa-review`     | 4       | 3                      | 12                          |
+| `agent:layout`        | 4       | 3                      | 12                          |
+| `agent:pdf-render`    | 2       | 2                      | 4 (memory-intensive)        |
+| `notifications`       | 1       | 10                     | 10                          |
 
 These are the Phase 1 values. Phase 2 Kubernetes autoscaling is driven by queue depth (HPA on `bullmq_queue_depth` custom metric).
 
@@ -878,9 +900,9 @@ These are the Phase 1 values. Phase 2 Kubernetes autoscaling is driven by queue 
 
 ```typescript
 enum JobPriority {
-  HIGH = 1,     // User-triggered: page regen, retry after failure
-  NORMAL = 5,   // New book creation
-  LOW = 10,     // Batch operations, admin re-runs
+  HIGH = 1, // User-triggered: page regen, retry after failure
+  NORMAL = 5, // New book creation
+  LOW = 10, // Batch operations, admin re-runs
 }
 ```
 
@@ -895,25 +917,25 @@ const BASE_RETRY_POLICY = {
   attempts: 3,
   backoff: {
     type: 'exponential',
-    delay: 2000,   // 2s, 4s, 8s
+    delay: 2000, // 2s, 4s, 8s
   },
   removeOnComplete: {
-    age: 3600,     // keep completed jobs for 1 hour
-    count: 1000,   // keep last 1000 completed jobs
+    age: 3600, // keep completed jobs for 1 hour
+    count: 1000, // keep last 1000 completed jobs
   },
   removeOnFail: {
-    age: 86400,    // keep failed jobs for 24 hours (for debugging)
+    age: 86400, // keep failed jobs for 24 hours (for debugging)
   },
-}
+};
 ```
 
 **Per-queue overrides:**
 
-| Queue | Attempts | Backoff delay | Reason |
-|---|---|---|---|
-| `agent:image-gen` | 5 | 5000ms | fal.ai transient failures are common |
-| `agent:pdf-render` | 2 | 10000ms | memory-intensive; don't retry too fast |
-| `notifications` | 3 | 1000ms | user-facing; fail fast, don't delay |
+| Queue              | Attempts | Backoff delay | Reason                                 |
+| ------------------ | -------- | ------------- | -------------------------------------- |
+| `agent:image-gen`  | 5        | 5000ms        | fal.ai transient failures are common   |
+| `agent:pdf-render` | 2        | 10000ms       | memory-intensive; don't retry too fast |
+| `notifications`    | 3        | 1000ms        | user-facing; fail fast, don't delay    |
 
 ## 4.5 Rate Limiting (Image Gen Queue)
 
@@ -921,9 +943,9 @@ The `agent:image-gen` queue is rate-limited at the BullMQ level:
 
 ```typescript
 const imageGenRateLimit = {
-  max: 45,           // slightly under fal.ai limit (50/min) for safety margin
-  duration: 60000,   // 1 minute window
-}
+  max: 45, // slightly under fal.ai limit (50/min) for safety margin
+  duration: 60000, // 1 minute window
+};
 ```
 
 Jobs that exceed the rate limit are held in the queue (not dropped or failed). BullMQ automatically spaces them across the time window. Multiple fal.ai API keys can be used in a round-robin to increase effective throughput.
@@ -931,6 +953,7 @@ Jobs that exceed the rate limit are held in the queue (not dropped or failed). B
 ## 4.6 Dead Letter Queue
 
 After all retry attempts are exhausted, the job does not disappear — BullMQ moves it to the failed state (visible in Bull Board). The Orchestrator listens to the `job:failed` event and:
+
 1. Updates `books.status` → `failed`
 2. Writes the error to `books.error_message`
 3. Refunds credits to `users.credits`
@@ -944,14 +967,14 @@ All jobs follow this envelope:
 
 ```typescript
 interface AgentJob<T = unknown> {
-  bookId: string
-  userId: string
-  step: AgentStep
-  input: T
-  priority: JobPriority
-  traceId: string        // OpenTelemetry trace context for correlation
-  attempt: number        // current attempt number (starts at 1)
-  idempotencyKey?: string
+  bookId: string;
+  userId: string;
+  step: AgentStep;
+  input: T;
+  priority: JobPriority;
+  traceId: string; // OpenTelemetry trace context for correlation
+  attempt: number; // current attempt number (starts at 1)
+  idempotencyKey?: string;
 }
 ```
 
@@ -960,6 +983,7 @@ The `traceId` propagates through all agents' OpenTelemetry spans, creating a sin
 ## 4.8 Bull Board
 
 Bull Board (the BullMQ admin UI) is deployed at `/admin/queues` behind admin auth. It shows:
+
 - Queue depth (waiting, active, completed, failed counts) in real time
 - Individual job inspection (input data, output, error, retry history)
 - Manual retry of failed jobs
@@ -970,6 +994,7 @@ Access is restricted to `users.role = 'admin'`.
 ## 4.9 Graceful Shutdown
 
 Workers listen to `SIGTERM` (sent by Kubernetes during pod shutdown):
+
 1. Stop accepting new jobs from the queue
 2. Let active jobs complete (or fail naturally) — up to 30 seconds grace period
 3. If jobs are still running after 30s: BullMQ marks them as stalled; they'll be picked up by another worker on restart
@@ -1310,6 +1335,7 @@ GIN indexes on JSONB columns are not added at Phase 1. Add them if specific JSON
 Users are never hard-deleted on request — they are soft-deleted (GDPR right-to-be-forgotten requires data erasure, but we comply by clearing PII, not by deleting rows):
 
 On account deletion:
+
 1. Set `users.deactivated_at = now()`
 2. Null out `users.email`, `users.name`, `users.password_hash`, `users.oauth_id` (replace with `REDACTED_{userId}`)
 3. Delete all `child_profiles` (PII)
@@ -1331,6 +1357,7 @@ npx prisma migrate deploy
 ```
 
 **Migration rules:**
+
 - Never drop a column in the same migration that removes it from code — remove code in deploy N, remove column in deploy N+1 (backward compatibility window)
 - Always add columns as nullable or with a default value (no `NOT NULL` without a default on existing tables)
 - Every migration must have a rollback plan documented in a comment at the top of the migration file
@@ -1340,6 +1367,7 @@ npx prisma migrate deploy
 **Development:** Direct Prisma connection (no pooler)
 
 **Production:** PgBouncer in transaction pooling mode:
+
 ```
 min_pool_size = 5
 max_pool_size = 100
@@ -1449,6 +1477,7 @@ Apple Sign-In follows the same pattern. Apple provides `idToken` (a JWT); the ba
 ## 6.6 JWT Validation Guard
 
 The `JwtAuthGuard` is the primary auth mechanism. It:
+
 1. Extracts the `Authorization: Bearer <token>` header
 2. Verifies the JWT signature with `JWT_SECRET`
 3. Checks expiry (`exp` claim)
@@ -1457,6 +1486,7 @@ The `JwtAuthGuard` is the primary auth mechanism. It:
 
 **Token payload vs. database freshness:**
 The JWT payload contains `plan` and `role` as cached values. However, the `JwtAuthGuard` re-fetches the user from the database on every request. This adds ~1ms per request but ensures:
+
 - Plan upgrades take effect immediately (no need to re-login)
 - Account deactivation takes effect immediately
 - Role changes are immediate
@@ -1477,6 +1507,7 @@ downloadPdf() { ... }
 `PlanGateGuard` checks `req.user.plan` against the decorator's required plan. If the user's plan is insufficient, it returns 403 with `{ error: { code: 'PLAN_UPGRADE_REQUIRED', requiredPlan: 'paid' } }`.
 
 Plan hierarchy for gate checks:
+
 ```
 free < pay_per_book < family < annual = educator
 ```
@@ -1500,6 +1531,7 @@ The client clears it from memory immediately on logout.
 ## 6.9 Email Verification
 
 When a user registers with email+password:
+
 1. Generate a 64-byte hex verification token
 2. Store it in Redis with key `email_verify:{token}` → `userId`, TTL 24 hours
 3. Send email with link to `/verify-email/{token}`
@@ -1527,6 +1559,7 @@ When a user registers with email+password:
 ## 7.1 Stripe Architecture
 
 StoryMe uses Stripe for:
+
 - One-time payments (single book purchase, $12.99)
 - Subscriptions (Family $9.99/mo, Annual $79.99/yr, Educator $49.99/yr)
 - Payment method management
@@ -1551,6 +1584,7 @@ The Stripe Dashboard holds the canonical price definitions. Environment variable
 ## 7.3 Checkout Flow
 
 **Single book purchase:**
+
 ```
 POST /api/billing/checkout { priceId: 'price_single', bookId: '...' }
 
@@ -1566,6 +1600,7 @@ POST /api/billing/checkout { priceId: 'price_single', bookId: '...' }
 ```
 
 **Subscription checkout:**
+
 ```
 POST /api/billing/checkout { priceId: 'price_monthly' }
 
@@ -1583,23 +1618,25 @@ POST /api/billing/checkout { priceId: 'price_monthly' }
 ## 7.4 Stripe Webhook Handler
 
 The webhook handler receives all Stripe events. The endpoint `/api/billing/webhook` is:
+
 - Public (no auth guard) — Stripe calls it from their servers
 - Protected by `stripe.webhooks.constructEvent()` signature verification using `STRIPE_WEBHOOK_SECRET`
 - Idempotent — Stripe may deliver the same event multiple times
 
 **Events handled:**
 
-| Stripe Event | Action |
-|---|---|
-| `payment_intent.succeeded` | Mark book as paid (`books.is_paid = true`), grant download access |
-| `payment_intent.payment_failed` | No action (user sees failure in Stripe Elements) |
-| `checkout.session.completed` | For subscription: create `subscriptions` record, update `users.plan`, grant credits |
-| `invoice.payment_succeeded` | Subscription renewal: confirm plan stays active, grant monthly credits |
-| `invoice.payment_failed` | Update subscription status to `past_due`; send dunning email |
-| `customer.subscription.deleted` | Subscription cancelled: revert user.plan to 'free' after period end |
-| `customer.subscription.updated` | Plan change: update `subscriptions` and `users.plan` |
+| Stripe Event                    | Action                                                                              |
+| ------------------------------- | ----------------------------------------------------------------------------------- |
+| `payment_intent.succeeded`      | Mark book as paid (`books.is_paid = true`), grant download access                   |
+| `payment_intent.payment_failed` | No action (user sees failure in Stripe Elements)                                    |
+| `checkout.session.completed`    | For subscription: create `subscriptions` record, update `users.plan`, grant credits |
+| `invoice.payment_succeeded`     | Subscription renewal: confirm plan stays active, grant monthly credits              |
+| `invoice.payment_failed`        | Update subscription status to `past_due`; send dunning email                        |
+| `customer.subscription.deleted` | Subscription cancelled: revert user.plan to 'free' after period end                 |
+| `customer.subscription.updated` | Plan change: update `subscriptions` and `users.plan`                                |
 
 **Webhook processing is idempotent:** Each event has a Stripe `event.id`. On receipt:
+
 1. Check Redis for key `stripe_event:{eventId}` — if exists, return 200 immediately (already processed)
 2. Process the event
 3. Set Redis key `stripe_event:{eventId}` with TTL 7 days
@@ -1622,10 +1659,12 @@ Always return 200 to Stripe even on internal errors (otherwise Stripe retries fo
 ## 7.5 Credit System
 
 Credits are consumed when:
+
 - Book creation starts (not when it completes) → immediately deducted to prevent race conditions
 - If generation fails: credits are refunded via a compensating transaction
 
 Credit amounts:
+
 - Free plan: 3 credits on registration (once, non-renewing)
 - Pay-per-book: no credits; payment via Stripe at time of generation
 - Family plan: 10 credits/month (granted on subscription renewal)
@@ -1633,6 +1672,7 @@ Credit amounts:
 - Educator plan: 30 credits/month
 
 Credit balance is in `users.credits`. All changes are transactional:
+
 ```sql
 BEGIN;
 UPDATE users SET credits = credits - 1 WHERE id = $userId AND credits >= 1;
@@ -1686,11 +1726,11 @@ Voluntary cancellation:
 
 StoryMe produces two distinct PDFs:
 
-| PDF | Generator | Purpose | Resolution | Watermark |
-|---|---|---|---|---|
-| Preview PDF (3 pages) | PDFKit (server) | Paywall preview | Screen (72dpi) | Yes — large diagonal "Preview" |
-| Full PDF (print-ready) | PDFKit (server) | Download / print-on-demand | 300dpi | No |
-| Browser Preview | @react-pdf/renderer (client) | Instant in-reader preview | Screen | No |
+| PDF                    | Generator                    | Purpose                    | Resolution     | Watermark                      |
+| ---------------------- | ---------------------------- | -------------------------- | -------------- | ------------------------------ |
+| Preview PDF (3 pages)  | PDFKit (server)              | Paywall preview            | Screen (72dpi) | Yes — large diagonal "Preview" |
+| Full PDF (print-ready) | PDFKit (server)              | Download / print-on-demand | 300dpi         | No                             |
+| Browser Preview        | @react-pdf/renderer (client) | Instant in-reader preview  | Screen         | No                             |
 
 The browser preview (React PDF) is for UI purposes only — it renders quickly in the browser using the same `PageLayout[]` data and does not require a server round-trip. The final downloadable PDF is always the server-rendered version.
 
@@ -1702,6 +1742,7 @@ The `PDFRenderAgent` runs as a BullMQ worker in Node.js. It uses **PDFKit** (pur
 Puppeteer renders HTML → PDF, which requires a full browser (Chromium) in the container. This uses ~1GB RAM per job. PDFKit renders directly to PDF primitives (text, image, paths) using ~100MB RAM per job. At PDF-render queue concurrency of 4, that is 400MB vs. 4GB — a significant infrastructure difference.
 
 **Page rendering sequence per page:**
+
 1. Set page dimensions (210mm × 148mm for A5, or 8.5in × 11in for US Letter — configured per request)
 2. Draw background decoration (if any) — SVG border fetched from R2 asset library
 3. Load page image from R2 (PNG, original resolution)
@@ -1711,6 +1752,7 @@ Puppeteer renders HTML → PDF, which requires a full browser (Chromium) in the 
 7. For the dedication page: use Lora Italic, centered, with decorative top/bottom rules
 
 **Book front matter:**
+
 - Page 1: Full-bleed cover (cover.png)
 - Page 2: Title page (title, author "Written for {childName}", subtitle)
 - Page 3: Dedication (if provided)
@@ -1718,26 +1760,28 @@ Puppeteer renders HTML → PDF, which requires a full browser (Chromium) in the 
 - Final page: "The End" + StoryMe branding + share QR code (generated with qrcode npm package)
 
 **Output:**
+
 - Uploaded to R2 at `books/{bookId}/book.pdf`
 - CDN URL stored in `books.pdf_url`
 - Separate preview PDF (pages 1–3, watermarked) uploaded to `books/{bookId}/book-preview.pdf`
 
 ## 8.3 PDF Specifications
 
-| Property | Screen PDF | Print PDF |
-|---|---|---|
-| Page size | 8.5in × 11in (US Letter) | 8.5in × 11in + 0.125in bleed |
-| Resolution | 72dpi images (WebP) | 300dpi images (PNG original) |
-| Color profile | sRGB | sRGB (CMYK conversion: Phase 3) |
-| Fonts | Embedded (subset) | Fully embedded |
-| File size | ~2–4MB | ~8–20MB |
-| Compression | Level 9 | Level 6 |
+| Property      | Screen PDF               | Print PDF                       |
+| ------------- | ------------------------ | ------------------------------- |
+| Page size     | 8.5in × 11in (US Letter) | 8.5in × 11in + 0.125in bleed    |
+| Resolution    | 72dpi images (WebP)      | 300dpi images (PNG original)    |
+| Color profile | sRGB                     | sRGB (CMYK conversion: Phase 3) |
+| Fonts         | Embedded (subset)        | Fully embedded                  |
+| File size     | ~2–4MB                   | ~8–20MB                         |
+| Compression   | Level 9                  | Level 6                         |
 
 **Why not CMYK at Phase 1?** CMYK conversion requires a color profile library (Little CMS or ImageMagick). This adds complexity and a large binary dependency to the PDF worker. Phase 1 targets digital delivery only; print-on-demand (Phase 2/3) will add CMYK conversion.
 
 ## 8.4 Font Embedding
 
 Fonts are embedded in the PDF at render time. The font files are stored in R2 at `assets/fonts/`:
+
 - `Plus-Jakarta-Sans-Regular.ttf`
 - `Plus-Jakarta-Sans-Bold.ttf`
 - `Lora-Regular.ttf`
@@ -1750,6 +1794,7 @@ PDFKit subsetting (using `fontkit`) ensures only the Unicode characters used in 
 ## 8.5 Page Image Embedding
 
 Full-resolution PNG images from R2 are used in the print PDF (not WebP — PDFKit embeds PNGs natively). The image download from R2 during PDF rendering is the slowest step. Optimization:
+
 - All page images are downloaded in parallel before rendering begins (not sequentially)
 - Downloads use signed R2 URLs (internal, not CDN URLs — avoids CDN overhead)
 - Progress is not reported during the PDF step (it's fast once images are downloaded)
@@ -1757,6 +1802,7 @@ Full-resolution PNG images from R2 are used in the print PDF (not WebP — PDFKi
 ## 8.6 Error Handling in PDF Render
 
 If a page image is missing (failed to generate earlier):
+
 - Render a placeholder image (a soft-colored rectangle with the StoryMe logo and "Illustration for page N")
 - Continue rendering the rest of the book
 - Mark `books.generated_degraded = true`
@@ -1818,21 +1864,22 @@ The `StorageService` is the single abstraction for all R2 operations. No code ou
 
 ```typescript
 class StorageService {
-  async uploadBuffer(key: string, buffer: Buffer, contentType: string): Promise<void>
-  async uploadStream(key: string, stream: Readable, contentType: string): Promise<void>
-  async downloadBuffer(key: string): Promise<Buffer>
-  async generateSignedUrl(key: string, expiresInSeconds: number): Promise<string>
-  async deleteObject(key: string): Promise<void>
-  async listObjects(prefix: string): Promise<string[]>
-  async objectExists(key: string): Promise<boolean>
+  async uploadBuffer(key: string, buffer: Buffer, contentType: string): Promise<void>;
+  async uploadStream(key: string, stream: Readable, contentType: string): Promise<void>;
+  async downloadBuffer(key: string): Promise<Buffer>;
+  async generateSignedUrl(key: string, expiresInSeconds: number): Promise<string>;
+  async deleteObject(key: string): Promise<void>;
+  async listObjects(prefix: string): Promise<string[]>;
+  async objectExists(key: string): Promise<boolean>;
 
   // Helpers
-  buildBookKey(bookId: string, filename: string): string
-  buildCdnUrl(key: string): string     // CDN_BASE_URL + '/' + key
+  buildBookKey(bookId: string, filename: string): string;
+  buildCdnUrl(key: string): string; // CDN_BASE_URL + '/' + key
 }
 ```
 
 **R2 SDK configuration:**
+
 ```typescript
 const s3Client = new S3Client({
   region: 'auto',
@@ -1841,29 +1888,31 @@ const s3Client = new S3Client({
     accessKeyId: R2_ACCESS_KEY,
     secretAccessKey: R2_SECRET_KEY,
   },
-})
+});
 ```
 
 R2 is S3-compatible, so the AWS SDK v3 S3Client works with the R2 endpoint.
 
 ## 9.3 Access Patterns
 
-| Asset | Visibility | How served | Auth required |
-|---|---|---|---|
-| Cover thumbnail (webp) | Public | CDN direct | No |
-| Page images (webp) | Public | CDN direct | No |
-| Full PDF | Private | Signed URL (24h expiry) | Yes (ownership check) |
-| Preview PDF (3 pages, watermarked) | Public | CDN or signed URL | No |
-| Original PNG images | Private | Internal only (PDF rendering) | Service-to-service |
-| LoRA weights | Private | Internal only | Service-to-service |
-| Font assets | Private | Internal only (PDF rendering) | Service-to-service |
+| Asset                              | Visibility | How served                    | Auth required         |
+| ---------------------------------- | ---------- | ----------------------------- | --------------------- |
+| Cover thumbnail (webp)             | Public     | CDN direct                    | No                    |
+| Page images (webp)                 | Public     | CDN direct                    | No                    |
+| Full PDF                           | Private    | Signed URL (24h expiry)       | Yes (ownership check) |
+| Preview PDF (3 pages, watermarked) | Public     | CDN or signed URL             | No                    |
+| Original PNG images                | Private    | Internal only (PDF rendering) | Service-to-service    |
+| LoRA weights                       | Private    | Internal only                 | Service-to-service    |
+| Font assets                        | Private    | Internal only (PDF rendering) | Service-to-service    |
 
 **Why are page images public?** The reader loads them directly from the CDN. Authentication for individual images would require a signed URL for every page on every read, adding server load and breaking CDN caching. The trade-off: images are technically accessible without auth if you know the URL pattern. This is acceptable because:
+
 1. Book URLs (`/book/{bookId}`) require auth to discover
 2. Shared books intentionally have public access
 3. Thumbnails are not the paid deliverable (the PDF is)
 
 **Why are PDFs private (signed URLs)?** PDFs are the paid deliverable. They are never served publicly from the CDN. Every download request goes through the API, which:
+
 1. Verifies authentication
 2. Verifies book ownership
 3. Verifies `books.is_paid = true` (for paid tiers)
@@ -1896,6 +1945,7 @@ All Sharp operations run in the `ImageGenerationAgent` worker after the fal.ai r
 
 **Book deletion:**
 When a user deletes a book (`DELETE /api/books/:id`), all R2 objects for that book are deleted:
+
 1. List all objects with prefix `books/{bookId}/`
 2. Delete all listed objects in a batch (R2 supports batch delete)
 3. Delete the `books` record and cascade-delete `book_pages`
@@ -1904,6 +1954,7 @@ This is done synchronously in the delete request handler (not in a background jo
 
 **Failed generation cleanup:**
 Books that fail generation leave partial R2 objects (some images were uploaded before failure). A nightly cleanup job (BullMQ scheduled job):
+
 1. Find all `books` with `status = 'failed'` and `created_at < now() - 7 days`
 2. Delete their R2 objects
 3. Keep the DB record (for audit/cost analysis)
@@ -1939,19 +1990,20 @@ The signed URL is stored in the wizard draft and later in `child_profiles.photo_
 
 ## 10.1 Three Pillars
 
-| Pillar | Tool | Purpose |
-|---|---|---|
-| Structured Logging | Winston + Loki (Grafana) | Request logs, agent logs, error logs |
-| Metrics | Prometheus + Grafana | System health, business KPIs, queue depth |
+| Pillar              | Tool                          | Purpose                                      |
+| ------------------- | ----------------------------- | -------------------------------------------- |
+| Structured Logging  | Winston + Loki (Grafana)      | Request logs, agent logs, error logs         |
+| Metrics             | Prometheus + Grafana          | System health, business KPIs, queue depth    |
 | Distributed Tracing | OpenTelemetry + Grafana Tempo | End-to-end trace of book generation pipeline |
-| Error Tracking | Sentry | Exceptions with stack traces and context |
-| Uptime Monitoring | Checkly | Synthetic tests from multiple regions |
+| Error Tracking      | Sentry                        | Exceptions with stack traces and context     |
+| Uptime Monitoring   | Checkly                       | Synthetic tests from multiple regions        |
 
 ## 10.2 Structured Logging
 
 **All logs are JSON-structured.** No unstructured log strings in production.
 
 Log format:
+
 ```json
 {
   "timestamp": "2026-06-30T12:00:00.000Z",
@@ -1968,23 +2020,27 @@ Log format:
 ```
 
 **Log levels:**
+
 - `error`: Exceptions, failed operations, retries exhausted
 - `warn`: Retries in progress, rate limits approaching, degraded fallback used
 - `info`: Request start/end, agent start/complete, state transitions
 - `debug`: Full request/response bodies (development only — never in production)
 
 **What is always logged:**
+
 - Every HTTP request: method, path, status, duration, userId, requestId
 - Every agent run: agent name, bookId, step, duration, tokens used, cost, status
 - Every queue job: queue name, jobId, bookId, attempt number, status
 - Every retry: what failed, which attempt, backoff duration
 
 **What is never logged:**
+
 - Passwords or tokens (anywhere in any form)
 - Full request/response bodies in production
 - Personally identifiable information (child names, photos) — book IDs only
 
 **Winston transport configuration (production):**
+
 - Console (for container stdout → collected by Kubernetes log agent)
 - Loki push (directly to Grafana Loki via HTTP transport)
 
@@ -1993,6 +2049,7 @@ Log format:
 Metrics are emitted via OpenTelemetry Metrics SDK and scraped by Prometheus.
 
 **System metrics (auto-instrumented by NestJS + OTel):**
+
 - HTTP request rate, latency (p50, p95, p99), error rate
 - Database query latency (via Prisma instrumentation)
 - Redis latency
@@ -2029,6 +2086,7 @@ stripe_revenue_usd_total
 ```
 
 **Prometheus scrape config:**
+
 ```yaml
 scrape_configs:
   - job_name: 'storyme-api'
@@ -2042,6 +2100,7 @@ scrape_configs:
 Every book generation creates a single distributed trace that spans all 9 agents. This is the primary debugging tool for pipeline failures.
 
 **Trace structure:**
+
 ```
 [Trace: book_abc123 generation]
 │
@@ -2071,12 +2130,14 @@ Every book generation creates a single distributed trace that spans all 9 agents
 
 **Trace propagation:**
 The `traceId` is generated when the book creation API request is received. It is:
+
 1. Added to the BullMQ job data as `job.data.traceId`
 2. Propagated via W3C Trace Context headers in all internal service-to-service calls
 3. Stored in `agent_logs.trace_id` for SQL-level correlation
 4. Returned in the API response as `meta.traceId` (for debug purposes)
 
 **Grafana Tempo query for a book's full trace:**
+
 ```
 {traceId="4bf92f3577b34da6a3ce929d0e0e4736"}
 ```
@@ -2084,27 +2145,26 @@ The `traceId` is generated when the book creation API request is received. It is
 ## 10.5 Error Tracking (Sentry)
 
 **Sentry setup:**
+
 ```typescript
 // main.ts
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV,
-  tracesSampleRate: 0.1,      // 10% of traces sent to Sentry (rest go to Tempo)
+  tracesSampleRate: 0.1, // 10% of traces sent to Sentry (rest go to Tempo)
   profilesSampleRate: 0.05,
-  integrations: [
-    new Sentry.Integrations.Http({ tracing: true }),
-    new PrismaInstrumentation(),
-  ],
+  integrations: [new Sentry.Integrations.Http({ tracing: true }), new PrismaInstrumentation()],
   beforeSend(event) {
     // Strip PII from error context
-    delete event?.user?.email
-    delete event?.extra?.childName
-    return event
+    delete event?.user?.email;
+    delete event?.extra?.childName;
+    return event;
   },
-})
+});
 ```
 
 **What goes to Sentry:**
+
 - All unhandled exceptions (NestJS global exception filter captures these)
 - AI provider errors (when all retries are exhausted)
 - Database errors
@@ -2112,6 +2172,7 @@ Sentry.init({
 - Stripe webhook processing failures
 
 **Sentry alert rules:**
+
 - Any `error` level event → Sentry issue created → Slack `#backend-alerts`
 - Error rate >1% → PagerDuty page
 
@@ -2128,17 +2189,19 @@ Returns 200 if the process is running. Never fails unless the process is deadloc
 
 **Readiness probe** (`/health/ready`):
 Checks:
+
 - PostgreSQL connection: `SELECT 1`
 - Redis connection: `PING`
-Returns 503 if either fails (Kubernetes removes the pod from load balancer rotation).
+  Returns 503 if either fails (Kubernetes removes the pod from load balancer rotation).
 
 **Deep health check** (`/health/deep`):
+
 - PostgreSQL: `SELECT 1`
 - Redis: `PING`
 - R2: `HeadObject` on a canary test object
 - Anthropic API: simple 1-token completion
 - fal.ai: `/health` endpoint
-Returns full status JSON with each component's status and latency.
+  Returns full status JSON with each component's status and latency.
 
 Deep health is not used by Kubernetes — it is used by Checkly for synthetic monitoring and on-call runbooks.
 
@@ -2146,17 +2209,17 @@ Deep health is not used by Kubernetes — it is used by Checkly for synthetic mo
 
 **Alerting stack:** Prometheus Alertmanager → PagerDuty (P1) / Slack (P2/P3)
 
-| Alert | Condition | Severity | Channel |
-|---|---|---|---|
-| API error rate high | HTTP 5xx rate > 1% for 5 minutes | P1 | PagerDuty |
-| Book generation failure rate high | `books_generation_failed_total` rate > 5% of `books_generation_started_total` | P1 | PagerDuty |
-| Queue depth critical | `bullmq_queue_depth{queue="agent:image-gen"} > 500` | P2 | Slack |
-| AI provider errors | `ai_provider_errors_total` rate > 10% for any provider for 5 minutes | P2 | Slack |
-| Database latency | p99 query latency > 500ms for 5 minutes | P2 | Slack |
-| PDF generation stuck | `bullmq_active_jobs{queue="agent:pdf-render"}` unchanged for 15 minutes | P2 | Slack |
-| Storage failures | R2 error rate > 1% | P1 | PagerDuty |
-| Stripe webhook failures | `stripe_webhook_errors_total` rate > 0 | P2 | Slack |
-| High memory (worker pods) | container memory > 80% of limit | P3 | Slack |
+| Alert                             | Condition                                                                     | Severity | Channel   |
+| --------------------------------- | ----------------------------------------------------------------------------- | -------- | --------- |
+| API error rate high               | HTTP 5xx rate > 1% for 5 minutes                                              | P1       | PagerDuty |
+| Book generation failure rate high | `books_generation_failed_total` rate > 5% of `books_generation_started_total` | P1       | PagerDuty |
+| Queue depth critical              | `bullmq_queue_depth{queue="agent:image-gen"} > 500`                           | P2       | Slack     |
+| AI provider errors                | `ai_provider_errors_total` rate > 10% for any provider for 5 minutes          | P2       | Slack     |
+| Database latency                  | p99 query latency > 500ms for 5 minutes                                       | P2       | Slack     |
+| PDF generation stuck              | `bullmq_active_jobs{queue="agent:pdf-render"}` unchanged for 15 minutes       | P2       | Slack     |
+| Storage failures                  | R2 error rate > 1%                                                            | P1       | PagerDuty |
+| Stripe webhook failures           | `stripe_webhook_errors_total` rate > 0                                        | P2       | Slack     |
+| High memory (worker pods)         | container memory > 80% of limit                                               | P3       | Slack     |
 
 ## 10.8 Admin Dashboard Metrics
 
@@ -2172,17 +2235,17 @@ The `/api/admin/stats` endpoint exposes business metrics for the admin dashboard
     "avgGenerationTimeMs": 180000
   },
   "revenue": {
-    "totalUsd": 48200.00,
-    "thisMonthUsd": 8400.00,
+    "totalUsd": 48200.0,
+    "thisMonthUsd": 8400.0,
     "activeSubscriptions": 312
   },
   "pipeline": {
     "avgCostPerBook": 0.71,
-    "totalAiCostUsd": 8800.00,
+    "totalAiCostUsd": 8800.0,
     "byProvider": {
-      "anthropic": 4200.00,
-      "fal-ai": 3800.00,
-      "openai": 800.00
+      "anthropic": 4200.0,
+      "fal-ai": 3800.0,
+      "openai": 800.0
     }
   },
   "storage": {
@@ -2253,11 +2316,12 @@ pnpm bull-board                # admin at http://localhost:3001/admin/queues
 ```
 
 **Development AI keys:**
+
 - Use `claude-haiku-4-5-20251001` as the default model in `.env.local` to reduce cost during development
 - Use fal.ai dev tier (rate-limited but free)
 - Development Stripe keys (`sk_test_...`) are safe to use in local testing
 
 ---
 
-*Document version 1.0 — StoryMe Backend Technical Design*
-*This document is the engineering contract. Changes require RFC + approval from the Principal Backend Architect.*
+_Document version 1.0 — StoryMe Backend Technical Design_
+_This document is the engineering contract. Changes require RFC + approval from the Principal Backend Architect._

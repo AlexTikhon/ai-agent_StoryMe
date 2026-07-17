@@ -3,7 +3,10 @@ import type Redis from 'ioredis';
 import { RedisRateLimiter } from './redis-rate-limiter.service';
 
 /** Minimal fake standing in for the real Lua-script fixed-window counter — enough to exercise RedisRateLimiter's own logic without a live Redis connection. */
-function createFakeRedis(): { redis: Redis; buckets: Map<string, { count: number; resetAt: number }> } {
+function createFakeRedis(): {
+  redis: Redis;
+  buckets: Map<string, { count: number; resetAt: number }>;
+} {
   const buckets = new Map<string, { count: number; resetAt: number }>();
   const eval_ = vi.fn(async (_script: string, _numKeys: number, key: string, windowMs: number) => {
     const now = Date.now();

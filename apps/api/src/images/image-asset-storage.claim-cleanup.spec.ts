@@ -51,9 +51,7 @@ describe('LocalImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
     const page = await storage.listClaimArtifacts({ pageSize: 100 });
 
     expect(page.entries).toHaveLength(1);
-    expect(page.entries[0]!.key).toBe(
-      `images/books/${TEST_BOOK_ID}/runs/run-1/claims/1/cover.png`,
-    );
+    expect(page.entries[0]!.key).toBe(`images/books/${TEST_BOOK_ID}/runs/run-1/claims/1/cover.png`);
     expect(page.entries[0]!.size).toBeGreaterThan(0);
     expect(page.entries[0]!.lastModified).toBeInstanceOf(Date);
     expect(page.nextCursor).toBeNull();
@@ -146,7 +144,11 @@ describe('CloudImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
   it('lists via ListObjectsV2Command scoped to the "images/books/" prefix', async () => {
     sendMock.mockResolvedValueOnce({
       Contents: [
-        { Key: 'images/books/b1/runs/r1/claims/1/cover.png', Size: 10, LastModified: new Date('2026-01-01') },
+        {
+          Key: 'images/books/b1/runs/r1/claims/1/cover.png',
+          Size: 10,
+          LastModified: new Date('2026-01-01'),
+        },
       ],
       IsTruncated: false,
     });
@@ -161,7 +163,11 @@ describe('CloudImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
       ContinuationToken: undefined,
     });
     expect(page.entries).toEqual([
-      { key: 'images/books/b1/runs/r1/claims/1/cover.png', size: 10, lastModified: new Date('2026-01-01') },
+      {
+        key: 'images/books/b1/runs/r1/claims/1/cover.png',
+        size: 10,
+        lastModified: new Date('2026-01-01'),
+      },
     ]);
     expect(page.nextCursor).toBeNull();
   });
@@ -172,9 +178,7 @@ describe('CloudImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
 
     await storage.listClaimArtifacts({ pageSize: 5000 });
 
-    expect(ListObjectsV2Command).toHaveBeenCalledWith(
-      expect.objectContaining({ MaxKeys: 1000 }),
-    );
+    expect(ListObjectsV2Command).toHaveBeenCalledWith(expect.objectContaining({ MaxKeys: 1000 }));
   });
 
   it('surfaces IsTruncated as a non-null opaque nextCursor', async () => {

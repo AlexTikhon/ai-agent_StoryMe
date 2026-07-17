@@ -79,7 +79,12 @@ interface Scenario {
 
 const scenarios: Scenario[] = [
   { name: 'valid production api env', role: 'api', env: VALID_API_ENV, expectSuccess: true },
-  { name: 'valid production worker env', role: 'worker', env: VALID_WORKER_ENV, expectSuccess: true },
+  {
+    name: 'valid production worker env',
+    role: 'worker',
+    env: VALID_WORKER_ENV,
+    expectSuccess: true,
+  },
   {
     name: 'AUTH_MODE=dev on a production api deploy (expected failure)',
     role: 'api',

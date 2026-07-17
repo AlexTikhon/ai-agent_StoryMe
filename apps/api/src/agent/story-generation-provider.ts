@@ -803,7 +803,11 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
     const storyPlan = buildStoryPlan(childName, theme, pageCount, lang, educationalMessage);
     const pages = buildPagePlan(storyPlan, pageCount, lang);
     const storyPlanWithDraft = buildStoryDraft(characterCard, { ...storyPlan, pages }, lang);
-    const storyPlanFinal = buildIllustrationPlan(characterCard, characterProfile, storyPlanWithDraft);
+    const storyPlanFinal = buildIllustrationPlan(
+      characterCard,
+      characterProfile,
+      storyPlanWithDraft,
+    );
     const bookPreview = buildBookPreview(
       { childName, childAge, language },
       characterCard,

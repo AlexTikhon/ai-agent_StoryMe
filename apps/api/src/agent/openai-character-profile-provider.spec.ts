@@ -60,8 +60,7 @@ describe('buildCharacterProfileMessageContent', () => {
       makeInput({ photo: { base64: 'ZmFrZS1ieXRlcw==', contentType: 'image/jpeg' } }),
     );
     const imagePart = content.find((part) => part['type'] === 'image_url') as
-      | { image_url: { url: string } }
-      | undefined;
+      { image_url: { url: string } } | undefined;
 
     expect(imagePart).toBeDefined();
     expect(imagePart?.image_url.url).toBe('data:image/jpeg;base64,ZmFrZS1ieXRlcw==');

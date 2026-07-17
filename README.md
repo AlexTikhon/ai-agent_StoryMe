@@ -45,7 +45,7 @@ match between API and web** or every request 401s.
   `POST /books/:id/generate`, `retry-generation`, or `regenerate` call
   charges 1 credit the moment the run is durably scheduled (not when
   generation completes), returns the stable `402 { code:
-  'INSUFFICIENT_CREDITS' }` if the balance is too low, and a run that later
+'INSUFFICIENT_CREDITS' }` if the balance is too low, and a run that later
   fails is automatically refunded exactly once — see
   [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E2".
 - **One-time credit purchasing via Stripe Checkout, including a frontend

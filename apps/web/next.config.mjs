@@ -8,10 +8,10 @@ const nextConfig = {
         protocol: 'http',
         hostname: 'localhost',
         port: '9000',
-        pathname: '/**'
-      }
-    ]
-  }
+        pathname: '/**',
+      },
+    ],
+  },
 };
 
 export default nextConfig;

@@ -30,9 +30,7 @@ export function createCharacterProfileProvider(
   }
 
   if (raw !== 'openai') {
-    throw new Error(
-      `Unknown CHARACTER_PROFILE_PROVIDER "${raw}" (expected "mock" or "openai")`,
-    );
+    throw new Error(`Unknown CHARACTER_PROFILE_PROVIDER "${raw}" (expected "mock" or "openai")`);
   }
 
   const apiKey = env['OPENAI_API_KEY'];

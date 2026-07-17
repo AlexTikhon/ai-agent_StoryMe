@@ -1,4 +1,5 @@
 # AI Children's Book Platform — Architecture Document
+
 > Production-Grade Multi-Agent System
 > Version 1.0 | Staff Engineer Reference Document
 
@@ -167,16 +168,16 @@ layout) without rerunning the full pipeline.
 
 ### 3.1 Frontend
 
-| Technology | Version | Why |
-|---|---|---|
-| **Next.js** | 15 (App Router) | SSR for SEO on marketing pages; RSC for fast initial load of book previewer; built-in API routes as BFF |
-| **React** | 19 | Concurrent rendering for smooth page flip animation |
-| **TypeScript** | 5.x | End-to-end type safety shared with backend via tRPC or OpenAPI codegen |
-| **TailwindCSS** | 4.x | Rapid UI iteration; purges to tiny CSS bundle |
-| **Zustand** | 5.x | Lightweight client state (wizard steps, active book session) |
-| **React Query (TanStack)** | 5.x | Server state, polling for job status, background refetch |
-| **Framer Motion** | 11.x | Book page-flip animations, cover reveal |
-| **React-PDF (@react-pdf/renderer)** | 3.x | Client-side PDF preview in browser before download |
+| Technology                          | Version         | Why                                                                                                     |
+| ----------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------- |
+| **Next.js**                         | 15 (App Router) | SSR for SEO on marketing pages; RSC for fast initial load of book previewer; built-in API routes as BFF |
+| **React**                           | 19              | Concurrent rendering for smooth page flip animation                                                     |
+| **TypeScript**                      | 5.x             | End-to-end type safety shared with backend via tRPC or OpenAPI codegen                                  |
+| **TailwindCSS**                     | 4.x             | Rapid UI iteration; purges to tiny CSS bundle                                                           |
+| **Zustand**                         | 5.x             | Lightweight client state (wizard steps, active book session)                                            |
+| **React Query (TanStack)**          | 5.x             | Server state, polling for job status, background refetch                                                |
+| **Framer Motion**                   | 11.x            | Book page-flip animations, cover reveal                                                                 |
+| **React-PDF (@react-pdf/renderer)** | 3.x             | Client-side PDF preview in browser before download                                                      |
 
 **Key trade-off:** Next.js App Router vs. plain Vite SPA.
 We choose Next.js because the marketing funnel (landing, examples, pricing) benefits enormously
@@ -186,14 +187,14 @@ from SSR/SEO, and we can colocate the BFF layer. A Vite SPA would require a sepa
 
 ### 3.2 Backend
 
-| Technology | Why |
-|---|---|
-| **NestJS** (Node.js + TypeScript) | Modular DI architecture maps perfectly to our agent modules. Decorator-based validation. First-class support for BullMQ, WebSocket, Guards. |
-| **FastAPI** (Python — Image Worker) | Image generation + ML preprocessing is Python-native. FastAPI handles async image jobs efficiently with Pydantic validation. |
-| **Prisma ORM** | Type-safe DB client, migrations, relations; codegen keeps types in sync |
-| **BullMQ** | Redis-backed queue with priorities, rate limiting, concurrency control, retries with backoff — critical for AI job orchestration |
-| **Socket.io** | Real-time progress events back to client during book generation (page-by-page streaming) |
-| **Zod** | Schema validation at API boundaries; shared with frontend |
+| Technology                          | Why                                                                                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **NestJS** (Node.js + TypeScript)   | Modular DI architecture maps perfectly to our agent modules. Decorator-based validation. First-class support for BullMQ, WebSocket, Guards. |
+| **FastAPI** (Python — Image Worker) | Image generation + ML preprocessing is Python-native. FastAPI handles async image jobs efficiently with Pydantic validation.                |
+| **Prisma ORM**                      | Type-safe DB client, migrations, relations; codegen keeps types in sync                                                                     |
+| **BullMQ**                          | Redis-backed queue with priorities, rate limiting, concurrency control, retries with backoff — critical for AI job orchestration            |
+| **Socket.io**                       | Real-time progress events back to client during book generation (page-by-page streaming)                                                    |
+| **Zod**                             | Schema validation at API boundaries; shared with frontend                                                                                   |
 
 **Why NestJS over FastAPI for the main API?**
 The orchestration layer is TypeScript-native (same language as frontend, shared types via monorepo).
@@ -203,29 +204,29 @@ Python FastAPI is isolated to the image worker only where ML libraries are neede
 
 ### 3.3 AI Layer
 
-| Provider | Role | Why |
-|---|---|---|
-| **Claude claude-sonnet-4-6 / claude-opus-4-8** | Story planning, chapter writing, quality review | Best narrative coherence and instruction-following for long-form creative content. Extended thinking for plot planning. |
-| **GPT-4o** | Fallback for story; illustration prompt optimization | Provider redundancy; GPT-4o vision for quality review of images |
-| **Gemini 2.5 Pro** | Multi-language translation, secondary fallback | Superior multilingual capabilities for non-English books |
-| **fal.ai → Flux 1.1 Pro** | Illustration generation | Best quality/speed/cost ratio for stylized children's illustrations. Supports LoRA for character consistency. |
-| **DALL-E 3** | Fallback image generation | OpenAI platform reliability as backup |
-| **ElevenLabs** | Audiobook narration (future) | Best child-friendly TTS voices |
+| Provider                                       | Role                                                 | Why                                                                                                                     |
+| ---------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **Claude claude-sonnet-4-6 / claude-opus-4-8** | Story planning, chapter writing, quality review      | Best narrative coherence and instruction-following for long-form creative content. Extended thinking for plot planning. |
+| **GPT-4o**                                     | Fallback for story; illustration prompt optimization | Provider redundancy; GPT-4o vision for quality review of images                                                         |
+| **Gemini 2.5 Pro**                             | Multi-language translation, secondary fallback       | Superior multilingual capabilities for non-English books                                                                |
+| **fal.ai → Flux 1.1 Pro**                      | Illustration generation                              | Best quality/speed/cost ratio for stylized children's illustrations. Supports LoRA for character consistency.           |
+| **DALL-E 3**                                   | Fallback image generation                            | OpenAI platform reliability as backup                                                                                   |
+| **ElevenLabs**                                 | Audiobook narration (future)                         | Best child-friendly TTS voices                                                                                          |
 
 ---
 
 ### 3.4 Infrastructure
 
-| Technology | Why |
-|---|---|
-| **PostgreSQL 16** | JSONB for flexible agent outputs; pgvector for character embedding similarity search |
-| **Redis 7** | BullMQ queues + job state cache + rate limit counters + session cache |
-| **Cloudflare R2** | S3-compatible, zero egress fees (critical at scale — PDFs are large). Integrated CDN. |
-| **Docker + Docker Compose** | Dev/prod parity |
-| **Kubernetes (GKE/EKS)** | Autoscaling agent workers independently; node pools for GPU (future) |
+| Technology                          | Why                                                                                    |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| **PostgreSQL 16**                   | JSONB for flexible agent outputs; pgvector for character embedding similarity search   |
+| **Redis 7**                         | BullMQ queues + job state cache + rate limit counters + session cache                  |
+| **Cloudflare R2**                   | S3-compatible, zero egress fees (critical at scale — PDFs are large). Integrated CDN.  |
+| **Docker + Docker Compose**         | Dev/prod parity                                                                        |
+| **Kubernetes (GKE/EKS)**            | Autoscaling agent workers independently; node pools for GPU (future)                   |
 | **OpenTelemetry + Grafana + Tempo** | Distributed tracing across agent pipeline; critical for debugging multi-agent failures |
-| **Sentry** | Error tracking with source maps |
-| **GitHub Actions** | CI/CD |
+| **Sentry**                          | Error tracking with source maps                                                        |
+| **GitHub Actions**                  | CI/CD                                                                                  |
 
 ---
 
@@ -326,8 +327,8 @@ interface CharacterCard {
   };
   personality: string[];
   speechPatterns: string[];
-  favoriteItems: string[];   // toys, colors, animals — woven into story
-  visualAnchor: string;      // single canonical visual description for image prompts
+  favoriteItems: string[]; // toys, colors, animals — woven into story
+  visualAnchor: string; // single canonical visual description for image prompts
 }
 
 interface StoryPlan {
@@ -358,16 +359,16 @@ interface Chapter {
 interface Page {
   pageNumber: number;
   text: string;
-  readingLevel: number;       // Flesch-Kincaid grade
+  readingLevel: number; // Flesch-Kincaid grade
   wordCount: number;
-  illustrationNote: string;   // art director note for this page
+  illustrationNote: string; // art director note for this page
 }
 
 interface ImagePrompt {
   pageNumber: number;
   positivePrompt: string;
   negativePrompt: string;
-  characterAnchor: string;    // injected character LoRA/description
+  characterAnchor: string; // injected character LoRA/description
   style: IllustrationStyle;
   mood: string;
   colorPalette: string[];
@@ -378,7 +379,7 @@ interface GeneratedImage {
   pageNumber: number;
   r2Key: string;
   url: string;
-  seed: number;               // stored for deterministic regeneration
+  seed: number; // stored for deterministic regeneration
   model: string;
   promptHash: string;
 }
@@ -387,8 +388,8 @@ interface QualityReport {
   pageNumber: number;
   passed: boolean;
   issues: QualityIssue[];
-  consistencyScore: number;  // 0–1
-  alignmentScore: number;    // 0–1
+  consistencyScore: number; // 0–1
+  alignmentScore: number; // 0–1
   action: 'pass' | 'regen_image' | 'regen_text' | 'regen_both';
 }
 
@@ -661,7 +662,7 @@ CREATE TABLE books (
 
   -- Input
   request       JSONB NOT NULL,    -- full BookRequest object
-  
+
   -- Agent outputs (stored as JSONB for schema flexibility)
   character_card      JSONB,
   story_plan          JSONB,
@@ -669,21 +670,21 @@ CREATE TABLE books (
   image_prompts       JSONB,       -- ImagePrompt[]
   quality_report      JSONB,       -- QualityReport[]
   page_layouts        JSONB,       -- PageLayout[]
-  
+
   -- Result
   pdf_r2_key    TEXT,
   pdf_url       TEXT,
   cover_url     TEXT,
   page_count    INTEGER,
-  
+
   -- Metadata
   generation_time_ms  INTEGER,
   total_cost_usd      DECIMAL(10, 6),
   ai_model_versions   JSONB,       -- {story: "claude-sonnet-4-6", image: "flux-1.1-pro"}
-  
+
   error_message TEXT,
   retry_count   INTEGER DEFAULT 0,
-  
+
   created_at    TIMESTAMPTZ DEFAULT now(),
   updated_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -695,24 +696,24 @@ CREATE TABLE book_pages (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   book_id       UUID NOT NULL REFERENCES books(id) ON DELETE CASCADE,
   page_number   INTEGER NOT NULL,
-  
+
   text_content  TEXT,
   reading_level DECIMAL(3,1),
-  
+
   image_prompt  JSONB,
   image_r2_key  TEXT,
   image_url     TEXT,
   image_seed    BIGINT,           -- for deterministic regen
-  
+
   layout_spec   JSONB,
-  
+
   qa_passed     BOOLEAN,
   qa_scores     JSONB,
   regen_count   INTEGER DEFAULT 0,
-  
+
   created_at    TIMESTAMPTZ DEFAULT now(),
   updated_at    TIMESTAMPTZ DEFAULT now(),
-  
+
   UNIQUE(book_id, page_number)
 );
 
@@ -829,8 +830,8 @@ PATCH  /api/admin/books/:id/refund            Refund credits
 ```typescript
 // POST /api/books
 interface CreateBookRequest {
-  childName: string;           // 1–50 chars
-  age: number;                 // 2–12
+  childName: string; // 1–50 chars
+  age: number; // 2–12
   gender: 'boy' | 'girl' | 'nonbinary';
   appearance: {
     hairColor: string;
@@ -840,23 +841,23 @@ interface CreateBookRequest {
     height?: 'tall' | 'average' | 'short';
     distinctiveFeatures?: string[];
   };
-  personality: string[];       // max 5 traits
-  favoriteAnimals: string[];   // max 3
-  favoriteColors: string[];    // max 3
-  favoriteToys: string[];      // max 3
-  hobbies: string[];           // max 5
-  educationalGoal: string;     // free text, max 200 chars
-  genre: BookGenre;            // 'adventure' | 'fantasy' | 'friendship' | 'mystery' | 'nature'
+  personality: string[]; // max 5 traits
+  favoriteAnimals: string[]; // max 3
+  favoriteColors: string[]; // max 3
+  favoriteToys: string[]; // max 3
+  hobbies: string[]; // max 5
+  educationalGoal: string; // free text, max 200 chars
+  genre: BookGenre; // 'adventure' | 'fantasy' | 'friendship' | 'mystery' | 'nature'
   bookLength: 8 | 16 | 24 | 32;
   illustrationStyle: IllustrationStyle;
-  language: string;            // BCP-47 code: 'en', 'es', 'fr', 'de', 'ru', etc.
+  language: string; // BCP-47 code: 'en', 'es', 'fr', 'de', 'ru', etc.
 }
 
 interface CreateBookResponse {
   bookId: string;
   estimatedMinutes: number;
   creditsCharged: number;
-  wsChannel: string;           // WebSocket channel to subscribe for progress
+  wsChannel: string; // WebSocket channel to subscribe for progress
 }
 
 // GET /api/books/:id
@@ -941,7 +942,7 @@ interface AgentJob<T> {
   step: AgentStep;
   input: T;
   priority: 'high' | 'normal' | 'low';
-  traceId: string;    // OpenTelemetry trace propagation
+  traceId: string; // OpenTelemetry trace propagation
   attempt: number;
 }
 ```
@@ -982,12 +983,12 @@ bucket: ai-children-books-prod
 
 ### 10.2 Access Patterns
 
-| Asset | Access Pattern | TTL |
-|---|---|---|
-| Book PDF download | Signed URL, user-authenticated | 24h |
-| Page image (preview) | Public CDN URL | Permanent |
-| Cover thumbnail | Public CDN URL | Permanent |
-| In-progress images | Private, API-proxied | Job lifetime |
+| Asset                | Access Pattern                 | TTL          |
+| -------------------- | ------------------------------ | ------------ |
+| Book PDF download    | Signed URL, user-authenticated | 24h          |
+| Page image (preview) | Public CDN URL                 | Permanent    |
+| Cover thumbnail      | Public CDN URL                 | Permanent    |
+| In-progress images   | Private, API-proxied           | Job lifetime |
 
 ---
 
@@ -1000,6 +1001,7 @@ bucket: ai-children-books-prod
 **Output:** CharacterCard + visualAnchor string
 
 **Responsibilities:**
+
 - Normalize appearance descriptions into precise, image-prompt-friendly language
 - Infer cultural context from name/language to avoid visual stereotyping
 - Generate the canonical `visualAnchor` — a single, dense visual description used consistently across ALL image prompts
@@ -1017,6 +1019,7 @@ Example: `"Emma, 6-year-old girl, curly red hair with freckles, bright green eye
 **Output:** StoryPlan
 
 **Responsibilities:**
+
 - Create a three-act narrative structure appropriate for child's age
 - Embed the educational goal organically into the plot
 - Define exactly which moments should be illustrated (max 1 per page spread)
@@ -1038,11 +1041,13 @@ plot progressions. The 5000-token thinking budget adds ~$0.04/book — justified
 **Parallelism:** All chapters written concurrently
 
 **Context management:**
+
 - Each worker receives: system prompt + character card + story plan + previous chapter summary (NOT full text)
 - This keeps context window lean while preserving narrative continuity
 - After writing, generates its own 200-token summary for the next chapter
 
 **Reading level enforcement:**
+
 - Target Flesch-Kincaid grade level calculated from child's age: `grade = age - 4`
 - Post-processing validation using `flesch-kincaid` npm package
 - Auto-simplification pass if score is too high
@@ -1059,6 +1064,7 @@ plot progressions. The 5000-token thinking budget adds ~$0.04/book — justified
 **Core task:** Translate narrative prose into precise, image-model-optimized prompts.
 
 The agent follows a strict prompt template to produce:
+
 1. **Scene description** — what is happening in the illustration
 2. **Character positioning** — where the character is in the frame
 3. **Emotional tone** — facial expression and body language
@@ -1101,6 +1107,7 @@ This achieves near-perfect character consistency.
 **Parallelism:** Concurrent, rate-limited to 50 req/min
 
 **Why Flux over DALL-E 3 as primary?**
+
 - Flux 1.1 Pro: $0.04/image at 1024px, superior illustration quality
 - DALL-E 3: $0.04/image (1024px), good quality but less controllable style
 - Flux supports LoRA injection (critical for future character consistency)
@@ -1108,6 +1115,7 @@ This achieves near-perfect character consistency.
 
 **Seed management:**
 Every generation stores the `seed` value. This enables:
+
 - Deterministic regeneration for debugging
 - Subtle variation regeneration (same seed ± small delta)
 
@@ -1120,6 +1128,7 @@ Every generation stores the `seed` value. This enables:
 **Output:** QualityReport
 
 **Checks performed:**
+
 1. **Content safety** — no age-inappropriate content (nudity, violence, scary imagery)
 2. **Character consistency** — does the illustrated character match the CharacterCard?
 3. **Text-image alignment** — does the illustration match what the text describes?
@@ -1139,6 +1148,7 @@ GPT-4o Vision has strong image understanding and is cheaper for rapid QA checks
 **Output:** PageLayout[]
 
 This is pure code, not AI. The layout engine:
+
 - Selects a layout template based on page type (cover, chapter-start, body, ending)
 - Applies typography rules (font size = 24pt for age 4–6, 18pt for age 7–9, 14pt for age 10–12)
 - Places text blocks and image frames according to the template
@@ -1158,6 +1168,7 @@ PDFKit gives lower-level control over image embedding, font subsetting, and blee
 needed for print-ready PDF/X-1a standard. React PDF is better for the browser preview.
 
 **PDF specifications:**
+
 - Format: PDF 1.4 (broad compatibility)
 - Color: sRGB for digital, CMYK conversion available for print
 - Resolution: 300 DPI (print-ready)
@@ -1261,6 +1272,7 @@ Positive prompt max 200 words. Negative prompt max 50 words.
 ## 13. Context Management Strategy
 
 ### Problem
+
 A 32-page book with chapters = large accumulated context. Naive full-context passing
 hits token limits and inflates cost.
 
@@ -1289,15 +1301,15 @@ Rule: Each agent receives only the context level(s) it needs.
 
 ### Token Budget per Book (32 pages, 4 chapters)
 
-| Agent | Input Tokens | Output Tokens | Total |
-|---|---|---|---|
-| CharBuilder | ~400 | ~200 | 600 |
-| StoryPlanner | ~800 | ~1000 | 1800 |
-| ChapterWriter ×4 | ~1200 each | ~800 each | 8000 |
-| IllustPromptGen ×32 | ~400 each | ~200 each | 19200 |
-| CharConsistency | ~6400 | ~6400 | 12800 |
-| QAReview ×32 | ~1000 each | ~200 each | 38400 |
-| **Total** | | | **~80,800 tokens** |
+| Agent               | Input Tokens | Output Tokens | Total              |
+| ------------------- | ------------ | ------------- | ------------------ |
+| CharBuilder         | ~400         | ~200          | 600                |
+| StoryPlanner        | ~800         | ~1000         | 1800               |
+| ChapterWriter ×4    | ~1200 each   | ~800 each     | 8000               |
+| IllustPromptGen ×32 | ~400 each    | ~200 each     | 19200              |
+| CharConsistency     | ~6400        | ~6400         | 12800              |
+| QAReview ×32        | ~1000 each   | ~200 each     | 38400              |
+| **Total**           |              |               | **~80,800 tokens** |
 
 **Estimated LLM cost per 32-page book: ~$0.25–0.40** (Claude Sonnet pricing)
 
@@ -1306,20 +1318,25 @@ Rule: Each agent receives only the context level(s) it needs.
 ## 14. Character Memory Strategy
 
 ### Per-Book Memory
+
 The `CharacterCard` is the canonical character memory. It is:
+
 1. Generated once by CharBuilder
 2. Stored in `books.character_card` (JSONB)
 3. Cached in Redis for the duration of the job
 4. Injected into EVERY downstream agent as immutable context
 
 ### Cross-Book (Series) Memory
+
 When a book is part of a series:
+
 1. The CharacterCard is stored in `character_cards` table
 2. New books in the same series load the card from DB
 3. The story planner receives a "previous books summary" (~200 tokens) from series history
 4. Character card is never modified — immutable per series
 
 ### Future: Photo-Based Character Memory
+
 ```
 User uploads child photo
     │
@@ -1344,6 +1361,7 @@ Injected into every image prompt as: <lora:character_id:0.8>
 ## 15. Illustration Consistency Strategy
 
 ### Problem
+
 Standard diffusion models have no memory — each image is statistically independent.
 The character looks different on every page.
 
@@ -1381,12 +1399,14 @@ via fal.ai's IP-Adapter support.
 ### Architecture: Two-Phase Rendering
 
 **Phase 1: Browser Preview (React PDF)**
+
 - Runs in the client via `@react-pdf/renderer`
 - Renders from PageLayout JSON (lightweight, no image re-fetch)
 - Allows user to see live preview before final PDF is ready
 - Lower resolution, no bleed marks
 
 **Phase 2: Print-Ready PDF (Server PDFKit)**
+
 - Runs in pdf:render worker
 - Downloads full-resolution images from R2
 - Embeds fonts (Google Fonts subset)
@@ -1626,40 +1646,41 @@ ai-book-platform/
 const RETRY_TRANSIENT = {
   attempts: 3,
   backoff: { type: 'exponential', delay: 2000, maxDelay: 30000 },
-  retryableErrors: [429, 500, 502, 503, 504]
+  retryableErrors: [429, 500, 502, 503, 504],
 };
 
 // Tier 2: Quality failures — regenerate with modified prompt
 const RETRY_QUALITY = {
   attempts: 2,
-  strategy: 'modify_prompt',  // inject negative feedback into prompt
-  maxRegenPerPage: 3
+  strategy: 'modify_prompt', // inject negative feedback into prompt
+  maxRegenPerPage: 3,
 };
 
 // Tier 3: Model failure — fallback to alternate provider
 const FALLBACK_CHAIN = {
-  story:   ['claude-sonnet-4-6', 'gpt-4o', 'gemini-2.5-pro'],
-  image:   ['fal-flux-1.1-pro', 'dall-e-3'],
-  review:  ['gpt-4o', 'claude-sonnet-4-6']
+  story: ['claude-sonnet-4-6', 'gpt-4o', 'gemini-2.5-pro'],
+  image: ['fal-flux-1.1-pro', 'dall-e-3'],
+  review: ['gpt-4o', 'claude-sonnet-4-6'],
 };
 ```
 
 ### Error Taxonomy
 
-| Error Type | Recovery |
-|---|---|
-| API rate limit (429) | BullMQ rate limiter, exponential backoff |
-| API timeout | Retry with same input, max 3× |
-| API provider down | Automatic failover to next provider in chain |
-| QA quality failure | Regenerate page with feedback injected into prompt |
-| Content policy block | Flag for human review, refund credits, notify user |
-| PDF render failure | Retry with reduced image quality |
-| Storage upload failure | Retry with exponential backoff |
-| Partial book failure | Save progress to DB, allow resume from last successful step |
+| Error Type             | Recovery                                                    |
+| ---------------------- | ----------------------------------------------------------- |
+| API rate limit (429)   | BullMQ rate limiter, exponential backoff                    |
+| API timeout            | Retry with same input, max 3×                               |
+| API provider down      | Automatic failover to next provider in chain                |
+| QA quality failure     | Regenerate page with feedback injected into prompt          |
+| Content policy block   | Flag for human review, refund credits, notify user          |
+| PDF render failure     | Retry with reduced image quality                            |
+| Storage upload failure | Retry with exponential backoff                              |
+| Partial book failure   | Save progress to DB, allow resume from last successful step |
 
 ### Dead Letter Queue
 
 All jobs that exhaust retries → `dlq:failed-jobs` queue.
+
 - Alert sent to on-call via PagerDuty
 - Job state preserved in DB for manual replay
 - User receives email notification with automatic credit refund
@@ -1688,12 +1709,14 @@ All jobs that exhaust retries → `dlq:failed-jobs` queue.
 ### Key Metrics to Track
 
 **Business metrics:**
+
 - Books generated per hour / day
 - Success rate (% of books that complete without error)
 - Average generation time per book
 - Revenue per book (credits charged)
 
 **AI pipeline metrics:**
+
 - Token usage per agent per book
 - Cost per book (breakdown by agent + provider)
 - QA failure rate per page type
@@ -1701,6 +1724,7 @@ All jobs that exhaust retries → `dlq:failed-jobs` queue.
 - Character consistency score distribution
 
 **Infrastructure metrics:**
+
 - Queue depth per agent queue
 - Worker CPU / memory / GPU utilization
 - API provider latency (p50, p95, p99)
@@ -1708,13 +1732,13 @@ All jobs that exhaust retries → `dlq:failed-jobs` queue.
 
 ### Alerting Rules
 
-| Condition | Severity | Action |
-|---|---|---|
-| Book success rate < 90% | P1 | PagerDuty |
-| Queue depth > 1000 jobs | P2 | Slack |
-| fal.ai error rate > 5% | P2 | Slack + auto-enable DALL-E fallback |
-| Cost per book > $2.00 | P2 | Slack |
-| DLQ depth > 0 | P3 | Slack |
+| Condition               | Severity | Action                              |
+| ----------------------- | -------- | ----------------------------------- |
+| Book success rate < 90% | P1       | PagerDuty                           |
+| Queue depth > 1000 jobs | P2       | Slack                               |
+| fal.ai error rate > 5%  | P2       | Slack + auto-enable DALL-E fallback |
+| Cost per book > $2.00   | P2       | Slack                               |
+| DLQ depth > 0           | P3       | Slack                               |
 
 ### Structured Log Format
 
@@ -1762,26 +1786,27 @@ User                  Next.js BFF              NestJS API         Database
 ```
 
 **Token strategy:**
+
 - Access token: JWT, 15-minute expiry, stored in memory (not localStorage)
 - Refresh token: opaque token, 7-day expiry, stored in HttpOnly Secure cookie
 - Refresh token stored hashed in DB (bcrypt), invalidated on logout
 
 ### Security Controls
 
-| Control | Implementation |
-|---|---|
-| Input sanitization | Zod schemas at every API boundary |
-| Prompt injection | Sanitize user inputs before LLM injection; wrap in XML tags |
-| Content safety | Pre-generation: Claude's built-in refusals. Post-generation: QA agent |
-| Rate limiting | Per-user: 3 books/hour. Global: nginx rate limiting |
-| CORS | Whitelist production domains only |
-| Secrets | Doppler / AWS Secrets Manager (never in code or .env committed) |
-| API keys | Rotated quarterly, per-environment |
-| PII in logs | User email/name stripped from all log lines |
-| R2 access | All assets private; served via signed URLs (24h expiry) |
-| SQL injection | Prisma ORM (parameterized queries, no raw SQL in hot paths) |
-| OWASP Top 10 | Quarterly security review + automated scanning |
-| CSP headers | Strict-Transport-Security, Content-Security-Policy, X-Frame-Options |
+| Control            | Implementation                                                        |
+| ------------------ | --------------------------------------------------------------------- |
+| Input sanitization | Zod schemas at every API boundary                                     |
+| Prompt injection   | Sanitize user inputs before LLM injection; wrap in XML tags           |
+| Content safety     | Pre-generation: Claude's built-in refusals. Post-generation: QA agent |
+| Rate limiting      | Per-user: 3 books/hour. Global: nginx rate limiting                   |
+| CORS               | Whitelist production domains only                                     |
+| Secrets            | Doppler / AWS Secrets Manager (never in code or .env committed)       |
+| API keys           | Rotated quarterly, per-environment                                    |
+| PII in logs        | User email/name stripped from all log lines                           |
+| R2 access          | All assets private; served via signed URLs (24h expiry)               |
+| SQL injection      | Prisma ORM (parameterized queries, no raw SQL in hot paths)           |
+| OWASP Top 10       | Quarterly security review + automated scanning                        |
+| CSP headers        | Strict-Transport-Security, Content-Security-Policy, X-Frame-Options   |
 
 ---
 
@@ -1789,15 +1814,15 @@ User                  Next.js BFF              NestJS API         Database
 
 ### Cost per 32-page book (target: < $0.80)
 
-| Component | Unit Cost | Count | Total |
-|---|---|---|---|
-| Claude Sonnet (story + chapters) | $0.003/1k tokens | ~15k tokens | $0.045 |
-| Claude Opus (story planning) | $0.015/1k tokens | ~2k tokens | $0.030 |
-| GPT-4o Vision (QA) | $0.005/1k tokens | ~16k tokens | $0.080 |
-| fal.ai Flux images | $0.04/image | 33 images | $1.320 |
-| **Total AI cost** | | | **~$1.475** |
-| Infrastructure per book | | | ~$0.05 |
-| **Total cost per book** | | | **~$1.525** |
+| Component                        | Unit Cost        | Count       | Total       |
+| -------------------------------- | ---------------- | ----------- | ----------- |
+| Claude Sonnet (story + chapters) | $0.003/1k tokens | ~15k tokens | $0.045      |
+| Claude Opus (story planning)     | $0.015/1k tokens | ~2k tokens  | $0.030      |
+| GPT-4o Vision (QA)               | $0.005/1k tokens | ~16k tokens | $0.080      |
+| fal.ai Flux images               | $0.04/image      | 33 images   | $1.320      |
+| **Total AI cost**                |                  |             | **~$1.475** |
+| Infrastructure per book          |                  |             | ~$0.05      |
+| **Total cost per book**          |                  |             | **~$1.525** |
 
 **Sell at $6.99/book → ~78% margin**
 
@@ -1812,12 +1837,12 @@ User                  Next.js BFF              NestJS API         Database
 
 ### Credit Pricing Model
 
-| Plan | Price | Credits | Books | Cost/book to us | Margin |
-|---|---|---|---|---|---|
-| Free | $0 | 3 credits | 1 (8-page) | $0.50 | Loss leader |
-| Starter | $9.99/mo | 10 credits | 2 (16-page) | $0.90 each | 81% |
-| Pro | $24.99/mo | 30 credits | 4 (32-page) | $1.52 each | 78% |
-| Pay per book | $6.99/book | 1 credit | 1 (32-page) | $1.52 | 78% |
+| Plan         | Price      | Credits    | Books       | Cost/book to us | Margin      |
+| ------------ | ---------- | ---------- | ----------- | --------------- | ----------- |
+| Free         | $0         | 3 credits  | 1 (8-page)  | $0.50           | Loss leader |
+| Starter      | $9.99/mo   | 10 credits | 2 (16-page) | $0.90 each      | 81%         |
+| Pro          | $24.99/mo  | 30 credits | 4 (32-page) | $1.52 each      | 78%         |
+| Pay per book | $6.99/book | 1 credit   | 1 (32-page) | $1.52           | 78%         |
 
 ---
 
@@ -1862,13 +1887,13 @@ Multi-region active-active:
 
 ### Bottleneck Analysis
 
-| Bottleneck | Limit | Mitigation |
-|---|---|---|
-| fal.ai rate limit | 50 req/min | BullMQ rate limiter + multiple API accounts |
-| Claude API rate limit | 1M tokens/min | Multiple API keys + request batching |
-| PostgreSQL writes | ~10k writes/sec | Connection pooling (PgBouncer) + read replicas |
-| PDF rendering (memory) | ~2GB per job | Dedicated PDF worker nodes; streaming render |
-| R2 upload bandwidth | Effectively unlimited | No concern |
+| Bottleneck             | Limit                 | Mitigation                                     |
+| ---------------------- | --------------------- | ---------------------------------------------- |
+| fal.ai rate limit      | 50 req/min            | BullMQ rate limiter + multiple API accounts    |
+| Claude API rate limit  | 1M tokens/min         | Multiple API keys + request batching           |
+| PostgreSQL writes      | ~10k writes/sec       | Connection pooling (PgBouncer) + read replicas |
+| PDF rendering (memory) | ~2GB per job          | Dedicated PDF worker nodes; streaming render   |
+| R2 upload bandwidth    | Effectively unlimited | No concern                                     |
 
 ---
 
@@ -1886,12 +1911,12 @@ services:
       POSTGRES_DB: bookplatform
       POSTGRES_USER: dev
       POSTGRES_PASSWORD: devpassword
-    ports: ["5432:5432"]
+    ports: ['5432:5432']
     volumes: [postgres_data:/var/lib/postgresql/data]
 
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ['6379:6379']
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
 
   api:
@@ -1905,9 +1930,9 @@ services:
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
       R2_ACCESS_KEY: ${R2_ACCESS_KEY}
       R2_SECRET_KEY: ${R2_SECRET_KEY}
-    ports: ["4000:4000"]
+    ports: ['4000:4000']
     depends_on: [postgres, redis]
-    volumes: ["./apps/api/src:/app/src"]  # hot reload
+    volumes: ['./apps/api/src:/app/src'] # hot reload
 
   worker:
     build: ./apps/api
@@ -1920,17 +1945,17 @@ services:
 
   web:
     build: ./apps/web
-    ports: ["3000:3000"]
+    ports: ['3000:3000']
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:4000
       NEXT_PUBLIC_WS_URL: ws://localhost:4000
-    volumes: ["./apps/web/src:/app/src"]
+    volumes: ['./apps/web/src:/app/src']
 
   image-worker:
     build: ./workers/image-worker
     environment:
       FAL_API_KEY: ${FAL_API_KEY}
-    ports: ["8000:8000"]
+    ports: ['8000:8000']
 
 volumes:
   postgres_data:
@@ -1954,8 +1979,8 @@ spec:
         - name: api
           image: gcr.io/bookplatform/api:${VERSION}
           resources:
-            requests: { cpu: "500m", memory: "512Mi" }
-            limits:   { cpu: "2000m", memory: "2Gi" }
+            requests: { cpu: '500m', memory: '512Mi' }
+            limits: { cpu: '2000m', memory: '2Gi' }
           env:
             - name: ANTHROPIC_API_KEY
               valueFrom:
@@ -1985,7 +2010,7 @@ spec:
               queue: agent:image-gen
         target:
           type: AverageValue
-          averageValue: "10"  # scale up when >10 jobs per pod
+          averageValue: '10' # scale up when >10 jobs per pod
 ```
 
 ---
@@ -2043,7 +2068,7 @@ jobs:
   deploy-prod:
     needs: build-images
     if: github.ref == 'refs/heads/main'
-    environment: production  # requires manual approval
+    environment: production # requires manual approval
     runs-on: ubuntu-latest
     steps:
       - run: kubectl set image deployment/api api=gcr.io/bookplatform/api:${{ github.sha }}
@@ -2119,16 +2144,20 @@ Playwright tests covering:
 describe('StoryPlannerPrompt', () => {
   it('matches expected prompt structure', () => {
     const prompt = buildStoryPlannerPrompt(sampleRequest, sampleCharCard);
-    expect(prompt).toMatchSnapshot();  // prevents accidental prompt regression
+    expect(prompt).toMatchSnapshot(); // prevents accidental prompt regression
   });
 });
 
 // Output schema validation (contract tests against real APIs in CI with small budget)
 describe('StoryPlannerAgent — contract test', () => {
-  it('real Claude output validates against StoryPlan schema', async () => {
-    const plan = await realAgent.run(sampleRequest);
-    expect(StoryPlanSchema.safeParse(plan).success).toBe(true);
-  }, { timeout: 30000 });
+  it(
+    'real Claude output validates against StoryPlan schema',
+    async () => {
+      const plan = await realAgent.run(sampleRequest);
+      expect(StoryPlanSchema.safeParse(plan).success).toBe(true);
+    },
+    { timeout: 30000 },
+  );
 });
 ```
 
@@ -2150,6 +2179,7 @@ image worker where Python ML libraries are needed.
 ### Decision 2: Multi-agent pipeline vs single mega-prompt
 
 **Chose multi-agent.** A single prompt for a 32-page book would be:
+
 - Unreliable (one failure = full regeneration)
 - Expensive (can't cache intermediate results)
 - Unscalable (can't parallelize chapter writing)
@@ -2162,6 +2192,7 @@ image worker where Python ML libraries are needed.
 ### Decision 3: Flux (fal.ai) vs DALL-E 3 as primary image model
 
 **Chose Flux 1.1 Pro via fal.ai.** Reasons:
+
 1. Better stylistic control for illustration styles
 2. LoRA support (critical for Phase 2 character consistency)
 3. Same cost, higher quality
@@ -2175,6 +2206,7 @@ Mitigated by keeping DALL-E 3 as automatic fallback.
 ### Decision 4: Store agent outputs as JSONB in PostgreSQL
 
 **Chose JSONB in Postgres.** Reasons:
+
 - Agent output schemas evolve frequently during development
 - Avoids premature normalization of deeply nested structures
 - pgvector can be added for future semantic search over generated stories
@@ -2188,6 +2220,7 @@ Acceptable because agent outputs are rarely queried — they're retrieved by boo
 ### Decision 5: PDF rendering on server (PDFKit) vs client (React PDF)
 
 **Chose both, for different purposes.**
+
 - Client-side React PDF: instant preview, zero server load
 - Server PDFKit: print-quality output, proper CMYK/bleed for print-on-demand
 
@@ -2207,5 +2240,5 @@ R2 egress: **$0** (included in CDN).
 
 ---
 
-*This architecture document was designed to serve millions of users at production scale.*
-*Version 1.0 — Ready for implementation by an engineering team of 3–5 engineers.*
+_This architecture document was designed to serve millions of users at production scale._
+_Version 1.0 — Ready for implementation by an engineering team of 3–5 engineers._

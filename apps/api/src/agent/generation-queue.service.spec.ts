@@ -18,7 +18,10 @@ function createMockQueue(): jest.Mocked<Queue> {
   } as unknown as jest.Mocked<Queue>;
 }
 
-function makeBullMqJob(state: string, overrides: { attemptsMade?: number; attempts?: number } = {}) {
+function makeBullMqJob(
+  state: string,
+  overrides: { attemptsMade?: number; attempts?: number } = {},
+) {
   return {
     getState: vi.fn().mockResolvedValue(state),
     attemptsMade: overrides.attemptsMade ?? 0,
@@ -91,7 +94,9 @@ describe('GenerationQueueService', () => {
 
     it('returns true when the job failed but more attempts remain', async () => {
       const queue = createMockQueue();
-      queue.getJob.mockResolvedValue(makeBullMqJob('failed', { attemptsMade: 1, attempts: 3 }) as never);
+      queue.getJob.mockResolvedValue(
+        makeBullMqJob('failed', { attemptsMade: 1, attempts: 3 }) as never,
+      );
       const service = new GenerationQueueService(queue as never);
 
       expect(await service.isJobStillPending('run-1')).toBe(true);
@@ -99,7 +104,9 @@ describe('GenerationQueueService', () => {
 
     it('returns false when the job failed and every attempt is exhausted', async () => {
       const queue = createMockQueue();
-      queue.getJob.mockResolvedValue(makeBullMqJob('failed', { attemptsMade: 3, attempts: 3 }) as never);
+      queue.getJob.mockResolvedValue(
+        makeBullMqJob('failed', { attemptsMade: 3, attempts: 3 }) as never,
+      );
       const service = new GenerationQueueService(queue as never);
 
       expect(await service.isJobStillPending('run-1')).toBe(false);

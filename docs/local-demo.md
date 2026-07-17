@@ -88,17 +88,17 @@ unless you have a specific reason to want the old shared-identity shortcut:
   - **Email verification (Phase 6F)**: new accounts start unverified — a
     banner in the dashboard header offers to resend the verification link.
     Registration itself still signs you in immediately either way, but a
-    *later* `/login` attempt (e.g. after clicking **Log out**) is rejected
+    _later_ `/login` attempt (e.g. after clicking **Log out**) is rejected
     with `401 EMAIL_NOT_VERIFIED` until the account is verified. No real
     email is sent locally — the API logs the verification link to its
     console instead (`[ConsoleEmailService] Verification email for
-    <email>: http://localhost:3000/verify-email?token=...`); copy that URL
+<email>: http://localhost:3000/verify-email?token=...`); copy that URL
     into the browser to verify. See
     [docs/auth-architecture.md §14](auth-architecture.md#14-phase-6f--email-verification).
   - **Password reset (Phase 6G)**: click **Forgot password?** on `/login` to
     request a reset link. As with verification, no real email is sent
     locally — the API logs it instead (`[ConsoleEmailService] Password reset
-    email for <email>: http://localhost:3000/reset-password?token=...`);
+email for <email>: http://localhost:3000/reset-password?token=...`);
     copy that URL into the browser to set a new password. The link expires
     after 30 minutes and can only be used once. See
     [docs/auth-architecture.md §15](auth-architecture.md#15-phase-6g--password-reset).

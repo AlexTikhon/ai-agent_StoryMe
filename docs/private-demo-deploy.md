@@ -84,14 +84,14 @@ apps/web (Next.js, Vercel)  ──HTTPS, CORS──▶  apps/api (NestJS, Docker
 
 ## 2. Recommended provider path
 
-| Piece | Recommendation | Why |
-|---|---|---|
-| Web | **Vercel** | Zero-config Next.js hosting, matches Phase 5D's audited path exactly (no Dockerfile needed). |
-| API | **Render, Fly.io, or Railway** (Docker service) | All three run an arbitrary Dockerfile as an always-on instance. Since Phase 3K, generation is a durable BullMQ/Redis queue rather than an in-process runner, so this pick is no longer forced by generation architecture — see [Known limitations](#known-limitations) for what still favors care before autoscaling (default `local` storage drivers, redundant recovery sweeps). Pick whichever the team already has an account on; nothing below is provider-specific beyond "runs a Docker image and lets you set env vars." |
-| Generation worker | **Same host as the API** (second Docker service, same image, `node dist/worker` start command) | Deployed separately from the API — see [§4a Deploy the generation worker](#4a-deploy-the-generation-worker). Must run as its own process/container in every deployed environment; `ENABLE_GENERATION_WORKER=true` is a local single-process dev convenience only, never set on either deployed service. |
-| Database | **Neon or Supabase** (managed Postgres), or the API host's own managed Postgres add-on if using Render/Railway | Either works; schema/migrations are plain Postgres, no provider-specific features used. |
-| Storage | **Cloudflare R2** | Already the primary implementation target (`PDF_STORAGE_DRIVER=r2` / `IMAGE_STORAGE_DRIVER=r2`), S3-compatible, no egress fees. AWS S3 works identically via `PDF_STORAGE_DRIVER=s3`. |
-| Redis | **A small managed Redis** (Upstash, Redis Cloud, or the API host's own Redis add-on) | Required for the app to boot, pass `/api/health`, and schedule/run every generation job (BullMQ, Phase 3K) — see below. A free/smallest tier is enough; nothing performance-sensitive runs through it today. |
+| Piece             | Recommendation                                                                                                 | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web               | **Vercel**                                                                                                     | Zero-config Next.js hosting, matches Phase 5D's audited path exactly (no Dockerfile needed).                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| API               | **Render, Fly.io, or Railway** (Docker service)                                                                | All three run an arbitrary Dockerfile as an always-on instance. Since Phase 3K, generation is a durable BullMQ/Redis queue rather than an in-process runner, so this pick is no longer forced by generation architecture — see [Known limitations](#known-limitations) for what still favors care before autoscaling (default `local` storage drivers, redundant recovery sweeps). Pick whichever the team already has an account on; nothing below is provider-specific beyond "runs a Docker image and lets you set env vars." |
+| Generation worker | **Same host as the API** (second Docker service, same image, `node dist/worker` start command)                 | Deployed separately from the API — see [§4a Deploy the generation worker](#4a-deploy-the-generation-worker). Must run as its own process/container in every deployed environment; `ENABLE_GENERATION_WORKER=true` is a local single-process dev convenience only, never set on either deployed service.                                                                                                                                                                                                                          |
+| Database          | **Neon or Supabase** (managed Postgres), or the API host's own managed Postgres add-on if using Render/Railway | Either works; schema/migrations are plain Postgres, no provider-specific features used.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Storage           | **Cloudflare R2**                                                                                              | Already the primary implementation target (`PDF_STORAGE_DRIVER=r2` / `IMAGE_STORAGE_DRIVER=r2`), S3-compatible, no egress fees. AWS S3 works identically via `PDF_STORAGE_DRIVER=s3`.                                                                                                                                                                                                                                                                                                                                            |
+| Redis             | **A small managed Redis** (Upstash, Redis Cloud, or the API host's own Redis add-on)                           | Required for the app to boot, pass `/api/health`, and schedule/run every generation job (BullMQ, Phase 3K) — see below. A free/smallest tier is enough; nothing performance-sensitive runs through it today.                                                                                                                                                                                                                                                                                                                     |
 
 This is the same architecture already recommended in
 [deployment-readiness.md's Recommended deployment architecture](deployment-readiness.md#recommended-deployment-architecture);
@@ -133,41 +133,41 @@ cloud storage (not local filesystem, since most container hosts have an
 ephemeral filesystem — see
 [Known blockers #1](deployment-readiness.md#known-blockers)).
 
-| Variable | App | Required for private demo? | Example value shape | Notes |
-|---|---|---|---|---|
-| `DATABASE_URL` | API | **Yes** | `postgresql://user:pass@host:5432/db` | Managed Postgres connection string. |
-| `REDIS_URL` | API | **Yes** | `redis://:password@host:6379` | See [Is Redis required?](#is-redis-required) — needed to boot and pass health checks, not for queue processing yet. |
-| `JWT_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | Signs/verifies access tokens (`JwtAuthGuard`, `TokenService`). |
-| `JWT_REFRESH_SECRET` | API | **Yes** | 32+ char random hex, `openssl rand -hex 32` | HMAC key used to hash refresh tokens before they're stored in `RefreshToken.tokenHash`. |
-| `AUTH_MODE` | API | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt` | Must match the web app's `NEXT_PUBLIC_AUTH_MODE` exactly — a mismatch 401s every request. Only set to `dev` for a trusted-operator-only deployment (see the warning above). |
-| `PORT` | API | No (has default `4000`) | `4000` | Most hosts (Render/Fly/Railway) set this automatically; the API already reads and binds it on `0.0.0.0`. |
-| `ALLOWED_ORIGINS` | API | **Yes** | `https://storyme-demo.vercel.app` | CORS allowlist, comma-separated for multiple origins (e.g. preview + production Vercel URLs). Must match the web app's deployed origin exactly. |
-| `EMAIL_PROVIDER` | API | No (defaults to `console`) | `console` \| `resend` | Set to `resend` to send real verification/reset email; leaving it unset logs the link server-side instead (`ConsoleEmailService`) — fine for an internal/trusted demo, not for real users. |
-| `RESEND_API_KEY` | API | **Yes, if `EMAIL_PROVIDER=resend`** | `re_...` | Boot fails fast (env validation) if `EMAIL_PROVIDER=resend` is set without this. |
-| `EMAIL_FROM` | API | **Yes, if `EMAIL_PROVIDER=resend`** | `StoryMe <noreply@storyme.app>` | Must be a verified sender/domain in the Resend dashboard, or sends will fail at request time even though boot succeeds. |
-| `EMAIL_REPLY_TO` | API | No | `support@storyme.app` | Optional; omitted from the outbound email entirely when unset. |
-| `OPENAI_API_KEY` | API | Only if using real generation | `sk-...` | Required only when `STORY_GENERATION_PROVIDER=openai` or `IMAGE_GENERATION_PROVIDER=openai`. Leave the providers on `mock` (default) for a free/deterministic demo. |
-| `STORY_GENERATION_PROVIDER` | API | No (defaults to `mock`) | `mock` \| `openai` | Set to `openai` only if you want real story text and have budget. |
-| `IMAGE_GENERATION_PROVIDER` | API | No (defaults to `mock`) | `mock` \| `openai` | Same — real image generation costs money per call (see `REAL_GENERATION_MAX_PAGES` guardrail). |
-| `PDF_STORAGE_DRIVER` | API | **Yes, set to `r2` or `s3`** | `r2` | Do not leave as default `local` — the container filesystem is ephemeral on every host in this runbook, so previously generated PDFs disappear on redeploy/restart. |
-| `IMAGE_STORAGE_DRIVER` | API | **Yes, set to `r2` or `s3`** | `r2` | Same reasoning as `PDF_STORAGE_DRIVER`, same ephemeral-filesystem risk for generated images. |
-| `PDF_STORAGE_BUCKET` | API | **Yes** (if using cloud storage) | `storyme-demo-previews` | Shared by both PDF and image storage (images go under an `images/` key prefix in the same bucket). |
-| `PDF_STORAGE_REGION` | API | **Yes** (if using cloud storage) | `auto` (R2) or `us-east-1` (S3) | R2 always uses `auto`. |
-| `PDF_STORAGE_ENDPOINT` | API | **Yes for R2**, omit for AWS S3 | `https://<account-id>.r2.cloudflarestorage.com` | Only needed for R2 (or any non-AWS S3-compatible endpoint). |
-| `PDF_STORAGE_ACCESS_KEY_ID` | API | **Yes** (if using cloud storage) | `<r2-or-iam-access-key>` | Scope the credential to only this bucket if the provider supports it. |
-| `PDF_STORAGE_SECRET_ACCESS_KEY` | API | **Yes** (if using cloud storage) | `<r2-or-iam-secret>` | Treat as a secret — set via the host's secret manager, not committed anywhere. |
-| `PDF_STORAGE_PUBLIC_BASE_URL` | API | No | *(not currently read by any code path)* | Not present in `apps/api/src/config/env.schema.ts` or `pdf-storage.ts` today — PDFs are served through the API's own preview endpoint (`GET /api/books/:id/pdf/preview`), not a direct public bucket URL. Included here for completeness since the task template asked for it; there is nothing to set. |
-| `WEB_APP_URL` | API | **Yes** | `https://storyme-demo.vercel.app` | Used only to build links in verification/reset email; set to the deployed web origin, not `localhost`. |
-| `ENABLE_GENERATION_WORKER` | API + worker | No (leave unset/`false` on both deployed services) | `false` | Local single-process dev convenience only (`pnpm --filter @book/api dev` self-enables the processor). Never set `true` on a deployed **api** service — it would double-consume jobs alongside the dedicated worker service. The dedicated **worker** entrypoint (`worker.ts`) always registers the processor regardless of this var, so it doesn't need it set either. |
-| `STRIPE_BILLING_ENABLED` | API | No (defaults to `false`; optional feature) | `false` \| `true` | Credit purchases (Phase E3/E4) are opt-in. `false` (default): `POST /api/billing/checkout` fails closed with `BILLING_DISABLED`, no Stripe client ever constructed, `/dashboard/credits` shows an unavailable state. Set `true` only once every var below is also set — see [§3.3 Stripe webhook configuration](#stripe-webhook-configuration-and-test-mode-verification). |
-| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_STARTER` / `STRIPE_PRICE_ID_PRO` / `STRIPE_PRICE_ID_BUNDLE` | API | **Yes, if `STRIPE_BILLING_ENABLED=true`** | `sk_test_...` / `whsec_...` / `price_...` | Boot fails fast (env validation, `env.schema.ts` `superRefine`) if `STRIPE_BILLING_ENABLED=true` is set without all five. Use **test-mode** keys/Price IDs for a private demo — see [§3.3](#stripe-webhook-configuration-and-test-mode-verification). |
-| `NEXT_PUBLIC_API_URL` | Web | **Yes** | `https://storyme-api-demo.onrender.com/api` | Baked in at **build time** (Next.js inlines `NEXT_PUBLIC_*` at build), not read at request time — must be set in Vercel's project env vars *before* the first build, and changing it requires a rebuild. Include the `/api` suffix. |
-| `NEXT_PUBLIC_AUTH_MODE` | Web | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt` | Same build-time-inlined caveat as `NEXT_PUBLIC_API_URL`. Must match the API's `AUTH_MODE` exactly. |
+| Variable                                                                                                                     | App          | Required for private demo?                           | Example value shape                             | Notes                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------- | ------------ | ---------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                                                               | API          | **Yes**                                              | `postgresql://user:pass@host:5432/db`           | Managed Postgres connection string.                                                                                                                                                                                                                                                                                                                                        |
+| `REDIS_URL`                                                                                                                  | API          | **Yes**                                              | `redis://:password@host:6379`                   | See [Is Redis required?](#is-redis-required) — needed to boot and pass health checks, not for queue processing yet.                                                                                                                                                                                                                                                        |
+| `JWT_SECRET`                                                                                                                 | API          | **Yes**                                              | 32+ char random hex, `openssl rand -hex 32`     | Signs/verifies access tokens (`JwtAuthGuard`, `TokenService`).                                                                                                                                                                                                                                                                                                             |
+| `JWT_REFRESH_SECRET`                                                                                                         | API          | **Yes**                                              | 32+ char random hex, `openssl rand -hex 32`     | HMAC key used to hash refresh tokens before they're stored in `RefreshToken.tokenHash`.                                                                                                                                                                                                                                                                                    |
+| `AUTH_MODE`                                                                                                                  | API          | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt`                                  | Must match the web app's `NEXT_PUBLIC_AUTH_MODE` exactly — a mismatch 401s every request. Only set to `dev` for a trusted-operator-only deployment (see the warning above).                                                                                                                                                                                                |
+| `PORT`                                                                                                                       | API          | No (has default `4000`)                              | `4000`                                          | Most hosts (Render/Fly/Railway) set this automatically; the API already reads and binds it on `0.0.0.0`.                                                                                                                                                                                                                                                                   |
+| `ALLOWED_ORIGINS`                                                                                                            | API          | **Yes**                                              | `https://storyme-demo.vercel.app`               | CORS allowlist, comma-separated for multiple origins (e.g. preview + production Vercel URLs). Must match the web app's deployed origin exactly.                                                                                                                                                                                                                            |
+| `EMAIL_PROVIDER`                                                                                                             | API          | No (defaults to `console`)                           | `console` \| `resend`                           | Set to `resend` to send real verification/reset email; leaving it unset logs the link server-side instead (`ConsoleEmailService`) — fine for an internal/trusted demo, not for real users.                                                                                                                                                                                 |
+| `RESEND_API_KEY`                                                                                                             | API          | **Yes, if `EMAIL_PROVIDER=resend`**                  | `re_...`                                        | Boot fails fast (env validation) if `EMAIL_PROVIDER=resend` is set without this.                                                                                                                                                                                                                                                                                           |
+| `EMAIL_FROM`                                                                                                                 | API          | **Yes, if `EMAIL_PROVIDER=resend`**                  | `StoryMe <noreply@storyme.app>`                 | Must be a verified sender/domain in the Resend dashboard, or sends will fail at request time even though boot succeeds.                                                                                                                                                                                                                                                    |
+| `EMAIL_REPLY_TO`                                                                                                             | API          | No                                                   | `support@storyme.app`                           | Optional; omitted from the outbound email entirely when unset.                                                                                                                                                                                                                                                                                                             |
+| `OPENAI_API_KEY`                                                                                                             | API          | Only if using real generation                        | `sk-...`                                        | Required only when `STORY_GENERATION_PROVIDER=openai` or `IMAGE_GENERATION_PROVIDER=openai`. Leave the providers on `mock` (default) for a free/deterministic demo.                                                                                                                                                                                                        |
+| `STORY_GENERATION_PROVIDER`                                                                                                  | API          | No (defaults to `mock`)                              | `mock` \| `openai`                              | Set to `openai` only if you want real story text and have budget.                                                                                                                                                                                                                                                                                                          |
+| `IMAGE_GENERATION_PROVIDER`                                                                                                  | API          | No (defaults to `mock`)                              | `mock` \| `openai`                              | Same — real image generation costs money per call (see `REAL_GENERATION_MAX_PAGES` guardrail).                                                                                                                                                                                                                                                                             |
+| `PDF_STORAGE_DRIVER`                                                                                                         | API          | **Yes, set to `r2` or `s3`**                         | `r2`                                            | Do not leave as default `local` — the container filesystem is ephemeral on every host in this runbook, so previously generated PDFs disappear on redeploy/restart.                                                                                                                                                                                                         |
+| `IMAGE_STORAGE_DRIVER`                                                                                                       | API          | **Yes, set to `r2` or `s3`**                         | `r2`                                            | Same reasoning as `PDF_STORAGE_DRIVER`, same ephemeral-filesystem risk for generated images.                                                                                                                                                                                                                                                                               |
+| `PDF_STORAGE_BUCKET`                                                                                                         | API          | **Yes** (if using cloud storage)                     | `storyme-demo-previews`                         | Shared by both PDF and image storage (images go under an `images/` key prefix in the same bucket).                                                                                                                                                                                                                                                                         |
+| `PDF_STORAGE_REGION`                                                                                                         | API          | **Yes** (if using cloud storage)                     | `auto` (R2) or `us-east-1` (S3)                 | R2 always uses `auto`.                                                                                                                                                                                                                                                                                                                                                     |
+| `PDF_STORAGE_ENDPOINT`                                                                                                       | API          | **Yes for R2**, omit for AWS S3                      | `https://<account-id>.r2.cloudflarestorage.com` | Only needed for R2 (or any non-AWS S3-compatible endpoint).                                                                                                                                                                                                                                                                                                                |
+| `PDF_STORAGE_ACCESS_KEY_ID`                                                                                                  | API          | **Yes** (if using cloud storage)                     | `<r2-or-iam-access-key>`                        | Scope the credential to only this bucket if the provider supports it.                                                                                                                                                                                                                                                                                                      |
+| `PDF_STORAGE_SECRET_ACCESS_KEY`                                                                                              | API          | **Yes** (if using cloud storage)                     | `<r2-or-iam-secret>`                            | Treat as a secret — set via the host's secret manager, not committed anywhere.                                                                                                                                                                                                                                                                                             |
+| `PDF_STORAGE_PUBLIC_BASE_URL`                                                                                                | API          | No                                                   | _(not currently read by any code path)_         | Not present in `apps/api/src/config/env.schema.ts` or `pdf-storage.ts` today — PDFs are served through the API's own preview endpoint (`GET /api/books/:id/pdf/preview`), not a direct public bucket URL. Included here for completeness since the task template asked for it; there is nothing to set.                                                                    |
+| `WEB_APP_URL`                                                                                                                | API          | **Yes**                                              | `https://storyme-demo.vercel.app`               | Used only to build links in verification/reset email; set to the deployed web origin, not `localhost`.                                                                                                                                                                                                                                                                     |
+| `ENABLE_GENERATION_WORKER`                                                                                                   | API + worker | No (leave unset/`false` on both deployed services)   | `false`                                         | Local single-process dev convenience only (`pnpm --filter @book/api dev` self-enables the processor). Never set `true` on a deployed **api** service — it would double-consume jobs alongside the dedicated worker service. The dedicated **worker** entrypoint (`worker.ts`) always registers the processor regardless of this var, so it doesn't need it set either.     |
+| `STRIPE_BILLING_ENABLED`                                                                                                     | API          | No (defaults to `false`; optional feature)           | `false` \| `true`                               | Credit purchases (Phase E3/E4) are opt-in. `false` (default): `POST /api/billing/checkout` fails closed with `BILLING_DISABLED`, no Stripe client ever constructed, `/dashboard/credits` shows an unavailable state. Set `true` only once every var below is also set — see [§3.3 Stripe webhook configuration](#stripe-webhook-configuration-and-test-mode-verification). |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_STARTER` / `STRIPE_PRICE_ID_PRO` / `STRIPE_PRICE_ID_BUNDLE` | API          | **Yes, if `STRIPE_BILLING_ENABLED=true`**            | `sk_test_...` / `whsec_...` / `price_...`       | Boot fails fast (env validation, `env.schema.ts` `superRefine`) if `STRIPE_BILLING_ENABLED=true` is set without all five. Use **test-mode** keys/Price IDs for a private demo — see [§3.3](#stripe-webhook-configuration-and-test-mode-verification).                                                                                                                      |
+| `NEXT_PUBLIC_API_URL`                                                                                                        | Web          | **Yes**                                              | `https://storyme-api-demo.onrender.com/api`     | Baked in at **build time** (Next.js inlines `NEXT_PUBLIC_*` at build), not read at request time — must be set in Vercel's project env vars _before_ the first build, and changing it requires a rebuild. Include the `/api` suffix.                                                                                                                                        |
+| `NEXT_PUBLIC_AUTH_MODE`                                                                                                      | Web          | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt`                                  | Same build-time-inlined caveat as `NEXT_PUBLIC_API_URL`. Must match the API's `AUTH_MODE` exactly.                                                                                                                                                                                                                                                                         |
 
 Vars not covered above (`GOOGLE_*`, `ANTHROPIC_API_KEY`, `FAL_API_KEY`,
 `R2_ACCOUNT_ID`/`R2_*`) are optional and reserved for features not built yet
 — see `.env.example` for the full annotated list. They can be left unset.
-`STRIPE_*` is a separate case: the *feature* (one-time credit purchases) is
+`STRIPE_*` is a separate case: the _feature_ (one-time credit purchases) is
 built and shipped (Phase E3/E4) — these vars are optional only because the
 feature itself is opt-in via `STRIPE_BILLING_ENABLED`, not because anything
 is unbuilt. See the table rows above.
@@ -230,22 +230,22 @@ Which process actually reads each var — useful when the API and worker are
 two separate deployed services with their own env var panels, and it's easy
 to set something on the wrong one (or forget the other).
 
-| Var group | API (`main.ts`) | Worker (`worker.ts`) | Web |
-|---|---|---|---|
-| `DATABASE_URL`, `REDIS_URL` | Required | Required | — |
-| `JWT_SECRET`, `JWT_REFRESH_SECRET`, `AUTH_MODE` | Required | Not read (worker has no HTTP surface, mints/verifies no tokens) | `NEXT_PUBLIC_AUTH_MODE` only, must match API's `AUTH_MODE` |
-| `ALLOWED_ORIGINS` | Required (CORS) | Not read | — |
-| `WEB_APP_URL` | Required (email link building) | Not read | — |
-| `PDF_STORAGE_*` / `IMAGE_STORAGE_*` | Required (serves previews) | Required (renders + saves PDFs/images) — **must be set identically on both**, see [PDF storage: separate worker guard](deployment-readiness.md#pdf-storage-worker-guard) | — |
-| `EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM` | Required (verification/reset emails) | Not read | — |
-| `STORY_GENERATION_PROVIDER`, `IMAGE_GENERATION_PROVIDER`, `OPENAI_API_KEY` | Not read at runtime (only the worker actually calls a generation provider) | Required if either provider is `openai` | — |
-| `STRIPE_*` | Required if `STRIPE_BILLING_ENABLED=true` (checkout + webhook endpoints live on the API) | Not read | — |
-| `ENABLE_GENERATION_WORKER` | Read, but must stay unset/`false` on a deployed **api** service | Not read (worker always registers the processor) | — |
-| `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_AUTH_MODE` | — | — | Required (build-time) |
+| Var group                                                                  | API (`main.ts`)                                                                          | Worker (`worker.ts`)                                                                                                                                                     | Web                                                        |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| `DATABASE_URL`, `REDIS_URL`                                                | Required                                                                                 | Required                                                                                                                                                                 | —                                                          |
+| `JWT_SECRET`, `JWT_REFRESH_SECRET`, `AUTH_MODE`                            | Required                                                                                 | Not read (worker has no HTTP surface, mints/verifies no tokens)                                                                                                          | `NEXT_PUBLIC_AUTH_MODE` only, must match API's `AUTH_MODE` |
+| `ALLOWED_ORIGINS`                                                          | Required (CORS)                                                                          | Not read                                                                                                                                                                 | —                                                          |
+| `WEB_APP_URL`                                                              | Required (email link building)                                                           | Not read                                                                                                                                                                 | —                                                          |
+| `PDF_STORAGE_*` / `IMAGE_STORAGE_*`                                        | Required (serves previews)                                                               | Required (renders + saves PDFs/images) — **must be set identically on both**, see [PDF storage: separate worker guard](deployment-readiness.md#pdf-storage-worker-guard) | —                                                          |
+| `EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM`                           | Required (verification/reset emails)                                                     | Not read                                                                                                                                                                 | —                                                          |
+| `STORY_GENERATION_PROVIDER`, `IMAGE_GENERATION_PROVIDER`, `OPENAI_API_KEY` | Not read at runtime (only the worker actually calls a generation provider)               | Required if either provider is `openai`                                                                                                                                  | —                                                          |
+| `STRIPE_*`                                                                 | Required if `STRIPE_BILLING_ENABLED=true` (checkout + webhook endpoints live on the API) | Not read                                                                                                                                                                 | —                                                          |
+| `ENABLE_GENERATION_WORKER`                                                 | Read, but must stay unset/`false` on a deployed **api** service                          | Not read (worker always registers the processor)                                                                                                                         | —                                                          |
+| `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_AUTH_MODE`                             | —                                                                                        | —                                                                                                                                                                        | Required (build-time)                                      |
 
 A var marked "Not read" is safe to leave unset on that service even if it's
 required on the other — setting it anyway is harmless (just noise), but
-omitting it from the *required* service is a boot failure or a silent
+omitting it from the _required_ service is a boot failure or a silent
 misconfiguration depending on the var (see the [preflight
 command](#pre-deploy-preflight-check) below, which exists specifically to
 catch the silent cases before they reach production).
@@ -273,8 +273,8 @@ entirely for a demo that only exercises the schema-default starter credits.
    traffic: from a machine with the [Stripe
    CLI](https://stripe.com/docs/stripe-cli) and network access to the
    deployed API, `stripe listen --forward-to
-   https://<your-api-host>/api/billing/webhook` and `stripe trigger
-   checkout.session.completed` — confirm the API logs show the event
+https://<your-api-host>/api/billing/webhook` and `stripe trigger
+checkout.session.completed` — confirm the API logs show the event
    accepted (not a `400` signature-verification failure) and, for a session
    whose metadata matches a real user/package, a credit grant.
 5. **End-to-end test-mode purchase**: from the deployed web app, sign in,
@@ -286,7 +286,7 @@ entirely for a demo that only exercises the schema-default starter credits.
 
 ### 3.4 Pre-deploy preflight check {#pre-deploy-preflight-check}
 
-Before setting any of the above on a real host, validate the *combination*
+Before setting any of the above on a real host, validate the _combination_
 locally against a `.env` file (or an exported shell environment) shaped like
 the target deployment:
 
@@ -304,7 +304,7 @@ network calls, and never prints a secret value — see
 `apps/api/scripts/preflight-deploy.ts` for exactly which invariants it
 checks. A clean exit (`0`) does not replace the [smoke test
 checklist](#6-smoke-test-checklist) below — it only catches cross-setting
-config mistakes *before* a container starts, not runtime/network issues
+config mistakes _before_ a container starts, not runtime/network issues
 (wrong credentials that parse fine but don't authenticate, an unreachable
 host, etc.).
 
@@ -435,7 +435,7 @@ produces exactly the "book claims `complete` but preview 404s" incident that
 guard exists to prevent. Both processes are otherwise safe to run at
 mismatched versions briefly during a rolling deploy — they communicate only
 through the database and the BullMQ queue, never a direct API call to each
-other — but the worker must never be *ahead* of the API on schema or storage
+other — but the worker must never be _ahead_ of the API on schema or storage
 config.
 
 **Verify the worker actually started** (it has no HTTP endpoint to `curl`,
@@ -564,7 +564,7 @@ one-time setup before this point.
       purchased package's credit amount, and the new `CreditTransaction`
       appears in the paginated history with `reason: purchase`.
 - [ ] Tail the API logs during this step and confirm `POST
-      /api/billing/webhook` was received and returned `2xx` — this is the
+/api/billing/webhook` was received and returned `2xx` — this is the
       concrete proof the webhook URL/secret configured in
       [§3.3](#stripe-webhook-configuration-and-test-mode-verification) is
       correct, not just that the checkout redirect worked.
@@ -610,7 +610,7 @@ one-time setup before this point.
 - [ ] Confirm the credit spent scheduling that run was refunded exactly
       once — the balance should be back to what it was before this book was
       created, and a second `CreditTransaction` (`reason:
-      refund_generation_failure`,
+refund_generation_failure`,
       `apps/api/src/agent/generation-run-coordinator.service.ts`) appears in
       the history alongside the original `reason: book_creation` debit.
 - [ ] Click **Retry generation** and confirm it succeeds normally (charging
@@ -622,7 +622,7 @@ one-time setup before this point.
 - [ ] On `/login`, click **Forgot password?**, submit the same email.
 - [ ] Retrieve the reset link the same way as the verification link above
       (Resend inbox or `[ConsoleEmailService] Password reset email for
-      <email>: ...` in the server logs).
+<email>: ...` in the server logs).
 - [ ] Open the reset link, set a new password, confirm it succeeds.
 - [ ] Log in at `/login` with the **new** password — confirm it succeeds.
 - [ ] Attempt to log in with the **old** password — confirm it is rejected.
@@ -650,7 +650,7 @@ one-time setup before this point.
   constraint (see [Step 7a's ordering
   note](#4a-deploy-the-generation-worker)) is that the worker's
   `PDF_STORAGE_*`/`IMAGE_STORAGE_*` config and the applied schema must never
-  end up *ahead* of what the API expects — rolling the worker back to an
+  end up _ahead_ of what the API expects — rolling the worker back to an
   older image against an already-forward-migrated database is safe (the
   worker only ever reads/writes rows, never runs migrations itself).
 - **Database**: `prisma migrate deploy` only applies forward migrations —
@@ -659,7 +659,7 @@ one-time setup before this point.
   write and apply a new forward migration that undoes the change; do not
   attempt to run an old migration backwards or hand-edit
   `_prisma_migrations`. This means an API/worker rollback to a pre-migration
-  image can still leave the *database* on the newer schema — only safe if
+  image can still leave the _database_ on the newer schema — only safe if
   the migration was additive (new nullable column, new table); a rollback
   after a breaking migration (dropped/renamed column an older image still
   reads) needs a forward fix-up migration first, not just an image rollback.
@@ -706,7 +706,7 @@ restated for this private-demo scope:
   automatically on terminal failure (`CreditsService`,
   `BooksService.createRunAndSchedule`), and one-time Stripe Checkout credit
   purchases are implemented end-to-end (`POST /api/billing/checkout` + `POST
-  /api/billing/webhook`, plus the `/dashboard/credits` and
+/api/billing/webhook`, plus the `/dashboard/credits` and
   `/billing/success`/`/billing/cancel` frontend) — see [§3.3 Stripe webhook
   configuration](#stripe-webhook-configuration-and-test-mode-verification)
   and the [Credits: purchase → webhook grant](#6-smoke-test-checklist) smoke
@@ -836,13 +836,14 @@ up automatically once the Railway service is linked to this repo):
   deploy to receive traffic. Same ordering constraint as
   [§5 Migration and release order](#5-migration-and-release-order) above:
   never run this inside the container's `CMD`.
+
 - **Health check path**: `/api/health` (already wired into `railway.json`'s
   `deploy.healthcheckPath` above, and into the Dockerfile's own
   `HEALTHCHECK` instruction — Railway uses its own HTTP check against this
   path to decide when a deploy is healthy).
 - **Node/pnpm versions**: pinned by the Dockerfile, not by Railway's
   Nixpacks builder — `node:20-alpine` base image, `corepack prepare
-  pnpm@9.4.0`. No separate Railway Node/pnpm version setting is needed since
+pnpm@9.4.0`. No separate Railway Node/pnpm version setting is needed since
   `builder: DOCKERFILE` bypasses Nixpacks entirely.
 - **Managed Postgres / Redis**: add Railway's Postgres and Redis plugins to
   the same project; use the connection strings they provide for
@@ -902,7 +903,7 @@ Vercel project's Root Directory is set to `apps/web`):
   first, because `@book/web` depends on the `@book/types` workspace package
   (resolves to `packages/types/dist`, per its `package.json` `main`/`types`
   fields) — running `pnpm install` and `pnpm turbo run build
-  --filter=@book/web` from the repo root lets Turborepo's `^build`
+--filter=@book/web` from the repo root lets Turborepo's `^build`
   dependency graph (`turbo.json`) build `@book/types` before `@book/web`,
   the same ordering the Dockerfile enforces manually for the API. This is
   Vercel's documented pattern for a Turborepo + pnpm workspace, not
@@ -919,33 +920,33 @@ grouped here by which platform's dashboard they get set in.
 
 **Railway (API) environment:**
 
-| Variable | Example value | Notes |
-| --- | --- | --- |
-| `DATABASE_URL` | *(from Railway Postgres plugin)* | |
-| `REDIS_URL` | *(from Railway Redis plugin)* | |
-| `AUTH_MODE` | `jwt` | Must match `NEXT_PUBLIC_AUTH_MODE` on Vercel. |
-| `JWT_SECRET` | `openssl rand -hex 32` output | |
-| `JWT_REFRESH_SECRET` | `openssl rand -hex 32` output | |
-| `WEB_APP_URL` | `https://your-app.vercel.app` | Used to build links in verification/reset email. |
-| `ALLOWED_ORIGINS` | `https://your-app.vercel.app` | CORS allowlist; comma-separate if adding a Vercel preview URL too. |
-| `EMAIL_PROVIDER` | `resend` | |
-| `RESEND_API_KEY` | `re_...` | Required once `EMAIL_PROVIDER=resend`. |
-| `EMAIL_FROM` | `StoryMe <noreply@yourdomain.com>` | Must be a verified sender/domain in Resend. |
-| `EMAIL_REPLY_TO` | `support@yourdomain.com` | Optional. |
-| `STORY_GENERATION_PROVIDER` | `mock` (or `openai`) | `mock` keeps the demo free/deterministic. |
-| `IMAGE_GENERATION_PROVIDER` | `mock` (or `openai`) | Same. |
-| `OPENAI_API_KEY` | `sk-...` | Only if either provider above is `openai`. |
-| `PDF_STORAGE_DRIVER` | `r2` (or `s3`, or leave `local`) | `local` is ephemeral on Railway's container filesystem — see [Storage decision note](deployment-readiness.md#storage-decision). |
-| `IMAGE_STORAGE_DRIVER` | `r2` (or `s3`, or leave `local`) | Same. |
-| `PDF_STORAGE_BUCKET` / `PDF_STORAGE_REGION` / `PDF_STORAGE_ENDPOINT` / `PDF_STORAGE_ACCESS_KEY_ID` / `PDF_STORAGE_SECRET_ACCESS_KEY` | *(bucket credentials)* | Only if `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` is `r2`/`s3`; shared by both. |
-| `PORT` | *(leave unset)* | Railway injects this; the app already reads it. |
+| Variable                                                                                                                             | Example value                      | Notes                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                                                                       | _(from Railway Postgres plugin)_   |                                                                                                                                 |
+| `REDIS_URL`                                                                                                                          | _(from Railway Redis plugin)_      |                                                                                                                                 |
+| `AUTH_MODE`                                                                                                                          | `jwt`                              | Must match `NEXT_PUBLIC_AUTH_MODE` on Vercel.                                                                                   |
+| `JWT_SECRET`                                                                                                                         | `openssl rand -hex 32` output      |                                                                                                                                 |
+| `JWT_REFRESH_SECRET`                                                                                                                 | `openssl rand -hex 32` output      |                                                                                                                                 |
+| `WEB_APP_URL`                                                                                                                        | `https://your-app.vercel.app`      | Used to build links in verification/reset email.                                                                                |
+| `ALLOWED_ORIGINS`                                                                                                                    | `https://your-app.vercel.app`      | CORS allowlist; comma-separate if adding a Vercel preview URL too.                                                              |
+| `EMAIL_PROVIDER`                                                                                                                     | `resend`                           |                                                                                                                                 |
+| `RESEND_API_KEY`                                                                                                                     | `re_...`                           | Required once `EMAIL_PROVIDER=resend`.                                                                                          |
+| `EMAIL_FROM`                                                                                                                         | `StoryMe <noreply@yourdomain.com>` | Must be a verified sender/domain in Resend.                                                                                     |
+| `EMAIL_REPLY_TO`                                                                                                                     | `support@yourdomain.com`           | Optional.                                                                                                                       |
+| `STORY_GENERATION_PROVIDER`                                                                                                          | `mock` (or `openai`)               | `mock` keeps the demo free/deterministic.                                                                                       |
+| `IMAGE_GENERATION_PROVIDER`                                                                                                          | `mock` (or `openai`)               | Same.                                                                                                                           |
+| `OPENAI_API_KEY`                                                                                                                     | `sk-...`                           | Only if either provider above is `openai`.                                                                                      |
+| `PDF_STORAGE_DRIVER`                                                                                                                 | `r2` (or `s3`, or leave `local`)   | `local` is ephemeral on Railway's container filesystem — see [Storage decision note](deployment-readiness.md#storage-decision). |
+| `IMAGE_STORAGE_DRIVER`                                                                                                               | `r2` (or `s3`, or leave `local`)   | Same.                                                                                                                           |
+| `PDF_STORAGE_BUCKET` / `PDF_STORAGE_REGION` / `PDF_STORAGE_ENDPOINT` / `PDF_STORAGE_ACCESS_KEY_ID` / `PDF_STORAGE_SECRET_ACCESS_KEY` | _(bucket credentials)_             | Only if `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` is `r2`/`s3`; shared by both.                                               |
+| `PORT`                                                                                                                               | _(leave unset)_                    | Railway injects this; the app already reads it.                                                                                 |
 
 **Vercel (Web) environment:**
 
-| Variable | Example value | Notes |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | `https://your-api.up.railway.app/api` | Include the `/api` suffix. Baked in at build time — set before the first Vercel build/deploy. |
-| `NEXT_PUBLIC_AUTH_MODE` | `jwt` | Must match `AUTH_MODE` on Railway. |
+| Variable                | Example value                         | Notes                                                                                         |
+| ----------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_API_URL`   | `https://your-api.up.railway.app/api` | Include the `/api` suffix. Baked in at build time — set before the first Vercel build/deploy. |
+| `NEXT_PUBLIC_AUTH_MODE` | `jwt`                                 | Must match `AUTH_MODE` on Railway.                                                            |
 
 ### 10.4 CORS / cookie / HTTPS notes
 

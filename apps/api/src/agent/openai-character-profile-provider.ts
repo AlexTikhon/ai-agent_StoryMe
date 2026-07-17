@@ -49,7 +49,7 @@ const SYSTEM_PROMPT = [
   'When a reference photo is provided, describe only non-sensitive, visible traits useful for a stylized illustration: general face shape, hairstyle, hair color, eye shape, smile, and general expression.',
   'Never infer or mention race, ethnicity, health, disability, religion, or any other sensitive attribute.',
   'Never describe the child in a way that would let an illustrator reproduce a realistic, identity-matching portrait — you are designing a warm, stylized, child-safe caricature for a picture book, not a photorealistic likeness.',
-  'The described character and outfit must be appropriate and modest for a children\'s picture book.',
+  "The described character and outfit must be appropriate and modest for a children's picture book.",
 ].join(' ');
 
 /**
@@ -147,9 +147,7 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
 
   constructor(options: OpenAICharacterProfileProviderOptions) {
     if (!options.apiKey) {
-      throw new CharacterProfileProviderError(
-        'OpenAICharacterProfileProvider requires an apiKey',
-      );
+      throw new CharacterProfileProviderError('OpenAICharacterProfileProvider requires an apiKey');
     }
     this.apiKey = options.apiKey;
     this.model = options.model ?? DEFAULT_MODEL;
@@ -238,7 +236,10 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
     try {
       raw = JSON.parse(messageContent);
     } catch (err) {
-      throw new CharacterProfileProviderError('OpenAI character profile content was not valid JSON', err);
+      throw new CharacterProfileProviderError(
+        'OpenAI character profile content was not valid JSON',
+        err,
+      );
     }
 
     const parsed = llmResponseSchema.safeParse(raw);

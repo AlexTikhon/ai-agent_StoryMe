@@ -51,12 +51,18 @@ async function runChecks(storage: PdfStorage): Promise<void> {
   await storage.savePreviewPdf(BOOK_ID, SAMPLE_PDF);
 
   console.log('[2/5] previewPdfExists returns true for the saved book');
-  assert(await storage.previewPdfExists(BOOK_ID), 'expected previewPdfExists to be true after save');
+  assert(
+    await storage.previewPdfExists(BOOK_ID),
+    'expected previewPdfExists to be true after save',
+  );
 
   console.log('[3/5] getPreviewPdf reads back matching metadata and content');
   const result = await storage.getPreviewPdf(BOOK_ID);
   assert(result !== null, 'expected getPreviewPdf to return a result');
-  assert(result!.contentType === 'application/pdf', `expected contentType "application/pdf", got "${result!.contentType}"`);
+  assert(
+    result!.contentType === 'application/pdf',
+    `expected contentType "application/pdf", got "${result!.contentType}"`,
+  );
   assert(
     result!.filename === `storyme-preview-${BOOK_ID}.pdf`,
     `expected filename "storyme-preview-${BOOK_ID}.pdf", got "${result!.filename}"`,
@@ -74,8 +80,14 @@ async function runChecks(storage: PdfStorage): Promise<void> {
   );
 
   console.log('[5/5] invalid/path-traversal bookId is rejected');
-  await assertRejects(storage.previewPdfExists(INVALID_BOOK_ID), 'expected previewPdfExists to reject invalid bookId');
-  await assertRejects(storage.getPreviewPdf(INVALID_BOOK_ID), 'expected getPreviewPdf to reject invalid bookId');
+  await assertRejects(
+    storage.previewPdfExists(INVALID_BOOK_ID),
+    'expected previewPdfExists to reject invalid bookId',
+  );
+  await assertRejects(
+    storage.getPreviewPdf(INVALID_BOOK_ID),
+    'expected getPreviewPdf to reject invalid bookId',
+  );
   await assertRejects(
     storage.savePreviewPdf(INVALID_BOOK_ID, SAMPLE_PDF),
     'expected savePreviewPdf to reject invalid bookId',
@@ -106,7 +118,9 @@ async function main(): Promise<void> {
 
   // Validates required env vars and fails fast with a clear message before any network call.
   const config = readCloudConfig(driver, process.env);
-  console.log(`Running cloud PDF storage smoke test against ${driver === 'r2' ? 'Cloudflare R2' : 'AWS S3'}...`);
+  console.log(
+    `Running cloud PDF storage smoke test against ${driver === 'r2' ? 'Cloudflare R2' : 'AWS S3'}...`,
+  );
   console.log('Config (secrets redacted):');
   for (const line of formatConfigSummary(config)) console.log(`  ${line}`);
   console.log('');

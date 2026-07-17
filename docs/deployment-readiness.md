@@ -47,7 +47,7 @@ small concrete fixes only — no new features, no OAuth, no refactors.
 Express's `trust proxy` setting. Every recommended deploy target in this doc
 (Render/Fly/Railway behind their edge, or Vercel) puts exactly one reverse
 proxy in front of the API, so `req.ip` — the key `AuthRateLimitGuard` uses to
-bucket rate-limit attempts by client — resolved to the *proxy's* address on
+bucket rate-limit attempts by client — resolved to the _proxy's_ address on
 every request, not the real client's. For `login`/`register` this was masked
 by the request's `email` also being part of the key, but `refresh`/`logout`
 have no email to key on, so this collapsed to **one shared rate-limit bucket
@@ -90,7 +90,7 @@ path allowed to write it:
   `creditsUpdatedAt`, and inserts one negative `CreditTransaction` row with
   the exact resulting `balanceAfter` — all inside one interactive Prisma
   transaction. The balance check is a conditional `updateMany` (`WHERE id =
-  ? AND credits >= ?`), the same pattern `GenerationRunService.claim` already
+? AND credits >= ?`), the same pattern `GenerationRunService.claim` already
   uses for fenced concurrent writes: Postgres's row lock serializes
   concurrent debits against the same user, so a losing debit's `WHERE`
   re-evaluates against the winner's already-committed balance and correctly
@@ -323,14 +323,14 @@ behavior changed.
 
 `.github/workflows/ci.yml` now runs six independent jobs:
 
-| Job (required-check name) | What it proves | Needs |
-|---|---|---|
-| **Lint, Format & Typecheck** | `prettier --check`, `eslint --max-warnings 0` (both packages), `tsc --noEmit` (both packages — `apps/web`'s `tsconfig.json` already includes `**/*.ts`/`**/*.tsx` with no test-file exclusion, so its 22 `*.test.ts(x)` files are typechecked today; `apps/api`'s `tsconfig.json` deliberately excludes `test/**`, `**/*.spec.ts` — unchanged, not weakened) | — |
-| **Unit Tests** | `pnpm test` (turbo → both packages' `vitest run`) — no Postgres/Redis service containers, no Stripe/OpenAI/Resend/S3/R2 network access. `DATABASE_URL`/`REDIS_URL` are syntactically valid but unreachable placeholders (`envSchema` only requires they parse as `postgresql://`/`redis://` URLs; nothing in this job opens a connection) | — |
-| **Integration Tests (Postgres + Redis)** | Real `postgres:16-alpine` + `redis:7-alpine` service containers; applies `prisma migrate deploy` to a fresh CI-only database, re-runs it to prove idempotency (asserts the second run's output contains "No pending migrations"), then `pnpm --filter @book/api test:integration` | — |
-| **Deployment Preflight** | `pnpm --filter @book/api preflight:deploy:ci-check` (see below) | — |
-| **Build (apps)** | `pnpm build` (turbo → `next build` + `tsc`) with a structurally valid placeholder `NEXT_PUBLIC_API_URL` (includes the required `/api` suffix) | Lint, Format & Typecheck |
-| **Docker Build (API)** | `docker build -f apps/api/Dockerfile` succeeds, tagged `storyme-api:ci-<sha>` — **built only, never pushed, no registry auth** | Lint, Format & Typecheck |
+| Job (required-check name)                | What it proves                                                                                                                                                                                                                                                                                                                                               | Needs                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
+| **Lint, Format & Typecheck**             | `prettier --check`, `eslint --max-warnings 0` (both packages), `tsc --noEmit` (both packages — `apps/web`'s `tsconfig.json` already includes `**/*.ts`/`**/*.tsx` with no test-file exclusion, so its 22 `*.test.ts(x)` files are typechecked today; `apps/api`'s `tsconfig.json` deliberately excludes `test/**`, `**/*.spec.ts` — unchanged, not weakened) | —                        |
+| **Unit Tests**                           | `pnpm test` (turbo → both packages' `vitest run`) — no Postgres/Redis service containers, no Stripe/OpenAI/Resend/S3/R2 network access. `DATABASE_URL`/`REDIS_URL` are syntactically valid but unreachable placeholders (`envSchema` only requires they parse as `postgresql://`/`redis://` URLs; nothing in this job opens a connection)                    | —                        |
+| **Integration Tests (Postgres + Redis)** | Real `postgres:16-alpine` + `redis:7-alpine` service containers; applies `prisma migrate deploy` to a fresh CI-only database, re-runs it to prove idempotency (asserts the second run's output contains "No pending migrations"), then `pnpm --filter @book/api test:integration`                                                                            | —                        |
+| **Deployment Preflight**                 | `pnpm --filter @book/api preflight:deploy:ci-check` (see below)                                                                                                                                                                                                                                                                                              | —                        |
+| **Build (apps)**                         | `pnpm build` (turbo → `next build` + `tsc`) with a structurally valid placeholder `NEXT_PUBLIC_API_URL` (includes the required `/api` suffix)                                                                                                                                                                                                                | Lint, Format & Typecheck |
+| **Docker Build (API)**                   | `docker build -f apps/api/Dockerfile` succeeds, tagged `storyme-api:ci-<sha>` — **built only, never pushed, no registry auth**                                                                                                                                                                                                                               | Lint, Format & Typecheck |
 
 All jobs carry `timeout-minutes` so a hung integration test or Docker build
 can't consume a runner indefinitely, and the workflow has top-level
@@ -394,24 +394,34 @@ path in every job that runs application code
 (`STORY_GENERATION_PROVIDER=mock`, `IMAGE_GENERATION_PROVIDER=mock`,
 `EMAIL_PROVIDER=console`, `STRIPE_BILLING_ENABLED=false`); the Deployment
 Preflight job's fixtures set `EMAIL_PROVIDER=resend`/`PDF_STORAGE_DRIVER=r2`
-to reach a *passing* preflight result, but `preflight-deploy.ts` itself
+to reach a _passing_ preflight result, but `preflight-deploy.ts` itself
 never opens a network connection regardless of which provider values are
 present — it only parses and cross-checks env vars (see its own doc
 comment). The Docker Build job builds an image and stops; it never runs
 `docker push` or authenticates to any registry.
 
-### Known pre-existing gap surfaced by this phase
+### Known pre-existing gap surfaced by this phase (resolved in Phase F2.1)
 
-`pnpm format:check` (newly run as an explicit CI step) currently fails on
-~45 files predating this phase (docs and several `apps/api/src` files, going
-back at least to the Phase B/C claim-artifact-cleanup work) — `format:check`
-was never part of CI before Phase F2, so this drift was never enforced.
-Phase F2 deliberately did not bulk-reformat those files (out of scope for a
-CI-safety change, and `git diff --check`-sized). Until a dedicated
-formatting pass fixes them, the **Lint, Format & Typecheck** required check
-will fail on `main` and on every PR that doesn't happen to touch those
-files — branch protection should not be turned on for that check until this
-is resolved separately.
+`pnpm format:check` (newly run as an explicit CI step in Phase F2) initially
+failed on ~45 files predating that phase (docs and several `apps/api/src`
+files, going back at least to the Phase B/C claim-artifact-cleanup work) —
+`format:check` was never part of CI before Phase F2, so this drift was never
+enforced. Those files were not formatted at the time they were originally
+written; Phase F2 deliberately did not bulk-reformat them (out of scope for
+a CI-safety change, and `git diff --check`-sized).
+
+Phase F2.1 performed that dedicated mechanical formatting pass — running the
+repo's pinned Prettier (`pnpm format`) across all 45 flagged files (TS/TSX,
+JSON/config, and Markdown) and committing the result as a standalone
+formatting-baseline commit, with no product code, refactors, or content
+changes mixed in. Two Markdown code fences (`FRONTEND_DESIGN.md` and
+`UX_SPEC.md` ARIA-landmark examples, and a `DESIGN_SYSTEM.md` button-state
+example) contained intentionally flat, unclosed example tags that Prettier's
+embedded-HTML formatter would otherwise have auto-nested into structurally
+misleading (and in the button case, invalid) markup; those three fences were
+adjusted to self-close each example tag so the illustrated meaning survives
+formatting. `pnpm format:check` now passes with zero diff on `main`, and
+branch protection can safely require the **Lint, Format & Typecheck** check.
 
 ## Production readiness summary {#production-readiness-summary}
 
@@ -475,7 +485,7 @@ real transactional email provider are all done end-to-end.
 Previous phases only read the Dockerfile; nobody had actually run
 `docker build` against it. Doing so in Phase 5C failed immediately, and
 fixing that surfaced three separate, real bugs — the third breaks the app in
-*every* run mode, not just Docker:
+_every_ run mode, not just Docker:
 
 1. **`packages/types` was never built before `apps/api`'s `tsc` build ran.**
    `apps/api` imports `@book/types`, which resolves to
@@ -485,12 +495,12 @@ fixing that surfaced three separate, real bugs — the third breaks the app in
    `RUN pnpm --filter @book/types build` before the `apps/api` build step.
 2. **pnpm's symlinked `node_modules` doesn't survive being relocated.**
    pnpm (unlike npm) doesn't hoist dependencies into a flat `node_modules` —
-   every package under `apps/api/node_modules` is a *relative* symlink into
+   every package under `apps/api/node_modules` is a _relative_ symlink into
    a shared `node_modules/.pnpm` virtual store, and the `@book/types` entry
    is a relative symlink to `packages/types`. The runtime stage's original
    `COPY --from=builder .../apps/api/node_modules ./node_modules` collapsed
    that into a shallower directory, so those relative symlink targets no
-   longer resolved — breaking *every* dependency, including `@nestjs/core`
+   longer resolved — breaking _every_ dependency, including `@nestjs/core`
    itself (`Error: Cannot find module '@nestjs/core'` at container start).
    Fixed by having the runtime stage preserve the exact
    `/app/{node_modules,packages/types,apps/api}` directory layout the
@@ -509,8 +519,8 @@ fixing that surfaced three separate, real bugs — the third breaks the app in
    — in every run mode, not just Docker** (`apps/api/src/auth/auth.module.ts`).
    `BooksModule` only imports `AuthModule` (not `UsersModule` directly) and
    applies `@UseGuards(DevAuthGuard)` to `BooksController`. Nest resolves a
-   cross-module guard's *own* constructor dependencies relative to what the
-   *consuming* module (`BooksModule`) can see, not just the guard's
+   cross-module guard's _own_ constructor dependencies relative to what the
+   _consuming_ module (`BooksModule`) can see, not just the guard's
    declaring module (`AuthModule`) — so `AuthModule` exporting only
    `DevAuthGuard` (and not also `UsersModule`) left `UsersService`
    unreachable from `BooksModule`'s perspective, and the app crashed at
@@ -518,7 +528,7 @@ fixing that surfaced three separate, real bugs — the third breaks the app in
    Reproduced identically via `pnpm --filter @book/api dev`, via
    `node dist/main` outside Docker, and inside the container — this was a
    real, pre-existing bug independent of Docker; the app could not boot in
-   *any* mode before this fix. Fixed by also exporting `UsersModule` from
+   _any_ mode before this fix. Fixed by also exporting `UsersModule` from
    `AuthModule`.
 
 All four were verified fixed by: a successful `docker build`, starting the
@@ -574,7 +584,7 @@ one when Docker is the recommended target.
 - **Baked in at build time, not read at request time.** Next.js inlines
   `NEXT_PUBLIC_*` vars via webpack at build time; there is no server-side
   runtime override. Practically: set `NEXT_PUBLIC_API_URL` in the Vercel
-  project's environment variables (or CI, for self-hosted builds) *before*
+  project's environment variables (or CI, for self-hosted builds) _before_
   running the build — changing it requires a rebuild + redeploy, not just an
   env var edit on a running instance.
   - Defaults to `http://localhost:4000/api` when unset, which is only
@@ -590,7 +600,7 @@ one when Docker is the recommended target.
 ### API client / cross-origin behavior
 
 - In `jwt` mode (default), `apiFetch`/`apiFetchBlob` send `credentials:
-  'include'` (so the `storyme_refresh` `HttpOnly` cookie round-trips
+'include'` (so the `storyme_refresh` `HttpOnly` cookie round-trips
   cross-origin) plus `Authorization: Bearer <accessToken>` from the
   in-memory token store. A `401` triggers exactly one silent
   `POST /api/auth/refresh` + retry before surfacing the error (see
@@ -647,7 +657,7 @@ impersonate any user, dev-mode identity is not connected to any credential.
    multiple (e.g. preview + production Vercel URLs).
 4. Run `pnpm --filter @book/web build` (Vercel does this automatically from
    the repo; a self-hosted Node host needs this plus `pnpm --filter @book/web
-   start` after).
+start` after).
 5. Verify the deployed web app can reach the deployed API: register/log in,
    create a book, confirm the detail page's polling and PDF open/download
    work cross-origin, and that `/dashboard` redirects to `/login` when
@@ -663,7 +673,7 @@ item 1 already flagged, but only as a recommendation, not an enforced
 guard: the deployed **worker** service (which renders and saves the PDF)
 and the **api** service (which serves it) run in separate containers with
 separate filesystems, and neither had `PDF_STORAGE_DRIVER` set — so both
-silently defaulted to `local`. The worker wrote `storybook.pdf` to *its own*
+silently defaulted to `local`. The worker wrote `storybook.pdf` to _its own_
 container's `tmp/` directory; the API's container never had that file, so
 every preview/download request 404'd, even though generation itself
 reported success.
@@ -719,7 +729,7 @@ step-by-step diagnosis procedure this incident led to.
 2. **No `prisma migrate deploy` step in the container.** `apps/api/Dockerfile`
    builds and runs `node dist/main` only — it does not apply migrations.
    Migrations must be run as a separate deploy step (`pnpm --filter @book/api
-   prisma:migrate:deploy`) before the new container starts serving traffic.
+prisma:migrate:deploy`) before the new container starts serving traffic.
 3. ~~No web app Dockerfile / hosting decision.~~ **Resolved in Phase 5D**:
    Vercel (or any Node host via `next build` / `next start`) is the
    recommended path — see
@@ -796,6 +806,7 @@ step-by-step diagnosis procedure this incident led to.
   doc's [Required env vars](#required-env-vars-production) section already
   claimed. See `env.schema.spec.ts` for coverage of both the mock-mode-boots
   and openai-without-key-fails cases.
+
 - **`.env.example`**: updated comments to match — those vars are now shown
   commented-out/optional with a note on why. `OPENAI_API_KEY` itself is now
   also commented out in the default mock/mock template (see follow-up fix
@@ -826,13 +837,13 @@ still pass unchanged.
 
 ## Storage decision note {#storage-decision}
 
-| | `LocalPdfStorage` | `CloudPdfStorage` (s3/r2) | `LocalImageAssetStorage` | `CloudImageAssetStorage` (s3/r2) |
-|---|---|---|---|---|
-| Implemented? | Yes | Yes, fully implemented and wired | Yes | Yes, fully implemented and wired (Phase 5B) |
-| Works locally? | Yes, zero config | Yes, needs real/MinIO bucket | Yes, zero config | Yes, needs real/MinIO bucket |
-| Safe in production? | No — ephemeral fs, single instance only | Yes | No — same ephemeral fs risk | Yes |
-| Required env vars | none | `PDF_STORAGE_DRIVER=s3\|r2`, `PDF_STORAGE_BUCKET`, `PDF_STORAGE_REGION`, `PDF_STORAGE_ACCESS_KEY_ID`, `PDF_STORAGE_SECRET_ACCESS_KEY`, `PDF_STORAGE_ENDPOINT` (r2 only) | none | `IMAGE_STORAGE_DRIVER=s3\|r2` only — reuses the same `PDF_STORAGE_*` credential vars above |
-| Selected via | `PDF_STORAGE_DRIVER` (default `local`) | same | `IMAGE_STORAGE_DRIVER` (default `local`) | same |
+|                     | `LocalPdfStorage`                       | `CloudPdfStorage` (s3/r2)                                                                                                                                               | `LocalImageAssetStorage`                 | `CloudImageAssetStorage` (s3/r2)                                                           |
+| ------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Implemented?        | Yes                                     | Yes, fully implemented and wired                                                                                                                                        | Yes                                      | Yes, fully implemented and wired (Phase 5B)                                                |
+| Works locally?      | Yes, zero config                        | Yes, needs real/MinIO bucket                                                                                                                                            | Yes, zero config                         | Yes, needs real/MinIO bucket                                                               |
+| Safe in production? | No — ephemeral fs, single instance only | Yes                                                                                                                                                                     | No — same ephemeral fs risk              | Yes                                                                                        |
+| Required env vars   | none                                    | `PDF_STORAGE_DRIVER=s3\|r2`, `PDF_STORAGE_BUCKET`, `PDF_STORAGE_REGION`, `PDF_STORAGE_ACCESS_KEY_ID`, `PDF_STORAGE_SECRET_ACCESS_KEY`, `PDF_STORAGE_ENDPOINT` (r2 only) | none                                     | `IMAGE_STORAGE_DRIVER=s3\|r2` only — reuses the same `PDF_STORAGE_*` credential vars above |
+| Selected via        | `PDF_STORAGE_DRIVER` (default `local`)  | same                                                                                                                                                                    | `IMAGE_STORAGE_DRIVER` (default `local`) | same                                                                                       |
 
 - `PdfStorage` is a clean interface (`apps/api/src/pdf/pdf-storage.ts`) with
   both a local and a fully working S3-compatible (AWS S3 or Cloudflare R2)
@@ -843,7 +854,7 @@ still pass unchanged.
   script (`pnpm --filter @book/api smoke:pdf-storage`), not by the normal
   test suite (which stays offline/local).
 - `ImageAssetStorage` (`apps/api/src/images/image-asset-storage.ts`) mirrors
-  the same interface shape *intentionally* so a cloud-backed implementation
+  the same interface shape _intentionally_ so a cloud-backed implementation
   could be dropped in later. **Phase 5B added that implementation**:
   `CloudImageAssetStorage` is an S3-compatible driver (AWS S3 or Cloudflare
   R2), selected at DI time via
@@ -928,16 +939,16 @@ still pass unchanged.
   `ImageAssetStorage` boundary pattern. The only implementation today,
   `ConsoleEmailService`, logs the verification link instead of sending real
   email — no third-party provider is wired up yet. `POST
-  /api/auth/verify-email` hashes the submitted token, verifies the user, and
+/api/auth/verify-email` hashes the submitted token, verifies the user, and
   clears the hash/expiry (so a token cannot be replayed after success);
   `POST /api/auth/resend-verification` issues a fresh token and invalidates
   the old one, always responding the same way regardless of whether the
   email exists, is already verified, or is deactivated (no account-existence
   leak). Both new endpoints are behind the existing `AuthRateLimitGuard`.
   `AuthService.login` now rejects an unverified account with `401
-  { "error": "Email is not verified", "code": "EMAIL_NOT_VERIFIED" }` —
+{ "error": "Email is not verified", "code": "EMAIL_NOT_VERIFIED" }` —
   **registration itself is unaffected** and still auto-signs the new user in,
-  matching the existing "no separate login step" UX; only a *subsequent*
+  matching the existing "no separate login step" UX; only a _subsequent_
   login attempt (e.g. after logging out) is gated on verification. See
   [`docs/auth-architecture.md` §14](auth-architecture.md#14-phase-6f--email-verification).
 - **Phase 6G (password reset)**: `POST /api/auth/request-password-reset`
@@ -949,7 +960,7 @@ still pass unchanged.
   (`sendPasswordResetEmail`, logged by `ConsoleEmailService` in dev/test).
   `POST /api/auth/reset-password` hashes the submitted token, rejects an
   unknown/expired match with `400
-  { "error": "Invalid or expired reset token", "code": "INVALID_RESET_TOKEN" }`,
+{ "error": "Invalid or expired reset token", "code": "INVALID_RESET_TOKEN" }`,
   and on success hashes the new password, clears the token (single-use), and
   revokes every persisted `RefreshToken` for that user so a session
   established before the reset can't outlive it. Both endpoints are behind
@@ -1008,7 +1019,7 @@ processes built from the same image — this is now a **four-service**
 topology, not three:
 
 - **Web**: `apps/web` on Vercel (or any Node host) — no Docker needed, `next
-  build` / `next start`. Confirmed in Phase 5D: build/env assumptions already
+build` / `next start`. Confirmed in Phase 5D: build/env assumptions already
   correct, see [Phase 5D: Web deployment readiness](#phase-5d-web) above for
   the full checklist.
 - **API**: `apps/api/Dockerfile`, start command `node dist/main`
@@ -1243,9 +1254,10 @@ Check, in order:
    If the worker service's logs show `mode=api`, its start command is wrong —
    fix it in the platform's service settings (see
    [Worker start command](#build-run-commands) above) and redeploy.
+
 2. **Do the api and worker services point at the same Redis/Postgres?**
    `REDIS_URL set=`/`DATABASE_URL set=` in the startup log only confirms the
-   var is non-empty, not that it's the *same* value in both services — a
+   var is non-empty, not that it's the _same_ value in both services — a
    worker pointed at a different (e.g. leftover local/staging) Redis instance
    will boot cleanly and log `processor registered=true`, but will never see
    jobs enqueued against the api's Redis. Compare the two services' env vars
@@ -1255,8 +1267,8 @@ Check, in order:
    (`restartPolicyMaxRetries` in `railway.json` only covers the api service;
    a worker service needs its own restart policy configured). BullMQ job
    pickup is logged per-job (`GenerationQueueProcessor`): `Picked up job —
-   bullmqJobId=... bookId=... generationJobId=...` on pickup, `Job completed
-   — ...` or `Job failed — ... error=...` on the two terminal outcomes — a
+bullmqJobId=... bookId=... generationJobId=...` on pickup, `Job completed
+— ...` or `Job failed — ... error=...` on the two terminal outcomes — a
    worker that boots but never logs any of these for a genuinely queued job
    has either crashed, lost its Redis connection, or (per point 1) isn't
    really running worker mode.
@@ -1284,7 +1296,7 @@ ready," but clicking **Open PDF**/**Download PDF**
      yet. Check `failedStep`/`errorMessage` instead.
 2. **Do the api and worker services have the same `PDF_STORAGE_DRIVER` (and,
    if `s3`/`r2`, the same bucket/credentials)?** This is the root cause this
-   phase was written for: `LocalPdfStorage` writes to *that container's own*
+   phase was written for: `LocalPdfStorage` writes to _that container's own_
    filesystem. If the api and worker are separate Railway services (the
    [recommended deployment architecture](#recommended-deployment-architecture))
    and either one is left on the `local` default, the worker's write is
@@ -1339,7 +1351,7 @@ that undoes the change, not running the old one backwards.
    manually-triggered deploy workflow) — this remains the one external step
    [Phase F2](#phase-f2-ci) deliberately does not add. CI ([Phase
    F2](#phase-f2-ci)) now proves the migration set applies cleanly and
-   idempotently to a *throwaway CI database* on every push/PR, which is real
+   idempotently to a _throwaway CI database_ on every push/PR, which is real
    coverage but not a substitute for this: the container itself still
    intentionally never runs `prisma migrate deploy` (see [Known
    blockers](#known-blockers) above), and no CI job holds or is meant to

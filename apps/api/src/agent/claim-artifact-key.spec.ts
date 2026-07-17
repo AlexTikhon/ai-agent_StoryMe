@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  parseClaimArtifactStorageKey,
-  claimArtifactNamespaceGroupKey,
-} from './claim-artifact-key';
+import { parseClaimArtifactStorageKey, claimArtifactNamespaceGroupKey } from './claim-artifact-key';
 
 describe('parseClaimArtifactStorageKey', () => {
   it('parses a valid PDF claim key (no "images/" prefix)', () => {
@@ -18,7 +15,9 @@ describe('parseClaimArtifactStorageKey', () => {
   });
 
   it('parses a valid image claim key with the "images/" prefix stripped', () => {
-    const parsed = parseClaimArtifactStorageKey('images/books/book-1/runs/run-1/claims/1/cover.png');
+    const parsed = parseClaimArtifactStorageKey(
+      'images/books/book-1/runs/run-1/claims/1/cover.png',
+    );
     expect(parsed).toEqual({
       bookId: 'book-1',
       runId: 'run-1',
@@ -63,11 +62,17 @@ describe('parseClaimArtifactStorageKey', () => {
     ['no relative segment after fencing version', 'books/book-1/runs/run-1/claims/1'],
     ['no relative segment, trailing slash', 'books/book-1/runs/run-1/claims/1/'],
     ['unsafe bookId (path traversal)', 'books/../etc/runs/run-1/claims/1/file.pdf'],
-    ['unsafe bookId (slash-smuggling via encoding)', 'books/book%2Fid/runs/run-1/claims/1/file.pdf'],
+    [
+      'unsafe bookId (slash-smuggling via encoding)',
+      'books/book%2Fid/runs/run-1/claims/1/file.pdf',
+    ],
     ['traversal relative segment ".."', 'books/book-1/runs/run-1/claims/1/../../../etc/passwd'],
     ['relative segment "."', 'books/book-1/runs/run-1/claims/1/.'],
     ['empty relative segment (double slash)', 'books/book-1/runs/run-1/claims/1//file.pdf'],
-    ['unsafe runId (contains slash via extra segment)', 'books/book-1/runs/run-1/extra/claims/1/file.pdf'],
+    [
+      'unsafe runId (contains slash via extra segment)',
+      'books/book-1/runs/run-1/extra/claims/1/file.pdf',
+    ],
     ['unsafe bookId characters', 'books/book!1/runs/run-1/claims/1/file.pdf'],
   ])('rejects: %s', (_label, key) => {
     expect(parseClaimArtifactStorageKey(key)).toBeNull();

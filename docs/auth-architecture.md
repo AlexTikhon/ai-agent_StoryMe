@@ -55,7 +55,7 @@ identity taken **on faith** from a request header.
 - Imports `UsersModule`, declares `AuthController`, provides `DevAuthGuard`.
 - Exports **both** `DevAuthGuard` and `UsersModule` — the latter only
   because Nest resolves a cross-module guard's constructor deps relative to
-  the *consuming* module's visible providers, not the guard's own declaring
+  the _consuming_ module's visible providers, not the guard's own declaring
   module. `BooksModule` imports `AuthModule` (not `UsersModule` directly)
   and applies `@UseGuards(DevAuthGuard)`, so `UsersModule` must be
   re-exported or the app fails to boot. (This was a real boot-blocking bug
@@ -76,6 +76,7 @@ identity taken **on faith** from a request header.
 ### 1.5 `User` Prisma model (`apps/api/prisma/schema.prisma:160-203`)
 
 Already contains fields a real auth system needs, unused today:
+
 - `passwordHash String?` — nullable, ready for email/password users.
 - `oauthProvider String?` / `oauthId String?` with a composite index —
   ready for OAuth users.
@@ -84,7 +85,7 @@ Already contains fields a real auth system needs, unused today:
 - `deactivatedAt DateTime?`.
 
 A `RefreshToken` model already exists (`schema.prisma:205-221`): `userId`,
-`tokenHash` (unique), `family` (UUID, for rotation/reuse-detection), 
+`tokenHash` (unique), `family` (UUID, for rotation/reuse-detection),
 `expiresAt`, `revokedAt`, `ipAddress`, `userAgent`. This is the exact shape
 `BACKEND_DESIGN.md` §6.1/§6.4 describes for refresh-token-family rotation.
 
@@ -103,11 +104,12 @@ real guard can populate the same field; `@CurrentUser()`
 ### 1.7 Protected controllers
 
 Only two controllers use `@UseGuards(DevAuthGuard)`:
+
 - `AuthController` (`GET /api/me`)
 - `BooksController` (`apps/api/src/books/books.controller.ts`) — all of
   `GET/POST /books`, `GET/PATCH/DELETE /books/:id`, `GET
-  /books/:id/pdf/preview`, `POST /books/:id/generate`, `POST
-  /books/:id/retry-generation`, `GET /books/:id/generation-diagnostics`.
+/books/:id/pdf/preview`, `POST /books/:id/generate`, `POST
+/books/:id/retry-generation`, `GET /books/:id/generation-diagnostics`.
 
 `HealthController` is the only other controller and is intentionally
 unguarded (health checks).
@@ -122,11 +124,11 @@ or controller logic needs to change.
 ### 1.8 Frontend assumptions
 
 - `apps/web/src/lib/api/client.ts` hardcodes `DEV_EMAIL =
-  'dev@storyme.local'` and `DEV_NAME = 'Dev User'`, sent as
+'dev@storyme.local'` and `DEV_NAME = 'Dev User'`, sent as
   `x-user-email`/`x-user-name` on **every** `apiFetch`/`apiFetchBlob` call.
   There is no login flow, no token storage, no auth state.
 - `apps/web/src/app/dashboard/page.tsx` hardcodes the display text `Signed
-  in as dev@storyme.local` — it does not read this from an API response.
+in as dev@storyme.local` — it does not read this from an API response.
 - No login/register page exists (`apps/web/src/app/` has only `page.tsx`
   (landing), `dashboard/page.tsx`, `dashboard/books/new/page.tsx`,
   `dashboard/books/[id]/page.tsx`).
@@ -142,7 +144,7 @@ or controller logic needs to change.
 next to `Content-Type`/`Authorization`/`X-Request-ID`, with a comment
 marking them dev-only. `credentials: true` is already set (needed for any
 future cookie-based refresh token), and `origin` is env-driven via
-`ALLOWED_ORIGINS`, not hardcoded — so no CORS *infrastructure* change is
+`ALLOWED_ORIGINS`, not hardcoded — so no CORS _infrastructure_ change is
 needed, only removing the two dev headers once `DevAuthGuard` is retired.
 
 ### 1.10 Docs already describing this
@@ -190,7 +192,7 @@ needed, only removing the two dev headers once `DevAuthGuard` is retired.
    revoke, so there's no way to end a "session" — the concept doesn't exist.
 5. **Header trust extends to the frontend by construction.** The web client
    hardcodes a single identity (`dev@storyme.local`); this is fine only
-   because it's the *only* identity anyone is meant to use in this
+   because it's the _only_ identity anyone is meant to use in this
    deployment.
 6. **Why this is acceptable today:** the current deployment target (per
    `docs/private-demo-deploy.md`, Phase 5E) is a private/internal demo
@@ -214,15 +216,15 @@ needed, only removing the two dev headers once `DevAuthGuard` is retired.
 
 ## 3. Recommended auth strategy
 
-| | A. Email/password + JWT + refresh cookie | B. Magic link / OTP | C. OAuth (Google/GitHub) | D. External provider (Clerk/Auth0/Supabase) |
-|---|---|---|---|---|
-| Fastest safe path | Moderate — need password hashing, token issuance/verification, rotation | Needs transactional email sending (not built yet) | Fast per-provider, but needs OAuth app registration + callback plumbing | Fastest to wire, but adds an external service dependency and account |
-| Complexity | Medium, fully in our control | Medium (email deliverability is the hard part) | Low-medium per provider, multiplies with each provider added | Low code, but a new vendor integration + billing surface |
-| Frontend integration | Standard login/register forms | Simple form, but async "check your email" step breaks the immediate-use flow | Redirect-based, slightly awkward for a modal-driven UX | SDK-driven, less control over UI |
-| Backend control | Full — auth data lives in our DB, matches existing schema exactly | Full | Partial — identity delegated to provider, but our DB still owns the account | Minimal — provider owns credentials/sessions |
-| User ownership | Full ownership of `User`/`RefreshToken` rows already in schema | Same schema, just no `passwordHash` usage | Schema already has `oauthProvider`/`oauthId` for this | Would require syncing an external user ID into our schema |
-| Deployment simplicity | No new external services; needs `JWT_SECRET`/`JWT_REFRESH_SECRET` (already reserved) | Needs an email provider (SMTP/Resend/etc.) not yet integrated | Needs OAuth app credentials per provider, and a public callback URL (harder before this ships) | Needs a Clerk/Auth0/Supabase account, its own env vars, and its own uptime dependency |
-| Portfolio/demo value | High — demonstrates hashing, JWT, refresh rotation, guard design end-to-end | Lower — mostly showcases email plumbing | Medium — shows OAuth integration but less "roll your own auth" depth | Lowest — the interesting work is delegated to the vendor |
+|                       | A. Email/password + JWT + refresh cookie                                             | B. Magic link / OTP                                                          | C. OAuth (Google/GitHub)                                                                       | D. External provider (Clerk/Auth0/Supabase)                                           |
+| --------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Fastest safe path     | Moderate — need password hashing, token issuance/verification, rotation              | Needs transactional email sending (not built yet)                            | Fast per-provider, but needs OAuth app registration + callback plumbing                        | Fastest to wire, but adds an external service dependency and account                  |
+| Complexity            | Medium, fully in our control                                                         | Medium (email deliverability is the hard part)                               | Low-medium per provider, multiplies with each provider added                                   | Low code, but a new vendor integration + billing surface                              |
+| Frontend integration  | Standard login/register forms                                                        | Simple form, but async "check your email" step breaks the immediate-use flow | Redirect-based, slightly awkward for a modal-driven UX                                         | SDK-driven, less control over UI                                                      |
+| Backend control       | Full — auth data lives in our DB, matches existing schema exactly                    | Full                                                                         | Partial — identity delegated to provider, but our DB still owns the account                    | Minimal — provider owns credentials/sessions                                          |
+| User ownership        | Full ownership of `User`/`RefreshToken` rows already in schema                       | Same schema, just no `passwordHash` usage                                    | Schema already has `oauthProvider`/`oauthId` for this                                          | Would require syncing an external user ID into our schema                             |
+| Deployment simplicity | No new external services; needs `JWT_SECRET`/`JWT_REFRESH_SECRET` (already reserved) | Needs an email provider (SMTP/Resend/etc.) not yet integrated                | Needs OAuth app credentials per provider, and a public callback URL (harder before this ships) | Needs a Clerk/Auth0/Supabase account, its own env vars, and its own uptime dependency |
+| Portfolio/demo value  | High — demonstrates hashing, JWT, refresh rotation, guard design end-to-end          | Lower — mostly showcases email plumbing                                      | Medium — shows OAuth integration but less "roll your own auth" depth                           | Lowest — the interesting work is delegated to the vendor                              |
 
 **Recommendation: Option A — email/password with a short-lived JWT access
 token plus a rotating refresh token in an `HttpOnly` cookie**, matching the
@@ -231,6 +233,7 @@ Prisma schema (`passwordHash`, `RefreshToken.family`) and env schema
 (`JWT_SECRET`, `JWT_REFRESH_SECRET`).
 
 Reasoning:
+
 - It's the only option requiring **zero new external services** — no email
   provider, no OAuth app registration, no third-party account — which keeps
   this deployable on the same private-demo infra documented in Phase 5E.
@@ -256,8 +259,8 @@ plan proposes the API set the refresh cookie directly** (cross-origin,
 access token in memory, calling the API directly — matching the current
 architecture instead of introducing a BFF as a Phase 6 prerequisite. A BFF
 can be layered in later without changing the `User`/`RefreshToken` schema
-or the token semantics; it only changes *where* the refresh cookie is set
-and *who* calls `/auth/refresh`. This is the one place this plan's backend
+or the token semantics; it only changes _where_ the refresh cookie is set
+and _who_ calls `/auth/refresh`. This is the one place this plan's backend
 design differs from `BACKEND_DESIGN.md`, and it should be called out
 explicitly if that document is ever treated as binding rather than
 directional.
@@ -288,7 +291,7 @@ See full contracts in §6. Routes: `POST /api/auth/register`, `POST
   create `User` (`plan: free`, `credits: 3`, matching current defaults) →
   issue token pair.
 - `login(email, password)`: look up by email → reject generically on
-  not-found *or* wrong password (no user-enumeration signal) → reject with
+  not-found _or_ wrong password (no user-enumeration signal) → reject with
   a distinct message if `passwordHash` is null (OAuth-only account, once
   OAuth exists) → issue token pair.
 - `refresh(rawRefreshToken)`: hash → look up in `RefreshToken` by hash →
@@ -313,17 +316,17 @@ See full contracts in §6. Routes: `POST /api/auth/register`, `POST
   frontend (never `localStorage`), sent as `Authorization: Bearer <token>`.
 - Refresh token: opaque random value (not a JWT — matches
   `BACKEND_DESIGN.md` §6.1), 7 day expiry, transmitted only via `HttpOnly;
-  Secure; SameSite=None; Path=/api/auth` cookie (`SameSite=None` because web
+Secure; SameSite=None; Path=/api/auth` cookie (`SameSite=None` because web
   and API are on different origins per the current deployment architecture
   in `docs/private-demo-deploy.md`; `Strict` only becomes viable if a same-
-  origin BFF is added later). The *hash* of the token (bcrypt or SHA-256 —
+  origin BFF is added later). The _hash_ of the token (bcrypt or SHA-256 —
   SHA-256 is sufficient here since it's a high-entropy random value, not a
   human password; cheaper than bcrypt for this) is stored in
   `RefreshToken.tokenHash`.
 - **Rotation + reuse detection**, using the existing `RefreshToken.family`
   column: each login generates a new `family` UUID; each refresh revokes
   the presented token and issues a new one in the same family. If a
-  *revoked* token is presented again, treat it as theft — revoke every
+  _revoked_ token is presented again, treat it as theft — revoke every
   token in that family, forcing re-login. This is a direct implementation
   of `BACKEND_DESIGN.md` §6.4 against the schema that's already migrated
   in.
@@ -359,7 +362,7 @@ See full contracts in §6. Routes: `POST /api/auth/register`, `POST
 - Split `findOrCreateByEmail` (dev-only convenience) from two new,
   explicit methods `AuthService` needs: `findByEmail(email)` (returns
   `null`, doesn't create) and `create(data: { email, passwordHash, name?
-  })`. Keep `findOrCreateByEmail` only for `DevAuthGuard`'s continued
+})`. Keep `findOrCreateByEmail` only for `DevAuthGuard`'s continued
   non-prod use.
 
 ### 4.9 Prisma schema changes
@@ -390,7 +393,7 @@ sequence (distinct from a DB migration).
   auth today — matches the existing all-client-rendered dashboard).
 - **Auth state**: a small React context (`AuthProvider`) wrapping
   `RootLayout`, holding `{ user, accessToken, status: 'loading' | 'authed'
-  | 'anon' }`. On mount, if a refresh cookie might exist, silently call
+| 'anon' }`. On mount, if a refresh cookie might exist, silently call
   `POST /api/auth/refresh` to try to obtain an access token before deciding
   `anon` vs `authed` — this is what makes "stay logged in across a page
   reload" work without `localStorage`.
@@ -423,18 +426,20 @@ sequence (distinct from a DB migration).
 All routes under the existing `/api` global prefix (`main.ts:42`).
 
 ### `POST /api/auth/register`
+
 - Body: `{ email: string, password: string, name?: string }`
 - Validation: `email` valid format; `password` ≥ 8 chars, 1 uppercase, 1
   number; `name` optional, trimmed, max length matching existing user name
   constraints.
 - 201: `{ accessToken: string, user: UserDto }` + `Set-Cookie:
-  storyme_refresh=...; HttpOnly; Secure; SameSite=None; Path=/api/auth;
-  Max-Age=604800`
+storyme_refresh=...; HttpOnly; Secure; SameSite=None; Path=/api/auth;
+Max-Age=604800`
 - 409: email already registered
 - 400: validation failure (shape matches existing global `ValidationPipe`
   error format)
 
 ### `POST /api/auth/login`
+
 - Body: `{ email: string, password: string }`
 - 200: `{ accessToken: string, user: UserDto }` + refresh cookie (same as
   register)
@@ -444,18 +449,21 @@ All routes under the existing `/api` global prefix (`main.ts:42`).
 - 429: rate-limited (see §8, §2 risk 3)
 
 ### `POST /api/auth/logout`
+
 - No body. Reads `storyme_refresh` cookie.
 - Auth required: refresh cookie (not access token — must work even if the
   access token already expired).
 - 204, clears cookie (`Max-Age=0`)
 
 ### `POST /api/auth/refresh`
+
 - No body. Reads `storyme_refresh` cookie.
 - 200: `{ accessToken: string, user: UserDto }` + rotated refresh cookie
 - 401: missing/invalid/expired/reused token (reuse ⇒ family revoked, per
   §4.5)
 
 ### `GET /api/auth/me`
+
 - Auth required: `Authorization: Bearer <accessToken>` via `JwtAuthGuard`
 - 200: `UserDto` (same shape as today's `GET /api/me`)
 - 401: missing/invalid/expired access token
@@ -509,7 +517,7 @@ All routes under the existing `/api` global prefix (`main.ts:42`).
   → 400 for each violated rule (length, uppercase, number).
 - **Login**: success issues both tokens and sets cookie; wrong password →
   401 generic message; unknown email → same 401 generic message (verify the
-  messages are *identical*, guarding against enumeration regressions);
+  messages are _identical_, guarding against enumeration regressions);
   OAuth-only account (`passwordHash: null`) → distinct 401 message.
 - **Logout**: revokes the specific `RefreshToken` row (`revokedAt` set);
   subsequent refresh with that token → 401.
@@ -540,6 +548,7 @@ All routes under the existing `/api` global prefix (`main.ts:42`).
 ## 9. Documentation plan
 
 Docs to update when Phase 6B (implementation) lands:
+
 - `README.md` — replace any dev-auth mention with the real login flow.
 - `docs/local-demo.md` — remove the `x-user-email` explanation; document
   local register/login instead.
@@ -638,7 +647,7 @@ had passing tests:
 - **Cross-user book isolation.** Every `BooksService` method that takes a
   book id also takes the caller's `userId` and routes through
   `findOwnedOrThrow`, which scopes the Prisma lookup to `{ id, userId,
-  deletedAt: null }` — a book that exists but belongs to someone else 404s
+deletedAt: null }` — a book that exists but belongs to someone else 404s
   exactly like a book that doesn't exist (no existence leak). This was
   already tested for `findOneForUser`, `startGeneration`, `retryGeneration`,
   and `getGenerationDiagnostics`; this phase added the missing equivalent
@@ -743,7 +752,7 @@ remain open (see §12.5).
 - **`RateLimiterService`** (`apps/api/src/rate-limit/rate-limiter.service.ts`)
   — a small, dependency-free, in-memory fixed-window counter:
   `consume(key, windowMs, maxAttempts)` returns `{ allowed, remaining,
-  retryAfterMs }`, plus a `reset()` for test isolation. It knows nothing
+retryAfterMs }`, plus a `reset()` for test isolation. It knows nothing
   about HTTP or auth — any future endpoint can reuse it directly. Registered
   as a `@Global()` provider (`rate-limit.module.ts`, imported once in
   `AppModule`, mirroring `CacheModule`'s pattern) so it doesn't need
@@ -780,7 +789,7 @@ remain open (see §12.5).
 > injects that token, not `RateLimiterService` directly. The commit that made
 > this change explicitly deferred updating this doc section ("deployment/doc
 > reconciliation" left as follow-up), so the reasoning below is historical —
-> it explains why in-memory was the *original* choice, not the current
+> it explains why in-memory was the _original_ choice, not the current
 > behavior. `RateLimiterService` (in-memory) still exists and is exported for
 > direct injection in unit tests that construct a guard without a Redis
 > connection, but no production request path uses it anymore. The auth path
@@ -790,7 +799,7 @@ remain open (see §12.5).
 The app already provisions Redis (`REDIS_URL`, `CacheModule`) and, since
 Phase 3K, depends on it for the generation pipeline (BullMQ — see
 `apps/api/docs/local-generation-pipeline.md`'s "Durable generation queue
-(Phase 3K)" section) — but the *auth/rate-limiting* path is a separate
+(Phase 3K)" section) — but the _auth/rate-limiting_ path is a separate
 concern and still doesn't need Redis for correctness. Adding a Redis-backed
 limiter now would mean the auth path's availability starts depending on
 Redis too, for a feature whose current single-instance deploy target doesn't
@@ -918,11 +927,11 @@ link before the token pair is issued.
 **Blocks login until verified** — the option this phase's own requirements
 called out as preferred, and the one that doesn't conflict with the existing
 auto-login-on-register UX (registration bypasses `login()` entirely, so it's
-unaffected by this gate). The check runs *after* the existing
+unaffected by this gate). The check runs _after_ the existing
 credential/deactivation check, in the same generic-message style: wrong
 password and unknown email both still throw the identical "Invalid email or
 password" message (no enumeration signal), and only once credentials are
-confirmed valid does an unverified account get a *distinct* rejection:
+confirmed valid does an unverified account get a _distinct_ rejection:
 
 ```json
 { "error": "Email is not verified", "code": "EMAIL_NOT_VERIFIED" }
@@ -957,7 +966,7 @@ account, or belongs to a deactivated account — `AuthService.resendVerification
 returns early (no-op) in all three of those cases, with **no way for a
 caller to distinguish them from the success path**, matching this codebase's
 existing no-enumeration policy for `login`/register-duplicate-email
-handling. For a genuine unverified account, it generates a *new* token via
+handling. For a genuine unverified account, it generates a _new_ token via
 `TokenService.generateEmailVerificationToken()` and overwrites the stored
 hash/expiry — the old raw token (if the user still has the original email)
 stops working immediately, since its hash no longer matches any stored row.

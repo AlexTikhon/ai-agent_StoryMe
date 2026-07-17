@@ -1,5 +1,7 @@
 # Frontend Technical Design
+
 ## StoryMe — Implementation Reference for Senior Frontend Engineers
+
 **Version 1.0 | Frontend Architecture Document**
 **Prepared by: Principal Frontend Architect | Date: June 2026**
 
@@ -46,13 +48,14 @@ Five principles govern every frontend decision:
 The application has four distinct navigation zones: Public (marketing), Auth (login/signup), Wizard (semi-public creation flow), and App (authenticated product). Each zone has its own layout shell, navigation component, data-fetching strategy, and auth requirements. No zone borrows infrastructure from another.
 
 **2. Server-First, Hydrate Selectively**
-Next.js 15 App Router is used throughout. Every route begins as a React Server Component (RSC). A component opts into client-side rendering only when it needs interactivity, browser APIs, or state. The decision is: *can this component be a Server Component?* If yes, it must be.
+Next.js 15 App Router is used throughout. Every route begins as a React Server Component (RSC). A component opts into client-side rendering only when it needs interactivity, browser APIs, or state. The decision is: _can this component be a Server Component?_ If yes, it must be.
 
 **3. Feature Ownership**
 Each product feature (wizard, reader, dashboard, checkout) owns its own folder. A feature exports only what other features need. Nothing from inside a feature folder is imported across feature boundaries — shared code lives in `src/shared`. This makes features independently deployable and testable.
 
 **4. State by Layer**
 State is allocated to the lowest layer that owns it:
+
 - Server state → React Query (TanStack Query)
 - URL state → `useSearchParams` / `useRouter`
 - Global client state → Zustand
@@ -68,23 +71,23 @@ The monorepo's `packages/types` package is the single source of truth for all sh
 
 ## 1.2 Technology Stack
 
-| Layer | Technology | Version | Purpose |
-|---|---|---|---|
-| Framework | Next.js | 15 (App Router) | SSR for marketing, RSC for fast initial load, BFF layer |
-| UI | React | 19 | Concurrent rendering, Suspense, Server Components |
-| Language | TypeScript | 5.x | Full strict mode; zero `any` |
-| Styling | TailwindCSS | 4.x | Utility-first, purges to minimal bundle |
-| Animation | Framer Motion | 11.x | Book reveal, page flip, wizard transitions |
-| Server State | TanStack Query | 5.x | Server state, polling, background refetch |
-| Client State | Zustand | 5.x | Wizard draft, auth token, reader position |
-| Forms | React Hook Form | 7.x | Uncontrolled, performant form handling |
-| Validation | Zod | 3.x | Schema validation; shared with API via `@storyme/types` |
-| PDF Preview | @react-pdf/renderer | 3.x | In-browser PDF preview (client-side only) |
-| Real-time | Socket.io client | 4.x | Generation progress events |
-| Icons | Lucide React | Latest | Tree-shakable icon set |
-| Date handling | date-fns | 3.x | Locale-aware date formatting |
-| Testing | Vitest + Testing Library | Latest | Unit and integration tests |
-| E2E | Playwright | Latest | End-to-end and visual regression |
+| Layer         | Technology               | Version         | Purpose                                                 |
+| ------------- | ------------------------ | --------------- | ------------------------------------------------------- |
+| Framework     | Next.js                  | 15 (App Router) | SSR for marketing, RSC for fast initial load, BFF layer |
+| UI            | React                    | 19              | Concurrent rendering, Suspense, Server Components       |
+| Language      | TypeScript               | 5.x             | Full strict mode; zero `any`                            |
+| Styling       | TailwindCSS              | 4.x             | Utility-first, purges to minimal bundle                 |
+| Animation     | Framer Motion            | 11.x            | Book reveal, page flip, wizard transitions              |
+| Server State  | TanStack Query           | 5.x             | Server state, polling, background refetch               |
+| Client State  | Zustand                  | 5.x             | Wizard draft, auth token, reader position               |
+| Forms         | React Hook Form          | 7.x             | Uncontrolled, performant form handling                  |
+| Validation    | Zod                      | 3.x             | Schema validation; shared with API via `@storyme/types` |
+| PDF Preview   | @react-pdf/renderer      | 3.x             | In-browser PDF preview (client-side only)               |
+| Real-time     | Socket.io client         | 4.x             | Generation progress events                              |
+| Icons         | Lucide React             | Latest          | Tree-shakable icon set                                  |
+| Date handling | date-fns                 | 3.x             | Locale-aware date formatting                            |
+| Testing       | Vitest + Testing Library | Latest          | Unit and integration tests                              |
+| E2E           | Playwright               | Latest          | End-to-end and visual regression                        |
 
 ---
 
@@ -103,17 +106,17 @@ These explicit exclusions prevent common mistakes:
 
 ## 1.4 Rendering Strategy by Zone
 
-| Zone | Rendering Model | Rationale |
-|---|---|---|
-| Marketing pages | SSR (RSC) | SEO-critical; content is static or near-static |
-| Auth pages | SSR shell + Client form | Form interactivity needed; shell can be server-rendered |
-| Wizard | Client Component (CSR) | Multi-step form with complex local state; no SEO value |
-| Dashboard | SSR shell + Client library grid | Auth check server-side; book grid rehydrated client-side |
-| Book Reader | Client Component (CSR) | Highly interactive; page flip, gestures, realtime updates |
-| Generation progress | Client Component (CSR) | Real-time WebSocket/SSE updates |
-| Shared book viewer | SSR | Public, shareable, SEO-friendly |
-| Settings | SSR shell + Client forms | Auth server-side; form interactivity client-side |
-| Checkout | Client Component (CSR) | Stripe Elements requires client-side; no SSR |
+| Zone                | Rendering Model                 | Rationale                                                 |
+| ------------------- | ------------------------------- | --------------------------------------------------------- |
+| Marketing pages     | SSR (RSC)                       | SEO-critical; content is static or near-static            |
+| Auth pages          | SSR shell + Client form         | Form interactivity needed; shell can be server-rendered   |
+| Wizard              | Client Component (CSR)          | Multi-step form with complex local state; no SEO value    |
+| Dashboard           | SSR shell + Client library grid | Auth check server-side; book grid rehydrated client-side  |
+| Book Reader         | Client Component (CSR)          | Highly interactive; page flip, gestures, realtime updates |
+| Generation progress | Client Component (CSR)          | Real-time WebSocket/SSE updates                           |
+| Shared book viewer  | SSR                             | Public, shareable, SEO-friendly                           |
+| Settings            | SSR shell + Client forms        | Auth server-side; form interactivity client-side          |
+| Checkout            | Client Component (CSR)          | Stripe Elements requires client-side; no SSR              |
 
 ---
 
@@ -133,6 +136,7 @@ External consumers (pages, routes)
 ```
 
 **Rules:**
+
 - Features may import from `shared`, never from other features directly.
 - `shared` may not import from features.
 - A feature's internal files are not public API. Only what is re-exported from the feature's `index.ts` barrel file is part of the public API.
@@ -521,24 +525,24 @@ apps/web/
 
 ## 2.1 Folder Purpose Summary
 
-| Folder | Purpose |
-|---|---|
-| `app/` | Routing only. Pages and layouts. No business logic. |
-| `app/(marketing)/` | SSR marketing pages, public routes. |
-| `app/(auth)/` | Auth flow pages with minimal auth layout. |
-| `app/(wizard)/` | Wizard steps with dedicated wizard shell layout. |
-| `app/(app)/` | All authenticated pages under the app shell. |
-| `app/api/` | BFF Route Handlers. Proxies to NestJS API, handles cookie auth. |
-| `features/` | Encapsulated product features. Each owns its own components, hooks, stores. |
-| `shared/components/ui/` | Design system primitives. No domain knowledge. |
-| `shared/hooks/` | Reusable, stateless, domain-agnostic hooks. |
-| `shared/services/` | Typed functions that call the BFF API layer. |
-| `shared/providers/` | React context providers that wrap the app tree. |
-| `shared/stores/` | Zustand stores not owned by a single feature. |
-| `shared/lib/` | Third-party SDK configuration and wrappers. |
-| `shared/constants/` | Typed constants: routes, query keys, feature config. |
-| `styles/` | Global CSS: Tailwind, design tokens, font loading. |
-| `assets/` | Static assets bundled by Next.js. |
+| Folder                  | Purpose                                                                     |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `app/`                  | Routing only. Pages and layouts. No business logic.                         |
+| `app/(marketing)/`      | SSR marketing pages, public routes.                                         |
+| `app/(auth)/`           | Auth flow pages with minimal auth layout.                                   |
+| `app/(wizard)/`         | Wizard steps with dedicated wizard shell layout.                            |
+| `app/(app)/`            | All authenticated pages under the app shell.                                |
+| `app/api/`              | BFF Route Handlers. Proxies to NestJS API, handles cookie auth.             |
+| `features/`             | Encapsulated product features. Each owns its own components, hooks, stores. |
+| `shared/components/ui/` | Design system primitives. No domain knowledge.                              |
+| `shared/hooks/`         | Reusable, stateless, domain-agnostic hooks.                                 |
+| `shared/services/`      | Typed functions that call the BFF API layer.                                |
+| `shared/providers/`     | React context providers that wrap the app tree.                             |
+| `shared/stores/`        | Zustand stores not owned by a single feature.                               |
+| `shared/lib/`           | Third-party SDK configuration and wrappers.                                 |
+| `shared/constants/`     | Typed constants: routes, query keys, feature config.                        |
+| `styles/`               | Global CSS: Tailwind, design tokens, font loading.                          |
+| `assets/`               | Static assets bundled by Next.js.                                           |
 
 ---
 
@@ -559,54 +563,54 @@ Route Group     URL Prefix      Layout Applied     Auth Required
 
 ## 3.2 Complete Route Table
 
-| URL Pattern | Component | Auth | Layout | Render |
-|---|---|---|---|---|
-| `/` | LandingPage | No | Public | SSR |
-| `/how-it-works` | HowItWorksPage | No | Public | SSR |
-| `/pricing` | PricingPage | No | Public | SSR |
-| `/samples` | SamplesPage | No | Public | SSR |
-| `/blog` | BlogIndexPage | No | Public | SSR |
-| `/blog/[slug]` | BlogPostPage | No | Public | SSR |
-| `/about` | AboutPage | No | Public | SSR |
-| `/faq` | FAQPage | No | Public | SSR |
-| `/contact` | ContactPage | No | Public | SSR |
-| `/gift` | GiftLandingPage | No | Public | SSR |
-| `/teachers` | TeachersPage | No | Public | SSR |
-| `/privacy` | PrivacyPage | No | Public | SSR |
-| `/terms` | TermsPage | No | Public | SSR |
-| `/login` | LoginPage | Redirect if authed | Auth | SSR shell |
-| `/signup` | SignupPage | Redirect if authed | Auth | SSR shell |
-| `/forgot-password` | ForgotPasswordPage | No | Auth | SSR |
-| `/reset-password/[token]` | ResetPasswordPage | No | Auth | CSR |
-| `/verify-email/[token]` | VerifyEmailPage | No | Auth | CSR |
-| `/oauth/callback` | OAuthCallbackPage | No | Auth | CSR |
-| `/create` | WizardStep1 | No | Wizard | CSR |
-| `/create/world` | WizardStep2 | No | Wizard | CSR |
-| `/create/story` | WizardStep3 | No | Wizard | CSR |
-| `/create/look` | WizardStep4 | No | Wizard | CSR |
-| `/create/dedication` | WizardStep5 | No | Wizard | CSR |
-| `/create/preview` | WizardPreview | Wall (auth modal) | Wizard | CSR |
-| `/create/generating/[jobId]` | GenerationProgress | Yes → /login | Wizard | CSR |
-| `/dashboard` | DashboardPage | Yes → /login | App | SSR shell |
-| `/book/[bookId]` | BookReaderPage | Yes → /login | App | CSR |
-| `/book/[bookId]/edit` | BookEditPage | Yes + paid → upgrade | App | CSR |
-| `/series/[seriesId]` | SeriesPage | Yes → /login | App | SSR |
-| `/checkout` | CheckoutPage | Yes → /login | App | CSR |
-| `/gift/create` | GiftCreatePage | Yes → /login | App | CSR |
-| `/gift/details` | GiftDetailsPage | Yes → /login | App | CSR |
-| `/gift/checkout` | GiftCheckoutPage | Yes → /login | App | CSR |
-| `/settings/profile` | ProfileSettings | Yes → /login | App+Settings | SSR shell |
-| `/settings/children` | ChildrenSettings | Yes → /login | App+Settings | SSR shell |
-| `/settings/children/new` | NewChildPage | Yes → /login | App+Settings | CSR |
-| `/settings/children/[id]` | EditChildPage | Yes → /login | App+Settings | CSR |
-| `/settings/subscription` | SubscriptionSettings | Yes → /login | App+Settings | SSR shell |
-| `/settings/billing` | BillingSettings | Yes → /login | App+Settings | SSR shell |
-| `/settings/notifications` | NotificationsSettings | Yes → /login | App+Settings | CSR |
-| `/settings/language` | LanguageSettings | Yes → /login | App+Settings | CSR |
-| `/settings/privacy` | PrivacySettings | Yes → /login | App+Settings | CSR |
-| `/shared/[bookId]` | SharedBookViewer | No | Minimal | SSR |
-| `/not-found` | NotFoundPage | No | Minimal | SSR |
-| `/500` (error.tsx) | ServerErrorPage | No | Minimal | CSR |
+| URL Pattern                  | Component             | Auth                 | Layout       | Render    |
+| ---------------------------- | --------------------- | -------------------- | ------------ | --------- |
+| `/`                          | LandingPage           | No                   | Public       | SSR       |
+| `/how-it-works`              | HowItWorksPage        | No                   | Public       | SSR       |
+| `/pricing`                   | PricingPage           | No                   | Public       | SSR       |
+| `/samples`                   | SamplesPage           | No                   | Public       | SSR       |
+| `/blog`                      | BlogIndexPage         | No                   | Public       | SSR       |
+| `/blog/[slug]`               | BlogPostPage          | No                   | Public       | SSR       |
+| `/about`                     | AboutPage             | No                   | Public       | SSR       |
+| `/faq`                       | FAQPage               | No                   | Public       | SSR       |
+| `/contact`                   | ContactPage           | No                   | Public       | SSR       |
+| `/gift`                      | GiftLandingPage       | No                   | Public       | SSR       |
+| `/teachers`                  | TeachersPage          | No                   | Public       | SSR       |
+| `/privacy`                   | PrivacyPage           | No                   | Public       | SSR       |
+| `/terms`                     | TermsPage             | No                   | Public       | SSR       |
+| `/login`                     | LoginPage             | Redirect if authed   | Auth         | SSR shell |
+| `/signup`                    | SignupPage            | Redirect if authed   | Auth         | SSR shell |
+| `/forgot-password`           | ForgotPasswordPage    | No                   | Auth         | SSR       |
+| `/reset-password/[token]`    | ResetPasswordPage     | No                   | Auth         | CSR       |
+| `/verify-email/[token]`      | VerifyEmailPage       | No                   | Auth         | CSR       |
+| `/oauth/callback`            | OAuthCallbackPage     | No                   | Auth         | CSR       |
+| `/create`                    | WizardStep1           | No                   | Wizard       | CSR       |
+| `/create/world`              | WizardStep2           | No                   | Wizard       | CSR       |
+| `/create/story`              | WizardStep3           | No                   | Wizard       | CSR       |
+| `/create/look`               | WizardStep4           | No                   | Wizard       | CSR       |
+| `/create/dedication`         | WizardStep5           | No                   | Wizard       | CSR       |
+| `/create/preview`            | WizardPreview         | Wall (auth modal)    | Wizard       | CSR       |
+| `/create/generating/[jobId]` | GenerationProgress    | Yes → /login         | Wizard       | CSR       |
+| `/dashboard`                 | DashboardPage         | Yes → /login         | App          | SSR shell |
+| `/book/[bookId]`             | BookReaderPage        | Yes → /login         | App          | CSR       |
+| `/book/[bookId]/edit`        | BookEditPage          | Yes + paid → upgrade | App          | CSR       |
+| `/series/[seriesId]`         | SeriesPage            | Yes → /login         | App          | SSR       |
+| `/checkout`                  | CheckoutPage          | Yes → /login         | App          | CSR       |
+| `/gift/create`               | GiftCreatePage        | Yes → /login         | App          | CSR       |
+| `/gift/details`              | GiftDetailsPage       | Yes → /login         | App          | CSR       |
+| `/gift/checkout`             | GiftCheckoutPage      | Yes → /login         | App          | CSR       |
+| `/settings/profile`          | ProfileSettings       | Yes → /login         | App+Settings | SSR shell |
+| `/settings/children`         | ChildrenSettings      | Yes → /login         | App+Settings | SSR shell |
+| `/settings/children/new`     | NewChildPage          | Yes → /login         | App+Settings | CSR       |
+| `/settings/children/[id]`    | EditChildPage         | Yes → /login         | App+Settings | CSR       |
+| `/settings/subscription`     | SubscriptionSettings  | Yes → /login         | App+Settings | SSR shell |
+| `/settings/billing`          | BillingSettings       | Yes → /login         | App+Settings | SSR shell |
+| `/settings/notifications`    | NotificationsSettings | Yes → /login         | App+Settings | CSR       |
+| `/settings/language`         | LanguageSettings      | Yes → /login         | App+Settings | CSR       |
+| `/settings/privacy`          | PrivacySettings       | Yes → /login         | App+Settings | CSR       |
+| `/shared/[bookId]`           | SharedBookViewer      | No                   | Minimal      | SSR       |
+| `/not-found`                 | NotFoundPage          | No                   | Minimal      | SSR       |
+| `/500` (error.tsx)           | ServerErrorPage       | No                   | Minimal      | CSR       |
 
 ## 3.3 Auth Guard Pattern
 
@@ -621,6 +625,7 @@ app/(app)/layout.tsx:
 ```
 
 The `/create/*` wizard routes are different — they use a hybrid approach:
+
 - Steps 1–5: Always accessible (no auth guard)
 - `/create/preview`: Renders a client-side auth modal over the preview when no session is present. The wizard data is preserved. After auth, generation begins immediately.
 - `/create/generating/:jobId`: Has a full server-side auth guard (redirect to login if no session).
@@ -632,18 +637,18 @@ All route params and search params are typed:
 ```typescript
 // shared/types/navigation.types.ts
 
-type BookPageParams = { bookId: string }
-type BookPageSearchParams = { page?: string; reveal?: string }
+type BookPageParams = { bookId: string };
+type BookPageSearchParams = { page?: string; reveal?: string };
 
 type DashboardSearchParams = {
-  child?: string
-  sort?: 'newest' | 'oldest' | 'az' | 'az-child'
-  q?: string
-  theme?: string
-}
+  child?: string;
+  sort?: 'newest' | 'oldest' | 'az' | 'az-child';
+  q?: string;
+  theme?: string;
+};
 
-type WizardGeneratingParams = { jobId: string }
-type CheckoutSearchParams = { plan?: 'single' | 'family' }
+type WizardGeneratingParams = { jobId: string };
+type CheckoutSearchParams = { plan?: 'single' | 'family' };
 ```
 
 ---
@@ -713,13 +718,13 @@ The reader is not a layout in the routing sense — it is a full-viewport Client
 
 ## 4.6 Responsive Behavior Summary
 
-| Layout | Mobile (<768px) | Tablet (768–1023px) | Desktop (≥1024px) |
-|---|---|---|---|
-| PublicLayout | Hamburger menu, stacked sections | Hamburger, 2-col grid sections | Full top nav, multi-col sections |
-| AppLayout | Bottom tabs, minimal top bar | Hamburger + left drawer | Full top header |
-| WizardLayout | Full-screen step, no illustration | Illustration shown in column | 50/50 split (form/illustration) |
-| SettingsLayout | Mobile: list → push sub-pages | Same | 240px sidebar + content area |
-| ReaderLayout | Single page, swipe nav | Single page, arrows | 2-page spread, arrows |
+| Layout         | Mobile (<768px)                   | Tablet (768–1023px)            | Desktop (≥1024px)                |
+| -------------- | --------------------------------- | ------------------------------ | -------------------------------- |
+| PublicLayout   | Hamburger menu, stacked sections  | Hamburger, 2-col grid sections | Full top nav, multi-col sections |
+| AppLayout      | Bottom tabs, minimal top bar      | Hamburger + left drawer        | Full top header                  |
+| WizardLayout   | Full-screen step, no illustration | Illustration shown in column   | 50/50 split (form/illustration)  |
+| SettingsLayout | Mobile: list → push sub-pages     | Same                           | 240px sidebar + content area     |
+| ReaderLayout   | Single page, swipe nav            | Single page, arrows            | 2-page spread, arrows            |
 
 ---
 
@@ -742,6 +747,7 @@ Each layer depends only on layers below it. Pages compose feature components. Fe
 ## 5.2 Design System Primitives
 
 All components in `shared/components/ui/` are:
+
 - **Uncontrolled by default** — they accept value and onChange via props, they do not manage their own state.
 - **Design-token aware** — they consume CSS custom property tokens from `styles/tokens.css`, never raw hex values or pixel values.
 - **Accessible by default** — ARIA attributes, keyboard handling, and focus management are built in, not left to callers.
@@ -788,33 +794,35 @@ These widgets are always fully controlled — they receive `value` and `onChange
 ## 5.4 Feature Component Rules
 
 Feature components may:
+
 - Import from `shared/components`, `shared/hooks`, `shared/services`, `shared/stores`
 - Import from the feature's own sub-directories
 - Import from `@storyme/types`
 
 Feature components must not:
+
 - Import from other feature folders
 - Contain raw API calls (`fetch(...)`) — all API calls go through `shared/services`
 - Contain design token values in component code — use Tailwind classes from the token mapping
 
 ## 5.5 Server vs. Client Component Decision Matrix
 
-| Component | Server or Client | Reason |
-|---|---|---|
-| `LandingPage` | Server | No interactivity; SEO-critical |
-| `BookCard` | Server (shell) + Client (hover actions) | Cover image and metadata can be server-rendered; hover actions need event handlers |
-| `BookCardGrid` | Client | Depends on filter/sort state from Zustand/URL |
-| `WizardStep*` | Client | All wizard components need form state and animations |
-| `BookReader` | Client | Page gestures, keyboard, WebSocket |
-| `ReaderToolbar` | Client | Auto-hide on inactivity, keyboard shortcuts |
-| `Modal` | Client | Needs browser APIs (focus management, scroll lock) |
-| `Toast` | Client | Animated, needs event handlers |
-| `SettingsProfile` | Server (shell) | Can pre-render the form shell; hydrate for interactivity |
-| `CheckoutForm` | Client | Stripe Elements requires client-side |
-| `GenerationProgress` | Client | WebSocket/SSE updates |
-| `DashboardLayout` | Server | Auth check, initial book list fetch |
-| `ChildProfileStrip` | Client | Click handlers for filtering |
-| `AuthModal` | Client | In-wizard auth modal; needs state |
+| Component            | Server or Client                        | Reason                                                                             |
+| -------------------- | --------------------------------------- | ---------------------------------------------------------------------------------- |
+| `LandingPage`        | Server                                  | No interactivity; SEO-critical                                                     |
+| `BookCard`           | Server (shell) + Client (hover actions) | Cover image and metadata can be server-rendered; hover actions need event handlers |
+| `BookCardGrid`       | Client                                  | Depends on filter/sort state from Zustand/URL                                      |
+| `WizardStep*`        | Client                                  | All wizard components need form state and animations                               |
+| `BookReader`         | Client                                  | Page gestures, keyboard, WebSocket                                                 |
+| `ReaderToolbar`      | Client                                  | Auto-hide on inactivity, keyboard shortcuts                                        |
+| `Modal`              | Client                                  | Needs browser APIs (focus management, scroll lock)                                 |
+| `Toast`              | Client                                  | Animated, needs event handlers                                                     |
+| `SettingsProfile`    | Server (shell)                          | Can pre-render the form shell; hydrate for interactivity                           |
+| `CheckoutForm`       | Client                                  | Stripe Elements requires client-side                                               |
+| `GenerationProgress` | Client                                  | WebSocket/SSE updates                                                              |
+| `DashboardLayout`    | Server                                  | Auth check, initial book list fetch                                                |
+| `ChildProfileStrip`  | Client                                  | Click handlers for filtering                                                       |
+| `AuthModal`          | Client                                  | In-wizard auth modal; needs state                                                  |
 
 ---
 
@@ -822,24 +830,25 @@ Feature components must not:
 
 ## 6.1 State Allocation Table
 
-| State Type | Tool | Location | Persisted |
-|---|---|---|---|
-| Server data (books, user, credits) | TanStack Query | Query cache | In-memory; TTL-based |
-| Authentication (token, user session) | Zustand (`authStore`) | Memory (token) + Cookie (refresh) | Cookie persists across tabs |
-| Wizard draft (all step data) | Zustand (`wizardStore`) | Memory + localStorage backup | localStorage (guest), server (authed) |
-| Reader position, bookmarks | Zustand (`readerStore`) | Memory + server sync | Server (via mutation on change) |
-| Global UI (toasts, active modals) | Zustand (`uiStore`) | Memory only | No |
-| Dashboard filters + sort | URL (`useSearchParams`) | URL | Browser history |
-| Search query | URL (`useSearchParams`) | URL | Browser history |
-| Book page position (deep link) | URL (`useSearchParams`) | URL | Browser history |
-| Form state (all forms) | React Hook Form | Memory (per form) | No |
-| Ephemeral UI (dropdown open, hover) | `useState` | Component | No |
+| State Type                           | Tool                    | Location                          | Persisted                             |
+| ------------------------------------ | ----------------------- | --------------------------------- | ------------------------------------- |
+| Server data (books, user, credits)   | TanStack Query          | Query cache                       | In-memory; TTL-based                  |
+| Authentication (token, user session) | Zustand (`authStore`)   | Memory (token) + Cookie (refresh) | Cookie persists across tabs           |
+| Wizard draft (all step data)         | Zustand (`wizardStore`) | Memory + localStorage backup      | localStorage (guest), server (authed) |
+| Reader position, bookmarks           | Zustand (`readerStore`) | Memory + server sync              | Server (via mutation on change)       |
+| Global UI (toasts, active modals)    | Zustand (`uiStore`)     | Memory only                       | No                                    |
+| Dashboard filters + sort             | URL (`useSearchParams`) | URL                               | Browser history                       |
+| Search query                         | URL (`useSearchParams`) | URL                               | Browser history                       |
+| Book page position (deep link)       | URL (`useSearchParams`) | URL                               | Browser history                       |
+| Form state (all forms)               | React Hook Form         | Memory (per form)                 | No                                    |
+| Ephemeral UI (dropdown open, hover)  | `useState`              | Component                         | No                                    |
 
 ## 6.2 TanStack Query Configuration
 
 **Query Client setup (`shared/lib/queryClient.ts`):**
 
 The query client is configured with these defaults:
+
 - `staleTime`: 30 seconds for most queries. The user's book list does not need sub-second freshness.
 - `gcTime`: 5 minutes. Keeps dehydrated pages fast on navigation.
 - `retry`: 1 for server errors; 0 for 4xx client errors (retry on auth failure handled by the `AuthProvider` interceptor, not per-query retry).
@@ -862,6 +871,7 @@ queryKeys.user.credits()                  → ['user', 'credits']
 **Polling strategy for book generation:**
 
 When a book is in a generating state, the status query switches to active polling:
+
 - Poll interval: 5 seconds while generation is active
 - Polling stops when status changes to `complete`, `failed`, or `partial`
 - The WebSocket/SSE is the primary update mechanism; polling is the fallback (see Section 10)
@@ -869,6 +879,7 @@ When a book is in a generating state, the status query switches to active pollin
 **Optimistic updates:**
 
 Applied to these mutations:
+
 - Bookmark a page → immediately reflects in the reader
 - Delete a book → immediately removes from grid
 - Add/remove child profile filter → immediately updates URL and triggers re-render
@@ -964,12 +975,12 @@ Actions:
 
 React Context is used sparingly — only for values that many deeply nested components need and that change rarely:
 
-| Context | Provider | Consumers | Value |
-|---|---|---|---|
-| AuthContext | AuthProvider | Any component needing user | `{ user, isLoading, isAuthenticated }` |
-| ToastContext | ToastProvider | `useToast` hook | `{ addToast }` |
-| ThemeContext | ThemeProvider | No component (CSS vars handle theming) | Dark/light mode toggle |
-| QueryContext | QueryProvider | React Query hooks automatically | QueryClient instance |
+| Context      | Provider      | Consumers                              | Value                                  |
+| ------------ | ------------- | -------------------------------------- | -------------------------------------- |
+| AuthContext  | AuthProvider  | Any component needing user             | `{ user, isLoading, isAuthenticated }` |
+| ToastContext | ToastProvider | `useToast` hook                        | `{ addToast }`                         |
+| ThemeContext | ThemeProvider | No component (CSS vars handle theming) | Dark/light mode toggle                 |
+| QueryContext | QueryProvider | React Query hooks automatically        | QueryClient instance                   |
 
 Context is **not** used for wizard state, reader state, or dashboard filters — those use Zustand or URL state.
 
@@ -984,6 +995,7 @@ All forms use **React Hook Form (RHF)** with **Zod** validation. The Zod schema 
 ## 7.2 Zod Schema Strategy
 
 Schemas live close to their feature:
+
 - Wizard step schemas: `features/wizard/schemas/wizard.schema.ts`
 - Auth form schemas: `features/auth/schemas/auth.schema.ts`
 - Settings schemas: `features/settings/schemas/settings.schema.ts`
@@ -1004,16 +1016,19 @@ WizardDraftSchema: WizardStep1Schema.merge(WizardStep2Schema).merge(...)  // ful
 ## 7.3 Wizard State and Form Integration
 
 The wizard has a subtle state duality:
+
 - **RHF** owns the in-step form state (what's currently on screen, input errors)
 - **Zustand** (`wizardStore.draft`) owns the persisted draft (what the user has completed across all steps)
 
 The flow for each step:
+
 1. Step mounts → RHF is initialized with `defaultValues` from `wizardStore.draft` (restores on back-navigation)
 2. User fills in step → RHF manages field state internally
 3. User clicks "Continue" → RHF validates → on success, `wizardStore.updateDraft(stepData)` is called, then navigate to next step
 4. `wizardStore.persistToLocalStorage()` is called after every successful step completion (debounced 500ms)
 
 This pattern means:
+
 - Navigating back always shows the previously entered data (from Zustand)
 - Data is never lost on refresh (from localStorage)
 - Validation is local to each step; only that step's schema is evaluated on Continue
@@ -1021,6 +1036,7 @@ This pattern means:
 ## 7.4 Non-Wizard Forms
 
 All settings forms, auth forms, and checkout forms use RHF with `zodResolver`. They follow this pattern:
+
 - `useForm` with Zod schema and `defaultValues` from server data (loaded via React Query)
 - When server data loads, `form.reset(serverData)` is called to populate form
 - `onSubmit` calls the relevant mutation (React Query mutation or direct service call)
@@ -1029,6 +1045,7 @@ All settings forms, auth forms, and checkout forms use RHF with `zodResolver`. T
 ## 7.5 Autosave (Dashboard Settings)
 
 Settings forms autosave after a 1-second debounce following any field change. The flow:
+
 1. User changes any field
 2. `useWatch` detects the change
 3. 1-second debounce fires → mutation is called
@@ -1054,6 +1071,7 @@ Draft data is always cleared from localStorage after a successful book generatio
 ## 8.1 Architecture
 
 The frontend never calls the NestJS backend directly. All API calls go through the **Next.js BFF (Backend for Frontend)** layer at `app/api/*`. This allows the BFF to:
+
 - Relay the access token as a server-to-server call (token not exposed to browser JS)
 - Set and read the HttpOnly refresh token cookie
 - Transform responses for the frontend without leaking backend internals
@@ -1081,6 +1099,7 @@ A typed base fetch wrapper with the following behaviors:
 ## 8.3 Service Functions (`shared/services/*.service.ts`)
 
 Service functions are thin wrappers around the API client that:
+
 - Define the request shape (typed request body)
 - Define the response shape (typed return value)
 - Handle any request-specific transformation
@@ -1088,6 +1107,7 @@ Service functions are thin wrappers around the API client that:
 Service functions are called from React Query hooks or mutations. They are never called directly from components.
 
 Example structure:
+
 ```
 books.service.ts
   createBook(request: CreateBookRequest) → Promise<CreateBookResponse>
@@ -1109,12 +1129,14 @@ books.service.ts
 3. **Mutation errors**: Surface as inline form errors (via `form.setError()`) or as toast notifications, depending on context. Never surfaced as full-page errors.
 
 **React Query error handling:**
+
 - Query errors: set error state on the component using `useQuery`'s `error` return value
 - Mutation errors: handled in the mutation's `onError` callback
 - No global `onError` handler that silently swallows errors
 
 **HTTP 401 Unauthorized handling:**
 When the BFF returns 401, the API client:
+
 1. Calls `authStore.refreshToken()` to attempt token refresh
 2. If refresh succeeds: retries the original request with the new token
 3. If refresh fails: calls `authStore.clearAuth()` and redirects to `/login?redirect=<current-url>`
@@ -1140,7 +1162,7 @@ The dashboard uses infinite scroll (intersection observer triggers `fetchNextPag
 All data-fetching queries pass an `AbortSignal` from React Query's `meta.signal`:
 
 ```typescript
-queryFn: ({ signal }) => booksService.listBooks(filters, { signal })
+queryFn: ({ signal }) => booksService.listBooks(filters, { signal });
 ```
 
 Service functions pass the signal to the underlying `fetch()` call. When the user navigates away mid-fetch, the request is cancelled immediately.
@@ -1151,10 +1173,10 @@ Service functions pass the signal to the underlying `fetch()` call. When the use
 
 ## 9.1 Token Architecture
 
-| Token | Storage | Lifetime | Purpose |
-|---|---|---|---|
-| Access Token | JavaScript memory (`authStore`) | 15 minutes | Sent in `Authorization` header for API calls |
-| Refresh Token | HttpOnly Secure cookie | 7 days | Used by BFF to issue new access tokens |
+| Token         | Storage                         | Lifetime   | Purpose                                      |
+| ------------- | ------------------------------- | ---------- | -------------------------------------------- |
+| Access Token  | JavaScript memory (`authStore`) | 15 minutes | Sent in `Authorization` header for API calls |
+| Refresh Token | HttpOnly Secure cookie          | 7 days     | Used by BFF to issue new access tokens       |
 
 The access token is **never** written to localStorage or sessionStorage. It lives exclusively in the Zustand `authStore`. This means the token is lost on full page refresh — which is correct behavior, triggering a silent token refresh via the HttpOnly cookie on mount.
 
@@ -1174,6 +1196,7 @@ Child components render only after `isLoading = false`. The app root shows a ful
 ## 9.3 Login Flow
 
 **Email/Password:**
+
 1. User submits `LoginForm`
 2. Call BFF `/api/auth/login` with `{ email, password }`
 3. BFF calls NestJS → NestJS returns `{ accessToken }` and sets the `refreshToken` cookie on the BFF response
@@ -1182,6 +1205,7 @@ Child components render only after `isLoading = false`. The app root shows a ful
 6. Navigate to `redirect` param URL or `/dashboard`
 
 **Google OAuth:**
+
 1. User clicks "Continue with Google" → redirect to BFF `/api/auth/google` → Google OAuth
 2. Google redirects to BFF callback → BFF exchanges code → NestJS issues tokens → BFF sets cookie
 3. BFF redirects to `/oauth/callback?accessToken=...&user=...` (short-lived GET param, not stored)
@@ -1199,11 +1223,13 @@ Child components render only after `isLoading = false`. The app root shows a ful
 ## 9.5 Protected Route Enforcement
 
 **Server-side (AppLayout RSC):**
+
 - Reads session from cookie using `cookies()` from `next/headers`
 - If no valid session: `redirect('/login?redirect=' + pathname)`
 - If valid: renders children with user passed as prop
 
 **Client-side (secondary guard):**
+
 - `AuthProvider` checks `authStore.isAuthenticated` after `isLoading = false`
 - If unauthenticated on a page that should be protected: navigate to `/login`
 - This is a secondary guard only — the server-side check is primary
@@ -1217,6 +1243,7 @@ usePlanGate('download-pdf') → { allowed: boolean, requiredPlan: 'paid' | 'subs
 ```
 
 The hook reads from `authStore.user.plan`. When `allowed = false`:
+
 - Render the feature with a lock overlay
 - Clicking the locked feature opens the upgrade modal
 
@@ -1259,6 +1286,7 @@ useGenerationStatus(jobId: string) → {
 ```
 
 **Internally:**
+
 1. Opens an `EventSource` to `/api/books/${jobId}/events`
 2. On each message: updates local state
 3. On SSE error/close: starts polling at 5-second intervals via React Query
@@ -1275,11 +1303,13 @@ useGenerationStatus(jobId: string) → {
 ## 10.4 Multiple Tab Behavior
 
 If the user has the generation screen open in two tabs:
+
 - Both tabs independently connect to SSE
 - Both receive the same events (SSE is broadcast from the backend)
 - On completion, both tabs navigate to the reveal screen
 
 If the user has the dashboard open in one tab and the generation screen in another:
+
 - Dashboard shows the book in "generating" state (pulsing card)
 - When generation completes, the generation tab auto-navigates to the reveal
 - The dashboard tab re-fetches the book list when it regains focus (`refetchOnWindowFocus: true` on the books list query)
@@ -1294,13 +1324,13 @@ Next.js App Router provides automatic code splitting by route. No manual `React.
 
 **Manual lazy loading** applies to these specific heavy components:
 
-| Component | Reason | Bundle size approx. |
-|---|---|---|
-| `@react-pdf/renderer` | PDF preview in browser | ~600 KB |
-| `AvatarBuilder` | Hair style grid with images | ~200 KB assets |
-| `BookReveal` + Framer Motion | Animation-heavy; reveal-only | ~80 KB |
-| `StripeCardForm` | Stripe Elements | ~300 KB |
-| `OpenDyslexic` font | Reader only, opt-in | ~120 KB |
+| Component                    | Reason                       | Bundle size approx. |
+| ---------------------------- | ---------------------------- | ------------------- |
+| `@react-pdf/renderer`        | PDF preview in browser       | ~600 KB             |
+| `AvatarBuilder`              | Hair style grid with images  | ~200 KB assets      |
+| `BookReveal` + Framer Motion | Animation-heavy; reveal-only | ~80 KB              |
+| `StripeCardForm`             | Stripe Elements              | ~300 KB             |
+| `OpenDyslexic` font          | Reader only, opt-in          | ~120 KB             |
 
 All of the above are wrapped in `React.lazy()` + `Suspense`. The Suspense boundary nearest to the component shows a skeleton or spinner while loading.
 
@@ -1336,6 +1366,7 @@ All images use Next.js `<Image>` component except where images are loaded dynami
 **Book page images** (reader): Direct `<img>` tags with `loading="lazy"`. Pages preload 2 pages ahead using `<link rel="prefetch">` injected into `<head>` when the user is on page N.
 
 **CDN image URLs:** Book images are served from Cloudflare CDN. The CDN URL is constructed by `shared/utils/image.ts` helper functions. Image sizing query parameters (width, quality) are appended for appropriate sizes:
+
 - Dashboard thumbnail: `?w=400&q=80`
 - Reader full page: `?w=1200&q=90`
 - Cover reveal: `?w=800&q=95`
@@ -1345,15 +1376,18 @@ All images use Next.js `<Image>` component except where images are loaded dynami
 ## 11.4 Prefetching
 
 **Route prefetching:**
+
 - All `<Link>` components in the app shell prefetch their routes on hover/focus (Next.js default)
 - The `/create` route is prefetched on landing page hero CTA render (100% of users will click it)
 
 **Data prefetching:**
+
 - On dashboard mount: prefetch book detail queries for the first 4 visible book cards
 - On wizard Step 5 (Dedication): prefetch the story summary to avoid wait on Preview screen
 - On book card hover (400ms): prefetch the full book data for the reader
 
 **Font prefetching:**
+
 - Fraunces and Plus Jakarta Sans are preconnected and prefetched in `<head>`
 - Lora (book font) is lazy-loaded; it is only fetched when the reader mounts
 
@@ -1361,14 +1395,15 @@ All images use Next.js `<Image>` component except where images are loaded dynami
 
 Next.js serves pages with these cache policies:
 
-| Content | Cache-Control |
-|---|---|
-| Static marketing pages | `s-maxage=3600, stale-while-revalidate=86400` |
-| API route responses (BFF) | `no-store` (contains auth-gated data) |
-| Static assets (JS, CSS) | `max-age=31536000, immutable` |
-| Next.js page RSC payloads | `no-store` for authed routes |
+| Content                   | Cache-Control                                 |
+| ------------------------- | --------------------------------------------- |
+| Static marketing pages    | `s-maxage=3600, stale-while-revalidate=86400` |
+| API route responses (BFF) | `no-store` (contains auth-gated data)         |
+| Static assets (JS, CSS)   | `max-age=31536000, immutable`                 |
+| Next.js page RSC payloads | `no-store` for authed routes                  |
 
 CDN (Cloudflare) caches:
+
 - Book PDFs: `max-age=31536000, immutable` (content-addressed by bookId)
 - Book page images: `max-age=2592000` (30 days)
 - Cover thumbnails: `max-age=2592000`
@@ -1382,6 +1417,7 @@ The dashboard book grid is **not** virtualized at launch. A typical user has few
 ## 11.7 Bundle Optimization
 
 **Critical rules:**
+
 - No lodash (use native methods)
 - No moment.js (date-fns with tree-shaking)
 - Lucide icons imported individually: `import { BookOpen } from 'lucide-react'` — never `import * from 'lucide-react'`
@@ -1389,6 +1425,7 @@ The dashboard book grid is **not** virtualized at launch. A typical user has few
 - Analyze bundle weekly during development with `next build && npx @next/bundle-analyzer`
 
 **Target bundle sizes (gzipped):**
+
 - First load JS (landing page): < 120 KB
 - First load JS (app shell): < 200 KB
 - Reader chunk (lazy): < 150 KB
@@ -1421,6 +1458,7 @@ WCAG 2.1 AA is the minimum. Every component ships accessible or it does not ship
 ## 12.2 Keyboard Navigation
 
 **Global keyboard conventions:**
+
 - `Tab` / `Shift+Tab`: focus forward/backward through interactive elements
 - `Enter`: activate focused button or link; submit form
 - `Space`: toggle focused checkbox, switch, or button
@@ -1429,6 +1467,7 @@ WCAG 2.1 AA is the minimum. Every component ships accessible or it does not ship
 
 **Focus trap implementation:**
 All modals, drawers, and bottom sheets implement focus trapping. When a modal opens:
+
 1. Focus moves to the first focusable element inside the modal
 2. `Tab`/`Shift+Tab` cycle within the modal only
 3. When modal closes, focus returns to the element that triggered it
@@ -1437,18 +1476,19 @@ Use a shared `useFocusTrap` hook that handles this with `focusTrap.js` under the
 
 **Reader keyboard map:**
 
-| Key | Action |
-|---|---|
-| `← →` | Previous / Next page |
-| `Home` | First page |
-| `End` | Last page |
-| `F` | Toggle fullscreen |
-| `B` | Bookmark current page |
-| `D` | Open download modal |
-| `S` | Open share modal |
-| `Esc` | Exit fullscreen / close reader |
+| Key    | Action                         |
+| ------ | ------------------------------ |
+| `← →`  | Previous / Next page           |
+| `Home` | First page                     |
+| `End`  | Last page                      |
+| `F`    | Toggle fullscreen              |
+| `B`    | Bookmark current page          |
+| `D`    | Open download modal            |
+| `S`    | Open share modal               |
+| `Esc`  | Exit fullscreen / close reader |
 
 **TagPicker keyboard:**
+
 - Tags are rendered as `role="checkbox"` in a `role="group"` `<fieldset>`
 - `Tab` moves between tags
 - `Space` toggles selection
@@ -1457,14 +1497,16 @@ Use a shared `useFocusTrap` hook that handles this with `focusTrap.js` under the
 ## 12.3 ARIA Requirements
 
 **Landmarks on every page:**
+
 ```html
-<header role="banner">
-<nav role="navigation" aria-label="Main navigation">
-<main role="main">
-<footer role="contentinfo">
+<header role="banner"></header>
+<nav role="navigation" aria-label="Main navigation"></nav>
+<main role="main"></main>
+<footer role="contentinfo"></footer>
 ```
 
 **Wizard step ARIA:**
+
 ```html
 <form role="form" aria-label="Book creation wizard, step {n} of 5">
   <h2 id="step-title">Tell us about {childName}</h2>
@@ -1475,6 +1517,7 @@ Use a shared `useFocusTrap` hook that handles this with `focusTrap.js` under the
 ```
 
 **Generation progress:**
+
 ```html
 <div role="progressbar"
      aria-valuenow={progress}
@@ -1484,55 +1527,56 @@ Use a shared `useFocusTrap` hook that handles this with `focusTrap.js` under the
 ```
 
 **Live regions:**
+
 ```html
 <!-- Stage label updates — polite (doesn't interrupt) -->
-<div aria-live="polite" aria-atomic="true">
-  {stageLabelText}
-</div>
+<div aria-live="polite" aria-atomic="true">{stageLabelText}</div>
 
 <!-- Error messages — assertive (interrupts immediately) -->
-<div role="alert" aria-live="assertive">
-  {errorMessage}
-</div>
+<div role="alert" aria-live="assertive">{errorMessage}</div>
 
 <!-- Toast notifications — status -->
-<div role="status" aria-live="polite">
-  {toastMessage}
-</div>
+<div role="status" aria-live="polite">{toastMessage}</div>
 ```
 
 ## 12.4 Focus Management Rules
 
-| Trigger | Focus moves to |
-|---|---|
-| Modal opens | First focusable element in modal, or modal heading |
-| Modal closes | Element that triggered the modal |
-| Wizard step transition | H2 heading of the new step |
-| Form submit with errors | First input with an error |
-| Toast appears | Toast does NOT receive focus (announced via aria-live) |
-| Book page turns | Hidden `aria-live` region announcing page text |
-| Dropdown opens | First option in dropdown |
-| Dropdown closes | Trigger button |
+| Trigger                 | Focus moves to                                         |
+| ----------------------- | ------------------------------------------------------ |
+| Modal opens             | First focusable element in modal, or modal heading     |
+| Modal closes            | Element that triggered the modal                       |
+| Wizard step transition  | H2 heading of the new step                             |
+| Form submit with errors | First input with an error                              |
+| Toast appears           | Toast does NOT receive focus (announced via aria-live) |
+| Book page turns         | Hidden `aria-live` region announcing page text         |
+| Dropdown opens          | First option in dropdown                               |
+| Dropdown closes         | Trigger button                                         |
 
 ## 12.5 Color and Visual
 
 **All color usage follows the Design System's verified contrast ratios.** No exceptions for "design reasons."
 
 Focus rings:
+
 ```css
 /* Applied globally in globals.css */
 :focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--color-bg-base), 0 0 0 5px rgba(101, 53, 224, 0.35);
+  box-shadow:
+    0 0 0 2px var(--color-bg-base),
+    0 0 0 5px rgba(101, 53, 224, 0.35);
 }
 ```
 
 Note `:focus-visible` not `:focus` — prevents focus ring on mouse click.
 
 **Reduced motion:**
+
 ```css
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
@@ -1542,8 +1586,9 @@ Note `:focus-visible` not `:focus` — prevents focus ring on mouse click.
 ```
 
 For JavaScript-driven animations (Framer Motion, book reveal), check at component level:
+
 ```typescript
-const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 ```
 
 Framer Motion's `useReducedMotion()` hook is used within animated components.
@@ -1580,42 +1625,42 @@ Root (global-error.tsx)          ← Catches layout crashes; minimal recovery UI
 
 ## 13.2 Next.js Error Files
 
-| File | Scope | Behavior |
-|---|---|---|
-| `app/global-error.tsx` | Root layout crash | Renders minimal HTML (no layout); "Reload page" button only |
-| `app/error.tsx` | All unhandled errors in app | Renders within the active layout; shows error UI with retry |
-| `app/(app)/error.tsx` | Errors in authenticated zone | Shows app header + error content + "Go to Dashboard" button |
-| `app/(wizard)/error.tsx` | Wizard zone errors | Shows "Your progress is saved. Go back to Dashboard?" option |
-| `app/not-found.tsx` | 404 (not-found() called) | Friendly 404 illustration + search + popular links |
+| File                     | Scope                        | Behavior                                                     |
+| ------------------------ | ---------------------------- | ------------------------------------------------------------ |
+| `app/global-error.tsx`   | Root layout crash            | Renders minimal HTML (no layout); "Reload page" button only  |
+| `app/error.tsx`          | All unhandled errors in app  | Renders within the active layout; shows error UI with retry  |
+| `app/(app)/error.tsx`    | Errors in authenticated zone | Shows app header + error content + "Go to Dashboard" button  |
+| `app/(wizard)/error.tsx` | Wizard zone errors           | Shows "Your progress is saved. Go back to Dashboard?" option |
+| `app/not-found.tsx`      | 404 (not-found() called)     | Friendly 404 illustration + search + popular links           |
 
 ## 13.3 Error Classification and User Messaging
 
-| Error Class | User Message Strategy | Recovery Action |
-|---|---|---|
-| Network error (offline) | "You're offline. Check your connection." | Auto-retry on reconnect |
-| 401 Unauthorized | "Please sign in to continue." (handled by auth interceptor) | Redirect to login |
-| 403 Forbidden (plan gate) | "This feature requires [plan name]." | Upgrade CTA |
-| 404 Not Found | "This page doesn't seem to exist." | Go to Dashboard / Go Home |
-| 422 Validation Error | Inline field error messages | Fix the field |
-| 429 Rate Limited | "You're doing that too fast. Please wait a moment." | Retry after delay |
-| 500 Server Error | "Something went wrong on our end. We've been notified." | Try again + status page link |
-| Generation failure | E02 from PRD error catalog | "Try Again" button with preserved inputs |
-| Payment declined | E07 from PRD | Re-enter card / try another |
+| Error Class               | User Message Strategy                                       | Recovery Action                          |
+| ------------------------- | ----------------------------------------------------------- | ---------------------------------------- |
+| Network error (offline)   | "You're offline. Check your connection."                    | Auto-retry on reconnect                  |
+| 401 Unauthorized          | "Please sign in to continue." (handled by auth interceptor) | Redirect to login                        |
+| 403 Forbidden (plan gate) | "This feature requires [plan name]."                        | Upgrade CTA                              |
+| 404 Not Found             | "This page doesn't seem to exist."                          | Go to Dashboard / Go Home                |
+| 422 Validation Error      | Inline field error messages                                 | Fix the field                            |
+| 429 Rate Limited          | "You're doing that too fast. Please wait a moment."         | Retry after delay                        |
+| 500 Server Error          | "Something went wrong on our end. We've been notified."     | Try again + status page link             |
+| Generation failure        | E02 from PRD error catalog                                  | "Try Again" button with preserved inputs |
+| Payment declined          | E07 from PRD                                                | Re-enter card / try another              |
 
 Error messages are **never** raw API error strings. Every error code maps to a localized, human-readable message string in `shared/constants/errorMessages.ts`.
 
 ## 13.4 Toast vs. Modal vs. Inline vs. Page Error Rules
 
-| Severity | Error Type | UI Treatment |
-|---|---|---|
-| Low | Transient (copy failed, image load) | Toast (auto-dismiss, 4s) |
-| Low | Form field validation | Inline below field |
-| Medium | Action failed (share failed, save failed) | Toast (with retry action) |
-| Medium | Persistent warning (plan limit near) | Banner below header |
-| High | Payment failure | Modal (blocks action, requires resolution) |
-| High | Feature access denied | Upgrade modal |
-| Critical | Generation failed | Full-screen error state |
-| Critical | Page crash (ErrorBoundary) | Full-page error within layout |
+| Severity | Error Type                                | UI Treatment                               |
+| -------- | ----------------------------------------- | ------------------------------------------ |
+| Low      | Transient (copy failed, image load)       | Toast (auto-dismiss, 4s)                   |
+| Low      | Form field validation                     | Inline below field                         |
+| Medium   | Action failed (share failed, save failed) | Toast (with retry action)                  |
+| Medium   | Persistent warning (plan limit near)      | Banner below header                        |
+| High     | Payment failure                           | Modal (blocks action, requires resolution) |
+| High     | Feature access denied                     | Upgrade modal                              |
+| Critical | Generation failed                         | Full-screen error state                    |
+| Critical | Page crash (ErrorBoundary)                | Full-page error within layout              |
 
 ---
 
@@ -1634,6 +1679,7 @@ Error messages are **never** raw API error strings. Every error code maps to a l
 ## 14.2 Unit Tests (Vitest)
 
 **What to test:**
+
 - Utility functions (`shared/utils/*`)
 - Zod schema validation (all wizard step schemas)
 - Store reducers (Zustand store action functions)
@@ -1649,6 +1695,7 @@ Error messages are **never** raw API error strings. Every error code maps to a l
 ## 14.3 Component Tests (Vitest + Testing Library)
 
 **What to test:**
+
 - All design system primitives in `shared/components/ui/`
 - Complex feature components: `WizardProgressBar`, `TagPicker`, `BookCard`, `NumberStepper`
 - Modal and focus trap behavior
@@ -1659,6 +1706,7 @@ Error messages are **never** raw API error strings. Every error code maps to a l
 **Approach:** Render the component in isolation. Use Testing Library's accessibility-first queries (`getByRole`, `getByLabelText`). Assert on visible text, ARIA states, and DOM structure — not implementation details.
 
 **Do not test:**
+
 - CSS classes (fragile, tests design not behavior)
 - Internal state of components
 - Whether `useState` was called
@@ -1668,6 +1716,7 @@ Error messages are **never** raw API error strings. Every error code maps to a l
 ## 14.4 Integration Tests (Vitest + Testing Library + MSW)
 
 **What to test:**
+
 - Wizard flow: completing steps 1–5, draft persistence, back navigation
 - Authentication flow: login, logout, session restore
 - Dashboard library: filtering, sorting, search
@@ -1684,15 +1733,15 @@ Error messages are **never** raw API error strings. Every error code maps to a l
 
 **Golden paths to test:**
 
-| Test | Description |
-|---|---|
-| `wizard-happy-path.spec.ts` | Guest → wizard steps 1–5 → auth modal → redirect to /generating |
-| `generation-to-reveal.spec.ts` | Monitor generation screen → auto-navigate to reveal |
-| `reader-navigation.spec.ts` | Open book → page navigation → keyboard → paywall |
-| `dashboard-library.spec.ts` | Books grid → search → filter → sort |
-| `auth-flow.spec.ts` | Signup → email verify → login → logout |
-| `checkout-flow.spec.ts` | Upgrade prompt → checkout → success |
-| `settings-profile.spec.ts` | Edit profile → autosave |
+| Test                           | Description                                                     |
+| ------------------------------ | --------------------------------------------------------------- |
+| `wizard-happy-path.spec.ts`    | Guest → wizard steps 1–5 → auth modal → redirect to /generating |
+| `generation-to-reveal.spec.ts` | Monitor generation screen → auto-navigate to reveal             |
+| `reader-navigation.spec.ts`    | Open book → page navigation → keyboard → paywall                |
+| `dashboard-library.spec.ts`    | Books grid → search → filter → sort                             |
+| `auth-flow.spec.ts`            | Signup → email verify → login → logout                          |
+| `checkout-flow.spec.ts`        | Upgrade prompt → checkout → success                             |
+| `settings-profile.spec.ts`     | Edit profile → autosave                                         |
 
 **Environment:** Tests run against a staging environment with seeded test data. Never against production.
 
@@ -1701,6 +1750,7 @@ Error messages are **never** raw API error strings. Every error code maps to a l
 ## 14.6 Visual Regression (Playwright)
 
 Playwright screenshots are taken for:
+
 - All design system components in all variants and states
 - All responsive breakpoints for key pages (landing, dashboard, reader, wizard)
 - Dark mode vs. light mode (when dark mode ships)
@@ -1714,6 +1764,7 @@ Screenshots are compared to a baseline using Playwright's `expect(page).toHaveSc
 ## 14.7 CI Gate
 
 All PRs must pass:
+
 1. TypeScript type check (`pnpm typecheck`)
 2. ESLint (`pnpm lint`)
 3. Unit tests (`pnpm test:unit`)
@@ -1735,6 +1786,7 @@ E2E and visual regression run on merge to main (not on every PR, to keep CI fast
 ## 15.2 Architecture
 
 **URL structure:** Locale prefix is optional for English (default), required for others:
+
 - `/` — English (default, no prefix)
 - `/es/` — Spanish
 - `/fr/` — French
@@ -1742,6 +1794,7 @@ E2E and visual regression run on merge to main (not on every PR, to keep CI fast
 - `/pt-br/` — Portuguese (Brazil)
 
 This is implemented via Next.js middleware (`middleware.ts`) that reads the user's preferred locale from:
+
 1. URL prefix (if present)
 2. Accept-Language header (for first-time visitors)
 3. Saved locale preference in `authStore.user.locale` (for authenticated users)
@@ -1781,6 +1834,7 @@ Messages are namespaced by feature:
 ```
 
 **Rules:**
+
 - No hardcoded English strings anywhere in component code
 - Always use the child's name via interpolation: `t('wizard.step1.title', { childName })` not `"Tell us about " + childName`
 - Currency and date formatting always use `Intl.NumberFormat` and `Intl.DateTimeFormat` with the active locale
@@ -1788,6 +1842,7 @@ Messages are namespaced by feature:
 ## 15.4 RTL Support
 
 RTL (for future Arabic/Hebrew support) is handled via Tailwind's RTL plugin and CSS logical properties:
+
 - `ml-4` (margin-left) is replaced by `ms-4` (margin-start) in all components
 - `text-left` is replaced by `text-start`
 - The `dir` attribute on `<html>` is set by next-intl based on locale
@@ -1796,6 +1851,7 @@ RTL (for future Arabic/Hebrew support) is handled via Tailwind's RTL plugin and 
 ## 15.5 Book Content vs. UI Language
 
 The book's story language (selected in wizard Step 5) is independent from the app UI language. A user in a German UI can create a book in English. These are separate settings:
+
 - UI language: stored in `authStore.user.locale`, applied to next-intl
 - Book language: stored in wizard draft `step5.language`, sent to the API as `language` field in the `CreateBookRequest`
 
@@ -1824,12 +1880,12 @@ STRIPE_WEBHOOK_SECRET           Stripe webhook signature verification
 
 ## 16.2 Environments
 
-| Environment | Purpose | API Target | Features |
-|---|---|---|---|
-| `development` | Local development | localhost:3001 (NestJS) | All features enabled; detailed error logging |
-| `preview` | PR preview deploys (Vercel) | Staging API | All features; test Stripe keys |
-| `staging` | Pre-production testing | Staging API | Production-like; test AI keys; performance monitoring |
-| `production` | Live product | Production API | All features; real Stripe; real AI keys; no debug info |
+| Environment   | Purpose                     | API Target              | Features                                               |
+| ------------- | --------------------------- | ----------------------- | ------------------------------------------------------ |
+| `development` | Local development           | localhost:3001 (NestJS) | All features enabled; detailed error logging           |
+| `preview`     | PR preview deploys (Vercel) | Staging API             | All features; test Stripe keys                         |
+| `staging`     | Pre-production testing      | Staging API             | Production-like; test AI keys; performance monitoring  |
+| `production`  | Live product                | Production API          | All features; real Stripe; real AI keys; no debug info |
 
 ## 16.3 Feature Flags
 
@@ -1842,14 +1898,17 @@ export const FEATURES = {
   SERIES_FEATURE: process.env.NEXT_PUBLIC_ENABLE_SERIES === 'true',
   PRINT_ON_DEMAND: process.env.NEXT_PUBLIC_ENABLE_POD === 'true',
   CLASSROOM_PACK: process.env.NEXT_PUBLIC_ENABLE_CLASSROOM === 'true',
-} as const
+} as const;
 ```
 
 Feature flags are evaluated at build time. They cannot be toggled without a redeploy. This is acceptable for v1. When runtime feature flags are needed (A/B testing, gradual rollout), integrate with a proper feature flag service (LaunchDarkly or similar).
 
 **Using a flag in a component:**
+
 ```tsx
-{FEATURES.DARK_MODE && <DarkModeToggle />}
+{
+  FEATURES.DARK_MODE && <DarkModeToggle />;
+}
 ```
 
 ---
@@ -1861,6 +1920,7 @@ Feature flags are evaluated at build time. They cannot be toggled without a rede
 **Primary defense:** React's default behavior is HTML escaping all values in JSX. As long as no `dangerouslySetInnerHTML` is used, React prevents XSS.
 
 **`dangerouslySetInnerHTML` policy:** Forbidden unless the content is:
+
 1. Sanitized by DOMPurify before rendering
 2. Generated entirely from trusted server-side sources (e.g., pre-rendered markdown from blog)
 
@@ -1871,6 +1931,7 @@ User-provided content (child names, dedication text, book titles) **never** flow
 ## 17.2 CSRF Prevention
 
 The BFF's state-mutating endpoints (POST, PATCH, DELETE) use double-submit cookie validation:
+
 - On page load, the BFF sets a `csrf-token` cookie (not HttpOnly)
 - Client reads this cookie via JavaScript and includes it in request headers as `X-CSRF-Token`
 - BFF validates that the header matches the cookie
@@ -1902,15 +1963,16 @@ Nonces are generated per-request in `middleware.ts` and injected into the `_docu
 
 **What is stored where:**
 
-| Data | Storage | Reason |
-|---|---|---|
-| Access JWT | Zustand (memory only) | Never persisted; cleared on tab close |
-| Refresh token | HttpOnly Secure cookie | Inaccessible to JavaScript |
-| Wizard draft | localStorage | Non-sensitive; cleared after book creation |
-| User preferences (locale, theme) | localStorage | Non-sensitive |
-| Reading position | API (server) | Synced across devices; cleared on delete |
+| Data                             | Storage                | Reason                                     |
+| -------------------------------- | ---------------------- | ------------------------------------------ |
+| Access JWT                       | Zustand (memory only)  | Never persisted; cleared on tab close      |
+| Refresh token                    | HttpOnly Secure cookie | Inaccessible to JavaScript                 |
+| Wizard draft                     | localStorage           | Non-sensitive; cleared after book creation |
+| User preferences (locale, theme) | localStorage           | Non-sensitive                              |
+| Reading position                 | API (server)           | Synced across devices; cleared on delete   |
 
 **Never stored:**
+
 - Passwords (never handled client-side at all — auth is OAuth + email link)
 - Credit card details (handled by Stripe Elements, never touch our code)
 - Access tokens in localStorage or sessionStorage
@@ -1919,6 +1981,7 @@ Nonces are generated per-request in `middleware.ts` and injected into the `_docu
 ## 17.5 Input Sanitization
 
 User inputs collected in wizard forms are:
+
 1. Validated at the client by Zod schemas before submission
 2. Re-validated at the BFF layer before forwarding to NestJS
 3. Re-validated at the NestJS layer with its own Zod/class-validator schemas
@@ -1944,13 +2007,13 @@ Analytics are abstracted behind a single interface in `shared/lib/analytics.ts`.
 ```typescript
 // shared/lib/analytics.ts
 interface AnalyticsEvent {
-  name: string
-  properties?: Record<string, string | number | boolean>
+  name: string;
+  properties?: Record<string, string | number | boolean>;
 }
 
-export function track(event: AnalyticsEvent): void
-export function identify(userId: string, traits: Record<string, unknown>): void
-export function page(name: string, properties?: Record<string, unknown>): void
+export function track(event: AnalyticsEvent): void;
+export function identify(userId: string, traits: Record<string, unknown>): void;
+export function page(name: string, properties?: Record<string, unknown>): void;
 ```
 
 The implementation behind this abstraction is Segment (Phase 1). Segment routes events to Mixpanel (product analytics) and GA4 (marketing analytics). Swapping the analytics provider requires changing only `analytics.ts`.
@@ -1961,31 +2024,32 @@ All events follow this naming convention: `{noun}_{verb}` (e.g., `book_created`,
 
 **Critical funnel events (must fire with 100% reliability):**
 
-| Event | Properties | Trigger |
-|---|---|---|
-| `page_viewed` | `{ pageName, locale }` | Every route change |
-| `wizard_started` | `{ source: 'landing' \| 'dashboard' }` | Wizard step 1 mount |
-| `wizard_step_completed` | `{ step: 1-5, timeOnStep }` | Each step Continue click |
-| `wizard_abandoned` | `{ step, dataEntered }` | Exit wizard confirmation |
-| `auth_modal_opened` | `{ source: 'wizard_preview' }` | Auth wall shown |
-| `auth_completed` | `{ method: 'google' \| 'apple' \| 'email', isNewUser }` | Successful auth |
-| `book_generation_started` | `{ bookLength, theme, language }` | Job ID received from API |
-| `book_generation_completed` | `{ durationMs, pageCount }` | Status → complete |
-| `book_generation_failed` | `{ step, errorCode }` | Status → failed |
-| `book_reveal_viewed` | `{ timeToReveal }` | Reveal animation starts |
-| `book_opened` | `{ source: 'reveal' \| 'dashboard' \| 'share_link' }` | Reader mounts |
-| `paywall_shown` | `{ bookId, page }` | Paywall overlay renders |
-| `paywall_cta_clicked` | `{ plan: 'single' \| 'subscription' }` | Paywall button clicked |
-| `checkout_started` | `{ plan, source }` | Checkout page mounts with intent |
-| `payment_submitted` | `{ plan, method }` | Submit clicked |
-| `payment_succeeded` | `{ plan, revenue }` | Stripe webhook confirms |
-| `payment_failed` | `{ errorCode }` | Stripe decline |
-| `pdf_download_initiated` | `{ resolution: 'screen' \| 'print' }` | Download button clicked |
-| `book_shared` | `{ method: 'link' \| 'instagram' \| 'whatsapp' \| 'facebook' }` | Share action completed |
+| Event                       | Properties                                                      | Trigger                          |
+| --------------------------- | --------------------------------------------------------------- | -------------------------------- |
+| `page_viewed`               | `{ pageName, locale }`                                          | Every route change               |
+| `wizard_started`            | `{ source: 'landing' \| 'dashboard' }`                          | Wizard step 1 mount              |
+| `wizard_step_completed`     | `{ step: 1-5, timeOnStep }`                                     | Each step Continue click         |
+| `wizard_abandoned`          | `{ step, dataEntered }`                                         | Exit wizard confirmation         |
+| `auth_modal_opened`         | `{ source: 'wizard_preview' }`                                  | Auth wall shown                  |
+| `auth_completed`            | `{ method: 'google' \| 'apple' \| 'email', isNewUser }`         | Successful auth                  |
+| `book_generation_started`   | `{ bookLength, theme, language }`                               | Job ID received from API         |
+| `book_generation_completed` | `{ durationMs, pageCount }`                                     | Status → complete                |
+| `book_generation_failed`    | `{ step, errorCode }`                                           | Status → failed                  |
+| `book_reveal_viewed`        | `{ timeToReveal }`                                              | Reveal animation starts          |
+| `book_opened`               | `{ source: 'reveal' \| 'dashboard' \| 'share_link' }`           | Reader mounts                    |
+| `paywall_shown`             | `{ bookId, page }`                                              | Paywall overlay renders          |
+| `paywall_cta_clicked`       | `{ plan: 'single' \| 'subscription' }`                          | Paywall button clicked           |
+| `checkout_started`          | `{ plan, source }`                                              | Checkout page mounts with intent |
+| `payment_submitted`         | `{ plan, method }`                                              | Submit clicked                   |
+| `payment_succeeded`         | `{ plan, revenue }`                                             | Stripe webhook confirms          |
+| `payment_failed`            | `{ errorCode }`                                                 | Stripe decline                   |
+| `pdf_download_initiated`    | `{ resolution: 'screen' \| 'print' }`                           | Download button clicked          |
+| `book_shared`               | `{ method: 'link' \| 'instagram' \| 'whatsapp' \| 'facebook' }` | Share action completed           |
 
 ## 18.3 Analytics Provider
 
 The `AnalyticsProvider` component (`shared/providers/AnalyticsProvider.tsx`):
+
 - Initializes the analytics SDK once on app mount
 - Calls `page()` on every route change via `usePathname()` effect
 - Calls `identify(userId, traits)` when `authStore.user` changes (login/signup/logout)
@@ -1996,6 +2060,7 @@ The `AnalyticsProvider` component (`shared/providers/AnalyticsProvider.tsx`):
 **Core Web Vitals** are tracked via Next.js's built-in `reportWebVitals()` function, forwarded to the analytics abstraction as custom events.
 
 **Custom performance events:**
+
 - `time_to_first_book_visible`: time from dashboard mount to first book card render
 - `time_to_wizard_interactive`: time from clicking "Create Your Book" to Step 1 being interactive
 - `reader_page_load_time`: time for each book page image to load in the reader
@@ -2016,22 +2081,23 @@ The `AnalyticsProvider` component (`shared/providers/AnalyticsProvider.tsx`):
 
 ## 19.2 File Naming
 
-| What | Convention | Example |
-|---|---|---|
-| React components | PascalCase | `BookCard.tsx` |
-| Custom hooks | camelCase, `use` prefix | `useReaderKeyboard.ts` |
-| Utility functions | camelCase | `formatDate.ts` |
-| Zustand stores | camelCase, `Store` suffix | `wizardStore.ts` |
-| Service files | camelCase, `service` suffix | `books.service.ts` |
-| Test files | Same name + `.test` or `.spec` | `BookCard.test.tsx` |
-| Schema files | camelCase, `schema` suffix | `wizard.schema.ts` |
-| Type files | camelCase, `types` suffix | `ui.types.ts` |
-| Constants | camelCase | `queryKeys.ts`, `routes.ts` |
-| Index barrels | `index.ts` always | `index.ts` |
+| What              | Convention                     | Example                     |
+| ----------------- | ------------------------------ | --------------------------- |
+| React components  | PascalCase                     | `BookCard.tsx`              |
+| Custom hooks      | camelCase, `use` prefix        | `useReaderKeyboard.ts`      |
+| Utility functions | camelCase                      | `formatDate.ts`             |
+| Zustand stores    | camelCase, `Store` suffix      | `wizardStore.ts`            |
+| Service files     | camelCase, `service` suffix    | `books.service.ts`          |
+| Test files        | Same name + `.test` or `.spec` | `BookCard.test.tsx`         |
+| Schema files      | camelCase, `schema` suffix     | `wizard.schema.ts`          |
+| Type files        | camelCase, `types` suffix      | `ui.types.ts`               |
+| Constants         | camelCase                      | `queryKeys.ts`, `routes.ts` |
+| Index barrels     | `index.ts` always              | `index.ts`                  |
 
 ## 19.3 Component Conventions
 
 **File structure within a component file:**
+
 1. Imports (external → internal → types)
 2. Types and interfaces for this component only
 3. Constants local to the component
@@ -2040,6 +2106,7 @@ The `AnalyticsProvider` component (`shared/providers/AnalyticsProvider.tsx`):
 6. `export default ComponentName` at the bottom (or named export, consistently)
 
 **Props interfaces:**
+
 - Named `ComponentNameProps`, not `Props`
 - Extended from appropriate HTML element when wrapping HTML: `interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement>`
 - Optional props get `?`, never `| undefined` explicitly
@@ -2047,6 +2114,7 @@ The `AnalyticsProvider` component (`shared/providers/AnalyticsProvider.tsx`):
 **Component size rule:** If a component exceeds 200 lines, split it. The split should follow logic boundaries, not arbitrary line counts. A 250-line component with a clear internal structure is better than two 120-line components with tight coupling.
 
 **No anonymous default exports.** Always name your component:
+
 - ✓ `export default function BookCard() {}`
 - ✗ `export default () => {}`
 
@@ -2060,6 +2128,7 @@ The `AnalyticsProvider` component (`shared/providers/AnalyticsProvider.tsx`):
 ## 19.5 Import Conventions
 
 Import order is enforced by ESLint (eslint-plugin-import + prettier-plugin-sort-imports):
+
 1. React and React-related (`react`, `react-dom`, `next/*`)
 2. External packages (alphabetical)
 3. Monorepo packages (`@storyme/*`)
@@ -2068,6 +2137,7 @@ Import order is enforced by ESLint (eslint-plugin-import + prettier-plugin-sort-
 6. Type-only imports (`import type ...`)
 
 **Absolute import paths** use `@/` alias configured in `tsconfig.json`:
+
 - `@/features/wizard/components/WizardStep`
 - `@/shared/components/ui/Button`
 - `@/shared/utils/cn`
@@ -2103,7 +2173,7 @@ When the current environment-variable feature flags need runtime control (A/B te
 
 ```typescript
 // shared/lib/featureFlags.ts
-export function isEnabled(flag: string): boolean
+export function isEnabled(flag: string): boolean;
 ```
 
 The implementation migrates to LaunchDarkly, Statsig, or similar. No component code changes because they import from this abstraction, not from the SDK directly.
@@ -2111,6 +2181,7 @@ The implementation migrates to LaunchDarkly, Statsig, or similar. No component c
 ## 20.2 Dark Mode
 
 The token system is already built for dark mode (see `DESIGN_SYSTEM.md §3.12`). All color values in components use CSS custom property tokens (`var(--color-text-primary)`), not raw hex values. Enabling dark mode requires:
+
 1. Adding a `ThemeProvider` that writes `data-theme="dark"` to `<html>`
 2. Adding the dark mode token overrides to `styles/tokens.css` (already designed, not yet written)
 3. Adding a theme toggle to the Settings language screen
@@ -2120,6 +2191,7 @@ The token system is already built for dark mode (see `DESIGN_SYSTEM.md §3.12`).
 ## 20.3 Mobile App (React Native)
 
 The monorepo structure prepares for a React Native app:
+
 - `packages/types` already exports all shared types (consumed by web today, React Native tomorrow)
 - `features/**/hooks/` are written with zero DOM dependencies (no `document`, `window`) where possible. Hooks with DOM dependencies are cleanly separated from hooks with pure logic.
 - Zustand stores have no DOM dependencies and can be reused in React Native
@@ -2130,6 +2202,7 @@ When the mobile app is built, it will live at `apps/mobile` in the monorepo and 
 ## 20.4 Micro-Frontend Readiness
 
 The feature-based architecture maps naturally to micro-frontends if team or product scale demands it:
+
 - Each feature in `features/` is already a candidate for extraction into its own deployable unit
 - Module Federation (Webpack 5) can be configured to serve `features/reader` or `features/checkout` from separate deployments
 - Shared components would need to move to a separate package (`packages/ui`) rather than `apps/web/src/shared`
@@ -2147,17 +2220,20 @@ This migration path is documented here as a future option, not a current goal.
 ## 20.6 Analytics Scale
 
 When events volume outgrows Segment's free tier:
+
 - The `analytics.ts` abstraction makes provider migration painless
 - All event calls in components remain unchanged
 - Only the implementation inside `analytics.ts` changes
 
 When A/B testing is needed:
+
 - The feature flag abstraction (`featureFlags.ts`) already provides the hook for experiment assignment
 - Adding experiment metadata to events is a single change in the `AnalyticsProvider`
 
 ## 20.7 Internationalization at Scale
 
 The current `next-intl` setup with JSON message files scales to:
+
 - Any number of locales (add a new JSON file + update middleware)
 - RTL languages (Tailwind RTL + CSS logical properties already in place)
 - Machine-assisted translation workflows (JSON format is compatible with all major TMS tools like Lokalise or Phrase)
@@ -2215,5 +2291,5 @@ pnpm test:components
 
 ---
 
-*Document version 1.0 — StoryMe Frontend Technical Design*
-*This document is the engineering contract. Changes require RFC + approval from the Principal Frontend Architect.*
+_Document version 1.0 — StoryMe Frontend Technical Design_
+_This document is the engineering contract. Changes require RFC + approval from the Principal Frontend Architect._

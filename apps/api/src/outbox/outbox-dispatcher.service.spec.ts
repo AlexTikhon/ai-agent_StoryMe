@@ -36,7 +36,14 @@ function createMockQueueService(): jest.Mocked<GenerationQueueService> {
 describe('OutboxDispatcherService', () => {
   describe('sweep', () => {
     it('dispatches every pending event to BullMQ and marks each dispatched', async () => {
-      const outboxService = createMockOutboxService([makeEvent(), makeEvent({ id: 'event-2', aggregateId: 'run-2', payload: { bookId: 'b-2', runId: 'run-2' } })]);
+      const outboxService = createMockOutboxService([
+        makeEvent(),
+        makeEvent({
+          id: 'event-2',
+          aggregateId: 'run-2',
+          payload: { bookId: 'b-2', runId: 'run-2' },
+        }),
+      ]);
       const queueService = createMockQueueService();
       const dispatcher = new OutboxDispatcherService(outboxService as never, queueService as never);
 
@@ -50,8 +57,16 @@ describe('OutboxDispatcherService', () => {
 
     it('records an attempt failure (and does not mark dispatched) when the queue publish fails, without aborting the rest of the batch', async () => {
       const outboxService = createMockOutboxService([
-        makeEvent({ id: 'event-1', aggregateId: 'run-1', payload: { bookId: 'b-1', runId: 'run-1' } }),
-        makeEvent({ id: 'event-2', aggregateId: 'run-2', payload: { bookId: 'b-2', runId: 'run-2' } }),
+        makeEvent({
+          id: 'event-1',
+          aggregateId: 'run-1',
+          payload: { bookId: 'b-1', runId: 'run-1' },
+        }),
+        makeEvent({
+          id: 'event-2',
+          aggregateId: 'run-2',
+          payload: { bookId: 'b-2', runId: 'run-2' },
+        }),
       ]);
       const queueService = createMockQueueService();
       queueService.enqueue.mockRejectedValueOnce(new Error('Redis connection refused'));
@@ -66,7 +81,9 @@ describe('OutboxDispatcherService', () => {
     });
 
     it('skips (never dispatches, never marks) an event with an unknown aggregateType', async () => {
-      const outboxService = createMockOutboxService([makeEvent({ aggregateType: 'something_else' })]);
+      const outboxService = createMockOutboxService([
+        makeEvent({ aggregateType: 'something_else' }),
+      ]);
       const queueService = createMockQueueService();
       const dispatcher = new OutboxDispatcherService(outboxService as never, queueService as never);
 
@@ -88,7 +105,9 @@ describe('OutboxDispatcherService', () => {
     it('does not start a second sweep while one is still in flight', async () => {
       let resolveFindPending!: (events: OutboxEvent[]) => void;
       const outboxService = {
-        findPending: vi.fn().mockReturnValue(new Promise((resolve) => (resolveFindPending = resolve))),
+        findPending: vi
+          .fn()
+          .mockReturnValue(new Promise((resolve) => (resolveFindPending = resolve))),
         markDispatched: vi.fn(),
         recordAttemptFailure: vi.fn(),
       } as unknown as jest.Mocked<OutboxService>;

@@ -103,19 +103,19 @@ The process exits `0`.
 
 ## Common failures and fixes
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `PDF_STORAGE_DRIVER must be "s3" or "r2"` | `PDF_STORAGE_DRIVER` unset or set to `local`/something else | Set it to `s3` or `r2` before running the script |
-| `requires the following environment variable(s): ...` | One or more required vars missing | Set all vars listed in the error; re-check for typos in the var name |
-| `requires the following environment variable(s): PDF_STORAGE_ENDPOINT` | Using `r2` without an endpoint | R2 always needs `PDF_STORAGE_ENDPOINT` — the SDK cannot infer it |
-| `InvalidAccessKeyId` / `SignatureDoesNotMatch` | Wrong or revoked access key/secret | Regenerate credentials in the AWS/R2 console and re-set both vars together (a mismatched pair is a common cause) |
-| `NoSuchBucket` | `PDF_STORAGE_BUCKET` doesn't exist or is in a different account | Confirm the bucket name and that it exists in the account tied to the credentials |
-| `getaddrinfo ENOTFOUND` / connection errors | Wrong `PDF_STORAGE_ENDPOINT`, or wrong region for S3 | Double-check the endpoint URL (R2) or region (S3); typos in the account id are the most common cause for R2 |
-| `PermanentRedirect` / region mismatch errors (S3) | `PDF_STORAGE_REGION` doesn't match the bucket's actual region | Set the region to match the bucket, not your default AWS region |
-| Path-style / 404s that shouldn't happen on R2 | `PDF_STORAGE_FORCE_PATH_STYLE` explicitly set to `false` | Leave it unset (it defaults to `true` when an endpoint is set) or set it to `true` |
-| `AccessDenied` on put/get/delete | IAM policy or R2 API token doesn't grant the needed action on the bucket | Grant `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, and `s3:HeadObject`/`ListBucket` as needed for the bucket/prefix used |
-| Network timeout with no other error | Local network, VPN, or firewall blocking egress to the endpoint | Verify connectivity to the endpoint host from your machine (e.g. `curl` the endpoint) |
-| `[cleanup] FAILED` after checks passed | Delete permission missing, or object already removed by another process | The script logs the exact key and bucket to delete manually; grant `s3:DeleteObject` for next time |
+| Symptom                                                                | Likely cause                                                             | Fix                                                                                                                            |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `PDF_STORAGE_DRIVER must be "s3" or "r2"`                              | `PDF_STORAGE_DRIVER` unset or set to `local`/something else              | Set it to `s3` or `r2` before running the script                                                                               |
+| `requires the following environment variable(s): ...`                  | One or more required vars missing                                        | Set all vars listed in the error; re-check for typos in the var name                                                           |
+| `requires the following environment variable(s): PDF_STORAGE_ENDPOINT` | Using `r2` without an endpoint                                           | R2 always needs `PDF_STORAGE_ENDPOINT` — the SDK cannot infer it                                                               |
+| `InvalidAccessKeyId` / `SignatureDoesNotMatch`                         | Wrong or revoked access key/secret                                       | Regenerate credentials in the AWS/R2 console and re-set both vars together (a mismatched pair is a common cause)               |
+| `NoSuchBucket`                                                         | `PDF_STORAGE_BUCKET` doesn't exist or is in a different account          | Confirm the bucket name and that it exists in the account tied to the credentials                                              |
+| `getaddrinfo ENOTFOUND` / connection errors                            | Wrong `PDF_STORAGE_ENDPOINT`, or wrong region for S3                     | Double-check the endpoint URL (R2) or region (S3); typos in the account id are the most common cause for R2                    |
+| `PermanentRedirect` / region mismatch errors (S3)                      | `PDF_STORAGE_REGION` doesn't match the bucket's actual region            | Set the region to match the bucket, not your default AWS region                                                                |
+| Path-style / 404s that shouldn't happen on R2                          | `PDF_STORAGE_FORCE_PATH_STYLE` explicitly set to `false`                 | Leave it unset (it defaults to `true` when an endpoint is set) or set it to `true`                                             |
+| `AccessDenied` on put/get/delete                                       | IAM policy or R2 API token doesn't grant the needed action on the bucket | Grant `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, and `s3:HeadObject`/`ListBucket` as needed for the bucket/prefix used |
+| Network timeout with no other error                                    | Local network, VPN, or firewall blocking egress to the endpoint          | Verify connectivity to the endpoint host from your machine (e.g. `curl` the endpoint)                                          |
+| `[cleanup] FAILED` after checks passed                                 | Delete permission missing, or object already removed by another process  | The script logs the exact key and bucket to delete manually; grant `s3:DeleteObject` for next time                             |
 
 ## Notes
 

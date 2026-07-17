@@ -96,12 +96,12 @@ const config: Config = {
 
         // Background & surface tokens
         bg: {
-          base: '#FDFCFB',      // Main page background (slightly warm white)
-          surface: '#FFFFFF',   // Cards, modals, elevated surfaces
-          subtle: '#F5F4F1',   // Inset panels, striped rows
-          muted: '#ECEAE5',    // Hover on subtle
-          inverse: '#1A1714',  // Dark overlays, tooltips
-          brand: '#6535E0',    // Brand-colored sections
+          base: '#FDFCFB', // Main page background (slightly warm white)
+          surface: '#FFFFFF', // Cards, modals, elevated surfaces
+          subtle: '#F5F4F1', // Inset panels, striped rows
+          muted: '#ECEAE5', // Hover on subtle
+          inverse: '#1A1714', // Dark overlays, tooltips
+          brand: '#6535E0', // Brand-colored sections
           'brand-subtle': '#F8F5FF', // Light violet surface
         },
 
@@ -134,30 +134,42 @@ const config: Config = {
       // ── Typography ────────────────────────────────────────────────────────
       fontFamily: {
         display: ['Fraunces', 'Georgia', '"Times New Roman"', 'serif'],
-        sans: ['"Plus Jakarta Sans"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
-        body: ['"Plus Jakarta Sans"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
+        sans: [
+          '"Plus Jakarta Sans"',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"Segoe UI"',
+          'sans-serif',
+        ],
+        body: [
+          '"Plus Jakarta Sans"',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"Segoe UI"',
+          'sans-serif',
+        ],
         book: ['Lora', 'Georgia', 'serif'],
       },
 
       fontSize: {
-        xs:   ['0.75rem',  { lineHeight: '1.5',   letterSpacing: '0.02em' }],
-        sm:   ['0.875rem', { lineHeight: '1.5',   letterSpacing: '0.01em' }],
-        base: ['1rem',     { lineHeight: '1.625', letterSpacing: '0' }],
-        lg:   ['1.125rem', { lineHeight: '1.5',   letterSpacing: '-0.01em' }],
-        xl:   ['1.25rem',  { lineHeight: '1.4',   letterSpacing: '-0.01em' }],
-        '2xl':['1.5rem',   { lineHeight: '1.35',  letterSpacing: '-0.02em' }],
-        '3xl':['1.875rem', { lineHeight: '1.25',  letterSpacing: '-0.02em' }],
-        '4xl':['2.25rem',  { lineHeight: '1.2',   letterSpacing: '-0.03em' }],
-        '5xl':['3rem',     { lineHeight: '1.1',   letterSpacing: '-0.03em' }],
-        '6xl':['3.75rem',  { lineHeight: '1.05',  letterSpacing: '-0.04em' }],
-        '7xl':['4.5rem',   { lineHeight: '1.0',   letterSpacing: '-0.04em' }],
+        xs: ['0.75rem', { lineHeight: '1.5', letterSpacing: '0.02em' }],
+        sm: ['0.875rem', { lineHeight: '1.5', letterSpacing: '0.01em' }],
+        base: ['1rem', { lineHeight: '1.625', letterSpacing: '0' }],
+        lg: ['1.125rem', { lineHeight: '1.5', letterSpacing: '-0.01em' }],
+        xl: ['1.25rem', { lineHeight: '1.4', letterSpacing: '-0.01em' }],
+        '2xl': ['1.5rem', { lineHeight: '1.35', letterSpacing: '-0.02em' }],
+        '3xl': ['1.875rem', { lineHeight: '1.25', letterSpacing: '-0.02em' }],
+        '4xl': ['2.25rem', { lineHeight: '1.2', letterSpacing: '-0.03em' }],
+        '5xl': ['3rem', { lineHeight: '1.1', letterSpacing: '-0.03em' }],
+        '6xl': ['3.75rem', { lineHeight: '1.05', letterSpacing: '-0.04em' }],
+        '7xl': ['4.5rem', { lineHeight: '1.0', letterSpacing: '-0.04em' }],
       },
 
       // ── Spacing ───────────────────────────────────────────────────────────
       // Tailwind's default spacing already uses 4px base unit.
       // These are additional named tokens from DESIGN_SYSTEM.md §2.2.
       spacing: {
-        'px': '1px',
+        px: '1px',
         '0.5': '2px',
       },
 
@@ -194,36 +206,37 @@ const config: Config = {
 
       // ── Container widths ──────────────────────────────────────────────────
       maxWidth: {
-        'container-xs':  '480px',
-        'container-sm':  '640px',
-        'container-md':  '768px',
-        'container-lg':  '1024px',
-        'container-xl':  '1200px',
+        'container-xs': '480px',
+        'container-sm': '640px',
+        'container-md': '768px',
+        'container-lg': '1024px',
+        'container-xl': '1200px',
         'container-2xl': '1440px',
       },
 
       // ── Gradients ─────────────────────────────────────────────────────────
       backgroundImage: {
-        'gradient-brand':        'linear-gradient(135deg, #6535E0 0%, #9879F8 100%)',
-        'gradient-celebration':  'linear-gradient(135deg, #F5A800 0%, #FFD966 100%)',
-        'gradient-warm-fade':    'linear-gradient(180deg, #FDFCFB 0%, #F5F4F1 100%)',
+        'gradient-brand': 'linear-gradient(135deg, #6535E0 0%, #9879F8 100%)',
+        'gradient-celebration': 'linear-gradient(135deg, #F5A800 0%, #FFD966 100%)',
+        'gradient-warm-fade': 'linear-gradient(180deg, #FDFCFB 0%, #F5F4F1 100%)',
         'gradient-surface-fade': 'linear-gradient(180deg, transparent 0%, #FDFCFB 100%)',
-        'gradient-cover-overlay':'linear-gradient(180deg, transparent 40%, rgba(26,23,20,0.7) 100%)',
+        'gradient-cover-overlay':
+          'linear-gradient(180deg, transparent 40%, rgba(26,23,20,0.7) 100%)',
       },
 
       // ── Animation ─────────────────────────────────────────────────────────
       keyframes: {
         'fade-in': {
           from: { opacity: '0', transform: 'translateY(8px)' },
-          to:   { opacity: '1', transform: 'translateY(0)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
         },
         'slide-in-right': {
           from: { opacity: '0', transform: 'translateX(24px)' },
-          to:   { opacity: '1', transform: 'translateX(0)' },
+          to: { opacity: '1', transform: 'translateX(0)' },
         },
         'slide-in-left': {
           from: { opacity: '0', transform: 'translateX(-24px)' },
-          to:   { opacity: '1', transform: 'translateX(0)' },
+          to: { opacity: '1', transform: 'translateX(0)' },
         },
         shimmer: {
           '0%': { backgroundPosition: '-200% 0' },

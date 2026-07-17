@@ -73,7 +73,9 @@ describe('ChildPhotoProcessor', () => {
   }, 20_000);
 
   it('strips EXIF metadata (e.g. GPS/copyright tags) from the output', async () => {
-    const withExif = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#fff' } })
+    const withExif = await sharp({
+      create: { width: 32, height: 32, channels: 3, background: '#fff' },
+    })
       .withExif({ IFD0: { Copyright: 'sensitive-location-marker' } })
       .jpeg()
       .toBuffer();

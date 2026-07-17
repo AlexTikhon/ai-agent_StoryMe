@@ -1,4 +1,5 @@
 # API Specification
+
 ## StoryMe — HTTP, SSE, Webhook & Contract Reference
 
 **Version 1.0 | June 2026**
@@ -62,19 +63,20 @@ StoryMe follows REST conventions with pragmatic deviations where REST is a poor 
 
 ### 1.2 Resource Naming
 
-| Rule | Correct | Wrong |
-|---|---|---|
-| Plural nouns | `/books` | `/book` |
-| Kebab-case | `/child-profiles` | `/childProfiles` |
-| IDs in path for specific resources | `/books/{bookId}` | `/getBook?id=...` |
-| Actions as POST sub-resources | `POST /books/{id}/cancel` | `DELETE /books/{id}/cancel` |
-| Filters as query params | `GET /books?status=complete` | `GET /books/complete` |
+| Rule                               | Correct                      | Wrong                       |
+| ---------------------------------- | ---------------------------- | --------------------------- |
+| Plural nouns                       | `/books`                     | `/book`                     |
+| Kebab-case                         | `/child-profiles`            | `/childProfiles`            |
+| IDs in path for specific resources | `/books/{bookId}`            | `/getBook?id=...`           |
+| Actions as POST sub-resources      | `POST /books/{id}/cancel`    | `DELETE /books/{id}/cancel` |
+| Filters as query params            | `GET /books?status=complete` | `GET /books/complete`       |
 
 ### 1.3 Versioning
 
 The API is versioned at the URL path level: `/v1/`. The current version is `v1`.
 
 **Versioning policy:**
+
 - A new version (`v2`) is only introduced for breaking changes.
 - Additive changes (new fields, new endpoints, new optional parameters) are non-breaking and do not require a version bump.
 - Deprecated fields are kept for a minimum 6-month deprecation window, marked with `@deprecated` in OpenAPI schema.
@@ -83,21 +85,21 @@ The API is versioned at the URL path level: `/v1/`. The current version is `v1`.
 
 ### 1.4 HTTP Status Codes
 
-| Scenario | Status | Usage |
-|---|---|---|
-| Success — read | 200 | GET, HEAD responses |
-| Success — created | 201 | POST that creates a persisted resource |
-| Success — async job accepted | 202 | `POST /books` — generation job enqueued |
-| Success — no content | 204 | DELETE, logout, PATCH with no return body |
-| Bad request | 400 | Malformed JSON, missing required fields, type errors |
-| Unauthenticated | 401 | No token, expired token, invalid token |
-| Forbidden | 403 | Valid auth, insufficient plan or role |
-| Not found | 404 | Resource does not exist or is not visible to caller |
-| Conflict | 409 | Duplicate resource (email already registered) |
-| Validation error | 422 | Field-level validation failures (Zod rejection) |
-| Rate limited | 429 | With `Retry-After` header |
-| Server error | 500 | Unexpected; Sentry notified automatically |
-| Gateway timeout | 504 | Upstream AI provider timed out |
+| Scenario                     | Status | Usage                                                |
+| ---------------------------- | ------ | ---------------------------------------------------- |
+| Success — read               | 200    | GET, HEAD responses                                  |
+| Success — created            | 201    | POST that creates a persisted resource               |
+| Success — async job accepted | 202    | `POST /books` — generation job enqueued              |
+| Success — no content         | 204    | DELETE, logout, PATCH with no return body            |
+| Bad request                  | 400    | Malformed JSON, missing required fields, type errors |
+| Unauthenticated              | 401    | No token, expired token, invalid token               |
+| Forbidden                    | 403    | Valid auth, insufficient plan or role                |
+| Not found                    | 404    | Resource does not exist or is not visible to caller  |
+| Conflict                     | 409    | Duplicate resource (email already registered)        |
+| Validation error             | 422    | Field-level validation failures (Zod rejection)      |
+| Rate limited                 | 429    | With `Retry-After` header                            |
+| Server error                 | 500    | Unexpected; Sentry notified automatically            |
+| Gateway timeout              | 504    | Upstream AI provider timed out                       |
 
 **Critical rule**: Never return `200` with an error body. The BFF error interceptor and frontend `apiClient` depend on status codes for routing to error handlers.
 
@@ -148,6 +150,7 @@ Authorization: Bearer <accessToken>
 Every resource access enforces ownership at the service layer, not only at the route guard level.
 
 **Rules:**
+
 - A user may only read or mutate resources they own (`user_id` match)
 - Returning a `404` (not `403`) when a resource exists but is not owned by the caller prevents resource enumeration
 - Shared resources (share link viewer) have explicit access grants checked before any data is returned
@@ -170,6 +173,7 @@ Retry-After: 37
 ### 1.11 Backward Compatibility
 
 When adding fields to a response:
+
 - New fields are always optional — existing clients must tolerate unknown fields
 - Field removals require a deprecation period and version bump
 - Enum values may be added to response enums; never removed without a version bump
@@ -181,11 +185,11 @@ When adding fields to a response:
 
 ### 2.1 URL Table
 
-| Environment | Frontend → BFF | BFF → NestJS API | Public CDN |
-|---|---|---|---|
-| Production | `https://storyme.app/api` | `https://api.storyme.app/v1` | `https://cdn.storyme.app` |
-| Staging | `https://staging.storyme.app/api` | `https://staging-api.storyme.app/v1` | `https://cdn-staging.storyme.app` |
-| Local development | `http://localhost:3000/api` | `http://localhost:4000/v1` | `http://localhost:4000/cdn` |
+| Environment       | Frontend → BFF                    | BFF → NestJS API                     | Public CDN                        |
+| ----------------- | --------------------------------- | ------------------------------------ | --------------------------------- |
+| Production        | `https://storyme.app/api`         | `https://api.storyme.app/v1`         | `https://cdn.storyme.app`         |
+| Staging           | `https://staging.storyme.app/api` | `https://staging-api.storyme.app/v1` | `https://cdn-staging.storyme.app` |
+| Local development | `http://localhost:3000/api`       | `http://localhost:4000/v1`           | `http://localhost:4000/cdn`       |
 
 ### 2.2 Layer Boundary
 
@@ -204,6 +208,7 @@ Workers (BullMQ agents)
 ```
 
 **Important:** The browser never calls `api.storyme.app` directly. All traffic flows through the BFF. The BFF:
+
 - Attaches the access token (from memory/cookie) as `Authorization: Bearer`
 - Manages the `HttpOnly` refresh cookie lifecycle
 - Converts Socket.io progress events to SSE streams for the browser
@@ -213,11 +218,11 @@ Workers (BullMQ agents)
 
 Public CDN URLs are constructed by the frontend directly (no API call needed):
 
-| Asset | Pattern |
-|---|---|
-| Cover thumbnail | `cdn.storyme.app/books/{bookId}/cover-thumb.webp` |
+| Asset               | Pattern                                                |
+| ------------------- | ------------------------------------------------------ |
+| Cover thumbnail     | `cdn.storyme.app/books/{bookId}/cover-thumb.webp`      |
 | Page image (reader) | `cdn.storyme.app/books/{bookId}/images/page-{NN}.webp` |
-| Social card | `cdn.storyme.app/books/{bookId}/social-card.png` |
+| Social card         | `cdn.storyme.app/books/{bookId}/social-card.png`       |
 
 Page numbers are zero-padded to 2 digits: `page-01.webp`, `page-12.webp`.
 
@@ -237,27 +242,27 @@ https://api.storyme.app/v1/webhooks/stripe
 
 ### 3.1 Request Headers
 
-| Header | Required | Direction | Purpose | Example |
-|---|---|---|---|---|
-| `Authorization` | Required (authenticated) | Client → Server | JWT Bearer token | `Bearer eyJhbGciOiJIUzI1NiJ9...` |
-| `Content-Type` | Required (with body) | Client → Server | Body format | `application/json` |
-| `X-Request-ID` | Optional | Client → Server | Client-generated trace ID; returned in response | `req_01J8XK2M...` |
-| `Idempotency-Key` | Required (idempotent ops) | Client → Server | Prevents duplicate mutations | `idem_f47ac10b-58cc...` |
-| `X-CSRF-Token` | Required (BFF state mutations) | Browser → BFF | Double-submit CSRF protection for BFF routes | `csrf_...` |
-| `Accept-Language` | Optional | Client → Server | Preferred locale for error messages | `en-US` |
-| `Stripe-Signature` | Required (webhook) | Stripe → API | Stripe HMAC signature | `t=1609459200,v1=...` |
+| Header             | Required                       | Direction       | Purpose                                         | Example                          |
+| ------------------ | ------------------------------ | --------------- | ----------------------------------------------- | -------------------------------- |
+| `Authorization`    | Required (authenticated)       | Client → Server | JWT Bearer token                                | `Bearer eyJhbGciOiJIUzI1NiJ9...` |
+| `Content-Type`     | Required (with body)           | Client → Server | Body format                                     | `application/json`               |
+| `X-Request-ID`     | Optional                       | Client → Server | Client-generated trace ID; returned in response | `req_01J8XK2M...`                |
+| `Idempotency-Key`  | Required (idempotent ops)      | Client → Server | Prevents duplicate mutations                    | `idem_f47ac10b-58cc...`          |
+| `X-CSRF-Token`     | Required (BFF state mutations) | Browser → BFF   | Double-submit CSRF protection for BFF routes    | `csrf_...`                       |
+| `Accept-Language`  | Optional                       | Client → Server | Preferred locale for error messages             | `en-US`                          |
+| `Stripe-Signature` | Required (webhook)             | Stripe → API    | Stripe HMAC signature                           | `t=1609459200,v1=...`            |
 
 ### 3.2 Response Headers
 
-| Header | Direction | Purpose | Example |
-|---|---|---|---|
-| `X-Request-ID` | Server → Client | Echo of request ID (generated by server if not provided) | `req_01J8XK2M...` |
-| `X-RateLimit-Limit` | Server → Client | Max requests in window | `100` |
-| `X-RateLimit-Remaining` | Server → Client | Remaining requests in window | `43` |
-| `X-RateLimit-Reset` | Server → Client | Unix timestamp when window resets | `1751280000` |
-| `Retry-After` | Server → Client | Seconds until retry is safe (on 429) | `60` |
-| `Content-Type` | Server → Client | Response body format | `application/json` |
-| `Set-Cookie` | Server → Client | Refresh token (auth endpoints only) | `storyme_refresh=...; HttpOnly; Secure; SameSite=Strict; Path=/api/auth` |
+| Header                  | Direction       | Purpose                                                  | Example                                                                  |
+| ----------------------- | --------------- | -------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `X-Request-ID`          | Server → Client | Echo of request ID (generated by server if not provided) | `req_01J8XK2M...`                                                        |
+| `X-RateLimit-Limit`     | Server → Client | Max requests in window                                   | `100`                                                                    |
+| `X-RateLimit-Remaining` | Server → Client | Remaining requests in window                             | `43`                                                                     |
+| `X-RateLimit-Reset`     | Server → Client | Unix timestamp when window resets                        | `1751280000`                                                             |
+| `Retry-After`           | Server → Client | Seconds until retry is safe (on 429)                     | `60`                                                                     |
+| `Content-Type`          | Server → Client | Response body format                                     | `application/json`                                                       |
+| `Set-Cookie`            | Server → Client | Refresh token (auth endpoints only)                      | `storyme_refresh=...; HttpOnly; Secure; SameSite=Strict; Path=/api/auth` |
 
 ### 3.3 CSRF Protection
 
@@ -282,13 +287,14 @@ interface ApiResponse<T> {
 }
 
 interface ResponseMeta {
-  requestId: string;      // e.g. "req_01J8XK2MABCDEF"
-  timestamp: string;      // ISO 8601 UTC: "2026-06-30T12:00:00.000Z"
-  traceId?: string;       // OpenTelemetry trace ID (debug builds only)
+  requestId: string; // e.g. "req_01J8XK2MABCDEF"
+  timestamp: string; // ISO 8601 UTC: "2026-06-30T12:00:00.000Z"
+  traceId?: string; // OpenTelemetry trace ID (debug builds only)
 }
 ```
 
 **Example:**
+
 ```json
 {
   "data": {
@@ -311,15 +317,16 @@ interface ApiErrorResponse {
 }
 
 interface ApiError {
-  code: string;           // Stable machine-readable error code (see §5)
-  message: string;        // Developer message — never shown to users directly
+  code: string; // Stable machine-readable error code (see §5)
+  message: string; // Developer message — never shown to users directly
   requestId: string;
-  field?: string;         // Which field caused the error (single-field errors)
-  details?: unknown;      // Additional context (debug builds only)
+  field?: string; // Which field caused the error (single-field errors)
+  details?: unknown; // Additional context (debug builds only)
 }
 ```
 
 **Example:**
+
 ```json
 {
   "error": {
@@ -335,15 +342,16 @@ interface ApiError {
 ```typescript
 interface ValidationErrorResponse {
   error: {
-    code: "VALIDATION_ERROR";
-    message: "Validation failed";
+    code: 'VALIDATION_ERROR';
+    message: 'Validation failed';
     requestId: string;
-    fields: Record<string, string>;  // field path → human-readable error
+    fields: Record<string, string>; // field path → human-readable error
   };
 }
 ```
 
 **Example:**
+
 ```json
 {
   "error": {
@@ -365,19 +373,20 @@ interface ValidationErrorResponse {
 interface PaginatedResponse<T> {
   data: {
     items: T[];
-    nextCursor: string | null;  // null when no more pages
+    nextCursor: string | null; // null when no more pages
     hasMore: boolean;
-    total: number;              // total items matching filter (not just this page)
+    total: number; // total items matching filter (not just this page)
   };
   meta: ResponseMeta;
 }
 ```
 
 **Example:**
+
 ```json
 {
   "data": {
-    "items": [ { "id": "bk_...", "title": "..." } ],
+    "items": [{ "id": "bk_...", "title": "..." }],
     "nextCursor": "eyJpZCI6ImJrXzAxSjh4IiwiY3JlYXRlZEF0IjoiMjAyNiJ9",
     "hasMore": true,
     "total": 47
@@ -396,11 +405,11 @@ Used by `POST /v1/books` and other endpoints that enqueue async work:
 ```typescript
 interface AsyncJobAcceptedResponse {
   data: {
-    jobId: string;          // Same as bookId for generation jobs
+    jobId: string; // Same as bookId for generation jobs
     bookId: string;
     estimatedMinutes: number;
-    sseUrl: string;         // SSE endpoint to subscribe for progress
-    pollUrl: string;        // Polling fallback endpoint
+    sseUrl: string; // SSE endpoint to subscribe for progress
+    pollUrl: string; // Polling fallback endpoint
   };
   meta: ResponseMeta;
 }
@@ -414,105 +423,105 @@ All error codes are stable strings. The frontend maps these to localized user me
 
 ### 5.1 Auth Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `AUTH_TOKEN_MISSING` | 401 | No Bearer token provided | Please sign in | No |
-| `AUTH_TOKEN_EXPIRED` | 401 | Access token has expired | Session expired, refreshing... | Yes (auto-refresh) |
-| `AUTH_TOKEN_INVALID` | 401 | JWT signature verification failed | Please sign in again | No |
-| `AUTH_REFRESH_MISSING` | 401 | Refresh cookie not present | Session expired | No |
-| `AUTH_REFRESH_EXPIRED` | 401 | Refresh token past expiry | Please sign in again | No |
-| `AUTH_REFRESH_REUSE` | 401 | Token family reuse detected — possible theft | Your session was revoked for security | No |
-| `AUTH_INVALID_CREDENTIALS` | 401 | Email or password incorrect | Invalid email or password | No |
-| `AUTH_OAUTH_EMAIL_CONFLICT` | 409 | Email registered with different provider | Account exists with Google/Apple login | No |
-| `AUTH_EMAIL_NOT_VERIFIED` | 403 | Email address not yet verified | Please verify your email | No |
-| `AUTH_ACCOUNT_DEACTIVATED` | 403 | Account has been deactivated | Contact support | No |
-| `AUTH_PASSWORD_NOT_SET` | 401 | OAuth user has no password | Sign in with Google/Apple | No |
+| Code                        | HTTP | Developer Message                            | User Meaning                           | Retryable          |
+| --------------------------- | ---- | -------------------------------------------- | -------------------------------------- | ------------------ |
+| `AUTH_TOKEN_MISSING`        | 401  | No Bearer token provided                     | Please sign in                         | No                 |
+| `AUTH_TOKEN_EXPIRED`        | 401  | Access token has expired                     | Session expired, refreshing...         | Yes (auto-refresh) |
+| `AUTH_TOKEN_INVALID`        | 401  | JWT signature verification failed            | Please sign in again                   | No                 |
+| `AUTH_REFRESH_MISSING`      | 401  | Refresh cookie not present                   | Session expired                        | No                 |
+| `AUTH_REFRESH_EXPIRED`      | 401  | Refresh token past expiry                    | Please sign in again                   | No                 |
+| `AUTH_REFRESH_REUSE`        | 401  | Token family reuse detected — possible theft | Your session was revoked for security  | No                 |
+| `AUTH_INVALID_CREDENTIALS`  | 401  | Email or password incorrect                  | Invalid email or password              | No                 |
+| `AUTH_OAUTH_EMAIL_CONFLICT` | 409  | Email registered with different provider     | Account exists with Google/Apple login | No                 |
+| `AUTH_EMAIL_NOT_VERIFIED`   | 403  | Email address not yet verified               | Please verify your email               | No                 |
+| `AUTH_ACCOUNT_DEACTIVATED`  | 403  | Account has been deactivated                 | Contact support                        | No                 |
+| `AUTH_PASSWORD_NOT_SET`     | 401  | OAuth user has no password                   | Sign in with Google/Apple              | No                 |
 
 ### 5.2 Validation Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `VALIDATION_ERROR` | 422 | Field validation failed | See `fields` map for details | Yes (fix inputs) |
-| `VALIDATION_SCHEMA_ERROR` | 400 | Request body does not match schema | Invalid request format | No |
-| `VALIDATION_CONTENT_POLICY` | 422 | Input failed content safety check | Please revise your input | Yes (fix input) |
+| Code                        | HTTP | Developer Message                  | User Meaning                 | Retryable        |
+| --------------------------- | ---- | ---------------------------------- | ---------------------------- | ---------------- |
+| `VALIDATION_ERROR`          | 422  | Field validation failed            | See `fields` map for details | Yes (fix inputs) |
+| `VALIDATION_SCHEMA_ERROR`   | 400  | Request body does not match schema | Invalid request format       | No               |
+| `VALIDATION_CONTENT_POLICY` | 422  | Input failed content safety check  | Please revise your input     | Yes (fix input)  |
 
 ### 5.3 Permission Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `FORBIDDEN` | 403 | Caller lacks permission for this action | Not authorized | No |
-| `PLAN_UPGRADE_REQUIRED` | 403 | Feature requires paid plan | Upgrade to access this feature | No |
-| `PLAN_CREDITS_EXHAUSTED` | 402 | No credits remaining | Purchase credits or upgrade plan | No |
-| `OWNERSHIP_VIOLATION` | 404 | Resource not owned by caller | Resource not found | No |
+| Code                     | HTTP | Developer Message                       | User Meaning                     | Retryable |
+| ------------------------ | ---- | --------------------------------------- | -------------------------------- | --------- |
+| `FORBIDDEN`              | 403  | Caller lacks permission for this action | Not authorized                   | No        |
+| `PLAN_UPGRADE_REQUIRED`  | 403  | Feature requires paid plan              | Upgrade to access this feature   | No        |
+| `PLAN_CREDITS_EXHAUSTED` | 402  | No credits remaining                    | Purchase credits or upgrade plan | No        |
+| `OWNERSHIP_VIOLATION`    | 404  | Resource not owned by caller            | Resource not found               | No        |
 
 ### 5.4 Book Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `BOOK_NOT_FOUND` | 404 | Book not found or not owned by caller | Book not found | No |
-| `BOOK_GENERATION_IN_PROGRESS` | 409 | Cannot modify book during active generation | Book is still generating | Yes (wait) |
-| `BOOK_NOT_COMPLETE` | 409 | Operation requires book status = complete | Book is not finished yet | Yes (wait) |
-| `BOOK_ALREADY_CANCELLED` | 409 | Book generation already cancelled | — | No |
-| `BOOK_REGEN_LIMIT_REACHED` | 409 | Page regeneration limit exceeded | Max regenerations reached for this page | No |
-| `BOOK_DRAFT_EXPIRED` | 410 | Wizard draft has expired | Your draft expired, please start over | No |
-| `BOOK_DELETE_IN_PROGRESS` | 409 | Book is being deleted | — | Yes (wait) |
+| Code                          | HTTP | Developer Message                           | User Meaning                            | Retryable  |
+| ----------------------------- | ---- | ------------------------------------------- | --------------------------------------- | ---------- |
+| `BOOK_NOT_FOUND`              | 404  | Book not found or not owned by caller       | Book not found                          | No         |
+| `BOOK_GENERATION_IN_PROGRESS` | 409  | Cannot modify book during active generation | Book is still generating                | Yes (wait) |
+| `BOOK_NOT_COMPLETE`           | 409  | Operation requires book status = complete   | Book is not finished yet                | Yes (wait) |
+| `BOOK_ALREADY_CANCELLED`      | 409  | Book generation already cancelled           | —                                       | No         |
+| `BOOK_REGEN_LIMIT_REACHED`    | 409  | Page regeneration limit exceeded            | Max regenerations reached for this page | No         |
+| `BOOK_DRAFT_EXPIRED`          | 410  | Wizard draft has expired                    | Your draft expired, please start over   | No         |
+| `BOOK_DELETE_IN_PROGRESS`     | 409  | Book is being deleted                       | —                                       | Yes (wait) |
 
 ### 5.5 Generation Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `GENERATION_FAILED` | 500 | All pipeline retries exhausted | Generation failed — credits refunded | No |
-| `GENERATION_TIMEOUT` | 504 | Pipeline exceeded maximum time | Generation timed out — try again | Yes |
-| `GENERATION_CONTENT_BLOCKED` | 422 | AI provider refused content | Content policy prevented generation | No |
-| `GENERATION_JOB_NOT_FOUND` | 404 | Job ID not found | Job not found | No |
-| `GENERATION_PROVIDER_ERROR` | 502 | Upstream AI provider error | AI provider temporarily unavailable | Yes |
+| Code                         | HTTP | Developer Message              | User Meaning                         | Retryable |
+| ---------------------------- | ---- | ------------------------------ | ------------------------------------ | --------- |
+| `GENERATION_FAILED`          | 500  | All pipeline retries exhausted | Generation failed — credits refunded | No        |
+| `GENERATION_TIMEOUT`         | 504  | Pipeline exceeded maximum time | Generation timed out — try again     | Yes       |
+| `GENERATION_CONTENT_BLOCKED` | 422  | AI provider refused content    | Content policy prevented generation  | No        |
+| `GENERATION_JOB_NOT_FOUND`   | 404  | Job ID not found               | Job not found                        | No        |
+| `GENERATION_PROVIDER_ERROR`  | 502  | Upstream AI provider error     | AI provider temporarily unavailable  | Yes       |
 
 ### 5.6 Upload Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `UPLOAD_FILE_TOO_LARGE` | 413 | File exceeds 10MB limit | File must be under 10MB | Yes (resize file) |
-| `UPLOAD_INVALID_MIME` | 422 | MIME type not in allowed list | Only JPEG, PNG, HEIC are supported | Yes (convert file) |
-| `UPLOAD_NO_FACE_DETECTED` | 422 | Face detection returned no faces | No face detected in photo — try a clearer photo | Yes |
-| `UPLOAD_TOO_SMALL` | 422 | Image dimensions below 200×200px | Photo is too small | Yes |
-| `UPLOAD_ASSET_NOT_FOUND` | 404 | Asset ID not found | Asset not found | No |
-| `UPLOAD_PRESIGN_EXPIRED` | 410 | Presigned URL has expired | Upload link expired — request a new one | Yes |
+| Code                      | HTTP | Developer Message                | User Meaning                                    | Retryable          |
+| ------------------------- | ---- | -------------------------------- | ----------------------------------------------- | ------------------ |
+| `UPLOAD_FILE_TOO_LARGE`   | 413  | File exceeds 10MB limit          | File must be under 10MB                         | Yes (resize file)  |
+| `UPLOAD_INVALID_MIME`     | 422  | MIME type not in allowed list    | Only JPEG, PNG, HEIC are supported              | Yes (convert file) |
+| `UPLOAD_NO_FACE_DETECTED` | 422  | Face detection returned no faces | No face detected in photo — try a clearer photo | Yes                |
+| `UPLOAD_TOO_SMALL`        | 422  | Image dimensions below 200×200px | Photo is too small                              | Yes                |
+| `UPLOAD_ASSET_NOT_FOUND`  | 404  | Asset ID not found               | Asset not found                                 | No                 |
+| `UPLOAD_PRESIGN_EXPIRED`  | 410  | Presigned URL has expired        | Upload link expired — request a new one         | Yes                |
 
 ### 5.7 Billing Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `BILLING_STRIPE_ERROR` | 502 | Stripe API returned an error | Payment service error — try again | Yes |
-| `BILLING_PAYMENT_FAILED` | 402 | Payment method declined | Payment declined — update payment method | Yes (update PM) |
-| `BILLING_SUBSCRIPTION_NOT_FOUND` | 404 | No active subscription for user | No active subscription | No |
-| `BILLING_ALREADY_SUBSCRIBED` | 409 | User already has active subscription | You already have an active plan | No |
-| `BILLING_CHECKOUT_EXPIRED` | 410 | Checkout session has expired | Checkout session expired — start over | Yes |
+| Code                             | HTTP | Developer Message                    | User Meaning                             | Retryable       |
+| -------------------------------- | ---- | ------------------------------------ | ---------------------------------------- | --------------- |
+| `BILLING_STRIPE_ERROR`           | 502  | Stripe API returned an error         | Payment service error — try again        | Yes             |
+| `BILLING_PAYMENT_FAILED`         | 402  | Payment method declined              | Payment declined — update payment method | Yes (update PM) |
+| `BILLING_SUBSCRIPTION_NOT_FOUND` | 404  | No active subscription for user      | No active subscription                   | No              |
+| `BILLING_ALREADY_SUBSCRIBED`     | 409  | User already has active subscription | You already have an active plan          | No              |
+| `BILLING_CHECKOUT_EXPIRED`       | 410  | Checkout session has expired         | Checkout session expired — start over    | Yes             |
 
 ### 5.8 Sharing Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `SHARE_LINK_NOT_FOUND` | 404 | Share token not found or revoked | Link not found or has expired | No |
-| `SHARE_LINK_EXPIRED` | 410 | Share link past expiry date | This link has expired | No |
-| `SHARE_LINK_REVOKED` | 410 | Share link explicitly revoked | This link is no longer active | No |
-| `SHARE_BOOK_NOT_PUBLIC` | 403 | Book is private — share not accessible | This book is private | No |
+| Code                    | HTTP | Developer Message                      | User Meaning                  | Retryable |
+| ----------------------- | ---- | -------------------------------------- | ----------------------------- | --------- |
+| `SHARE_LINK_NOT_FOUND`  | 404  | Share token not found or revoked       | Link not found or has expired | No        |
+| `SHARE_LINK_EXPIRED`    | 410  | Share link past expiry date            | This link has expired         | No        |
+| `SHARE_LINK_REVOKED`    | 410  | Share link explicitly revoked          | This link is no longer active | No        |
+| `SHARE_BOOK_NOT_PUBLIC` | 403  | Book is private — share not accessible | This book is private          | No        |
 
 ### 5.9 Rate Limit Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `RATE_LIMIT_EXCEEDED` | 429 | User-level rate limit exceeded | Too many requests — slow down | Yes (see Retry-After) |
-| `RATE_LIMIT_GENERATION` | 429 | Book generation rate limit exceeded | Too many books — wait before creating another | Yes |
-| `RATE_LIMIT_AUTH` | 429 | Auth endpoint rate limit exceeded | Too many attempts — try again later | Yes |
-| `RATE_LIMIT_UPLOAD` | 429 | Upload rate limit exceeded | Too many uploads — try again later | Yes |
+| Code                    | HTTP | Developer Message                   | User Meaning                                  | Retryable             |
+| ----------------------- | ---- | ----------------------------------- | --------------------------------------------- | --------------------- |
+| `RATE_LIMIT_EXCEEDED`   | 429  | User-level rate limit exceeded      | Too many requests — slow down                 | Yes (see Retry-After) |
+| `RATE_LIMIT_GENERATION` | 429  | Book generation rate limit exceeded | Too many books — wait before creating another | Yes                   |
+| `RATE_LIMIT_AUTH`       | 429  | Auth endpoint rate limit exceeded   | Too many attempts — try again later           | Yes                   |
+| `RATE_LIMIT_UPLOAD`     | 429  | Upload rate limit exceeded          | Too many uploads — try again later            | Yes                   |
 
 ### 5.10 Server Errors
 
-| Code | HTTP | Developer Message | User Meaning | Retryable |
-|---|---|---|---|---|
-| `INTERNAL_SERVER_ERROR` | 500 | Unexpected server error | Something went wrong — try again | Yes |
-| `SERVICE_UNAVAILABLE` | 503 | Dependency unavailable | Service temporarily down | Yes |
-| `GATEWAY_TIMEOUT` | 504 | Upstream timeout | Request timed out — try again | Yes |
+| Code                    | HTTP | Developer Message       | User Meaning                     | Retryable |
+| ----------------------- | ---- | ----------------------- | -------------------------------- | --------- |
+| `INTERNAL_SERVER_ERROR` | 500  | Unexpected server error | Something went wrong — try again | Yes       |
+| `SERVICE_UNAVAILABLE`   | 503  | Dependency unavailable  | Service temporarily down         | Yes       |
+| `GATEWAY_TIMEOUT`       | 504  | Upstream timeout        | Request timed out — try again    | Yes       |
 
 ---
 
@@ -532,48 +541,52 @@ All error codes are stable strings. The frontend maps these to localized user me
 **Rate limit:** 5 requests / hour per IP
 
 **Request body:**
+
 ```typescript
 interface SignupRequestDto {
-  email: string;        // valid email format
-  password: string;     // min 8 chars, 1 uppercase, 1 number
-  name: string;         // 1–100 chars, trimmed
-  locale?: string;      // BCP-47, default "en"
+  email: string; // valid email format
+  password: string; // min 8 chars, 1 uppercase, 1 number
+  name: string; // 1–100 chars, trimmed
+  locale?: string; // BCP-47, default "en"
 }
 ```
 
 **Response `201`:**
+
 ```typescript
 interface AuthResponseDto {
   accessToken: string;
-  user: UserDto;        // see §24
+  user: UserDto; // see §24
 }
 ```
 
 **Cookies set:**
+
 ```
 Set-Cookie: storyme_refresh=<token>; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=604800; Domain=.storyme.app
 ```
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 201 | User created successfully |
-| 409 | Email already registered (`AUTH_OAUTH_EMAIL_CONFLICT` if OAuth account exists) |
-| 422 | Validation failure (`VALIDATION_ERROR`) |
-| 429 | Rate limit exceeded |
+| Status | Condition                                                                      |
+| ------ | ------------------------------------------------------------------------------ |
+| 201    | User created successfully                                                      |
+| 409    | Email already registered (`AUTH_OAUTH_EMAIL_CONFLICT` if OAuth account exists) |
+| 422    | Validation failure (`VALIDATION_ERROR`)                                        |
+| 429    | Rate limit exceeded                                                            |
 
 **Error codes:** `VALIDATION_ERROR`, `AUTH_OAUTH_EMAIL_CONFLICT`
 
 **Validation rules:**
 
-| Field | Rule |
-|---|---|
-| `email` | Valid RFC 5322 email, max 254 chars, lowercased |
+| Field      | Rule                                                        |
+| ---------- | ----------------------------------------------------------- |
+| `email`    | Valid RFC 5322 email, max 254 chars, lowercased             |
 | `password` | Min 8 chars, at least 1 uppercase letter, at least 1 number |
-| `name` | 1–100 chars, trimmed, no control characters |
+| `name`     | 1–100 chars, trimmed, no control characters                 |
 
 **Side effects:**
+
 - Creates `users` record with `plan=free`, `credits=3`
 - Sends verification email (non-blocking — failure does not block signup response)
 - Creates entry in `refresh_tokens` table
@@ -589,15 +602,17 @@ Set-Cookie: storyme_refresh=<token>; HttpOnly; Secure; SameSite=Strict; Path=/ap
 **Rate limit:** 10 requests / 15 minutes per IP; after 10 failures → 429 with `Retry-After: 900`
 
 **Request body:**
+
 ```typescript
 interface LoginRequestDto {
   email: string;
   password: string;
-  rememberMe?: boolean;  // if false, session cookie (no Max-Age)
+  rememberMe?: boolean; // if false, session cookie (no Max-Age)
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface AuthResponseDto {
   accessToken: string;
@@ -609,12 +624,12 @@ interface AuthResponseDto {
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 200 | Login successful |
-| 401 | Invalid credentials — always generic (`AUTH_INVALID_CREDENTIALS`). Never reveal which field is wrong. |
-| 401 | OAuth-only account (`AUTH_PASSWORD_NOT_SET`) |
-| 429 | Rate limit |
+| Status | Condition                                                                                             |
+| ------ | ----------------------------------------------------------------------------------------------------- |
+| 200    | Login successful                                                                                      |
+| 401    | Invalid credentials — always generic (`AUTH_INVALID_CREDENTIALS`). Never reveal which field is wrong. |
+| 401    | OAuth-only account (`AUTH_PASSWORD_NOT_SET`)                                                          |
+| 429    | Rate limit                                                                                            |
 
 ---
 
@@ -629,15 +644,16 @@ interface AuthResponseDto {
 **Response `204`:** No content
 
 **Cookies cleared:**
+
 ```
 Set-Cookie: storyme_refresh=; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=0
 ```
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 204 | Logged out (even if token was already invalid — idempotent) |
+| Status | Condition                                                   |
+| ------ | ----------------------------------------------------------- |
+| 204    | Logged out (even if token was already invalid — idempotent) |
 
 ---
 
@@ -650,6 +666,7 @@ Set-Cookie: storyme_refresh=; HttpOnly; Secure; SameSite=Strict; Path=/api/auth;
 **Request body:** Empty — refresh token read from `storyme_refresh` cookie
 
 **Response `200`:**
+
 ```typescript
 interface AuthResponseDto {
   accessToken: string;
@@ -661,12 +678,12 @@ interface AuthResponseDto {
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 200 | New tokens issued |
-| 401 | Cookie missing (`AUTH_REFRESH_MISSING`) |
-| 401 | Token expired (`AUTH_REFRESH_EXPIRED`) |
-| 401 | Token reuse detected — full family revoked (`AUTH_REFRESH_REUSE`) |
+| Status | Condition                                                         |
+| ------ | ----------------------------------------------------------------- |
+| 200    | New tokens issued                                                 |
+| 401    | Cookie missing (`AUTH_REFRESH_MISSING`)                           |
+| 401    | Token expired (`AUTH_REFRESH_EXPIRED`)                            |
+| 401    | Token reuse detected — full family revoked (`AUTH_REFRESH_REUSE`) |
 
 **BFF behavior:** The BFF calls this endpoint automatically when the access token expires (silent refresh). The browser never calls this endpoint directly — it is proxied through the BFF's token relay logic.
 
@@ -681,6 +698,7 @@ interface AuthResponseDto {
 **Rate limit:** 3 requests / hour per IP
 
 **Request body:**
+
 ```typescript
 interface ForgotPasswordRequestDto {
   email: string;
@@ -688,6 +706,7 @@ interface ForgotPasswordRequestDto {
 ```
 
 **Response `200`:**
+
 ```json
 { "data": { "message": "If an account exists with that email, a reset link has been sent." }, "meta": { ... } }
 ```
@@ -695,6 +714,7 @@ interface ForgotPasswordRequestDto {
 **Status codes:** Always `200` (intentional)
 
 **Side effects:**
+
 - If user exists: generates reset token → stores in Redis `password_reset:{token}` → `userId`, TTL 1 hour
 - Sends reset email with link: `https://storyme.app/reset-password/{token}`
 
@@ -707,27 +727,30 @@ interface ForgotPasswordRequestDto {
 **Auth required:** No
 
 **Request body:**
+
 ```typescript
 interface ResetPasswordRequestDto {
-  token: string;        // from email link
-  newPassword: string;  // min 8 chars, 1 uppercase, 1 number
+  token: string; // from email link
+  newPassword: string; // min 8 chars, 1 uppercase, 1 number
 }
 ```
 
 **Response `200`:**
+
 ```json
 { "data": { "message": "Password updated successfully." }, "meta": { ... } }
 ```
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 200 | Password reset |
-| 400 | Token not found or expired |
-| 422 | Password does not meet requirements |
+| Status | Condition                           |
+| ------ | ----------------------------------- |
+| 200    | Password reset                      |
+| 400    | Token not found or expired          |
+| 422    | Password does not meet requirements |
 
 **Side effects:**
+
 - Updates `users.password_hash`
 - Revokes ALL `refresh_tokens` for the user (forces re-login everywhere)
 - Deletes the Redis reset token key
@@ -741,6 +764,7 @@ interface ResetPasswordRequestDto {
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface AuthMeResponseDto {
   user: UserDto;
@@ -758,19 +782,21 @@ interface AuthMeResponseDto {
 **Auth required:** No
 
 **Request body:**
+
 ```typescript
 interface OAuthGoogleRequestDto {
-  code: string;            // authorization code from Google
-  redirectUri: string;     // must match registered redirect URI
+  code: string; // authorization code from Google
+  redirectUri: string; // must match registered redirect URI
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface AuthResponseDto {
   accessToken: string;
   user: UserDto;
-  isNewUser: boolean;      // true if account was just created
+  isNewUser: boolean; // true if account was just created
 }
 ```
 
@@ -778,11 +804,11 @@ interface AuthResponseDto {
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 200 | Auth successful |
-| 409 | Email already registered via password (`AUTH_OAUTH_EMAIL_CONFLICT`) |
-| 400 | Invalid or expired OAuth code |
+| Status | Condition                                                           |
+| ------ | ------------------------------------------------------------------- |
+| 200    | Auth successful                                                     |
+| 409    | Email already registered via password (`AUTH_OAUTH_EMAIL_CONFLICT`) |
+| 400    | Invalid or expired OAuth code                                       |
 
 ---
 
@@ -793,10 +819,11 @@ interface AuthResponseDto {
 **Auth required:** No
 
 **Request body:**
+
 ```typescript
 interface OAuthAppleRequestDto {
-  idToken: string;         // Apple JWT — verified server-side with Apple's public keys
-  name?: string;           // only sent on first sign-in from Apple
+  idToken: string; // Apple JWT — verified server-side with Apple's public keys
+  name?: string; // only sent on first sign-in from Apple
 }
 ```
 
@@ -817,9 +844,10 @@ interface OAuthAppleRequestDto {
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface UserProfileResponseDto {
-  user: UserDto;                    // see §24
+  user: UserDto; // see §24
   subscription: SubscriptionDto | null;
   creditBalance: number;
 }
@@ -834,15 +862,17 @@ interface UserProfileResponseDto {
 **Auth required:** Yes
 
 **Request body (all fields optional):**
+
 ```typescript
 interface UpdateUserRequestDto {
-  name?: string;            // 1–100 chars
-  locale?: string;          // BCP-47 locale code
-  timezone?: string;        // IANA timezone string
+  name?: string; // 1–100 chars
+  locale?: string; // BCP-47 locale code
+  timezone?: string; // IANA timezone string
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface UpdateUserResponseDto {
   user: UserDto;
@@ -862,10 +892,11 @@ interface UpdateUserResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface DeleteUserRequestDto {
-  password?: string;        // required if account has password auth
-  confirmation: "DELETE";   // must be literal string "DELETE"
+  password?: string; // required if account has password auth
+  confirmation: 'DELETE'; // must be literal string "DELETE"
 }
 ```
 
@@ -873,13 +904,14 @@ interface DeleteUserRequestDto {
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 204 | Deletion initiated |
-| 400 | Confirmation string incorrect |
-| 401 | Password incorrect (for password accounts) |
+| Status | Condition                                  |
+| ------ | ------------------------------------------ |
+| 204    | Deletion initiated                         |
+| 400    | Confirmation string incorrect              |
+| 401    | Password incorrect (for password accounts) |
 
 **Side effects (synchronous):**
+
 1. Sets `users.deactivated_at = now()`
 2. Nulls PII: `users.email → "REDACTED_{id}"`, `users.name`, `users.password_hash`, `users.oauth_id`
 3. Deletes all `child_profiles` (hard delete — PII)
@@ -901,6 +933,7 @@ interface DeleteUserRequestDto {
 **Rate limit:** 1 request / 24 hours per user
 
 **Response `200`:**
+
 ```
 Content-Type: application/json
 Content-Disposition: attachment; filename="storyme-export-{userId}.json"
@@ -913,7 +946,7 @@ interface UserDataExportDto {
   books: BookDto[];
   creditTransactions: CreditTransactionDto[];
   notifications: NotificationDto[];
-  exportedAt: string;   // ISO 8601
+  exportedAt: string; // ISO 8601
 }
 ```
 
@@ -936,6 +969,7 @@ interface UserDataExportDto {
 **Query params:** No pagination (max 20 profiles per user — list is always complete)
 
 **Response `200`:**
+
 ```typescript
 interface ChildProfileListResponseDto {
   profiles: ChildProfileDto[];
@@ -951,19 +985,21 @@ interface ChildProfileListResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface CreateChildProfileRequestDto {
-  name: string;             // 1–50 chars, trimmed
-  nickname?: string;        // 1–30 chars
-  age: number;              // integer 2–12
+  name: string; // 1–50 chars, trimmed
+  nickname?: string; // 1–30 chars
+  age: number; // integer 2–12
   pronouns: 'he/him' | 'she/her' | 'they/them';
-  birthday?: string;        // ISO 8601 date: "2020-03-15"
-  avatarConfig?: AvatarConfigDto;     // from avatar builder
-  photoAssetId?: string;    // from upload flow — references uploads table
+  birthday?: string; // ISO 8601 date: "2020-03-15"
+  avatarConfig?: AvatarConfigDto; // from avatar builder
+  photoAssetId?: string; // from upload flow — references uploads table
 }
 ```
 
 **Response `201`:**
+
 ```typescript
 interface ChildProfileResponseDto {
   profile: ChildProfileDto;
@@ -972,13 +1008,13 @@ interface ChildProfileResponseDto {
 
 **Validation rules:**
 
-| Field | Rule |
-|---|---|
-| `name` | 1–50 chars, no control characters |
-| `age` | Integer between 2 and 12 inclusive |
-| `pronouns` | Must be one of the enum values |
-| `birthday` | If provided, must be a valid date; child age derived from birthday must match `age` ±1 |
-| `photoAssetId` | If provided, must be owned by the calling user and have `status=complete` |
+| Field          | Rule                                                                                   |
+| -------------- | -------------------------------------------------------------------------------------- |
+| `name`         | 1–50 chars, no control characters                                                      |
+| `age`          | Integer between 2 and 12 inclusive                                                     |
+| `pronouns`     | Must be one of the enum values                                                         |
+| `birthday`     | If provided, must be a valid date; child age derived from birthday must match `age` ±1 |
+| `photoAssetId` | If provided, must be owned by the calling user and have `status=complete`              |
 
 **Status codes:** `201` / `401` / `422`
 
@@ -991,9 +1027,11 @@ interface ChildProfileResponseDto {
 **Auth required:** Yes
 
 **Path params:**
+
 - `id` — UUID of the child profile
 
 **Response `200`:**
+
 ```typescript
 interface ChildProfileResponseDto {
   profile: ChildProfileDto;
@@ -1011,6 +1049,7 @@ interface ChildProfileResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface UpdateChildProfileRequestDto {
   name?: string;
@@ -1019,11 +1058,12 @@ interface UpdateChildProfileRequestDto {
   pronouns?: 'he/him' | 'she/her' | 'they/them';
   birthday?: string;
   avatarConfig?: AvatarConfigDto;
-  photoAssetId?: string | null;   // null to remove photo
+  photoAssetId?: string | null; // null to remove photo
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface ChildProfileResponseDto {
   profile: ChildProfileDto;
@@ -1067,13 +1107,15 @@ Guest drafts are identified by a session ID stored in a non-HttpOnly cookie (`st
 **Query params:** None
 
 **Response `200`:**
+
 ```typescript
 interface WizardDraftResponseDto {
-  draft: WizardDraftDto | null;   // null if no draft exists
+  draft: WizardDraftDto | null; // null if no draft exists
 }
 ```
 
 **Response `200` (no draft):**
+
 ```json
 { "data": { "draft": null }, "meta": { ... } }
 ```
@@ -1089,16 +1131,18 @@ interface WizardDraftResponseDto {
 **Auth required:** No (works for guests)
 
 **Request body:**
+
 ```typescript
 interface UpsertWizardDraftRequestDto {
-  step: number;                // current wizard step (1–6)
-  completedSteps: number[];    // steps that have been completed
-  data: Partial<CreateBookRequestDto>;   // partial wizard payload
-  childProfileId?: string;     // if user selected existing profile
+  step: number; // current wizard step (1–6)
+  completedSteps: number[]; // steps that have been completed
+  data: Partial<CreateBookRequestDto>; // partial wizard payload
+  childProfileId?: string; // if user selected existing profile
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface WizardDraftResponseDto {
   draft: WizardDraftDto;
@@ -1106,6 +1150,7 @@ interface WizardDraftResponseDto {
 ```
 
 **Side effects:**
+
 - Creates or replaces the draft (upsert by userId or guestSessionId)
 - Sets `expiresAt = now() + 30 days`
 - For guests: sets `storyme_guest_session` cookie if not already present
@@ -1113,6 +1158,7 @@ interface WizardDraftResponseDto {
 **Status codes:** `200` / `422`
 
 **Notes:**
+
 - Partial payloads are accepted — the server merges with existing draft data
 - The server stores the raw `data` object; no deep validation of the book request fields until `POST /v1/books` is called
 
@@ -1135,20 +1181,23 @@ interface WizardDraftResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface MigrateWizardDraftRequestDto {
-  guestSessionId: string;    // value from storyme_guest_session cookie
+  guestSessionId: string; // value from storyme_guest_session cookie
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface WizardDraftResponseDto {
-  draft: WizardDraftDto | null;   // the migrated draft, or null if guest had no draft
+  draft: WizardDraftDto | null; // the migrated draft, or null if guest had no draft
 }
 ```
 
 **Behavior:**
+
 - If guest draft exists: associate it with `userId`, clear guestSessionId
 - If user already has a draft: guest draft takes priority (overwrite), unless the user's draft is newer (compare `updatedAt`)
 - The BFF calls this endpoint automatically on login/signup completion if `storyme_guest_session` cookie exists
@@ -1164,6 +1213,7 @@ interface WizardDraftResponseDto {
 Photo uploads use a two-step presigned URL flow to avoid proxying large files through the API server.
 
 **Upload flow:**
+
 1. Client calls `POST /v1/uploads/photo/presign` → receives presigned R2 URL + `assetId`
 2. Client uploads file directly to R2 via `PUT <presignedUrl>`
 3. Client calls `POST /v1/uploads/photo/complete` → triggers processing pipeline
@@ -1180,35 +1230,38 @@ Photo uploads use a two-step presigned URL flow to avoid proxying large files th
 **Rate limit:** 10 uploads / hour per user
 
 **Request body:**
+
 ```typescript
 interface PhotoPresignRequestDto {
-  filename: string;        // original filename, used for extension detection
-  contentType: string;     // "image/jpeg" | "image/png" | "image/heic"
-  fileSizeBytes: number;   // must be declared upfront; validated against limit
+  filename: string; // original filename, used for extension detection
+  contentType: string; // "image/jpeg" | "image/png" | "image/heic"
+  fileSizeBytes: number; // must be declared upfront; validated against limit
   childProfileId?: string; // optional — associates upload with a profile
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface PhotoPresignResponseDto {
-  assetId: string;           // UUID — reference this in subsequent calls
-  uploadUrl: string;         // presigned R2 PUT URL, valid for 10 minutes
-  uploadHeaders: {           // headers required on the PUT request
+  assetId: string; // UUID — reference this in subsequent calls
+  uploadUrl: string; // presigned R2 PUT URL, valid for 10 minutes
+  uploadHeaders: {
+    // headers required on the PUT request
     'Content-Type': string;
   };
-  r2Key: string;             // e.g. "uploads/{userId}/{assetId}.jpg"
-  expiresAt: string;         // ISO 8601 — when the presigned URL expires
+  r2Key: string; // e.g. "uploads/{userId}/{assetId}.jpg"
+  expiresAt: string; // ISO 8601 — when the presigned URL expires
 }
 ```
 
 **Validation:**
 
-| Field | Rule |
-|---|---|
-| `contentType` | Must be `image/jpeg`, `image/png`, or `image/heic` |
-| `fileSizeBytes` | Must be ≤ 10,485,760 bytes (10MB) |
-| `filename` | 1–255 chars, extension must match contentType |
+| Field           | Rule                                               |
+| --------------- | -------------------------------------------------- |
+| `contentType`   | Must be `image/jpeg`, `image/png`, or `image/heic` |
+| `fileSizeBytes` | Must be ≤ 10,485,760 bytes (10MB)                  |
+| `filename`      | 1–255 chars, extension must match contentType      |
 
 **Status codes:** `200` / `401` / `422` / `429`
 
@@ -1221,22 +1274,25 @@ interface PhotoPresignResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface PhotoUploadCompleteRequestDto {
-  assetId: string;    // from presign response
+  assetId: string; // from presign response
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface PhotoUploadAcceptedDto {
   assetId: string;
   status: 'processing';
-  pollUrl: string;    // GET /v1/uploads/{assetId}
+  pollUrl: string; // GET /v1/uploads/{assetId}
 }
 ```
 
 **Server-side processing (async):**
+
 1. Verify the R2 object exists at the expected key
 2. Download and validate: MIME type check, dimension check (min 200×200px)
 3. Run face detection
@@ -1257,9 +1313,10 @@ interface PhotoUploadAcceptedDto {
 **Path params:** `assetId` — UUID from presign response
 
 **Response `200`:**
+
 ```typescript
 interface UploadStatusResponseDto {
-  asset: AssetDto;    // see §24
+  asset: AssetDto; // see §24
 }
 ```
 
@@ -1297,15 +1354,15 @@ interface UploadStatusResponseDto {
 
 **Query params:**
 
-| Param | Type | Default | Description |
-|---|---|---|---|
-| `cursor` | string | — | Pagination cursor |
-| `limit` | number | 20 | Max 100 |
-| `status` | string | — | Filter by status enum value |
-| `childProfileId` | string | — | Filter by child |
-| `sort` | `created_at\|updated_at` | `created_at` | Sort field |
-| `order` | `asc\|desc` | `desc` | Sort direction |
-| `q` | string | — | Search by book title (partial match) |
+| Param            | Type                     | Default      | Description                          |
+| ---------------- | ------------------------ | ------------ | ------------------------------------ |
+| `cursor`         | string                   | —            | Pagination cursor                    |
+| `limit`          | number                   | 20           | Max 100                              |
+| `status`         | string                   | —            | Filter by status enum value          |
+| `childProfileId` | string                   | —            | Filter by child                      |
+| `sort`           | `created_at\|updated_at` | `created_at` | Sort field                           |
+| `order`          | `asc\|desc`              | `desc`       | Sort direction                       |
+| `q`              | string                   | —            | Search by book title (partial match) |
 
 **Response `200`:** `PaginatedResponse<BookListItemDto>`
 
@@ -1322,69 +1379,72 @@ interface UploadStatusResponseDto {
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface CreateBookRequestDto {
-  childName: string;              // 1–50 chars
-  age: number;                    // 2–12
+  childName: string; // 1–50 chars
+  age: number; // 2–12
   pronouns: 'he/him' | 'she/her' | 'they/them';
   appearance: {
-    hairColor: string;            // max 50 chars
-    hairStyle: string;            // max 50 chars
-    eyeColor: string;             // max 50 chars
-    skinTone: string;             // max 50 chars
+    hairColor: string; // max 50 chars
+    hairStyle: string; // max 50 chars
+    eyeColor: string; // max 50 chars
+    skinTone: string; // max 50 chars
     height?: 'tall' | 'average' | 'short';
-    distinctiveFeatures?: string[];  // max 5 items, each max 100 chars
+    distinctiveFeatures?: string[]; // max 5 items, each max 100 chars
   };
-  personality: string[];          // 1–5 traits, each 1–50 chars
-  favoriteAnimals: string[];      // 0–3 items
-  favoriteColors: string[];       // 0–3 items
-  favoriteToys: string[];         // 0–3 items
-  hobbies: string[];              // 0–5 items
-  educationalGoal?: string;       // max 200 chars
+  personality: string[]; // 1–5 traits, each 1–50 chars
+  favoriteAnimals: string[]; // 0–3 items
+  favoriteColors: string[]; // 0–3 items
+  favoriteToys: string[]; // 0–3 items
+  hobbies: string[]; // 0–5 items
+  educationalGoal?: string; // max 200 chars
   genre: 'adventure' | 'fantasy' | 'friendship' | 'mystery' | 'nature' | 'space' | 'ocean';
   bookLength: 8 | 16 | 24 | 32;
   illustrationStyle: 'watercolor' | 'comic' | '3d_cartoon' | 'pencil_sketch';
-  language: string;               // BCP-47 code: 'en', 'es', 'fr', 'de', 'ru', 'pt', 'ar'
-  photoAssetId?: string;          // optional reference photo for likeness
-  childProfileId?: string;        // optional — saves to existing profile
-  dedicationText?: string;        // max 300 chars
+  language: string; // BCP-47 code: 'en', 'es', 'fr', 'de', 'ru', 'pt', 'ar'
+  photoAssetId?: string; // optional reference photo for likeness
+  childProfileId?: string; // optional — saves to existing profile
+  dedicationText?: string; // max 300 chars
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface BookCreatedResponseDto {
   bookId: string;
-  jobId: string;           // same as bookId for generation tracking
+  jobId: string; // same as bookId for generation tracking
   status: 'queued';
-  creditsCharged: number;  // always 1
+  creditsCharged: number; // always 1
   estimatedMinutes: number;
-  sseUrl: string;          // "/api/generation/jobs/{bookId}/events"
-  pollUrl: string;         // "/api/generation/jobs/{bookId}"
+  sseUrl: string; // "/api/generation/jobs/{bookId}/events"
+  pollUrl: string; // "/api/generation/jobs/{bookId}"
 }
 ```
 
 **Plan gates:**
 
-| Plan | Allowed book lengths |
-|---|---|
-| `free` | 8 pages only (first book) |
-| `pay_per_book` | 8, 16, 24, 32 |
-| `family` | 8, 16, 24, 32 |
-| `annual` | 8, 16, 24, 32 |
-| `educator` | 8, 16, 24, 32 |
+| Plan           | Allowed book lengths      |
+| -------------- | ------------------------- |
+| `free`         | 8 pages only (first book) |
+| `pay_per_book` | 8, 16, 24, 32             |
+| `family`       | 8, 16, 24, 32             |
+| `annual`       | 8, 16, 24, 32             |
+| `educator`     | 8, 16, 24, 32             |
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 202 | Generation job enqueued |
-| 402 | Insufficient credits (`PLAN_CREDITS_EXHAUSTED`) |
-| 403 | Plan does not allow this book length (`PLAN_UPGRADE_REQUIRED`) |
-| 409 | Duplicate `Idempotency-Key` — returns original 202 response |
-| 422 | Validation failure |
+| Status | Condition                                                      |
+| ------ | -------------------------------------------------------------- |
+| 202    | Generation job enqueued                                        |
+| 402    | Insufficient credits (`PLAN_CREDITS_EXHAUSTED`)                |
+| 403    | Plan does not allow this book length (`PLAN_UPGRADE_REQUIRED`) |
+| 409    | Duplicate `Idempotency-Key` — returns original 202 response    |
+| 422    | Validation failure                                             |
 
 **Side effects:**
+
 1. Atomically deducts 1 credit from `users.credits`
 2. Records `credit_transactions` entry with `reason=book_creation`
 3. Creates `books` record with `status=created`
@@ -1403,9 +1463,10 @@ interface BookCreatedResponseDto {
 **Path params:** `bookId` — UUID
 
 **Response `200`:**
+
 ```typescript
 interface BookResponseDto {
-  book: BookDto;    // see §24
+  book: BookDto; // see §24
 }
 ```
 
@@ -1420,14 +1481,16 @@ interface BookResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface UpdateBookRequestDto {
-  title?: string;           // 1–200 chars
-  dedicationText?: string;  // max 300 chars
+  title?: string; // 1–200 chars
+  dedicationText?: string; // max 300 chars
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface BookResponseDto {
   book: BookDto;
@@ -1449,6 +1512,7 @@ interface BookResponseDto {
 **Status codes:** `204` / `401` / `404` / `409 BOOK_GENERATION_IN_PROGRESS`
 
 **Side effects:**
+
 1. Verifies no active generation job for this book
 2. Deletes all R2 objects under `books/{bookId}/` prefix (batch delete)
 3. Hard-deletes `books` record and cascades to `book_pages`
@@ -1463,22 +1527,23 @@ interface BookResponseDto {
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface BookStatusResponseDto {
   bookId: string;
   status: BookStatus;
   progress: {
-    step: string;           // current agent step name
+    step: string; // current agent step name
     percentComplete: number; // 0–100
     completedSteps: string[];
-    pagesComplete: number;  // pages with images ready
+    pagesComplete: number; // pages with images ready
     totalPages: number;
   };
   error?: {
     code: string;
     message: string;
   };
-  completedAt?: string;    // set when status=complete
+  completedAt?: string; // set when status=complete
 }
 ```
 
@@ -1497,24 +1562,26 @@ interface BookStatusResponseDto {
 **Request body:** Empty
 
 **Response `200`:**
+
 ```typescript
 interface BookCancelResponseDto {
   bookId: string;
   status: 'cancelled';
-  creditsRefunded: number;   // 1 (always refunds)
+  creditsRefunded: number; // 1 (always refunds)
 }
 ```
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 200 | Cancellation accepted |
-| 404 | Book not found |
-| 409 | Book already cancelled (`BOOK_ALREADY_CANCELLED`) |
-| 409 | Book already complete — cannot cancel (`BOOK_NOT_IN_PROGRESS`) |
+| Status | Condition                                                      |
+| ------ | -------------------------------------------------------------- |
+| 200    | Cancellation accepted                                          |
+| 404    | Book not found                                                 |
+| 409    | Book already cancelled (`BOOK_ALREADY_CANCELLED`)              |
+| 409    | Book already complete — cannot cancel (`BOOK_NOT_IN_PROGRESS`) |
 
 **Side effects:**
+
 - Signals BullMQ to cancel active jobs for this book
 - Credits refunded if cancelled before `image_gen` phase
 - No credits refunded if cancelled during `pdf_render` (delivery imminent)
@@ -1533,13 +1600,15 @@ interface BookCancelResponseDto {
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface RegenerateBookRequestDto {
-  reason?: string;   // optional user-provided reason (for analytics)
+  reason?: string; // optional user-provided reason (for analytics)
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface BookCreatedResponseDto {
   bookId: string;
@@ -1561,6 +1630,7 @@ interface BookCreatedResponseDto {
 **Base path:** `/v1/books/{bookId}/pages`
 
 **Access rules:**
+
 - Pages 1–3 (preview pages) are accessible to any authenticated user who can see the book, plus anonymous viewers with a valid share link
 - Pages 4+ require `book.is_paid = true` for download-quality access; reading in-app requires `book.user_id = req.user.id`
 - Page images (CDN URLs) are publicly accessible via URL — auth protects the metadata/text only
@@ -1574,9 +1644,10 @@ interface BookCreatedResponseDto {
 **Auth required:** Yes (book owner only)
 
 **Response `200`:**
+
 ```typescript
 interface BookPagesResponseDto {
-  pages: BookPageDto[];   // see §24
+  pages: BookPageDto[]; // see §24
   bookId: string;
   totalPages: number;
 }
@@ -1593,9 +1664,11 @@ interface BookPagesResponseDto {
 **Auth required:** Yes (book owner); pages 1–3 accessible to shared-link holders
 
 **Path params:**
+
 - `pageNumber` — 1-indexed integer
 
 **Response `200`:**
+
 ```typescript
 interface BookPageResponseDto {
   page: BookPageDto;
@@ -1617,13 +1690,15 @@ interface BookPageResponseDto {
 **Plan gate:** `family`, `annual`, `educator` plans
 
 **Request body:**
+
 ```typescript
 interface UpdatePageRequestDto {
-  textContent: string;   // max 500 chars, must be non-empty
+  textContent: string; // max 500 chars, must be non-empty
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface BookPageResponseDto {
   page: BookPageDto;
@@ -1647,13 +1722,15 @@ interface BookPageResponseDto {
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface RegenerateTextRequestDto {
-  feedback?: string;    // optional hint for the AI (max 200 chars)
+  feedback?: string; // optional hint for the AI (max 200 chars)
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface PageRegenAcceptedDto {
   bookId: string;
@@ -1664,6 +1741,7 @@ interface PageRegenAcceptedDto {
 ```
 
 **Limits:**
+
 - Maximum 3 text regenerations per page per book
 - Returns `409 BOOK_REGEN_LIMIT_REACHED` when exceeded
 
@@ -1684,14 +1762,16 @@ interface PageRegenAcceptedDto {
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface RegenerateImageRequestDto {
-  feedback?: string;      // optional art direction hint (max 200 chars)
-  useDifferentSeed?: boolean;  // default true — generates variation
+  feedback?: string; // optional art direction hint (max 200 chars)
+  useDifferentSeed?: boolean; // default true — generates variation
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface PageRegenAcceptedDto {
   bookId: string;
@@ -1724,18 +1804,20 @@ This API provides job-level visibility into the AI generation pipeline. The `job
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface StartGenerationJobRequestDto {
   bookId: string;
-  priority?: 'high' | 'normal' | 'low';   // default 'normal'
-  fromStep?: AgentStep;                    // resume from a specific step (admin only)
+  priority?: 'high' | 'normal' | 'low'; // default 'normal'
+  fromStep?: AgentStep; // resume from a specific step (admin only)
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface GenerationJobResponseDto {
-  job: GenerationJobDto;    // see §24
+  job: GenerationJobDto; // see §24
 }
 ```
 
@@ -1752,6 +1834,7 @@ interface GenerationJobResponseDto {
 **Path params:** `jobId` — equals `bookId`
 
 **Response `200`:**
+
 ```typescript
 interface GenerationJobResponseDto {
   job: GenerationJobDto;
@@ -1771,10 +1854,11 @@ interface GenerationJobResponseDto {
 **Path params:** `jobId` — equals `bookId`
 
 **Query params:**
-| Param | Required | Description |
-|---|---|---|
-| `token` | Yes | Short-lived SSE token (obtained from `POST /v1/generation/jobs/{jobId}/sse-token`). Cannot send Authorization header on SSE connections — use this token instead. |
-| `lastEventId` | No | ID of last received event for reconnect |
+
+| Param         | Required | Description                                                                                                                                                       |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `token`       | Yes      | Short-lived SSE token (obtained from `POST /v1/generation/jobs/{jobId}/sse-token`). Cannot send Authorization header on SSE connections — use this token instead. |
+| `lastEventId` | No       | ID of last received event for reconnect                                                                                                                           |
 
 **Response:** `Content-Type: text/event-stream`
 
@@ -1789,12 +1873,14 @@ X-Accel-Buffering: no
 See §14 for the complete SSE event specification.
 
 **Reconnect behavior:**
+
 - Clients should reconnect on disconnect with the `lastEventId` of the last received event
 - The BFF buffers the last 100 events in Redis for 10 minutes for reconnect support
 - On reconnect with `lastEventId`: server replays missed events since that ID
 - After `generation.completed` or `generation.failed`, the SSE stream closes with `event: close`
 
 **Multiple tabs behavior:**
+
 - Multiple SSE connections from the same user for the same `jobId` are allowed
 - Each connection receives the same event stream (fan-out via Redis pub/sub)
 
@@ -1819,13 +1905,15 @@ Response: { token: string, expiresAt: string }  // token valid 5 minutes
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface RetryGenerationJobRequestDto {
-  fromStep?: AgentStep;   // admin only — override which step to restart from
+  fromStep?: AgentStep; // admin only — override which step to restart from
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface GenerationJobResponseDto {
   job: GenerationJobDto;
@@ -1847,6 +1935,7 @@ interface GenerationJobResponseDto {
 **Request body:** Empty
 
 **Response `200`:**
+
 ```typescript
 interface CancelJobResponseDto {
   jobId: string;
@@ -1873,14 +1962,14 @@ data: {JSON payload}
 
 The BFF converts Socket.io events from NestJS into SSE events. The mapping is:
 
-| Socket.io event | SSE event name |
-|---|---|
-| `book:progress` | `generation.progress` |
-| `page:ready` | `generation.page_ready` |
-| `cover:ready` | `generation.cover_ready` |
-| `book:complete` | `generation.completed` |
-| `book:error` | `generation.failed` |
-| `book:cancelled` | `generation.cancelled` |
+| Socket.io event  | SSE event name           |
+| ---------------- | ------------------------ |
+| `book:progress`  | `generation.progress`    |
+| `page:ready`     | `generation.page_ready`  |
+| `cover:ready`    | `generation.cover_ready` |
+| `book:complete`  | `generation.completed`   |
+| `book:error`     | `generation.failed`      |
+| `book:cancelled` | `generation.cancelled`   |
 
 ---
 
@@ -1893,13 +1982,14 @@ interface GenerationStartedEvent {
   eventId: string;
   bookId: string;
   jobId: string;
-  totalSteps: number;        // 9 pipeline steps
+  totalSteps: number; // 9 pipeline steps
   estimatedMinutes: number;
-  startedAt: string;         // ISO 8601
+  startedAt: string; // ISO 8601
 }
 ```
 
 **SSE example:**
+
 ```
 id: evt_01J8XK001
 event: generation.started
@@ -1918,9 +2008,9 @@ Emitted at each pipeline step transition.
 interface GenerationProgressEvent {
   eventId: string;
   bookId: string;
-  step: AgentStep;           // current step name
-  stepLabel: string;         // human-readable label for UI display
-  percentComplete: number;   // 0–100
+  step: AgentStep; // current step name
+  stepLabel: string; // human-readable label for UI display
+  percentComplete: number; // 0–100
   completedSteps: AgentStep[];
 }
 
@@ -1938,19 +2028,20 @@ type AgentStep =
 
 **Step labels and percentages:**
 
-| `step` | `stepLabel` | `percentComplete` |
-|---|---|---|
-| `char_build` | "Getting to know {childName}…" | 5 |
-| `story_plan` | "Planning the adventure…" | 15 |
-| `chapter_gen` | "Writing the story…" | 35 |
-| `illust_plan` | "Imagining the illustrations…" | 45 |
-| `char_consistency` | "Making sure the character looks just right…" | 52 |
-| `image_gen` | "Painting the pages…" | 70 |
-| `qa_review` | "Checking every detail…" | 85 |
-| `layout` | "Laying out the book…" | 92 |
-| `pdf_render` | "Almost ready…" | 98 |
+| `step`             | `stepLabel`                                   | `percentComplete` |
+| ------------------ | --------------------------------------------- | ----------------- |
+| `char_build`       | "Getting to know {childName}…"                | 5                 |
+| `story_plan`       | "Planning the adventure…"                     | 15                |
+| `chapter_gen`      | "Writing the story…"                          | 35                |
+| `illust_plan`      | "Imagining the illustrations…"                | 45                |
+| `char_consistency` | "Making sure the character looks just right…" | 52                |
+| `image_gen`        | "Painting the pages…"                         | 70                |
+| `qa_review`        | "Checking every detail…"                      | 85                |
+| `layout`           | "Laying out the book…"                        | 92                |
+| `pdf_render`       | "Almost ready…"                               | 98                |
 
 **SSE example:**
+
 ```
 id: evt_01J8XK002
 event: generation.progress
@@ -1969,14 +2060,15 @@ Emitted for each completed page image during `image_gen`. Pages may arrive out o
 interface GenerationPageReadyEvent {
   eventId: string;
   bookId: string;
-  pageNumber: number;             // 1-indexed
-  imageUrl: string;               // CDN WebP URL: cdn.storyme.app/books/{bookId}/images/page-{NN}.webp
-  pagesComplete: number;          // how many pages have images so far
+  pageNumber: number; // 1-indexed
+  imageUrl: string; // CDN WebP URL: cdn.storyme.app/books/{bookId}/images/page-{NN}.webp
+  pagesComplete: number; // how many pages have images so far
   totalPages: number;
 }
 ```
 
 **SSE example:**
+
 ```
 id: evt_01J8XK003
 event: generation.page_ready
@@ -1995,8 +2087,8 @@ Emitted when the cover image is generated (during `image_gen`, typically early).
 interface GenerationCoverReadyEvent {
   eventId: string;
   bookId: string;
-  coverUrl: string;          // cdn.storyme.app/books/{bookId}/cover-thumb.webp
-  title: string;             // book title from StoryPlan (available after story_plan)
+  coverUrl: string; // cdn.storyme.app/books/{bookId}/cover-thumb.webp
+  title: string; // book title from StoryPlan (available after story_plan)
 }
 ```
 
@@ -2015,13 +2107,14 @@ interface GenerationCompletedEvent {
   title: string;
   coverUrl: string;
   pageCount: number;
-  pdfReady: boolean;             // always true when this event fires
+  pdfReady: boolean; // always true when this event fires
   generationTimeMs: number;
-  previewPdfAvailable: boolean;  // always true
+  previewPdfAvailable: boolean; // always true
 }
 ```
 
 **SSE example:**
+
 ```
 id: evt_01J8XK042
 event: generation.completed
@@ -2029,6 +2122,7 @@ data: {"eventId":"evt_01J8XK042","bookId":"bk_abc","title":"Emma and the Magic F
 ```
 
 **Frontend behavior:**
+
 1. Show confetti / celebration animation
 2. Transition to book reveal screen
 3. Fetch `GET /v1/books/{bookId}` to get full book data
@@ -2046,15 +2140,16 @@ Emitted when the pipeline exhausts all retries.
 interface GenerationFailedEvent {
   eventId: string;
   bookId: string;
-  errorCode: string;           // e.g. "GENERATION_FAILED", "GENERATION_CONTENT_BLOCKED"
-  errorMessage: string;        // developer message
-  creditsRefunded: number;     // always 1
+  errorCode: string; // e.g. "GENERATION_FAILED", "GENERATION_CONTENT_BLOCKED"
+  errorMessage: string; // developer message
+  creditsRefunded: number; // always 1
   retryable: boolean;
-  step: AgentStep;             // which step failed
+  step: AgentStep; // which step failed
 }
 ```
 
 **Frontend behavior:**
+
 1. Show error state with user-friendly message
 2. If `retryable=true`: offer retry button → calls `POST /v1/generation/jobs/{jobId}/retry`
 3. If `retryable=false` (e.g., content policy): show support link
@@ -2071,7 +2166,7 @@ interface GenerationCancelledEvent {
   eventId: string;
   bookId: string;
   creditsRefunded: number;
-  cancelledAt: string;   // ISO 8601
+  cancelledAt: string; // ISO 8601
 }
 ```
 
@@ -2084,6 +2179,7 @@ interface GenerationCancelledEvent {
 **Base path:** `/v1/reader`
 
 The Reader API provides optimized access to book content for the in-app reader experience. It is separate from the Books API because it:
+
 1. Serves a different consumer shape (reader needs pages + CDN URLs, not generation metadata)
 2. Must support anonymous shared-link access
 3. Tracks reading progress
@@ -2098,11 +2194,12 @@ The Reader API provides optimized access to book content for the in-app reader e
 
 **Query params:**
 
-| Param | Required | Description |
-|---|---|---|
+| Param        | Required    | Description                               |
+| ------------ | ----------- | ----------------------------------------- |
 | `shareToken` | Conditional | Required for anonymous shared-book access |
 
 **Response `200`:**
+
 ```typescript
 interface ReaderBookResponseDto {
   book: {
@@ -2112,20 +2209,20 @@ interface ReaderBookResponseDto {
     pageCount: number;
     isOwner: boolean;
     isPaid: boolean;
-    previewPageCount: number;   // 3 for non-paid, pageCount for paid
+    previewPageCount: number; // 3 for non-paid, pageCount for paid
   };
   pages: ReaderPageDto[];
   readingState: {
     lastPage: number;
     bookmarks: number[];
-  } | null;   // null for anonymous viewers
+  } | null; // null for anonymous viewers
 }
 
 interface ReaderPageDto {
   pageNumber: number;
-  imageUrl: string;         // CDN WebP URL
-  textContent: string;      // page text
-  isLocked: boolean;        // true if page > previewPageCount and book not paid
+  imageUrl: string; // CDN WebP URL
+  textContent: string; // page text
+  isLocked: boolean; // true if page > previewPageCount and book not paid
 }
 ```
 
@@ -2144,6 +2241,7 @@ interface ReaderPageDto {
 **Query params:** `shareToken` (optional — unlocks preview for private shared books)
 
 **Response `200`:**
+
 ```typescript
 interface ReaderPreviewResponseDto {
   book: {
@@ -2153,8 +2251,8 @@ interface ReaderPreviewResponseDto {
     pageCount: number;
     isPublic: boolean;
   };
-  pages: ReaderPageDto[];    // always exactly pages 1–3
-  upgradeUrl: string;        // link to purchase/unlock full book
+  pages: ReaderPageDto[]; // always exactly pages 1–3
+  upgradeUrl: string; // link to purchase/unlock full book
 }
 ```
 
@@ -2169,9 +2267,10 @@ interface ReaderPreviewResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface UpdateReadingProgressRequestDto {
-  lastPage: number;   // 1-indexed, must be 1–book.pageCount
+  lastPage: number; // 1-indexed, must be 1–book.pageCount
 }
 ```
 
@@ -2190,6 +2289,7 @@ interface UpdateReadingProgressRequestDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface AddBookmarkRequestDto {
   pageNumber: number;
@@ -2197,9 +2297,10 @@ interface AddBookmarkRequestDto {
 ```
 
 **Response `200`:**
+
 ```typescript
 interface BookmarkResponseDto {
-  bookmarks: number[];    // updated full list of bookmarked pages
+  bookmarks: number[]; // updated full list of bookmarked pages
 }
 ```
 
@@ -2218,6 +2319,7 @@ interface BookmarkResponseDto {
 **Path params:** `pageNumber` — 1-indexed
 
 **Response `200`:**
+
 ```typescript
 interface BookmarkResponseDto {
   bookmarks: number[];
@@ -2228,7 +2330,6 @@ interface BookmarkResponseDto {
 
 ---
 
-
 ## 16. PDF & Download API
 
 **Base path:** `/v1/books/{bookId}`
@@ -2237,11 +2338,11 @@ PDFs are private assets. Every download request goes through the API, which veri
 
 **PDF types:**
 
-| Type | Resolution | Pages | Watermark | Plan required |
-|---|---|---|---|---|
-| Preview | 72 dpi (screen) | 1â€“3 | "Preview" diagonal | None |
-| Screen | 72 dpi | Full book | None | Paid (is_paid=true) |
-| Print | 300 dpi | Full book | None | Paid (is_paid=true) |
+| Type    | Resolution      | Pages     | Watermark          | Plan required       |
+| ------- | --------------- | --------- | ------------------ | ------------------- |
+| Preview | 72 dpi (screen) | 1â€“3     | "Preview" diagonal | None                |
+| Screen  | 72 dpi          | Full book | None               | Paid (is_paid=true) |
+| Print   | 300 dpi         | Full book | None               | Paid (is_paid=true) |
 
 ---
 
@@ -2256,13 +2357,15 @@ PDFs are private assets. Every download request goes through the API, which veri
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface TriggerPdfRequestDto {
-  quality: 'screen' | 'print';   // default 'print'
+  quality: 'screen' | 'print'; // default 'print'
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface PdfJobAcceptedDto {
   bookId: string;
@@ -2288,10 +2391,11 @@ interface PdfJobAcceptedDto {
 **Plan gate:** `book.is_paid = true`
 
 **Response `200`:**
+
 ```typescript
 interface PdfDownloadResponseDto {
-  downloadUrl: string;     // signed R2 URL, valid 24 hours
-  expiresAt: string;       // ISO 8601
+  downloadUrl: string; // signed R2 URL, valid 24 hours
+  expiresAt: string; // ISO 8601
   fileSizeBytes: number;
   pageCount: number;
   quality: 'print';
@@ -2300,14 +2404,14 @@ interface PdfDownloadResponseDto {
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 200 | Signed URL returned |
-| 401 | Unauthenticated |
-| 402 | Book not paid â€” use checkout to unlock |
-| 403 | Not book owner |
-| 404 | Book not found |
-| 409 | PDF not yet generated (`BOOK_NOT_COMPLETE`) |
+| Status | Condition                                   |
+| ------ | ------------------------------------------- |
+| 200    | Signed URL returned                         |
+| 401    | Unauthenticated                             |
+| 402    | Book not paid â€” use checkout to unlock    |
+| 403    | Not book owner                              |
+| 404    | Book not found                              |
+| 409    | PDF not yet generated (`BOOK_NOT_COMPLETE`) |
 
 ---
 
@@ -2318,6 +2422,7 @@ interface PdfDownloadResponseDto {
 **Auth required:** No
 
 **Response `200`:**
+
 ```typescript
 interface PreviewPdfDownloadResponseDto {
   downloadUrl: string;
@@ -2374,19 +2479,21 @@ interface PreviewPdfDownloadResponseDto {
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface CreateShareLinkRequestDto {
   mode: 'preview_only' | 'full_read';
-  expiresInDays?: number;    // 1â€“365; null for never-expiring (default: 30)
-  password?: string;         // optional access password (max 100 chars)
+  expiresInDays?: number; // 1â€“365; null for never-expiring (default: 30)
+  password?: string; // optional access password (max 100 chars)
 }
 ```
 
 **Response `201`:**
+
 ```typescript
 interface ShareLinkResponseDto {
   shareLink: ShareLinkDto;
-  shareUrl: string;     // e.g. "https://storyme.app/shared/bk_abc/s_tok123"
+  shareUrl: string; // e.g. "https://storyme.app/shared/bk_abc/s_tok123"
 }
 ```
 
@@ -2403,6 +2510,7 @@ interface ShareLinkResponseDto {
 **Auth required:** No
 
 **Response `200`:**
+
 ```typescript
 interface ShareLinkResolveResponseDto {
   token: string;
@@ -2422,12 +2530,12 @@ interface ShareLinkResolveResponseDto {
 
 **Status codes:**
 
-| Status | Condition |
-|---|---|
-| 200 | Token valid |
-| 401 | Password required â€” send `X-Share-Password` header and retry |
-| 404 | Token not found |
-| 410 | Token expired (`SHARE_LINK_EXPIRED`) or revoked (`SHARE_LINK_REVOKED`) |
+| Status | Condition                                                              |
+| ------ | ---------------------------------------------------------------------- |
+| 200    | Token valid                                                            |
+| 401    | Password required â€” send `X-Share-Password` header and retry         |
+| 404    | Token not found                                                        |
+| 410    | Token expired (`SHARE_LINK_EXPIRED`) or revoked (`SHARE_LINK_REVOKED`) |
 
 **Password-protected access:** Send password as `X-Share-Password: <value>` header. Validated server-side; password hash is never returned to clients.
 
@@ -2440,15 +2548,17 @@ interface ShareLinkResolveResponseDto {
 **Auth required:** Yes (book owner)
 
 **Request body:**
+
 ```typescript
 interface UpdateShareLinkRequestDto {
-  expiresInDays?: number | null;    // null = never-expiring
+  expiresInDays?: number | null; // null = never-expiring
   mode?: 'preview_only' | 'full_read';
-  password?: string | null;         // null = remove password
+  password?: string | null; // null = remove password
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface ShareLinkResponseDto {
   shareLink: ShareLinkDto;
@@ -2481,16 +2591,18 @@ interface ShareLinkResponseDto {
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface SocialCardRequestDto {
-  layout?: 'cover_only' | 'cover_with_title';   // default 'cover_with_title'
+  layout?: 'cover_only' | 'cover_with_title'; // default 'cover_with_title'
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface SocialCardResponseDto {
-  socialCardUrl: string;    // cdn.storyme.app/books/{bookId}/social-card.png
+  socialCardUrl: string; // cdn.storyme.app/books/{bookId}/social-card.png
   width: 1200;
   height: 630;
   generatedAt: string;
@@ -2516,6 +2628,7 @@ The frontend never calls Stripe directly. All Stripe interactions go through the
 **Auth required:** No
 
 **Response `200`:**
+
 ```typescript
 interface PlansResponseDto {
   plans: PlanDto[];
@@ -2535,21 +2648,23 @@ interface PlansResponseDto {
 **Idempotency-Key:** Required
 
 **Request body:**
+
 ```typescript
 interface CreateCheckoutSessionRequestDto {
   priceId: 'price_single' | 'price_monthly' | 'price_annual' | 'price_educator';
-  bookId?: string;        // required when priceId = 'price_single'
+  bookId?: string; // required when priceId = 'price_single'
   successUrl?: string;
   cancelUrl?: string;
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface CheckoutSessionResponseDto {
   mode: 'payment' | 'subscription';
-  clientSecret?: string;        // for Stripe Elements (one-time payment)
-  checkoutUrl?: string;         // Stripe Checkout hosted URL (subscription)
+  clientSecret?: string; // for Stripe Elements (one-time payment)
+  checkoutUrl?: string; // Stripe Checkout hosted URL (subscription)
   sessionId?: string;
   expiresAt: string;
 }
@@ -2557,12 +2672,12 @@ interface CheckoutSessionResponseDto {
 
 **Behavior by priceId:**
 
-| `priceId` | Mode | Frontend action |
-|---|---|---|
-| `price_single` | `payment` | Use `clientSecret` with Stripe Elements |
-| `price_monthly` | `subscription` | Redirect to `checkoutUrl` |
-| `price_annual` | `subscription` | Redirect to `checkoutUrl` |
-| `price_educator` | `subscription` | Redirect to `checkoutUrl` |
+| `priceId`        | Mode           | Frontend action                         |
+| ---------------- | -------------- | --------------------------------------- |
+| `price_single`   | `payment`      | Use `clientSecret` with Stripe Elements |
+| `price_monthly`  | `subscription` | Redirect to `checkoutUrl`               |
+| `price_annual`   | `subscription` | Redirect to `checkoutUrl`               |
+| `price_educator` | `subscription` | Redirect to `checkoutUrl`               |
 
 **Status codes:** `200` / `401` / `402` / `409 BILLING_ALREADY_SUBSCRIBED` / `500 BILLING_STRIPE_ERROR`
 
@@ -2575,9 +2690,10 @@ interface CheckoutSessionResponseDto {
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface CustomerPortalResponseDto {
-  portalUrl: string;     // single-use Stripe URL, valid 5 minutes
+  portalUrl: string; // single-use Stripe URL, valid 5 minutes
   expiresAt: string;
 }
 ```
@@ -2605,6 +2721,7 @@ interface CustomerPortalResponseDto {
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface PaymentMethodsResponseDto {
   paymentMethods: Array<{
@@ -2627,6 +2744,7 @@ interface PaymentMethodsResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface CancelSubscriptionRequestDto {
   reason?: string;
@@ -2635,10 +2753,11 @@ interface CancelSubscriptionRequestDto {
 ```
 
 **Response `200`:**
+
 ```typescript
 interface SubscriptionCancelResponseDto {
   subscription: SubscriptionDto;
-  accessUntil: string;    // ISO 8601
+  accessUntil: string; // ISO 8601
   message: string;
 }
 ```
@@ -2658,6 +2777,7 @@ interface SubscriptionCancelResponseDto {
 **Request body:** Empty
 
 **Response `200`:**
+
 ```typescript
 interface SubscriptionResumeResponseDto {
   subscription: SubscriptionDto;
@@ -2681,6 +2801,7 @@ interface SubscriptionResumeResponseDto {
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface CreditBalanceResponseDto {
   balance: number;
@@ -2713,13 +2834,15 @@ interface CreditBalanceResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface RedeemCreditRequestDto {
-  code: string;    // 6â€“20 chars, case-insensitive
+  code: string; // 6â€“20 chars, case-insensitive
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface RedeemCreditResponseDto {
   creditsAdded: number;
@@ -2767,12 +2890,15 @@ interface RedeemCreditResponseDto {
   mode: 'subscription';
   customer: string;
   subscription: string;
-  metadata: { userId: string };
+  metadata: {
+    userId: string;
+  }
   payment_status: 'paid';
 }
 ```
 
 **Database updates:**
+
 1. Create or update `subscriptions` row
 2. Set `users.plan` to the subscribed plan
 3. Grant monthly credits via `credit_transactions` (`reason=subscription_grant`)
@@ -2791,10 +2917,14 @@ interface RedeemCreditResponseDto {
   id: string;
   customer: string;
   status: string;
-  items: { data: [{ price: { id: string } }] };
+  items: {
+    data: [{ price: { id: string } }];
+  }
   current_period_start: number;
   current_period_end: number;
-  metadata: { userId: string };
+  metadata: {
+    userId: string;
+  }
 }
 ```
 
@@ -2816,11 +2946,14 @@ interface RedeemCreditResponseDto {
   cancel_at_period_end: boolean;
   current_period_start: number;
   current_period_end: number;
-  items: { data: [{ price: { id: string } }] };
+  items: {
+    data: [{ price: { id: string } }];
+  }
 }
 ```
 
 **Database updates:**
+
 - Update `subscriptions.status`, `cancel_at_period_end`, period timestamps
 - If `cancel_at_period_end=true`: send cancellation confirmed email
 - If plan changed: update `users.plan`
@@ -2832,11 +2965,19 @@ interface RedeemCreditResponseDto {
 **Triggered by:** Subscription fully cancelled.
 
 **Fields used:**
+
 ```typescript
-{ id: string; customer: string; metadata: { userId: string }; }
+{
+  id: string;
+  customer: string;
+  metadata: {
+    userId: string;
+  }
+}
 ```
 
 **Database updates:**
+
 1. Set `subscriptions.status = 'cancelled'`, `cancelled_at = now()`
 2. Set `users.plan = 'free'`
 3. Send "subscription ended" email
@@ -2857,11 +2998,14 @@ interface RedeemCreditResponseDto {
   amount_paid: number;
   period_start: number;
   period_end: number;
-  lines: { data: [{ price: { id: string } }] };
+  lines: {
+    data: [{ price: { id: string } }];
+  }
 }
 ```
 
 **Database updates:**
+
 1. Update `subscriptions.current_period_start/end`
 2. Grant monthly credits (`reason=subscription_grant`)
 3. Send receipt email (if preference enabled)
@@ -2873,6 +3017,7 @@ interface RedeemCreditResponseDto {
 **Triggered by:** Subscription renewal payment failure.
 
 **Fields used:**
+
 ```typescript
 {
   id: string;
@@ -2884,6 +3029,7 @@ interface RedeemCreditResponseDto {
 ```
 
 **Database updates:**
+
 1. Set `subscriptions.status = 'past_due'`
 2. Send dunning email with Customer Portal link
 3. Frontend shows "payment failed" banner (polled via `/v1/users/me`)
@@ -2901,11 +3047,16 @@ interface RedeemCreditResponseDto {
   id: string;
   customer: string;
   amount: number;
-  metadata: { userId: string; bookId: string; priceId: string };
+  metadata: {
+    userId: string;
+    bookId: string;
+    priceId: string;
+  }
 }
 ```
 
 **Database updates:**
+
 1. Set `books.is_paid = true`, `books.paid_at = now()`, `books.stripe_payment_intent_id = id`
 2. Send "book unlocked" notification
 
@@ -2926,6 +3077,7 @@ interface RedeemCreditResponseDto {
 **Triggered by:** Charge refunded via Stripe Dashboard or admin.
 
 **Fields used:**
+
 ```typescript
 {
   id: string;
@@ -2935,6 +3087,7 @@ interface RedeemCreditResponseDto {
 ```
 
 **Database updates:**
+
 1. Lookup `books` by `stripe_payment_intent_id`
 2. Set `books.is_paid = false` if fully refunded
 3. Add compensating credit transaction (`reason=admin_adjustment`)
@@ -2990,17 +3143,19 @@ interface RedeemCreditResponseDto {
 **Auth required:** Yes
 
 **Request body:**
+
 ```typescript
 interface UpdateNotificationPreferencesRequestDto {
   emailOnCompletion?: boolean;
   emailOnPayment?: boolean;
   emailMarketing?: boolean;
   emailBirthday?: boolean;
-  pushEnabled?: boolean;   // reserved for mobile Phase 2
+  pushEnabled?: boolean; // reserved for mobile Phase 2
 }
 ```
 
 **Response `200`:**
+
 ```typescript
 interface NotificationPreferencesResponseDto {
   preferences: {
@@ -3034,6 +3189,7 @@ Aggregate/optimized endpoints for the dashboard UI. Avoid N+1 queries on the fro
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface DashboardSummaryResponseDto {
   user: {
@@ -3064,14 +3220,14 @@ interface DashboardSummaryResponseDto {
 
 **Query params:**
 
-| Param | Default | Description |
-|---|---|---|
-| `cursor` | â€” | Cursor |
-| `limit` | 12 | Max 48 |
-| `childProfileId` | â€” | Filter by child |
-| `status` | â€” | Filter by book status |
-| `sort` | `created_at` | `created_at` \| `updated_at` \| `title` |
-| `order` | `desc` | `asc` \| `desc` |
+| Param            | Default      | Description                             |
+| ---------------- | ------------ | --------------------------------------- |
+| `cursor`         | â€”          | Cursor                                  |
+| `limit`          | 12           | Max 48                                  |
+| `childProfileId` | â€”          | Filter by child                         |
+| `status`         | â€”          | Filter by book status                   |
+| `sort`           | `created_at` | `created_at` \| `updated_at` \| `title` |
+| `order`          | `desc`       | `asc` \| `desc`                         |
 
 **Response `200`:** `PaginatedResponse<BookListItemDto>`
 
@@ -3084,13 +3240,16 @@ interface DashboardSummaryResponseDto {
 **Auth required:** Yes
 
 **Response `200`:**
+
 ```typescript
 interface DashboardChildrenResponseDto {
-  children: Array<ChildProfileDto & {
-    bookCount: number;
-    lastBookAt: string | null;
-    latestCoverUrl: string | null;
-  }>;
+  children: Array<
+    ChildProfileDto & {
+      bookCount: number;
+      lastBookAt: string | null;
+      latestCoverUrl: string | null;
+    }
+  >;
 }
 ```
 
@@ -3105,6 +3264,7 @@ interface DashboardChildrenResponseDto {
 **Query params:** `limit` (default 10, max 20)
 
 **Response `200`:**
+
 ```typescript
 interface RecentActivityResponseDto {
   activities: Array<{
@@ -3147,15 +3307,19 @@ interface RecentActivityResponseDto {
 **Query params:** `queue`, `state` (`active|waiting|failed|completed`), `limit` (max 200)
 
 **Response `200`:**
+
 ```typescript
 interface AdminGenerationJobsResponseDto {
   jobs: GenerationJobDto[];
-  queueStats: Record<string, {
-    waiting: number;
-    active: number;
-    completed: number;
-    failed: number;
-  }>;
+  queueStats: Record<
+    string,
+    {
+      waiting: number;
+      active: number;
+      completed: number;
+      failed: number;
+    }
+  >;
 }
 ```
 
@@ -3166,15 +3330,17 @@ interface AdminGenerationJobsResponseDto {
 **Purpose:** Admin retry with optional step override.
 
 **Request body:**
+
 ```typescript
 interface AdminRetryJobRequestDto {
   fromStep?: AgentStep;
   priority?: 'high' | 'normal' | 'low';
-  note?: string;   // audit note
+  note?: string; // audit note
 }
 ```
 
 **Response `202`:**
+
 ```typescript
 interface GenerationJobResponseDto {
   job: GenerationJobDto;
@@ -3188,6 +3354,7 @@ interface GenerationJobResponseDto {
 **Purpose:** Full user details for admin inspection.
 
 **Response `200`:**
+
 ```typescript
 interface AdminUserResponseDto {
   user: UserDto;
@@ -3208,6 +3375,7 @@ interface AdminUserResponseDto {
 **Query params:** `period` (`today` | `7d` | `30d` | `all`, default `today`)
 
 **Response `200`:**
+
 ```typescript
 interface AdminMetricsResponseDto {
   books: {
@@ -3253,6 +3421,7 @@ interface AdminMetricsResponseDto {
 **Query params:** `bookId` (required)
 
 **Response `200`:**
+
 ```typescript
 interface AdminAgentRunsResponseDto {
   bookId: string;
@@ -3522,12 +3691,7 @@ interface AssetDto {
   contentType: string;
   fileSizeBytes: number;
   status: 'pending' | 'processing' | 'complete' | 'failed';
-  failureReason:
-    | 'no_face_detected'
-    | 'invalid_mime'
-    | 'too_small'
-    | 'processing_error'
-    | null;
+  failureReason: 'no_face_detected' | 'invalid_mime' | 'too_small' | 'processing_error' | null;
   processedUrl: string | null;
   childProfileId: string | null;
   createdAt: string;
@@ -3585,7 +3749,7 @@ interface PlanDto {
   description: string;
   stripePriceId: string | null;
   pricing: {
-    amount: number;             // cents
+    amount: number; // cents
     currency: string;
     interval: 'one_time' | 'month' | 'year' | null;
   };
@@ -3682,80 +3846,80 @@ type NotificationType =
 
 ### 25.1 Signup
 
-| Field | Type | Required | Constraints | Error Code |
-|---|---|---|---|---|
-| `email` | string | Yes | Valid RFC 5322, max 254 chars, unique in DB | `VALIDATION_ERROR` |
-| `password` | string | Yes | Min 8 chars, â‰¥1 uppercase, â‰¥1 number | `VALIDATION_ERROR` |
-| `name` | string | Yes | 1â€“100 chars, no control characters | `VALIDATION_ERROR` |
-| `locale` | string | No | Valid BCP-47 code from supported list | `VALIDATION_ERROR` |
+| Field      | Type   | Required | Constraints                                 | Error Code         |
+| ---------- | ------ | -------- | ------------------------------------------- | ------------------ |
+| `email`    | string | Yes      | Valid RFC 5322, max 254 chars, unique in DB | `VALIDATION_ERROR` |
+| `password` | string | Yes      | Min 8 chars, â‰¥1 uppercase, â‰¥1 number    | `VALIDATION_ERROR` |
+| `name`     | string | Yes      | 1â€“100 chars, no control characters        | `VALIDATION_ERROR` |
+| `locale`   | string | No       | Valid BCP-47 code from supported list       | `VALIDATION_ERROR` |
 
 ### 25.2 Login
 
-| Field | Type | Required | Constraints | Error Code |
-|---|---|---|---|---|
-| `email` | string | Yes | Non-empty | `VALIDATION_ERROR` |
-| `password` | string | Yes | Non-empty | `VALIDATION_ERROR` |
+| Field      | Type   | Required | Constraints | Error Code         |
+| ---------- | ------ | -------- | ----------- | ------------------ |
+| `email`    | string | Yes      | Non-empty   | `VALIDATION_ERROR` |
+| `password` | string | Yes      | Non-empty   | `VALIDATION_ERROR` |
 
 ### 25.3 Child Profile
 
-| Field | Type | Required | Constraints | Error Code |
-|---|---|---|---|---|
-| `name` | string | Yes | 1â€“50 chars, no control characters | `VALIDATION_ERROR` |
-| `nickname` | string | No | 1â€“30 chars | `VALIDATION_ERROR` |
-| `age` | integer | Yes | 2â€“12 inclusive | `VALIDATION_ERROR` |
-| `pronouns` | enum | Yes | `he/him` \| `she/her` \| `they/them` | `VALIDATION_ERROR` |
-| `birthday` | string | No | ISO 8601 date, past dates only, age consistency Â±1 year | `VALIDATION_ERROR` |
-| `photoAssetId` | UUID | No | Owned by calling user, `status=complete` | `VALIDATION_ERROR` |
+| Field          | Type    | Required | Constraints                                              | Error Code         |
+| -------------- | ------- | -------- | -------------------------------------------------------- | ------------------ |
+| `name`         | string  | Yes      | 1â€“50 chars, no control characters                      | `VALIDATION_ERROR` |
+| `nickname`     | string  | No       | 1â€“30 chars                                             | `VALIDATION_ERROR` |
+| `age`          | integer | Yes      | 2â€“12 inclusive                                         | `VALIDATION_ERROR` |
+| `pronouns`     | enum    | Yes      | `he/him` \| `she/her` \| `they/them`                     | `VALIDATION_ERROR` |
+| `birthday`     | string  | No       | ISO 8601 date, past dates only, age consistency Â±1 year | `VALIDATION_ERROR` |
+| `photoAssetId` | UUID    | No       | Owned by calling user, `status=complete`                 | `VALIDATION_ERROR` |
 
 ### 25.4 Book Creation
 
-| Field | Type | Required | Constraints | Error Code |
-|---|---|---|---|---|
-| `childName` | string | Yes | 1â€“50 chars, trimmed | `VALIDATION_ERROR` |
-| `age` | integer | Yes | 2â€“12 inclusive | `VALIDATION_ERROR` |
-| `pronouns` | enum | Yes | `he/him` \| `she/her` \| `they/them` | `VALIDATION_ERROR` |
-| `appearance.hairColor` | string | Yes | 1â€“50 chars | `VALIDATION_ERROR` |
-| `appearance.hairStyle` | string | Yes | 1â€“50 chars | `VALIDATION_ERROR` |
-| `appearance.eyeColor` | string | Yes | 1â€“50 chars | `VALIDATION_ERROR` |
-| `appearance.skinTone` | string | Yes | 1â€“50 chars | `VALIDATION_ERROR` |
-| `appearance.distinctiveFeatures` | string[] | No | Max 5 items, each â‰¤100 chars | `VALIDATION_ERROR` |
-| `personality` | string[] | Yes | 1â€“5 items, each 1â€“50 chars | `VALIDATION_ERROR` |
-| `favoriteAnimals` | string[] | No | 0â€“3 items, each â‰¤50 chars | `VALIDATION_ERROR` |
-| `favoriteColors` | string[] | No | 0â€“3 items, each â‰¤30 chars | `VALIDATION_ERROR` |
-| `favoriteToys` | string[] | No | 0â€“3 items, each â‰¤50 chars | `VALIDATION_ERROR` |
-| `hobbies` | string[] | No | 0â€“5 items, each â‰¤50 chars | `VALIDATION_ERROR` |
-| `educationalGoal` | string | No | Max 200 chars | `VALIDATION_ERROR` |
-| `genre` | enum | Yes | `adventure\|fantasy\|friendship\|mystery\|nature\|space\|ocean` | `VALIDATION_ERROR` |
-| `bookLength` | enum | Yes | `8\|16\|24\|32` (plan-gated) | `VALIDATION_ERROR` / `PLAN_UPGRADE_REQUIRED` |
-| `illustrationStyle` | enum | Yes | `watercolor\|comic\|3d_cartoon\|pencil_sketch` | `VALIDATION_ERROR` |
-| `language` | string | Yes | Valid BCP-47 from supported list | `VALIDATION_ERROR` |
-| `dedicationText` | string | No | Max 300 chars | `VALIDATION_ERROR` |
-| All string fields | â€” | â€” | Content safety screening | `VALIDATION_CONTENT_POLICY` |
+| Field                            | Type     | Required | Constraints                                                     | Error Code                                   |
+| -------------------------------- | -------- | -------- | --------------------------------------------------------------- | -------------------------------------------- |
+| `childName`                      | string   | Yes      | 1â€“50 chars, trimmed                                           | `VALIDATION_ERROR`                           |
+| `age`                            | integer  | Yes      | 2â€“12 inclusive                                                | `VALIDATION_ERROR`                           |
+| `pronouns`                       | enum     | Yes      | `he/him` \| `she/her` \| `they/them`                            | `VALIDATION_ERROR`                           |
+| `appearance.hairColor`           | string   | Yes      | 1â€“50 chars                                                    | `VALIDATION_ERROR`                           |
+| `appearance.hairStyle`           | string   | Yes      | 1â€“50 chars                                                    | `VALIDATION_ERROR`                           |
+| `appearance.eyeColor`            | string   | Yes      | 1â€“50 chars                                                    | `VALIDATION_ERROR`                           |
+| `appearance.skinTone`            | string   | Yes      | 1â€“50 chars                                                    | `VALIDATION_ERROR`                           |
+| `appearance.distinctiveFeatures` | string[] | No       | Max 5 items, each â‰¤100 chars                                  | `VALIDATION_ERROR`                           |
+| `personality`                    | string[] | Yes      | 1â€“5 items, each 1â€“50 chars                                  | `VALIDATION_ERROR`                           |
+| `favoriteAnimals`                | string[] | No       | 0â€“3 items, each â‰¤50 chars                                   | `VALIDATION_ERROR`                           |
+| `favoriteColors`                 | string[] | No       | 0â€“3 items, each â‰¤30 chars                                   | `VALIDATION_ERROR`                           |
+| `favoriteToys`                   | string[] | No       | 0â€“3 items, each â‰¤50 chars                                   | `VALIDATION_ERROR`                           |
+| `hobbies`                        | string[] | No       | 0â€“5 items, each â‰¤50 chars                                   | `VALIDATION_ERROR`                           |
+| `educationalGoal`                | string   | No       | Max 200 chars                                                   | `VALIDATION_ERROR`                           |
+| `genre`                          | enum     | Yes      | `adventure\|fantasy\|friendship\|mystery\|nature\|space\|ocean` | `VALIDATION_ERROR`                           |
+| `bookLength`                     | enum     | Yes      | `8\|16\|24\|32` (plan-gated)                                    | `VALIDATION_ERROR` / `PLAN_UPGRADE_REQUIRED` |
+| `illustrationStyle`              | enum     | Yes      | `watercolor\|comic\|3d_cartoon\|pencil_sketch`                  | `VALIDATION_ERROR`                           |
+| `language`                       | string   | Yes      | Valid BCP-47 from supported list                                | `VALIDATION_ERROR`                           |
+| `dedicationText`                 | string   | No       | Max 300 chars                                                   | `VALIDATION_ERROR`                           |
+| All string fields                | â€”      | â€”      | Content safety screening                                        | `VALIDATION_CONTENT_POLICY`                  |
 
 ### 25.5 Photo Upload
 
-| Field | Type | Required | Constraints | Error Code |
-|---|---|---|---|---|
-| `contentType` | string | Yes | `image/jpeg\|image/png\|image/heic` | `UPLOAD_INVALID_MIME` |
-| `fileSizeBytes` | integer | Yes | 1â€“10,485,760 bytes (10MB) | `UPLOAD_FILE_TOO_LARGE` |
-| `filename` | string | Yes | 1â€“255 chars, extension must match contentType | `VALIDATION_ERROR` |
-| Image dimensions | â€” | Checked server-side | Min 200Ã—200px | `UPLOAD_TOO_SMALL` |
-| Face detection | â€” | Checked server-side | â‰¥1 face detected | `UPLOAD_NO_FACE_DETECTED` |
+| Field            | Type    | Required            | Constraints                                     | Error Code                |
+| ---------------- | ------- | ------------------- | ----------------------------------------------- | ------------------------- |
+| `contentType`    | string  | Yes                 | `image/jpeg\|image/png\|image/heic`             | `UPLOAD_INVALID_MIME`     |
+| `fileSizeBytes`  | integer | Yes                 | 1â€“10,485,760 bytes (10MB)                     | `UPLOAD_FILE_TOO_LARGE`   |
+| `filename`       | string  | Yes                 | 1â€“255 chars, extension must match contentType | `VALIDATION_ERROR`        |
+| Image dimensions | â€”     | Checked server-side | Min 200Ã—200px                                  | `UPLOAD_TOO_SMALL`        |
+| Face detection   | â€”     | Checked server-side | â‰¥1 face detected                              | `UPLOAD_NO_FACE_DETECTED` |
 
 ### 25.6 Share Link
 
-| Field | Type | Required | Constraints | Error Code |
-|---|---|---|---|---|
-| `mode` | enum | Yes | `preview_only\|full_read` | `VALIDATION_ERROR` |
-| `expiresInDays` | integer | No | 1â€“365 or null | `VALIDATION_ERROR` |
-| `password` | string | No | Max 100 chars | `VALIDATION_ERROR` |
+| Field           | Type    | Required | Constraints               | Error Code         |
+| --------------- | ------- | -------- | ------------------------- | ------------------ |
+| `mode`          | enum    | Yes      | `preview_only\|full_read` | `VALIDATION_ERROR` |
+| `expiresInDays` | integer | No       | 1â€“365 or null           | `VALIDATION_ERROR` |
+| `password`      | string  | No       | Max 100 chars             | `VALIDATION_ERROR` |
 
 ### 25.7 Checkout
 
-| Field | Type | Required | Constraints | Error Code |
-|---|---|---|---|---|
-| `priceId` | enum | Yes | One of the 4 configured Stripe price IDs | `VALIDATION_ERROR` |
-| `bookId` | UUID | Conditional | Required when `priceId=price_single`; must be owned by user | `VALIDATION_ERROR` |
+| Field     | Type | Required    | Constraints                                                 | Error Code         |
+| --------- | ---- | ----------- | ----------------------------------------------------------- | ------------------ |
+| `priceId` | enum | Yes         | One of the 4 configured Stripe price IDs                    | `VALIDATION_ERROR` |
+| `bookId`  | UUID | Conditional | Required when `priceId=price_single`; must be owned by user | `VALIDATION_ERROR` |
 
 ### 25.8 Notification Preferences
 
@@ -3769,27 +3933,27 @@ Rate limits are enforced per user (authenticated) or per IP (unauthenticated) vi
 
 ### 26.1 Rate Limit Table
 
-| Endpoint Group | Guest (per IP) | Free User | Paid User | Admin |
-|---|---|---|---|---|
-| General API | 30 req/min | 100 req/min | 200 req/min | 1000 req/min |
-| `POST /auth/login` | 10 req/15 min | 10 req/15 min | 10 req/15 min | Unlimited |
-| `POST /auth/signup` | 5 req/hour | â€” | â€” | Unlimited |
-| `POST /auth/forgot-password` | 3 req/hour | 3 req/hour | 3 req/hour | Unlimited |
-| `POST /books` | N/A (auth req.) | 3 books/hour | 10 books/hour | Unlimited |
-| `POST /books/{id}/regenerate` | N/A | 1 req/hour | 5 req/hour | Unlimited |
-| `POST /books/{id}/pages/{n}/regenerate-*` | N/A | N/A (plan gate) | 10 req/hour | Unlimited |
-| `POST /uploads/photo/presign` | N/A | 5 req/hour | 10 req/hour | Unlimited |
-| `GET /generation/jobs/{id}/events` | N/A | 5 concurrent | 5 concurrent | Unlimited |
-| `POST /billing/checkout-session` | N/A | 5 req/hour | 5 req/hour | Unlimited |
-| `GET /admin/*` | N/A | N/A | N/A | 1000 req/min |
+| Endpoint Group                            | Guest (per IP)  | Free User       | Paid User     | Admin        |
+| ----------------------------------------- | --------------- | --------------- | ------------- | ------------ |
+| General API                               | 30 req/min      | 100 req/min     | 200 req/min   | 1000 req/min |
+| `POST /auth/login`                        | 10 req/15 min   | 10 req/15 min   | 10 req/15 min | Unlimited    |
+| `POST /auth/signup`                       | 5 req/hour      | â€”             | â€”           | Unlimited    |
+| `POST /auth/forgot-password`              | 3 req/hour      | 3 req/hour      | 3 req/hour    | Unlimited    |
+| `POST /books`                             | N/A (auth req.) | 3 books/hour    | 10 books/hour | Unlimited    |
+| `POST /books/{id}/regenerate`             | N/A             | 1 req/hour      | 5 req/hour    | Unlimited    |
+| `POST /books/{id}/pages/{n}/regenerate-*` | N/A             | N/A (plan gate) | 10 req/hour   | Unlimited    |
+| `POST /uploads/photo/presign`             | N/A             | 5 req/hour      | 10 req/hour   | Unlimited    |
+| `GET /generation/jobs/{id}/events`        | N/A             | 5 concurrent    | 5 concurrent  | Unlimited    |
+| `POST /billing/checkout-session`          | N/A             | 5 req/hour      | 5 req/hour    | Unlimited    |
+| `GET /admin/*`                            | N/A             | N/A             | N/A           | 1000 req/min |
 
 ### 26.2 Global IP Limits (Cloudflare)
 
-| Condition | Limit | Action |
-|---|---|---|
-| Any IP | 500 req/min | 429 |
-| Auth endpoints, per IP | 50 req/min | 429 |
-| Upload endpoints, per IP | 20 req/min | 429 |
+| Condition                | Limit       | Action |
+| ------------------------ | ----------- | ------ |
+| Any IP                   | 500 req/min | 429    |
+| Auth endpoints, per IP   | 50 req/min  | 429    |
+| Upload endpoints, per IP | 20 req/min  | 429    |
 
 ### 26.3 Generation Concurrency Limit
 
@@ -3806,6 +3970,7 @@ X-RateLimit-Reset: 1751280000
 ```
 
 On 429:
+
 ```
 Retry-After: 57
 ```
@@ -3814,26 +3979,26 @@ Retry-After: 57
 
 ## 27. Authorization Matrix
 
-| Resource | Guest | Auth Free | Auth Paid | Book Owner | Share-Link Viewer | Admin |
-|---|---|---|---|---|---|---|
-| **Wizard draft (guest)** | Read/Write | â€” | â€” | â€” | â€” | â€” |
-| **Wizard draft (user)** | â€” | Read/Write | Read/Write | â€” | No | Read |
-| **Create book** | No | Yes (8-page) | Yes (all) | â€” | No | Yes |
-| **List own books** | No | Yes | Yes | â€” | No | Yes (all) |
-| **Read book metadata** | No | Yes (own) | Yes (own) | Yes | Preview only | Yes |
-| **Preview pages 1â€“3** | No | Yes (own) | Yes (own) | Yes | Yes | Yes |
-| **Full pages 4+** | No | Yes (own, unpaid) | Yes (own, paid) | Yes (if paid) | No | Yes |
-| **Edit page text** | No | No | No | Yes (paid plan only) | No | Yes |
-| **Regenerate page** | No | No | No | Yes (paid plan only) | No | Yes |
-| **Delete book** | No | Yes (own) | Yes (own) | Yes | No | Yes |
-| **Download PDF** | No | No | Yes (is_paid=true) | Yes (is_paid=true) | No | Yes |
-| **Preview PDF (3-page watermarked)** | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Child profiles** | No | Own only | Own only | Own only | No | All |
-| **Billing checkout** | No | Yes | Yes | â€” | No | Yes |
-| **Billing portal** | No | Subscribers only | Subscribers only | â€” | No | Yes |
-| **Share links: create** | No | No | No | Yes | No | Yes |
-| **Share links: view** | Yes (with token) | Yes (with token) | Yes (with token) | Yes | Yes | Yes |
-| **Admin endpoints** | No | No | No | No | No | Yes |
+| Resource                             | Guest            | Auth Free         | Auth Paid          | Book Owner           | Share-Link Viewer | Admin     |
+| ------------------------------------ | ---------------- | ----------------- | ------------------ | -------------------- | ----------------- | --------- |
+| **Wizard draft (guest)**             | Read/Write       | â€”               | â€”                | â€”                  | â€”               | â€”       |
+| **Wizard draft (user)**              | â€”              | Read/Write        | Read/Write         | â€”                  | No                | Read      |
+| **Create book**                      | No               | Yes (8-page)      | Yes (all)          | â€”                  | No                | Yes       |
+| **List own books**                   | No               | Yes               | Yes                | â€”                  | No                | Yes (all) |
+| **Read book metadata**               | No               | Yes (own)         | Yes (own)          | Yes                  | Preview only      | Yes       |
+| **Preview pages 1â€“3**              | No               | Yes (own)         | Yes (own)          | Yes                  | Yes               | Yes       |
+| **Full pages 4+**                    | No               | Yes (own, unpaid) | Yes (own, paid)    | Yes (if paid)        | No                | Yes       |
+| **Edit page text**                   | No               | No                | No                 | Yes (paid plan only) | No                | Yes       |
+| **Regenerate page**                  | No               | No                | No                 | Yes (paid plan only) | No                | Yes       |
+| **Delete book**                      | No               | Yes (own)         | Yes (own)          | Yes                  | No                | Yes       |
+| **Download PDF**                     | No               | No                | Yes (is_paid=true) | Yes (is_paid=true)   | No                | Yes       |
+| **Preview PDF (3-page watermarked)** | Yes              | Yes               | Yes                | Yes                  | Yes               | Yes       |
+| **Child profiles**                   | No               | Own only          | Own only           | Own only             | No                | All       |
+| **Billing checkout**                 | No               | Yes               | Yes                | â€”                  | No                | Yes       |
+| **Billing portal**                   | No               | Subscribers only  | Subscribers only   | â€”                  | No                | Yes       |
+| **Share links: create**              | No               | No                | No                 | Yes                  | No                | Yes       |
+| **Share links: view**                | Yes (with token) | Yes (with token)  | Yes (with token)   | Yes                  | Yes               | Yes       |
+| **Admin endpoints**                  | No               | No                | No                 | No                   | No                | Yes       |
 
 ---
 
@@ -3846,6 +4011,7 @@ Idempotency-Key: <UUID v4>
 ```
 
 Rules:
+
 - Must be UUID v4 (36-char hyphenated)
 - Unique per distinct user action
 - Reused on retries of the same operation
@@ -3853,16 +4019,16 @@ Rules:
 
 ### 28.2 Idempotent Endpoints
 
-| Endpoint | TTL | Duplicate Behavior |
-|---|---|---|
-| `POST /v1/books` | 24 hours | Return original `202` |
-| `POST /v1/generation/jobs` | 24 hours | Return original `202` |
-| `POST /v1/generation/jobs/{id}/retry` | 24 hours | Return original `202` |
-| `POST /v1/books/{id}/regenerate` | 24 hours | Return original `202` |
-| `POST /v1/books/{id}/pages/{n}/regenerate-image` | 1 hour | Return original `202` |
-| `POST /v1/books/{id}/pages/{n}/regenerate-text` | 1 hour | Return original `202` |
-| `POST /v1/billing/checkout-session` | 1 hour | Return original `200` |
-| `POST /v1/books/{id}/share-links` | 1 hour | Return original `201` |
+| Endpoint                                         | TTL      | Duplicate Behavior    |
+| ------------------------------------------------ | -------- | --------------------- |
+| `POST /v1/books`                                 | 24 hours | Return original `202` |
+| `POST /v1/generation/jobs`                       | 24 hours | Return original `202` |
+| `POST /v1/generation/jobs/{id}/retry`            | 24 hours | Return original `202` |
+| `POST /v1/books/{id}/regenerate`                 | 24 hours | Return original `202` |
+| `POST /v1/books/{id}/pages/{n}/regenerate-image` | 1 hour   | Return original `202` |
+| `POST /v1/books/{id}/pages/{n}/regenerate-text`  | 1 hour   | Return original `202` |
+| `POST /v1/billing/checkout-session`              | 1 hour   | Return original `200` |
+| `POST /v1/books/{id}/share-links`                | 1 hour   | Return original `201` |
 
 ### 28.3 Redis Storage Format
 
@@ -3889,7 +4055,7 @@ HTTP `409`. Client waits 2 seconds and retries.
 All Stripe calls use a compound key:
 
 ```typescript
-idempotencyKey: `${userId}:${priceId}:${clientIdempotencyKey}`
+idempotencyKey: `${userId}:${priceId}:${clientIdempotencyKey}`;
 ```
 
 ### 28.6 Webhook Idempotency
@@ -3906,25 +4072,25 @@ TTL:   7 days
 
 ### 29.1 Tags
 
-| Tag | Section |
-|---|---|
-| `auth` | Â§6 |
-| `users` | Â§7 |
-| `child-profiles` | Â§8 |
-| `wizard-drafts` | Â§9 |
-| `uploads` | Â§10 |
-| `books` | Â§11 |
-| `book-pages` | Â§12 |
-| `generation` | Â§13 |
-| `reader` | Â§15 |
-| `downloads` | Â§16 |
-| `sharing` | Â§17 |
-| `billing` | Â§18 |
-| `credits` | Â§19 |
-| `webhooks` | Â§20 |
-| `notifications` | Â§21 |
-| `dashboard` | Â§22 |
-| `admin` | Â§23 |
+| Tag              | Section |
+| ---------------- | ------- |
+| `auth`           | Â§6     |
+| `users`          | Â§7     |
+| `child-profiles` | Â§8     |
+| `wizard-drafts`  | Â§9     |
+| `uploads`        | Â§10    |
+| `books`          | Â§11    |
+| `book-pages`     | Â§12    |
+| `generation`     | Â§13    |
+| `reader`         | Â§15    |
+| `downloads`      | Â§16    |
+| `sharing`        | Â§17    |
+| `billing`        | Â§18    |
+| `credits`        | Â§19    |
+| `webhooks`       | Â§20    |
+| `notifications`  | Â§21    |
+| `dashboard`      | Â§22    |
+| `admin`          | Â§23    |
 
 ### 29.2 Security Schemes
 
@@ -4029,6 +4195,7 @@ The frontend is the consumer; the NestJS API is the provider. Pact tests define 
 **Location:** `apps/web/src/__tests__/contracts/`
 
 **Example contract:**
+
 ```typescript
 it('POST /v1/books returns 202 with expected shape', async () => {
   await provider
@@ -4060,6 +4227,7 @@ it('POST /v1/books returns 202 with expected shape', async () => {
 **Location:** `apps/api/src/__tests__/integration/`
 
 Each endpoint test:
+
 1. Seeds test data in isolated test Postgres instance
 2. Calls endpoint via supertest
 3. Asserts response shape matches DTO in Â§24
@@ -4116,7 +4284,8 @@ MSW handlers auto-generated from Pact contracts:
 // apps/web/src/__tests__/mocks/handlers.ts (generated)
 export const handlers = [
   rest.post('/api/books', (req, res, ctx) =>
-    res(ctx.status(202), ctx.json(bookCreatedMockResponse))),
+    res(ctx.status(202), ctx.json(bookCreatedMockResponse)),
+  ),
 ];
 ```
 
@@ -4151,6 +4320,7 @@ Issues that must be resolved before implementation to prevent conflicting interp
 **Problem:** `ARCHITECTURE.md` shows a WebSocket server. `BACKEND_DESIGN.md Â§1.7` describes Socket.io events. `FRONTEND_DESIGN.md Â§10` is titled "WebSocket & SSE Strategy."
 
 **Decision:**
+
 - **NestJS â†’ BFF:** Socket.io (server-to-server, internal)
 - **BFF â†’ Browser:** SSE via `EventSource` (external, browser-compatible)
 - The browser uses `EventSource`. No Socket.io client library in the browser bundle.
@@ -4166,6 +4336,7 @@ Issues that must be resolved before implementation to prevent conflicting interp
 **Problem:** The transition point from guest wizard to authenticated generation was implicit.
 
 **Decision:**
+
 - Wizard steps 1â€“5 are accessible to guests. Draft saved server-side by `storyme_guest_session` cookie.
 - Step 6 ("Preview & auth wall") requires authentication before calling `POST /v1/books`.
 - On login/signup at step 6, BFF auto-calls `POST /v1/wizard-drafts/migrate`.
@@ -4180,6 +4351,7 @@ Issues that must be resolved before implementation to prevent conflicting interp
 **Problem:** Inconsistency between documents on what "free" users can access.
 
 **Decision:**
+
 - **Always free:** Pages 1â€“3 in reader, 3-page watermarked preview PDF, share-link preview mode
 - **Requires `is_paid=true`:** Pages 4+ in reader, full PDF download (screen + print)
 - `is_paid=true` is set by: (a) consuming a subscription credit at `POST /v1/books`, OR (b) successful Stripe `payment_intent.succeeded` webhook
@@ -4194,6 +4366,7 @@ Issues that must be resolved before implementation to prevent conflicting interp
 **Problem:** Whether subscription users consume credits or have unlimited generation was unclear.
 
 **Decision:**
+
 - Credits are **always** consumed at `POST /v1/books`, regardless of plan
 - Subscriptions grant a monthly credit allowance (family: 10/mo, annual: 10/mo, educator: 30/mo)
 - `pay_per_book` users: no credits â€” they pay per book via Stripe checkout (webhook sets `is_paid=true`)
@@ -4208,6 +4381,7 @@ Issues that must be resolved before implementation to prevent conflicting interp
 **Problem:** Initial pipeline PDF is async (PDFRenderAgent). Post-edit PDF trigger via API endpoint was underdefined.
 
 **Decision:**
+
 - **Initial generation:** `PDFRenderAgent` runs as the final pipeline step. No explicit API call needed.
 - **Post-edit regeneration:** `POST /v1/books/{bookId}/pdf` triggers a new `pdf:render` BullMQ job. Plan-gated (family, annual, educator).
 - Re-generation does NOT re-run AI agents â€” only the layout and PDF render step.
@@ -4220,13 +4394,13 @@ Issues that must be resolved before implementation to prevent conflicting interp
 
 **Decision (authoritative):**
 
-| Asset | Served as | Why |
-|---|---|---|
-| Cover thumbnail `.webp` | Public CDN URL | Fast loading; not the paid deliverable |
-| Page images `.webp` | Public CDN URL | Reader performance; acceptable risk |
-| Preview PDF (watermarked) | Public CDN URL | Shareable by design |
-| Full PDF (print/screen) | Signed R2 URL, 24h TTL | Paid deliverable; ownership check required |
-| Original PNG images | Internal only | Used only by PDF renderer |
+| Asset                     | Served as              | Why                                        |
+| ------------------------- | ---------------------- | ------------------------------------------ |
+| Cover thumbnail `.webp`   | Public CDN URL         | Fast loading; not the paid deliverable     |
+| Page images `.webp`       | Public CDN URL         | Reader performance; acceptable risk        |
+| Preview PDF (watermarked) | Public CDN URL         | Shareable by design                        |
+| Full PDF (print/screen)   | Signed R2 URL, 24h TTL | Paid deliverable; ownership check required |
+| Original PNG images       | Internal only          | Used only by PDF renderer                  |
 
 **Impact:** Frontend constructs page image URLs from CDN pattern (Â§2.3) directly. PDF downloads always need an API call first.
 
@@ -4247,6 +4421,7 @@ Issues that must be resolved before implementation to prevent conflicting interp
 ### Issue 10: Anonymous Reader Access via Share Token
 
 **Decision:**
+
 - `GET /v1/reader/books/{bookId}?shareToken={token}` bypasses `JwtAuthGuard`
 - A `ShareTokenGuard` validates the share token against the `share_links` table
 - Returns pages up to `previewPageCount` based on share link `mode`
@@ -4258,7 +4433,7 @@ Issues that must be resolved before implementation to prevent conflicting interp
 
 ---
 
-*Document version 1.0 â€” StoryMe API Specification*
-*This document is the authoritative engineering contract.*
-*Changes require RFC + approval from the Staff API Architect.*
-*Next step: Generate OpenAPI 3.1 YAML from this document's DTOs and endpoint definitions.*
+_Document version 1.0 â€” StoryMe API Specification_
+_This document is the authoritative engineering contract._
+_Changes require RFC + approval from the Staff API Architect._
+_Next step: Generate OpenAPI 3.1 YAML from this document's DTOs and endpoint definitions._

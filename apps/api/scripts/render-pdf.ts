@@ -244,7 +244,7 @@ const SAMPLE_LAYOUT: BookLayout = {
       },
       textBlock: {
         box: { x: 300, y: 600, width: 1800, height: 1200 },
-        text: "The End! We hope Mia enjoyed this adventure. Keep exploring, keep dreaming!\n\nThrough friendship, we learn the importance of courage, kindness, and believing in ourselves.",
+        text: 'The End! We hope Mia enjoyed this adventure. Keep exploring, keep dreaming!\n\nThrough friendship, we learn the importance of courage, kindness, and believing in ourselves.',
         fontFamily: 'Plus Jakarta Sans',
         fontSize: 16,
         lineHeight: 1.6,

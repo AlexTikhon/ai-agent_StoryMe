@@ -239,7 +239,9 @@ describe('BooksController.uploadChildPhoto', () => {
 
   it('passes through undefined when multer rejected the upload (no file on the request)', async () => {
     const booksService = createMockBooksService();
-    booksService.uploadChildPhoto.mockRejectedValue(new BadRequestException('No photo file provided'));
+    booksService.uploadChildPhoto.mockRejectedValue(
+      new BadRequestException('No photo file provided'),
+    );
     const controller = new BooksController(booksService);
 
     await expect(controller.uploadChildPhoto(FAKE_USER, 'b-1', undefined)).rejects.toThrow(

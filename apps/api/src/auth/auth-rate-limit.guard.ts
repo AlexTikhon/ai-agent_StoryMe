@@ -10,7 +10,11 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { Env } from '../config/env.schema';
-import { RATE_LIMITER_TOKEN, type RateLimiter, type RateLimitResult } from '../rate-limit/rate-limiter.interface';
+import {
+  RATE_LIMITER_TOKEN,
+  type RateLimiter,
+  type RateLimitResult,
+} from '../rate-limit/rate-limiter.interface';
 
 /**
  * Applies AUTH_RATE_LIMIT_WINDOW_MS / AUTH_RATE_LIMIT_MAX_ATTEMPTS to

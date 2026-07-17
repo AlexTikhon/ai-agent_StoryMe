@@ -26,11 +26,18 @@ const logger = new Logger('BooksMapper');
  * the hand-written @book/types interfaces (`x?: X`) even though safeParse
  * never actually sets a key to `undefined` on parsed JSON.
  */
-function parseJsonField<T>(schema: ZodTypeAny, value: unknown, fieldName: string, bookId: string): T | null {
+function parseJsonField<T>(
+  schema: ZodTypeAny,
+  value: unknown,
+  fieldName: string,
+  bookId: string,
+): T | null {
   if (value === null || value === undefined) return null;
   const result = schema.safeParse(value);
   if (!result.success) {
-    logger.warn(`Book ${bookId}: stored ${fieldName} does not match the expected shape; returning null.`);
+    logger.warn(
+      `Book ${bookId}: stored ${fieldName} does not match the expected shape; returning null.`,
+    );
     return null;
   }
   return result.data as T;
@@ -48,7 +55,12 @@ export function toBookDto(book: Book): BookDto {
     educationalMessage: book.educationalMessage,
     pageCount: book.pageCount,
     status: book.status as unknown as BookStatus,
-    characterCard: parseJsonField(characterCardSchema, book.characterCard, 'characterCard', book.id),
+    characterCard: parseJsonField(
+      characterCardSchema,
+      book.characterCard,
+      'characterCard',
+      book.id,
+    ),
     storyPlan: parseJsonField(storyPlanSchema, book.storyPlan, 'storyPlan', book.id),
     bookPreview: parseJsonField(bookPreviewSchema, book.bookPreview, 'bookPreview', book.id),
     imageGenerationResult: parseJsonField(

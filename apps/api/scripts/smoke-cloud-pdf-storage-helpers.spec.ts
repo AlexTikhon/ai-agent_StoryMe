@@ -44,7 +44,11 @@ describe('formatConfigSummary', () => {
   });
 
   it('labels r2 driver as Cloudflare R2', () => {
-    const lines = formatConfigSummary({ ...baseConfig, driver: 'r2', endpoint: 'https://abc.r2.cloudflarestorage.com' });
+    const lines = formatConfigSummary({
+      ...baseConfig,
+      driver: 'r2',
+      endpoint: 'https://abc.r2.cloudflarestorage.com',
+    });
     expect(lines.some((line) => line.includes('Cloudflare R2'))).toBe(true);
   });
 

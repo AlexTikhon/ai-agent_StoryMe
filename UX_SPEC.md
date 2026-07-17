@@ -1,5 +1,7 @@
 # UX Specification
+
 ## StoryMe — Interaction Design & Engineering Reference
+
 **Version 1.0 | UX Architecture Document**
 **Prepared by: Product Design & UX Architecture Team | Date: June 2026**
 
@@ -34,7 +36,7 @@ We borrow from three design traditions:
 
 - **Airbnb**: Experience design that uses narrative and emotion to reduce perceived complexity
 - **Linear**: Interface that disappears — keyboard-first, fast, opinionated
-- **Apple**: Motion and reveal as communication — transitions that *mean* something
+- **Apple**: Motion and reveal as communication — transitions that _mean_ something
 
 ---
 
@@ -43,6 +45,7 @@ We borrow from three design traditions:
 In a typical SaaS product, we minimize time-to-value. In StoryMe, time-to-emotion is the metric. A user who spends 3 engaged minutes in the wizard is more invested than one who rushes through in 90 seconds. Design each screen to invite presence, not acceleration.
 
 **Implications:**
+
 - Wizard steps use full-screen layouts with illustration, not compact form rows
 - Progress animations play fully — they are not skippable
 - The reveal screen holds attention before offering any action
@@ -89,6 +92,7 @@ Keyboard-only users, screen reader users, users with motor difficulties, and use
 Every string a user reads is an opportunity to reinforce warmth and trust. Error messages are not error messages — they are reassurances. Empty states are not empty — they are invitations.
 
 **Voice rules:**
+
 - Use the child's name whenever possible: "Lily's book is ready" not "Your book is ready"
 - Use "we" sparingly — prefer "your" and "you"
 - Never use passive voice in errors
@@ -207,18 +211,18 @@ storyme.app/
 
 ## 2.2 Route Access Matrix
 
-| Route Pattern | Guest | Logged-in Free | Logged-in Paid | Admin |
-|---|---|---|---|---|
-| `/` and public pages | ✓ | ✓ | ✓ | ✓ |
-| `/create` (steps 1–4) | ✓ | ✓ | ✓ | ✓ |
-| `/create/preview` | Redirect to signup | ✓ | ✓ | ✓ |
-| `/create/generating` | Redirect to login | ✓ | ✓ | ✓ |
-| `/dashboard` | Redirect to `/` | ✓ | ✓ | ✓ |
-| `/book/:id` (preview) | Redirect to login | ✓ (pages 1-7) | ✓ | ✓ |
-| `/book/:id/edit` | Redirect to login | ✗ (upgrade) | ✓ | ✓ |
-| `/checkout` | Redirect to login | ✓ | ✓ | ✓ |
-| `/settings/*` | Redirect to login | ✓ | ✓ | ✓ |
-| `/shared/:bookId` | ✓ | ✓ | ✓ | ✓ |
+| Route Pattern         | Guest              | Logged-in Free | Logged-in Paid | Admin |
+| --------------------- | ------------------ | -------------- | -------------- | ----- |
+| `/` and public pages  | ✓                  | ✓              | ✓              | ✓     |
+| `/create` (steps 1–4) | ✓                  | ✓              | ✓              | ✓     |
+| `/create/preview`     | Redirect to signup | ✓              | ✓              | ✓     |
+| `/create/generating`  | Redirect to login  | ✓              | ✓              | ✓     |
+| `/dashboard`          | Redirect to `/`    | ✓              | ✓              | ✓     |
+| `/book/:id` (preview) | Redirect to login  | ✓ (pages 1-7)  | ✓              | ✓     |
+| `/book/:id/edit`      | Redirect to login  | ✗ (upgrade)    | ✓              | ✓     |
+| `/checkout`           | Redirect to login  | ✓              | ✓              | ✓     |
+| `/settings/*`         | Redirect to login  | ✓              | ✓              | ✓     |
+| `/shared/:bookId`     | ✓                  | ✓              | ✓              | ✓     |
 
 ---
 
@@ -226,14 +230,14 @@ storyme.app/
 
 The following UI states are persisted in the URL to support deep linking, sharing, and browser history:
 
-| State | URL Pattern | Notes |
-|---|---|---|
-| Dashboard child filter | `/dashboard?child=profileId` | Persisted on filter change |
-| Dashboard sort | `/dashboard?sort=oldest` | Default omitted from URL |
-| Book page | `/book/:id?page=12` | Updated on every page turn |
-| Settings section | `/settings/billing` | Full route, not query param |
-| Wizard step | `/create/world` | Each step is a route |
-| Generation job | `/create/generating/jobId` | Shareable for "email when ready" |
+| State                  | URL Pattern                  | Notes                            |
+| ---------------------- | ---------------------------- | -------------------------------- |
+| Dashboard child filter | `/dashboard?child=profileId` | Persisted on filter change       |
+| Dashboard sort         | `/dashboard?sort=oldest`     | Default omitted from URL         |
+| Book page              | `/book/:id?page=12`          | Updated on every page turn       |
+| Settings section       | `/settings/billing`          | Full route, not query param      |
+| Wizard step            | `/create/world`              | Each step is a route             |
+| Generation job         | `/create/generating/jobId`   | Shareable for "email when ready" |
 
 ---
 
@@ -261,6 +265,7 @@ Each zone has its own navigation shell. They never share a shell component.
 ```
 
 **Header components (left to right):**
+
 - Logo: links to `/dashboard` when authenticated, `/` when guest
 - Nav link: Library → `/dashboard`
 - Nav dropdown: Children → lists child profiles + "Add Child"
@@ -270,6 +275,7 @@ Each zone has its own navigation shell. They never share a shell component.
 - Account avatar: opens account dropdown menu
 
 **Account dropdown menu items:**
+
 1. Profile (→ `/settings/profile`)
 2. Subscription (→ `/settings/subscription`)
 3. Divider
@@ -298,6 +304,7 @@ Mobile uses a **bottom tab bar** instead of a top header nav.
 ```
 
 **Bottom tab items:**
+
 1. Library (house icon) → `/dashboard`
 2. Create (sparkle/plus icon) → `/create` — **emphasized tab** (slightly larger icon, brand color)
 3. Account (person icon) → `/settings/profile`
@@ -317,6 +324,7 @@ Tablet uses the **top header** layout but with a condensed navigation:
 - "+ Create Book" button always visible (right side)
 
 The drawer contains:
+
 - Child profile avatars (row)
 - Library link
 - Settings link
@@ -336,12 +344,14 @@ The wizard uses its own shell — no top nav, no bottom tabs.
 ```
 
 **Components:**
+
 - Exit button (top-left X): triggers exit confirmation modal
 - Progress bar (top-center): shows 5 nodes, filled = completed, active = current, empty = upcoming
 - Node labels: visible on desktop (Name · World · Story · Look · Dedication), icon-only on mobile
 - No back button in header — Back is handled by a text link within the step content area
 
 **Navigation rules:**
+
 - Forward: only when current step validation passes
 - Back: always allowed, no validation required
 - Exit: triggers confirmation modal if any data has been entered
@@ -374,17 +384,17 @@ The reader replaces the app shell entirely (full viewport).
 
 ## 3.7 Back Button Behavior
 
-| Context | Back button action |
-|---|---|
-| Dashboard → Book Reader | Reader closes → Dashboard |
-| Dashboard → Wizard | Wizard opens (not dashboard "back") |
-| Wizard Step 2 → Step 1 | Step 1, data preserved |
-| Wizard Step 1, back pressed | Exit confirmation modal |
-| Settings sub-page | Goes to parent settings page |
-| Settings → Dashboard | Back to dashboard |
-| Checkout → Book | Returns to book reader |
-| Generation screen | Cannot go back (shows modal: "Your book is being created — going back won't stop it") |
-| Book Reader (browser back) | Goes to dashboard or previous page in history |
+| Context                     | Back button action                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| Dashboard → Book Reader     | Reader closes → Dashboard                                                             |
+| Dashboard → Wizard          | Wizard opens (not dashboard "back")                                                   |
+| Wizard Step 2 → Step 1      | Step 1, data preserved                                                                |
+| Wizard Step 1, back pressed | Exit confirmation modal                                                               |
+| Settings sub-page           | Goes to parent settings page                                                          |
+| Settings → Dashboard        | Back to dashboard                                                                     |
+| Checkout → Book             | Returns to book reader                                                                |
+| Generation screen           | Cannot go back (shows modal: "Your book is being created — going back won't stop it") |
+| Book Reader (browser back)  | Goes to dashboard or previous page in history                                         |
 
 ---
 
@@ -400,14 +410,14 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 
 ## 3.9 Browser Refresh Behavior
 
-| Page | Refresh behavior |
-|---|---|
-| Dashboard | Reloads data from API, maintains filter state from URL |
+| Page              | Refresh behavior                                              |
+| ----------------- | ------------------------------------------------------------- |
+| Dashboard         | Reloads data from API, maintains filter state from URL        |
 | Wizard (any step) | Data restored from localStorage (guest) or server (logged-in) |
-| Generation screen | Re-polls job status API; shows current progress |
-| Book Reader | Restores to last saved page position |
-| Settings | Reloads, preserves URL sub-section |
-| Checkout | Reloads fresh (no payment state preserved in URL) |
+| Generation screen | Re-polls job status API; shows current progress               |
+| Book Reader       | Restores to last saved page position                          |
+| Settings          | Reloads, preserves URL sub-section                            |
+| Checkout          | Reloads fresh (no payment state preserved in URL)             |
 
 ---
 
@@ -430,6 +440,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Exit points:** CTA → `/create`, nav → `/pricing`, `/how-it-works`, `/samples`
 
 **Components:**
+
 - `HeroSection`: headline, subheadline, CTA button, hero media (video/gif)
 - `BookCarousel`: swipeable sample books (3–5 books, auto-advance paused on hover)
 - `HowItWorksSection`: 3-step visual explanation
@@ -443,6 +454,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Loading state:** Page loads progressively — text renders first, then images. BookCarousel has skeleton loader.
 
 **Responsive behavior:**
+
 - Desktop: hero has side-by-side text + media
 - Tablet: stacked, media below text
 - Mobile: hero is text + CTA only (media loads lazily below fold)
@@ -460,6 +472,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Exit points:** Continue → `/create/world`, Exit → confirmation modal → `/dashboard` or `/`
 
 **Components:**
+
 - `WizardShell` (progress bar, exit button)
 - `WizardStep` wrapper (title, subtitle, illustration)
 - `TextInput` (name)
@@ -472,6 +485,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Primary action:** Continue → validates name, proceeds to step 2
 
 **Validation:**
+
 - Name: required, 1–30 chars, letters + hyphens + apostrophes (supports names like O'Brien, Mary-Jane)
 - Name: trim whitespace before validation
 - Age: required, 1–12, integer only (stepper prevents invalid input)
@@ -483,11 +497,13 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Empty state:** Form starts blank except age stepper (defaults to 5 but not locked)
 
 **Error state:**
+
 - Name empty: inline error below field: "What's this adventurer's name?"
 - Name invalid chars: "Please use letters, hyphens, and apostrophes only"
 - Pronouns not selected: highlight selector with outline, show: "Please select pronouns to continue"
 
 **Keyboard interactions:**
+
 - Tab: Name → Nickname → Age (up/down arrows) → Pronouns → Continue
 - Enter: submits if valid
 - Escape: triggers exit confirmation modal
@@ -505,6 +521,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Exit points:** Continue → `/create/story`, Back → `/create`
 
 **Components:**
+
 - `WizardShell`
 - `TagPicker` (interests, multi-select, min 1, max 5)
 - `ColorPicker` (favorite color, optional, 16-color grid)
@@ -515,6 +532,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 - `BackLink` → Step 1
 
 **TagPicker behavior:**
+
 - 16 tags shown initially (2 rows of 8 on desktop, scrollable on mobile)
 - "Show more" reveals remaining tags
 - Selected tags have filled background + checkmark
@@ -524,6 +542,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Loading state:** None.
 
 **Keyboard interactions:**
+
 - Tags are keyboard navigable: Tab focuses, Space/Enter toggles selection
 - Continue button at bottom, focusable via Tab
 
@@ -540,6 +559,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 **Exit points:** Continue → `/create/look`, Back → `/create/world`
 
 **Components:**
+
 - `WizardShell`
 - `ThemeCardGrid` (story themes, single select, 2×4 grid on desktop, 1×N on mobile)
 - `SettingCardGrid` (settings, single select, same layout)
@@ -550,6 +570,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 - `BackLink`
 
 **ThemeCard anatomy:**
+
 ```
 ┌────────────────┐
 │   [Illustration│
@@ -559,6 +580,7 @@ All routes are deep-linkable. When a user follows a deep link while unauthentica
 │  Short desc    │
 └────────────────┘
 ```
+
 Selected state: border color = brand primary (3px), background tint
 
 **LessonDropdown behavior:** Collapsed by default. Clicking "Add a lesson" expands a dropdown. Selecting a lesson shows the value and a "Remove" ×. The field label changes to "Story lesson: [selected]".
@@ -566,6 +588,7 @@ Selected state: border color = brand primary (3px), background tint
 **BookLengthToggle (free user):** Extended option is visible but has a lock icon. Clicking it opens the upgrade modal.
 
 **Validation:**
+
 - Theme: required
 - Setting: required
 - Mood: optional (default = "Exciting & Fun" if not selected by the time Continue is clicked)
@@ -584,12 +607,14 @@ Selected state: border color = brand primary (3px), background tint
 **Exit points:** Continue → `/create/dedication`, Back → `/create/story`
 
 **Components:**
+
 - `WizardShell`
 - `AppearanceModePicker`: two-tab switcher ("Upload Photo" / "Build Their Look")
 - **Photo mode:** `PhotoUploadZone`, `PhotoPreview`, `RetryPhotoButton`, `AvatarAdjustmentPanel`
 - **Avatar mode:** `SkinTonePicker`, `HairStyleGrid`, `HairColorPicker`, `EyeColorPicker`, `AccessoriesPicker`, `AvatarPreview`
 
 **Photo upload flow:**
+
 1. User drags/drops or clicks to open file picker
 2. File validation (type, size) — inline error if fails
 3. Upload begins → spinner on drop zone with percentage
@@ -605,11 +630,13 @@ Selected state: border color = brand primary (3px), background tint
 **HairStyleGrid:** 20 illustrated hair style thumbnails, 5×4 on desktop, 4×5 on mobile. Selected = border + checkmark overlay.
 
 **Validation:**
+
 - Photo mode: photo must be uploaded AND processed successfully
 - Avatar mode: skin tone is the only required field (others have reasonable defaults)
 - Continue disabled until at least skin tone selected in avatar mode
 
 **Edge cases:**
+
 - Photo with multiple faces: "We found more than one face — tap the one that's [Name]"
 - Photo processing timeout (>15s): show "This is taking a moment..." with option to switch to avatar mode
 - Very dark/very light photo: "The photo is a bit hard to see — try one with better lighting"
@@ -627,6 +654,7 @@ Selected state: border color = brand primary (3px), background tint
 **Exit points:** Continue → `/create/preview`, Back → `/create/look`
 
 **Components:**
+
 - `WizardShell`
 - `DedicationToggle` ("Include a dedication page" on/off — on by default)
 - `DedicationTextarea` (200 char max, character count shown)
@@ -638,6 +666,7 @@ Selected state: border color = brand primary (3px), background tint
 - `BackLink`
 
 **DedicationPreview layout:**
+
 ```
 ┌──────────────────────────────────┐
 │                                  │
@@ -647,6 +676,7 @@ Selected state: border color = brand primary (3px), background tint
 │                                  │
 └──────────────────────────────────┘
 ```
+
 Styled with serif font, warm background, decorative border.
 
 **DedicationToggle = Off:** Textarea, FromName, and Preview collapse with animation (height → 0, 200ms ease-out). Suggestions also collapse.
@@ -668,6 +698,7 @@ Styled with serif font, warm background, decorative border.
 **Exit points:** "Create My Book" → auth modal (if guest) or generation → `/create/generating/:jobId`; "Edit My Answers" → returns to relevant wizard step
 
 **Components:**
+
 - `BookCoverPreview` (animated mockup, title + child's name, style preview)
 - `StorySummaryCard` (AI-generated title + 2-sentence story summary — loaded via streaming API)
 - `FeatureList` ("24 illustrated pages · Print-quality PDF · Yours forever")
@@ -680,6 +711,7 @@ Styled with serif font, warm background, decorative border.
 **BookCoverPreview:** Shows a 3D-tilted book mockup. The child's name appears on the cover in the story title. Background/color matches the selected theme. NOT the final cover — this is a styled placeholder.
 
 **Auth modal behavior:**
+
 - Slides up from bottom on mobile (bottom sheet)
 - Centered dialog on desktop
 - Options: Continue with Google, Continue with Apple, Use Email
@@ -699,6 +731,7 @@ Styled with serif font, warm background, decorative border.
 **Exit points:** Generation complete → auto-redirect to `/book/:bookId?reveal=true`
 
 **Components:**
+
 - `GenerationHero` (full-screen themed illustration — based on selected setting)
 - `GenerationStageLabel` (animated cycling headline)
 - `GenerationProgressBar` (determinate, themed)
@@ -709,6 +742,7 @@ Styled with serif font, warm background, decorative border.
 - `FactCarousel` (tips/fun facts at bottom, auto-advances every 6 seconds)
 
 **Stage timeline states:**
+
 - Upcoming: gray circle, gray label
 - Active: spinning indicator + brand color circle + bold label
 - Complete: checkmark circle + muted label
@@ -736,6 +770,7 @@ Styled with serif font, warm background, decorative border.
 **Exit points:** "Open My Book" → clears `?reveal=true` param, enters reader. "Share" → share modal.
 
 **Components:**
+
 - `RevealOverlay` (full-viewport, themed background with particle animation)
 - `RevealBookCover` (book cover flies in from center with scale + opacity animation)
 - `RevealHeadline` ("[Name]'s [Title] is ready!")
@@ -744,6 +779,7 @@ Styled with serif font, warm background, decorative border.
 - `ShareQuickButton` (secondary: "Share the magic")
 
 **Animation sequence (total: ~2.5 seconds):**
+
 1. 0ms: Background fades in (200ms, opacity 0→1)
 2. 200ms: Particles/sparkles begin (themed: stars, bubbles, leaves, etc.)
 3. 400ms: Book cover scales up from 60%→100% + fades in (600ms, ease-out-back)
@@ -768,6 +804,7 @@ Styled with serif font, warm background, decorative border.
 **Exit points:** Back button → `/dashboard` (or history); close button → same as back
 
 **Components:**
+
 - `ReaderToolbar` (top, auto-hiding)
 - `BookSpread` (desktop: 2-page spread; mobile: single page)
 - `PageTurnButton` (left/right, large hit areas, visible on hover/focus)
@@ -781,6 +818,7 @@ Styled with serif font, warm background, decorative border.
 `[← Back] [Book Title] [🔖 Bookmark] [⛶ Fullscreen] [↓ Download] [↗ Share] [✕ Close]`
 
 **Page turn interaction:**
+
 - Click/tap left third of screen → previous page
 - Click/tap right third of screen → next page
 - Click/tap center → toggle toolbar visibility
@@ -791,15 +829,18 @@ Styled with serif font, warm background, decorative border.
 - Keyboard End → last page
 
 **Page transition animation:**
+
 - Desktop: subtle slide (20px, 150ms ease-in-out) — pages slide in from right/left
 - Mobile: swipe follows finger with rubber-band at ends
 
 **ProgressBar scrub behavior:**
+
 - Hover shows page number tooltip above cursor
 - Click/tap jumps to that page
 - Touch: drag to scrub through pages
 
 **PaywallOverlay:**
+
 - Appears on top of page 8 (blurs the page image beneath it)
 - NOT a modal — it's an in-place overlay within the reader
 - Blurred background: 8px blur, 0.6 opacity overlay
@@ -808,21 +849,23 @@ Styled with serif font, warm background, decorative border.
 - X button in corner: closes overlay, returns to page 7 (does not grant access)
 
 **Fullscreen mode:**
+
 - `document.fullscreenAPI` on desktop browsers
 - On mobile: hides browser chrome by scrolling to max position, sticky positioning
 - Toolbar always accessible in fullscreen (auto-hide + tap to show)
 
 **Keyboard map:**
-| Key | Action |
-|---|---|
-| `←` / `→` | Previous / Next page |
-| `Home` | First page |
-| `End` | Last page |
-| `F` | Toggle fullscreen |
-| `Esc` | Exit fullscreen / close reader |
-| `B` | Bookmark current page |
-| `D` | Open download modal |
-| `S` | Open share modal |
+
+| Key       | Action                         |
+| --------- | ------------------------------ |
+| `←` / `→` | Previous / Next page           |
+| `Home`    | First page                     |
+| `End`     | Last page                      |
+| `F`       | Toggle fullscreen              |
+| `Esc`     | Exit fullscreen / close reader |
+| `B`       | Bookmark current page          |
+| `D`       | Open download modal            |
+| `S`       | Open share modal               |
 
 **Analytics events:** `book_opened`, `book_page_viewed` (each page), `book_completed` (last page reached), `reader_exited`, `paywall_shown`, `paywall_dismissed`
 
@@ -837,6 +880,7 @@ Styled with serif font, warm background, decorative border.
 **Exit points:** Book card → `/book/:id`, Create button → `/create`, Settings → `/settings/*`
 
 **Components:**
+
 - `AppHeader` (full nav header)
 - `ChildProfileStrip` (horizontal scrollable row of avatar circles)
 - `LibraryToolbar` (`SearchInput`, `FilterDropdown`, `SortDropdown`, view toggle grid/list)
@@ -847,6 +891,7 @@ Styled with serif font, warm background, decorative border.
 - `LibrarySkeletonGrid` (loading state)
 
 **ChildProfileStrip behavior:**
+
 - Horizontally scrollable on overflow (no visible scrollbar; swipe on mobile)
 - "All" chip at left (always visible, default selected)
 - Each child shows: avatar circle (40px) + name label below
@@ -855,18 +900,21 @@ Styled with serif font, warm background, decorative border.
 - "+ Add Child" item at end: navigates to `/settings/children/new`
 
 **Search behavior:**
+
 - Debounced 300ms
 - Searches: book title, child name
 - URL updates: `/dashboard?q=lily` (supports direct link to search results)
 - "Clear" × button appears when input is non-empty
 
 **Filter dropdown:**
+
 - Opens as dropdown on desktop, bottom sheet on mobile
 - Sections: By Child (checkboxes), By Theme (checkboxes), By Date (date range picker), By Status (checkboxes)
 - Applied filters show as chips in the toolbar (each chip has × to remove)
 - "Clear all" link when any filter is active
 
 **Sort dropdown:**
+
 - Options: Newest (default), Oldest, A–Z by title, A–Z by child name
 - Selected option shown in button label
 
@@ -884,10 +932,12 @@ Styled with serif font, warm background, decorative border.
 **Purpose:** Account management, subscription, preferences.
 
 **Layout:**
+
 - Desktop: 2-column layout (left: nav sidebar 240px, right: content)
 - Mobile: Settings home page is a list of nav items (no sidebar); each item pushes to its sub-page
 
 **Settings nav items:**
+
 1. Profile
 2. Children
 3. Subscription
@@ -897,6 +947,7 @@ Styled with serif font, warm background, decorative border.
 7. Privacy
 
 **Sub-screen: Profile**
+
 - `AvatarUpload` (circle upload zone, 80px)
 - `TextInput` (display name)
 - `TextInput` (email — disabled, with "Change email" link that sends verification)
@@ -906,11 +957,13 @@ Styled with serif font, warm background, decorative border.
 - `DangerZone` section (at bottom, separated by divider): "Delete My Account"
 
 **Sub-screen: Children**
+
 - `ChildProfileList` (cards with avatar, name, age, book count, edit/delete actions)
 - `AddChildButton` → `/settings/children/new`
 - Delete: confirmation modal before delete
 
 **Sub-screen: Subscription**
+
 - `PlanBadge` (current plan name + status)
 - `NextBillingInfo` (date + amount)
 - `FeatureList` (what's included in current plan)
@@ -918,19 +971,23 @@ Styled with serif font, warm background, decorative border.
 - `CancelLink` (if subscribed) → triggers retention modal
 
 **Sub-screen: Billing**
+
 - `PaymentMethodCard` (masked number, expiry, edit link)
 - `BillingAddressForm`
 - `InvoiceList` (table: date, amount, status, download)
 
 **Sub-screen: Notifications**
+
 - `ToggleRow` for each notification type
 - `BirthdayReminderConfig` per child (dropdown: "N days before")
 
 **Sub-screen: Language**
+
 - `LanguageSelector` (UI language)
 - `BookLanguageSelector` (default book language, separate from UI)
 
 **Sub-screen: Privacy**
+
 - `DataDownloadButton` (triggers async export, email when ready)
 - `DeleteAccountButton` → multi-step confirmation (see edge cases)
 - `CookiePreferencesLink`
@@ -944,6 +1001,7 @@ Styled with serif font, warm background, decorative border.
 **Entry points:** Paywall in reader, dashboard upgrade prompt, plan selection
 
 **Components:**
+
 - `OrderSummaryCard` (what they're buying, features list, price)
 - `PaymentMethodTabs`: Express (Apple Pay / Google Pay) | Card
 - `CardForm` (Stripe Elements — number, expiry, CVC, postal code)
@@ -953,6 +1011,7 @@ Styled with serif font, warm background, decorative border.
 - `TrustBadges` (SSL, Stripe, money-back guarantee icons)
 
 **Payment flow:**
+
 1. User sees order summary
 2. Apple Pay / Google Pay shown if browser supports it (above the fold)
 3. Card form is below, collapsible on mobile
@@ -977,6 +1036,7 @@ Styled with serif font, warm background, decorative border.
 **Entry points:** Shared link (email, social, WhatsApp)
 
 **Components:**
+
 - `MinimalHeader` (StoryMe logo + "Create your own book" CTA link)
 - `BookReader` (same as authenticated reader, but without toolbar download/bookmark)
 - `ConversionBanner` (bottom of page after reading 3+ pages): "Create a personalized book for your child — free to start"
@@ -996,19 +1056,20 @@ Styled with serif font, warm background, decorative border.
 
 **Variants:**
 
-| Variant | Use | Visual |
-|---|---|---|
-| `primary` | Main action per screen | Filled, brand color, white label |
-| `secondary` | Supporting action | Outlined, brand color |
-| `ghost` | Tertiary / low-emphasis | Text only, brand color |
-| `danger` | Destructive actions | Filled, error red |
-| `loading` | In-progress state | Filled + spinner, disabled |
+| Variant     | Use                     | Visual                           |
+| ----------- | ----------------------- | -------------------------------- |
+| `primary`   | Main action per screen  | Filled, brand color, white label |
+| `secondary` | Supporting action       | Outlined, brand color            |
+| `ghost`     | Tertiary / low-emphasis | Text only, brand color           |
+| `danger`    | Destructive actions     | Filled, error red                |
+| `loading`   | In-progress state       | Filled + spinner, disabled       |
 
 **Sizes:** `sm` (32px height) · `md` (40px, default) · `lg` (48px) · `xl` (56px, wizard CTAs)
 
 **States:** Default · Hover · Pressed · Focused · Disabled · Loading
 
 **Properties:**
+
 ```
 Button {
   variant: 'primary' | 'secondary' | 'ghost' | 'danger'
@@ -1024,6 +1085,7 @@ Button {
 ```
 
 **Accessibility:**
+
 - `role="button"` (if not `<button>` element — always prefer `<button>`)
 - `aria-disabled="true"` when disabled (not `disabled` attribute — maintains focusability for screen reader users)
 - `aria-busy="true"` when loading
@@ -1040,6 +1102,7 @@ Button {
 **States:** Empty · Filled · Focused · Error · Disabled · Read-only
 
 **Properties:**
+
 ```
 TextInput {
   label: string
@@ -1081,11 +1144,13 @@ TextInput {
 **Purpose:** Increment/decrement a bounded integer value (age picker).
 
 **Visual:**
+
 ```
 [ − ]  [  7  ]  [ + ]
 ```
 
 **Properties:**
+
 ```
 NumberStepper {
   value: number
@@ -1098,6 +1163,7 @@ NumberStepper {
 ```
 
 **Accessibility:**
+
 - `role="spinbutton"`
 - `aria-valuenow`, `aria-valuemin`, `aria-valuemax`
 - Arrow up/down keys work when focused on the value display
@@ -1113,6 +1179,7 @@ NumberStepper {
 **States:** Unselected · Selected · Disabled (at max selection) · Hovered
 
 **Properties:**
+
 ```
 TagPicker {
   options: Array<{ id: string, label: string, icon?: string }>
@@ -1143,6 +1210,7 @@ TagPicker {
 **Purpose:** Display a single book in the library grid or list.
 
 **Grid card anatomy:**
+
 ```
 ┌──────────────────┐
 │                  │
@@ -1163,6 +1231,7 @@ TagPicker {
 **"In progress" state:** Cover shows a spinner overlay + "Creating..." label. Card is not clickable until complete.
 
 **Properties:**
+
 ```
 BookCard {
   bookId: string
@@ -1181,6 +1250,7 @@ BookCard {
 ```
 
 **Accessibility:**
+
 - Card is focusable via keyboard
 - Enter on card → opens reader (same as "Read" click)
 - Action buttons are keyboard accessible when card is focused (Tab reveals action bar)
@@ -1192,6 +1262,7 @@ BookCard {
 **Purpose:** Select a story theme or setting in the wizard.
 
 **Anatomy:**
+
 ```
 ┌──────────────────┐
 │  [Theme image    │
@@ -1213,6 +1284,7 @@ BookCard {
 **Purpose:** Communicate position in the wizard flow.
 
 **Visual:**
+
 ```
 ●────●────○────○────○
  1    2    3    4    5
@@ -1234,6 +1306,7 @@ Name World Story Look Dedic.
 **Variants:** `sm` (400px wide) · `md` (560px) · `lg` (720px) · `fullscreen`
 
 **Behavior:**
+
 - Opens with fade-in + scale (0.95 → 1.0, 200ms)
 - Backdrop: semi-transparent overlay, click closes modal (unless `disableBackdropClose` set)
 - Escape key closes modal
@@ -1241,6 +1314,7 @@ Name World Story Look Dedic.
 - Scroll lock on body when open
 
 **Anatomy:**
+
 ```
 ┌───────────────────────────────┐
 │  Modal Title             [×]  │
@@ -1256,6 +1330,7 @@ Name World Story Look Dedic.
 **Mobile:** Always full-width, bottom-aligned (bottom sheet behavior). Slides up from bottom.
 
 **Accessibility:**
+
 - `role="dialog"`, `aria-modal="true"`, `aria-labelledby=[title-id]`
 - Focus moved to modal on open (to first interactive element or modal title)
 - Focus returned to trigger element on close
@@ -1284,6 +1359,7 @@ Name World Story Look Dedic.
 **Duration:** 3 seconds auto-dismiss. Error toasts persist until dismissed (or max 8 seconds). Hover pauses auto-dismiss.
 
 **Anatomy:**
+
 ```
 [ Icon | Message text                        [×] ]
 ```
@@ -1313,6 +1389,7 @@ Name World Story Look Dedic.
 **Variants:** `linear` (default) · `themed` (animated character moving along path)
 
 **Properties:**
+
 ```
 GenerationProgressBar {
   progress: number  // 0–100
@@ -1337,6 +1414,7 @@ GenerationProgressBar {
 **Behavior:** Animated shimmer (left to right gradient sweep, 1.5s loop).
 
 **Usage rules:**
+
 - Use skeletons for content that takes >300ms to load
 - Match skeleton dimensions to actual content dimensions
 - Do not use spinners for large content areas — use skeletons
@@ -1348,6 +1426,7 @@ GenerationProgressBar {
 **Purpose:** Communicate absence of content with a clear action.
 
 **Anatomy:**
+
 ```
         [Illustration]
 
@@ -1359,6 +1438,7 @@ GenerationProgressBar {
 ```
 
 **Properties:**
+
 ```
 EmptyState {
   illustration: IllustrationName
@@ -1382,6 +1462,7 @@ EmptyState {
 **Purpose:** Filter content in library.
 
 **Behavior:**
+
 - Expands on focus (mobile: pushes other toolbar items off-screen)
 - Clear button (×) appears when value is non-empty
 - Results count shown below: "Showing 3 results for 'lily'"
@@ -1406,6 +1487,7 @@ EmptyState {
 **Purpose:** Control bar for the book reader.
 
 **Items:**
+
 ```
 [← Back]  [Title truncated]  [🔖][⛶][↓][↗]  [Page N of M]
 ```
@@ -1432,22 +1514,23 @@ EmptyState {
 
 ## 6.1 Hover States
 
-| Element | Hover behavior | Transition |
-|---|---|---|
-| Button (primary) | 8% darker background | 100ms ease |
-| Button (secondary) | Light background tint | 100ms ease |
-| BookCard | Reveal action bar, subtle shadow increase | 150ms ease |
-| ThemeCard | Scale 1.02, shadow increase | 150ms ease |
-| Tag (unselected) | Border color shift, background tint | 100ms ease |
-| NavLink | Underline slides in from left | 150ms ease |
-| Tooltip trigger | Tooltip appears after 300ms delay | — |
-| PageTurnButton | Opacity 0.5 → 1.0 | 150ms ease |
+| Element            | Hover behavior                            | Transition |
+| ------------------ | ----------------------------------------- | ---------- |
+| Button (primary)   | 8% darker background                      | 100ms ease |
+| Button (secondary) | Light background tint                     | 100ms ease |
+| BookCard           | Reveal action bar, subtle shadow increase | 150ms ease |
+| ThemeCard          | Scale 1.02, shadow increase               | 150ms ease |
+| Tag (unselected)   | Border color shift, background tint       | 100ms ease |
+| NavLink            | Underline slides in from left             | 150ms ease |
+| Tooltip trigger    | Tooltip appears after 300ms delay         | —          |
+| PageTurnButton     | Opacity 0.5 → 1.0                         | 150ms ease |
 
 ---
 
 ## 6.2 Focus States
 
 All interactive elements have a visible focus ring when focused via keyboard:
+
 - **Ring:** 2px solid, brand primary color, 2px offset
 - **Background:** Never changes on focus alone (contrast against existing background)
 - Focus ring is **never** suppressed via `outline: none` without a visible alternative
@@ -1457,12 +1540,12 @@ All interactive elements have a visible focus ring when focused via keyboard:
 
 ## 6.3 Pressed States
 
-| Element | Press behavior |
-|---|---|
-| Button | Scale 0.97 + slightly darker, 80ms ease |
-| ThemeCard | Scale 0.98, 80ms ease |
-| Tag | Immediate visual toggle (no delay) |
-| PageTurnButton | Scale 0.95, 80ms ease |
+| Element        | Press behavior                          |
+| -------------- | --------------------------------------- |
+| Button         | Scale 0.97 + slightly darker, 80ms ease |
+| ThemeCard      | Scale 0.98, 80ms ease                   |
+| Tag            | Immediate visual toggle (no delay)      |
+| PageTurnButton | Scale 0.95, 80ms ease                   |
 
 ---
 
@@ -1481,6 +1564,7 @@ All interactive elements have a visible focus ring when focused via keyboard:
 Used for destructive or irreversible actions. Not used for safe actions.
 
 **Actions requiring confirmation:**
+
 - Delete a book
 - Delete a child profile
 - Delete account
@@ -1488,6 +1572,7 @@ Used for destructive or irreversible actions. Not used for safe actions.
 - Exit wizard mid-progress
 
 **Confirmation dialog pattern:**
+
 - Modal, `sm` size
 - Headline: plain description of what will happen ("Delete this book?")
 - Body: consequences ("This cannot be undone. Your book will be removed from your library.")
@@ -1501,6 +1586,7 @@ Used for destructive or irreversible actions. Not used for safe actions.
 ## 6.6 Undo Patterns
 
 Used for:
+
 - Replacing dedication text with a suggestion template
 - Deleting a tag selection (before confirming)
 - Clearing search input
@@ -1512,14 +1598,17 @@ Used for:
 ## 6.7 Retry Patterns
 
 **Single-action retry (e.g., failed share link copy):**
+
 - Error toast: "Couldn't copy link — try again" with "Retry" button in toast
 
 **Generation retry:**
+
 - Full error screen
 - "Try Again" button: resubmits with same inputs (no data re-entry)
 - Input data preserved in session and server draft
 
 **Automatic retry (silent):**
+
 - Photo upload: retry once automatically on network error
 - Single page illustration failure: retry 3× silently before flagging
 
@@ -1530,17 +1619,18 @@ Used for:
 See Section 8 for full motion specification.
 
 **Key interaction animations:**
-| Interaction | Animation |
-|---|---|
-| Modal open | Scale 0.95→1.0, opacity 0→1, 200ms ease-out |
-| Modal close | Scale 1.0→0.95, opacity 1→0, 150ms ease-in |
-| Bottom sheet open | TranslateY 100%→0%, 250ms cubic-bezier(0.32, 0.72, 0, 1) |
-| Page turn (reader) | SlideX ±20px, opacity, 150ms ease-in-out |
-| Tag selection | Background fills, scale 0.97→1.0, 100ms ease-out |
-| Toast appear | SlideY +8px → 0px, opacity 0→1, 200ms ease-out |
-| Toast dismiss | SlideY 0 → +8px, opacity 1→0, 150ms ease-in |
-| Wizard step transition | Slide left/right, 250ms ease-in-out |
-| Dropdown open | Max-height 0→auto, opacity 0→1, 200ms ease-out |
+
+| Interaction            | Animation                                                |
+| ---------------------- | -------------------------------------------------------- |
+| Modal open             | Scale 0.95→1.0, opacity 0→1, 200ms ease-out              |
+| Modal close            | Scale 1.0→0.95, opacity 1→0, 150ms ease-in               |
+| Bottom sheet open      | TranslateY 100%→0%, 250ms cubic-bezier(0.32, 0.72, 0, 1) |
+| Page turn (reader)     | SlideX ±20px, opacity, 150ms ease-in-out                 |
+| Tag selection          | Background fills, scale 0.97→1.0, 100ms ease-out         |
+| Toast appear           | SlideY +8px → 0px, opacity 0→1, 200ms ease-out           |
+| Toast dismiss          | SlideY 0 → +8px, opacity 1→0, 150ms ease-in              |
+| Wizard step transition | Slide left/right, 250ms ease-in-out                      |
+| Dropdown open          | Max-height 0→auto, opacity 0→1, 200ms ease-out           |
 
 ---
 
@@ -1548,14 +1638,14 @@ See Section 8 for full motion specification.
 
 ## 7.1 Breakpoints
 
-| Name | Range | Target |
-|---|---|---|
-| `xs` | 0–374px | Small phones (SE, older Android) |
-| `sm` | 375–767px | Standard phones |
-| `md` | 768–1023px | Tablets (portrait & landscape) |
-| `lg` | 1024–1279px | Small laptops |
-| `xl` | 1280–1535px | Desktop |
-| `2xl` | 1536px+ | Large/wide monitors |
+| Name  | Range       | Target                           |
+| ----- | ----------- | -------------------------------- |
+| `xs`  | 0–374px     | Small phones (SE, older Android) |
+| `sm`  | 375–767px   | Standard phones                  |
+| `md`  | 768–1023px  | Tablets (portrait & landscape)   |
+| `lg`  | 1024–1279px | Small laptops                    |
+| `xl`  | 1280–1535px | Desktop                          |
+| `2xl` | 1536px+     | Large/wide monitors              |
 
 **Design baseline:** `sm` (375px) is the design starting point. Components are designed at 375px and enhanced upward.
 
@@ -1565,66 +1655,66 @@ See Section 8 for full motion specification.
 
 ### Navigation
 
-| Breakpoint | Navigation |
-|---|---|
-| `xs`/`sm` | Bottom tab bar (3 tabs) + minimal top bar (logo + avatar) |
-| `md` | Top header + hamburger → left drawer |
-| `lg`+ | Full top header with all nav items visible |
+| Breakpoint | Navigation                                                |
+| ---------- | --------------------------------------------------------- |
+| `xs`/`sm`  | Bottom tab bar (3 tabs) + minimal top bar (logo + avatar) |
+| `md`       | Top header + hamburger → left drawer                      |
+| `lg`+      | Full top header with all nav items visible                |
 
 ### Dashboard Grid
 
-| Breakpoint | Columns |
-|---|---|
-| `xs`/`sm` | 2 columns |
-| `md` | 3 columns |
-| `lg` | 4 columns |
-| `xl`+ | 5 columns |
+| Breakpoint | Columns   |
+| ---------- | --------- |
+| `xs`/`sm`  | 2 columns |
+| `md`       | 3 columns |
+| `lg`       | 4 columns |
+| `xl`+      | 5 columns |
 
 ### Book Reader
 
-| Breakpoint | Layout |
-|---|---|
-| `xs`/`sm` | Single page, fullscreen, swipe navigation |
-| `md` | Single page with visible arrows |
-| `lg`+ | Two-page spread |
+| Breakpoint | Layout                                    |
+| ---------- | ----------------------------------------- |
+| `xs`/`sm`  | Single page, fullscreen, swipe navigation |
+| `md`       | Single page with visible arrows           |
+| `lg`+      | Two-page spread                           |
 
 ### Wizard
 
-| Breakpoint | Layout |
-|---|---|
-| `xs`/`sm` | Full-screen step, stacked layout, no decorative illustration |
-| `md` | Full-screen step, illustration visible in column |
-| `lg`+ | Split: form left (50%), illustration right (50%) |
+| Breakpoint | Layout                                                       |
+| ---------- | ------------------------------------------------------------ |
+| `xs`/`sm`  | Full-screen step, stacked layout, no decorative illustration |
+| `md`       | Full-screen step, illustration visible in column             |
+| `lg`+      | Split: form left (50%), illustration right (50%)             |
 
 ### Settings
 
-| Breakpoint | Layout |
-|---|---|
-| `xs`/`sm` | Single column; settings home is a list; each section pushes new screen |
-| `md`+ | Two-column: sidebar (240px fixed) + content |
+| Breakpoint | Layout                                                                 |
+| ---------- | ---------------------------------------------------------------------- |
+| `xs`/`sm`  | Single column; settings home is a list; each section pushes new screen |
+| `md`+      | Two-column: sidebar (240px fixed) + content                            |
 
 ### Modals
 
-| Breakpoint | Behavior |
-|---|---|
-| `xs`/`sm` | Full-width bottom sheet (slides up) |
-| `md`+ | Centered dialog (fixed max-width) |
+| Breakpoint | Behavior                            |
+| ---------- | ----------------------------------- |
+| `xs`/`sm`  | Full-width bottom sheet (slides up) |
+| `md`+      | Centered dialog (fixed max-width)   |
 
 ---
 
 ## 7.3 Components That Collapse/Adapt
 
-| Component | Desktop | Mobile |
-|---|---|---|
-| `LibraryToolbar` | All controls visible in one row | Search bar takes full width; filter/sort in overflow dropdown |
-| `ReaderToolbar` | All icons visible | Title hidden; actions in `...` overflow menu |
-| `ChildProfileStrip` | Horizontal scroll visible | Same, but with swipe affordance |
-| `AvatarPicker` | All sections visible in tabs | Accordion-style sections |
-| `DedicationPreview` | Always visible next to form | Appears in modal on "Preview" tap |
-| `ThemeCardGrid` | 4 columns | 2 columns |
-| `HairStyleGrid` | 5 columns | 4 columns |
-| `GenerationStageTimeline` | Vertical list on right side | Hidden; stage label only |
-| `FactCarousel` | Visible | Collapsed (save vertical space) |
+| Component                 | Desktop                         | Mobile                                                        |
+| ------------------------- | ------------------------------- | ------------------------------------------------------------- |
+| `LibraryToolbar`          | All controls visible in one row | Search bar takes full width; filter/sort in overflow dropdown |
+| `ReaderToolbar`           | All icons visible               | Title hidden; actions in `...` overflow menu                  |
+| `ChildProfileStrip`       | Horizontal scroll visible       | Same, but with swipe affordance                               |
+| `AvatarPicker`            | All sections visible in tabs    | Accordion-style sections                                      |
+| `DedicationPreview`       | Always visible next to form     | Appears in modal on "Preview" tap                             |
+| `ThemeCardGrid`           | 4 columns                       | 2 columns                                                     |
+| `HairStyleGrid`           | 5 columns                       | 4 columns                                                     |
+| `GenerationStageTimeline` | Vertical list on right side     | Hidden; stage label only                                      |
+| `FactCarousel`            | Visible                         | Collapsed (save vertical space)                               |
 
 ---
 
@@ -1632,14 +1722,14 @@ See Section 8 for full motion specification.
 
 **Active on `sm`/`xs` only:**
 
-| Behavior | Implementation |
-|---|---|
-| Bottom sheet modals | Transform instead of centered dialog |
-| Swipe to turn pages | Touch event handling with velocity detection |
-| Pull-to-refresh on dashboard | Native gesture → reload library |
-| Long-press on BookCard | Opens action sheet (equivalent of hover action bar) |
-| Swipe-to-delete on BookCard (list view) | Swipe left reveals delete button |
-| Drag handle on bottom sheets | Visual affordance + touch interaction |
+| Behavior                                | Implementation                                      |
+| --------------------------------------- | --------------------------------------------------- |
+| Bottom sheet modals                     | Transform instead of centered dialog                |
+| Swipe to turn pages                     | Touch event handling with velocity detection        |
+| Pull-to-refresh on dashboard            | Native gesture → reload library                     |
+| Long-press on BookCard                  | Opens action sheet (equivalent of hover action bar) |
+| Swipe-to-delete on BookCard (list view) | Swipe left reveals delete button                    |
+| Drag handle on bottom sheets            | Visual affordance + touch interaction               |
 
 ---
 
@@ -1656,26 +1746,26 @@ See Section 8 for full motion specification.
 
 ## 8.2 Duration Scale
 
-| Token | Duration | Use |
-|---|---|---|
-| `duration-instant` | 80ms | Pressed states, immediate feedback |
-| `duration-fast` | 150ms | State changes, color transitions |
-| `duration-medium` | 250ms | Component enter/exit, page transitions |
-| `duration-slow` | 400ms | Modal open, drawer open |
-| `duration-deliberate` | 600ms | Reveal animations, book open |
-| `duration-story` | 1000ms+ | Narrative animations (book reveal sequence) |
+| Token                 | Duration | Use                                         |
+| --------------------- | -------- | ------------------------------------------- |
+| `duration-instant`    | 80ms     | Pressed states, immediate feedback          |
+| `duration-fast`       | 150ms    | State changes, color transitions            |
+| `duration-medium`     | 250ms    | Component enter/exit, page transitions      |
+| `duration-slow`       | 400ms    | Modal open, drawer open                     |
+| `duration-deliberate` | 600ms    | Reveal animations, book open                |
+| `duration-story`      | 1000ms+  | Narrative animations (book reveal sequence) |
 
 ---
 
 ## 8.3 Easing Scale
 
-| Token | Curve | Use |
-|---|---|---|
-| `ease-default` | `cubic-bezier(0.4, 0, 0.2, 1)` | General purpose |
-| `ease-in` | `cubic-bezier(0.4, 0, 1, 1)` | Elements exiting |
-| `ease-out` | `cubic-bezier(0, 0, 0.2, 1)` | Elements entering |
-| `ease-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | Playful bouncy arrivals |
-| `ease-decelerate` | `cubic-bezier(0, 0, 0, 1)` | Bottom sheets, drawers |
+| Token             | Curve                               | Use                     |
+| ----------------- | ----------------------------------- | ----------------------- |
+| `ease-default`    | `cubic-bezier(0.4, 0, 0.2, 1)`      | General purpose         |
+| `ease-in`         | `cubic-bezier(0.4, 0, 1, 1)`        | Elements exiting        |
+| `ease-out`        | `cubic-bezier(0, 0, 0.2, 1)`        | Elements entering       |
+| `ease-spring`     | `cubic-bezier(0.34, 1.56, 0.64, 1)` | Playful bouncy arrivals |
+| `ease-decelerate` | `cubic-bezier(0, 0, 0, 1)`          | Bottom sheets, drawers  |
 
 ---
 
@@ -1697,6 +1787,7 @@ Timeline:
 ```
 
 **Reduced motion alternative:**
+
 - All elements appear at `t=0` at full opacity, no transforms, no particles
 - Only fade transitions (opacity changes) permitted
 
@@ -1705,6 +1796,7 @@ Timeline:
 ## 8.5 Page Turn Animation (Reader)
 
 **Standard (no reduced motion):**
+
 - Direction: Next = slides in from right. Previous = slides in from left.
 - Outgoing page: `translateX(0) → translateX(-20px)` + `opacity 1 → 0` (150ms ease-in)
 - Incoming page: `translateX(20px) → translateX(0)` + `opacity 0 → 1` (150ms ease-out)
@@ -1719,6 +1811,7 @@ Timeline:
 ## 8.6 Wizard Step Transitions
 
 **Between steps:**
+
 - Outgoing: `translateX(0) → translateX(-40px)` + fade out, 200ms ease-in
 - Incoming: `translateX(40px) → translateX(0)` + fade in, 250ms ease-out
 - Back navigation: reverse direction (incoming from left, outgoing to right)
@@ -1732,19 +1825,23 @@ Timeline:
 ## 8.7 Generation Progress Animations
 
 **Stage label change:**
+
 - Old label: fade out (150ms)
 - New label: fade in (150ms)
 - Slight slide up (8px) on new label entry
 
 **Progress bar fill:**
+
 - Smooth continuous fill, not jumpy
 - Never animates backwards
 
 **Stage node transition to "complete":**
+
 - Circle fills with brand color (200ms)
 - Checkmark draws in (SVG stroke-dashoffset animation, 300ms)
 
 **Partial preview reveal:**
+
 - Panel slides up from bottom (mobile): 300ms ease-decelerate
 - Card appears from right (desktop): 400ms ease-spring
 
@@ -1763,15 +1860,18 @@ Timeline:
 ## 8.9 Success Animations
 
 **Small success (save profile, copy link):**
+
 - Button/field briefly highlights green (100ms flash)
 - Toast slides in from bottom
 
 **Large success (purchase complete):**
+
 - Checkmark draws in (SVG, 400ms ease-out)
 - Circle fills behind checkmark (400ms, delayed 100ms)
 - Subtle background color pulse (1 cycle only)
 
 **Generation complete (book reveal):**
+
 - See 8.4 above
 
 ---
@@ -1779,9 +1879,12 @@ Timeline:
 ## 8.10 prefers-reduced-motion Implementation
 
 **Global wrapper:**
+
 ```css
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
@@ -1801,34 +1904,35 @@ Timeline:
 
 The following success criteria are explicitly targeted:
 
-| Criterion | Level | Implementation |
-|---|---|---|
-| 1.1.1 Non-text Content | A | Alt text on all images and illustrations |
-| 1.3.1 Info and Relationships | A | Semantic HTML, ARIA roles |
-| 1.3.2 Meaningful Sequence | A | DOM order matches visual order |
-| 1.3.3 Sensory Characteristics | A | No instruction relies on shape/color alone |
-| 1.4.1 Use of Color | A | Color never sole conveyor of info |
-| 1.4.3 Contrast (Minimum) | AA | 4.5:1 for text, 3:1 for large text |
-| 1.4.4 Resize Text | AA | Works at 200% zoom without horizontal scroll |
-| 1.4.10 Reflow | AA | Single column at 320px width |
-| 1.4.11 Non-text Contrast | AA | 3:1 for UI components |
-| 2.1.1 Keyboard | A | All functionality keyboard accessible |
-| 2.1.2 No Keyboard Trap | A | Modals have escape route |
-| 2.4.3 Focus Order | A | Logical tab order |
-| 2.4.4 Link Purpose | A | All links have descriptive text |
-| 2.4.7 Focus Visible | AA | All focused elements show visible ring |
-| 3.1.1 Language of Page | A | `lang` attribute on `<html>` |
-| 3.2.1 On Focus | A | No context change on focus |
-| 3.3.1 Error Identification | A | Errors identified and described in text |
-| 3.3.2 Labels or Instructions | A | All form fields have labels |
-| 4.1.2 Name, Role, Value | A | All components have ARIA names and roles |
-| 4.1.3 Status Messages | AA | Status messages via `aria-live` |
+| Criterion                     | Level | Implementation                               |
+| ----------------------------- | ----- | -------------------------------------------- |
+| 1.1.1 Non-text Content        | A     | Alt text on all images and illustrations     |
+| 1.3.1 Info and Relationships  | A     | Semantic HTML, ARIA roles                    |
+| 1.3.2 Meaningful Sequence     | A     | DOM order matches visual order               |
+| 1.3.3 Sensory Characteristics | A     | No instruction relies on shape/color alone   |
+| 1.4.1 Use of Color            | A     | Color never sole conveyor of info            |
+| 1.4.3 Contrast (Minimum)      | AA    | 4.5:1 for text, 3:1 for large text           |
+| 1.4.4 Resize Text             | AA    | Works at 200% zoom without horizontal scroll |
+| 1.4.10 Reflow                 | AA    | Single column at 320px width                 |
+| 1.4.11 Non-text Contrast      | AA    | 3:1 for UI components                        |
+| 2.1.1 Keyboard                | A     | All functionality keyboard accessible        |
+| 2.1.2 No Keyboard Trap        | A     | Modals have escape route                     |
+| 2.4.3 Focus Order             | A     | Logical tab order                            |
+| 2.4.4 Link Purpose            | A     | All links have descriptive text              |
+| 2.4.7 Focus Visible           | AA    | All focused elements show visible ring       |
+| 3.1.1 Language of Page        | A     | `lang` attribute on `<html>`                 |
+| 3.2.1 On Focus                | A     | No context change on focus                   |
+| 3.3.1 Error Identification    | A     | Errors identified and described in text      |
+| 3.3.2 Labels or Instructions  | A     | All form fields have labels                  |
+| 4.1.2 Name, Role, Value       | A     | All components have ARIA names and roles     |
+| 4.1.3 Status Messages         | AA    | Status messages via `aria-live`              |
 
 ---
 
 ## 9.2 Keyboard Navigation Map
 
 **Global:**
+
 - `Tab`: Move forward through interactive elements
 - `Shift+Tab`: Move backward
 - `Enter`: Activate button/link; submit form
@@ -1836,10 +1940,12 @@ The following success criteria are explicitly targeted:
 - `Escape`: Close modal, drawer, dropdown, exit fullscreen
 
 **Wizard:**
+
 - `Enter`: Proceed to next step (if valid)
 - `Escape`: Open exit confirmation
 
 **Book Reader:**
+
 - `← →`: Previous/next page
 - `Home` / `End`: First/last page
 - `F`: Toggle fullscreen
@@ -1849,14 +1955,17 @@ The following success criteria are explicitly targeted:
 - `Escape`: Exit fullscreen or close reader
 
 **TagPicker:**
+
 - `Tab`: Move between tags
 - `Space`: Toggle tag selection
 
 **ThemeCardGrid:**
+
 - Arrow keys: Navigate between cards
 - `Space`/`Enter`: Select card
 
 **Modal:**
+
 - `Escape`: Close
 - `Tab`: Cycle within modal only (focus trap)
 
@@ -1865,43 +1974,44 @@ The following success criteria are explicitly targeted:
 ## 9.3 Screen Reader Requirements
 
 **ARIA Landmarks on every page:**
+
 ```html
-<header role="banner">
-<nav role="navigation" aria-label="Main navigation">
-<main role="main">
-<aside role="complementary">  <!-- sidebars, etc. -->
-<footer role="contentinfo">
+<header role="banner"></header>
+<nav role="navigation" aria-label="Main navigation"></nav>
+<main role="main"></main>
+<aside role="complementary"></aside>
+<!-- sidebars, etc. -->
+<footer role="contentinfo"></footer>
 ```
 
 **Wizard ARIA:**
+
 ```html
 <div role="form" aria-label="Book creation wizard">
-  <div role="group" aria-labelledby="step-1-title">
-    ...
-  </div>
+  <div role="group" aria-labelledby="step-1-title">...</div>
 </div>
 ```
 
 **Generation progress:**
+
 ```html
-<div role="progressbar"
-     aria-valuenow="45"
-     aria-valuemin="0"
-     aria-valuemax="100"
-     aria-label="Generating Lily's book, 45% complete">
+<div
+  role="progressbar"
+  aria-valuenow="45"
+  aria-valuemin="0"
+  aria-valuemax="100"
+  aria-label="Generating Lily's book, 45% complete"
+></div>
 ```
 
 **Live regions:**
+
 ```html
 <!-- Status updates (polite) -->
-<div aria-live="polite" aria-atomic="true">
-  [Stage label updates here]
-</div>
+<div aria-live="polite" aria-atomic="true">[Stage label updates here]</div>
 
 <!-- Error messages (assertive) -->
-<div role="alert" aria-live="assertive">
-  [Error messages here]
-</div>
+<div role="alert" aria-live="assertive">[Error messages here]</div>
 ```
 
 **Book Reader:** The book's text content is available to screen readers via an `aria-label` on each page element. Illustration descriptions are provided via `<figure>` + `<figcaption>` structure.
@@ -1927,11 +2037,13 @@ The following success criteria are explicitly targeted:
 ## 9.5 Color Contrast Requirements
 
 **Text on backgrounds:**
+
 - Body text on white: minimum ratio 7:1 (AAA target where feasible)
 - Body text on color backgrounds: minimum 4.5:1
 - Large text (≥18px bold, ≥24px regular): minimum 3:1
 
 **UI Components:**
+
 - Input borders: 3:1 against background
 - Focus rings: 3:1 against adjacent colors
 - Icons: 3:1 against background
@@ -1976,12 +2088,14 @@ The book reader presents content that is fundamentally visual. Accessibility con
 ## 10.1 Network & Connectivity
 
 **Slow network (>3s per page load):**
+
 - Skeleton loaders appear immediately (not spinners)
 - Images use low-quality placeholders (LQIP) while loading
 - Cover image in reader preloads 2 pages ahead; on slow connection reduces to 1 ahead
 - Wizard step transition is blocked if server save has not confirmed (with a "Saving..." indicator)
 
 **Offline (service worker):**
+
 - Dashboard: shows cached books, banner: "You're offline — some features may be limited"
 - Library books can be read offline if they were previously loaded (cached via service worker)
 - Wizard: local draft preserved in localStorage. Save to server retried when connection returns.
@@ -1989,6 +2103,7 @@ The book reader presents content that is fundamentally visual. Accessibility con
 - Attempting to pay while offline: payment blocked, clear error message shown
 
 **Connection restored:**
+
 - Pending sync items are silently synced
 - Toast: "You're back online" (only if the user saw an offline message)
 - Generation status polled immediately upon reconnect
@@ -1998,27 +2113,32 @@ The book reader presents content that is fundamentally visual. Accessibility con
 ## 10.2 Generation Edge Cases
 
 **Generation takes >5 minutes:**
+
 - Estimated time label: "This is taking a little longer than usual — we're putting extra care into [Name]'s book."
 - No error yet; user remains on progress screen
 - At 8 minutes: "Your book is taking longer than expected. We've sent you an email so you don't have to keep waiting." (email sent automatically, user can safely close tab)
 
 **Generation takes >10 minutes:**
+
 - Job timeout on server side
 - User sees error screen if they are still on the page
 - Email sent regardless: "Your book took longer than expected. We're working on it — we'll email you when it's done."
 - Automatic server-side retry (1 attempt)
 
 **Generation fails (all retries exhausted):**
+
 - Error screen with: headline ("Something went wrong"), explanation (no technical detail), "Try Again" button (restores all inputs), "Contact Support" link
 - No charge made — payment gate only opens after successful generation
 - Input data preserved in draft for 30 days
 
 **User closes tab during generation:**
+
 - Generation continues on server
 - On return (any tab): dashboard shows "In progress" book card with spinner
 - Email notification sent on completion (if email notification was toggled on — if not, user must check dashboard)
 
 **User starts a second book while first is generating:**
+
 - Allowed on paid plans
 - Dashboard shows both as "In progress"
 - Generation queue: second job starts immediately on paid plans; queued on free plans
@@ -2028,26 +2148,31 @@ The book reader presents content that is fundamentally visual. Accessibility con
 ## 10.3 Wizard Edge Cases
 
 **User refreshes mid-wizard:**
+
 - Guest: restored from localStorage (step, all field values)
 - Logged-in: restored from server draft
 - On restore, user sees a banner: "We restored your progress — continue where you left off"
 
 **User opens wizard in two browser tabs:**
+
 - Same draft is loaded in both
 - Last write wins (no conflict UI — simply take latest data)
 - Show toast on second tab: "You have this wizard open in another tab"
 
 **User presses browser back from wizard step 1:**
+
 - Instead of navigating away: exit confirmation modal appears
 - Modal: "Are you sure you want to leave? Your progress will be saved." [Keep Going] [Exit]
 - If guest: "Your progress will be lost." [Keep Going] [Exit]
 
 **Wizard takes >30 minutes (session timeout):**
+
 - On wizard step Continue: server responds with 401
 - Redirect to login with return URL to preview page
 - After login: draft restored, generation begins
 
 **Photo upload during poor connectivity:**
+
 - Progress bar shows upload progress (xhr/fetch with progress events)
 - If upload stalls: "Upload is slow — check your connection" after 15 seconds
 - Auto-retry on network error (1 retry automatically)
@@ -2057,31 +2182,37 @@ The book reader presents content that is fundamentally visual. Accessibility con
 ## 10.4 Payment Edge Cases
 
 **Payment interrupted (browser closed during checkout):**
+
 - Stripe payment intent is idempotent — if user returns with same session, same intent is reused
 - No double-charge possible
 - On return: checkout screen shows in same state as when they left
 
 **Payment succeeds but redirect fails (network drops after charge):**
+
 - Stripe webhook → server marks book as paid
 - User returns to app → dashboard shows book as "paid" / available to download
 - Recovery email sent: "Your payment went through! Your book is ready in your library."
 
 **Double-click on submit button:**
+
 - Button disabled on first click
 - Idempotency key prevents double-charge on server
 
 **Card declined:**
+
 - Inline error below card form (not modal, not redirect)
 - Specific decline reason from Stripe displayed where available: "Insufficient funds" / "Card expired" / "Do not honor" (generic)
 - User can edit card details and retry without re-entering everything
 
 **3D Secure challenge:**
+
 - Stripe.js handles the 3DS modal natively
 - Our UI shows a loading overlay while 3DS challenge is in progress
 - On 3DS success: normal success flow
 - On 3DS failure: clear inline error
 
 **Subscription payment fails (recurring):**
+
 - Handled by Stripe's Smart Retries
 - After all retries fail: email to user + in-app banner: "Your subscription payment failed — update your payment method to continue."
 
@@ -2090,16 +2221,19 @@ The book reader presents content that is fundamentally visual. Accessibility con
 ## 10.5 Session Edge Cases
 
 **Session expires while user is in the app:**
+
 - API returns 401
 - Toast: "Your session has expired — please sign in again"
 - After sign-in: return to the page they were on (saved in `redirect` query param)
 - Form data preserved (no loss of unsaved draft)
 
 **User signs in on another device:**
+
 - Sessions are not invalidated across devices
 - Multiple simultaneous sessions supported
 
 **User signs out on one device:**
+
 - Does not affect other devices
 - If user had a pending generation: it completes; email sent when ready
 
@@ -2110,21 +2244,25 @@ The book reader presents content that is fundamentally visual. Accessibility con
 **Multi-step confirmation for account deletion:**
 
 Step 1 — Intent:
+
 - "Delete my account" link in settings → full-page confirmation (not modal)
 - Explains: "All your books, child profiles, and settings will be permanently deleted. This cannot be undone."
 - Lists: books that will be deleted (count + thumbnails)
 - Options: [Download All Books] [Cancel] [Continue to Delete]
 
 Step 2 — Verification:
+
 - "Type DELETE to confirm" (text input)
 - [Cancel] [Permanently Delete My Account] (danger button, disabled until "DELETE" is typed)
 
 Step 3 — Completion:
+
 - Account deleted → logged out → landing page
 - Toast: "Your account has been deleted. We're sorry to see you go."
 - Confirmation email sent
 
 **Subscription cancellation before account deletion:**
+
 - If active subscription: system cancels it immediately on account deletion (pro-rated refund per billing policy)
 
 ---
@@ -2132,12 +2270,15 @@ Step 3 — Completion:
 ## 10.7 Shared Book Edge Cases
 
 **Book deleted by owner after share link sent:**
+
 - Share link returns 404 error page: "This book is no longer available."
 
 **Owner sets book to private after sharing:**
+
 - Share link returns: "This book is private. Request access from the owner."
 
 **Shared link bookmarked and opened years later:**
+
 - If book still exists: works normally
 - Link does not expire
 
@@ -2146,22 +2287,27 @@ Step 3 — Completion:
 ## 10.8 Miscellaneous Edge Cases
 
 **Very long child name (30 chars):**
+
 - All components that display the name must truncate with ellipsis at their container width
 - Tooltip shows full name on truncated text
 
 **Special characters in name (e.g., Ó, ñ, 张):**
+
 - Accepted in all name fields (Unicode support)
 - AI generation uses name as-entered (not transliterated)
 
 **Child age changes between book creations:**
+
 - Age is stored per-book (snapshot at creation time), not derived from birthdate
 - Prompt shown when creating new book: "Is [Name] still 5 years old, or have they had a birthday?" [Update Age] [Keep as 5]
 
 **Duplicate book creation (user clicks "Create" twice fast):**
+
 - Wizard submit is idempotent — second click is ignored (button disabled after first click)
 - Draft is identified by a client-generated UUID, preventing duplicate job creation
 
 **Reader opened on unsupported browser:**
+
 - Feature detection for required APIs (IntersectionObserver, CSS custom properties)
 - Fallback: static paginated view (no animations, basic prev/next)
 - Banner: "For the best reading experience, use a modern browser like Chrome or Safari."
@@ -2175,9 +2321,10 @@ Step 3 — Completion:
 Events follow the naming convention: `noun_verb` (lowercase, snake_case).
 
 All events carry these base properties:
+
 ```json
 {
-  "user_id": "usr_xxx",           // null for guests
+  "user_id": "usr_xxx", // null for guests
   "session_id": "ses_xxx",
   "device_type": "mobile|tablet|desktop",
   "platform": "web|ios|android",
@@ -2191,97 +2338,97 @@ All events carry these base properties:
 
 ## 11.2 Acquisition Events
 
-| Event | Trigger | Properties |
-|---|---|---|
-| `page_viewed` | Any page load | `page_name`, `referrer`, `utm_*` |
-| `landing_cta_clicked` | Hero CTA clicked | `cta_position` (hero/pricing/footer) |
-| `sample_book_viewed` | Sample book opened | `book_theme` |
-| `pricing_page_viewed` | Pricing page loaded | `referrer` |
+| Event                 | Trigger             | Properties                           |
+| --------------------- | ------------------- | ------------------------------------ |
+| `page_viewed`         | Any page load       | `page_name`, `referrer`, `utm_*`     |
+| `landing_cta_clicked` | Hero CTA clicked    | `cta_position` (hero/pricing/footer) |
+| `sample_book_viewed`  | Sample book opened  | `book_theme`                         |
+| `pricing_page_viewed` | Pricing page loaded | `referrer`                           |
 
 ---
 
 ## 11.3 Wizard Events
 
-| Event | Trigger | Properties |
-|---|---|---|
-| `wizard_started` | Step 1 loaded | `entry_point` (landing/dashboard/email) |
-| `wizard_step_completed` | Any step continued | `step_number`, `step_name`, `time_on_step_ms` |
-| `wizard_step_back` | Back button clicked | `from_step`, `to_step` |
-| `wizard_abandoned` | Exit confirmed | `step_abandoned`, `time_in_wizard_ms`, `reason` (exit_button/browser_back/session_timeout) |
-| `wizard_photo_uploaded` | Photo upload completes | `success: boolean`, `failure_reason?` |
-| `wizard_photo_failed` | Photo processing fails | `failure_reason` (no_face/too_small/unsupported) |
-| `wizard_avatar_built` | Avatar builder used | `features_customized: string[]` |
-| `wizard_tags_selected` | Interests confirmed | `tags: string[]`, `tag_count: number` |
-| `wizard_theme_selected` | Theme chosen | `theme_id`, `theme_name` |
-| `wizard_setting_selected` | Setting chosen | `setting_id`, `setting_name` |
-| `wizard_dedication_written` | Dedication field filled | `has_from_name: boolean`, `char_count: number` |
-| `wizard_completed` | Step 5 confirmed, auth completed | `total_time_ms`, `optional_fields_filled: number` |
+| Event                       | Trigger                          | Properties                                                                                 |
+| --------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------ |
+| `wizard_started`            | Step 1 loaded                    | `entry_point` (landing/dashboard/email)                                                    |
+| `wizard_step_completed`     | Any step continued               | `step_number`, `step_name`, `time_on_step_ms`                                              |
+| `wizard_step_back`          | Back button clicked              | `from_step`, `to_step`                                                                     |
+| `wizard_abandoned`          | Exit confirmed                   | `step_abandoned`, `time_in_wizard_ms`, `reason` (exit_button/browser_back/session_timeout) |
+| `wizard_photo_uploaded`     | Photo upload completes           | `success: boolean`, `failure_reason?`                                                      |
+| `wizard_photo_failed`       | Photo processing fails           | `failure_reason` (no_face/too_small/unsupported)                                           |
+| `wizard_avatar_built`       | Avatar builder used              | `features_customized: string[]`                                                            |
+| `wizard_tags_selected`      | Interests confirmed              | `tags: string[]`, `tag_count: number`                                                      |
+| `wizard_theme_selected`     | Theme chosen                     | `theme_id`, `theme_name`                                                                   |
+| `wizard_setting_selected`   | Setting chosen                   | `setting_id`, `setting_name`                                                               |
+| `wizard_dedication_written` | Dedication field filled          | `has_from_name: boolean`, `char_count: number`                                             |
+| `wizard_completed`          | Step 5 confirmed, auth completed | `total_time_ms`, `optional_fields_filled: number`                                          |
 
 ---
 
 ## 11.4 Generation Events
 
-| Event | Trigger | Properties |
-|---|---|---|
-| `generation_started` | Job created on server | `job_id`, `theme`, `setting`, `book_language` |
-| `generation_progress_milestone` | At 25%, 50%, 75% | `job_id`, `progress_percent` |
-| `generation_completed` | Book created successfully | `job_id`, `duration_ms`, `page_count` |
-| `generation_failed` | Job fails after retries | `job_id`, `failure_reason`, `attempt_count` |
-| `generation_email_toggled` | Email notification toggled | `enabled: boolean` |
-| `generation_tab_closed` | User closes tab during generation | `progress_at_close_percent` |
-| `partial_preview_viewed` | Cover preview shown at 40% | `job_id` |
+| Event                           | Trigger                           | Properties                                    |
+| ------------------------------- | --------------------------------- | --------------------------------------------- |
+| `generation_started`            | Job created on server             | `job_id`, `theme`, `setting`, `book_language` |
+| `generation_progress_milestone` | At 25%, 50%, 75%                  | `job_id`, `progress_percent`                  |
+| `generation_completed`          | Book created successfully         | `job_id`, `duration_ms`, `page_count`         |
+| `generation_failed`             | Job fails after retries           | `job_id`, `failure_reason`, `attempt_count`   |
+| `generation_email_toggled`      | Email notification toggled        | `enabled: boolean`                            |
+| `generation_tab_closed`         | User closes tab during generation | `progress_at_close_percent`                   |
+| `partial_preview_viewed`        | Cover preview shown at 40%        | `job_id`                                      |
 
 ---
 
 ## 11.5 Reader Events
 
-| Event | Trigger | Properties |
-|---|---|---|
-| `book_opened` | Reader screen loaded | `book_id`, `entry_point` (reveal/library/share_link/email) |
-| `book_page_viewed` | Page displayed | `book_id`, `page_number`, `time_on_page_ms` |
-| `book_completed` | Last page reached | `book_id`, `total_read_time_ms` |
-| `reader_exited` | Reader closed | `book_id`, `last_page_viewed`, `read_percent` |
-| `paywall_shown` | Paywall overlay appears | `book_id`, `user_plan` |
-| `paywall_cta_clicked` | Upgrade clicked in paywall | `book_id`, `plan_selected` (single/family) |
-| `paywall_dismissed` | Paywall × clicked | `book_id` |
-| `reader_fullscreen_entered` | Fullscreen toggled on | `book_id` |
-| `reader_bookmark_added` | Bookmark set | `book_id`, `page_number` |
-| `reader_download_clicked` | Download button clicked | `book_id`, `resolution` (screen/print) |
-| `reader_shared` | Share action completed | `book_id`, `share_method` (link/instagram/facebook/whatsapp) |
+| Event                       | Trigger                    | Properties                                                   |
+| --------------------------- | -------------------------- | ------------------------------------------------------------ |
+| `book_opened`               | Reader screen loaded       | `book_id`, `entry_point` (reveal/library/share_link/email)   |
+| `book_page_viewed`          | Page displayed             | `book_id`, `page_number`, `time_on_page_ms`                  |
+| `book_completed`            | Last page reached          | `book_id`, `total_read_time_ms`                              |
+| `reader_exited`             | Reader closed              | `book_id`, `last_page_viewed`, `read_percent`                |
+| `paywall_shown`             | Paywall overlay appears    | `book_id`, `user_plan`                                       |
+| `paywall_cta_clicked`       | Upgrade clicked in paywall | `book_id`, `plan_selected` (single/family)                   |
+| `paywall_dismissed`         | Paywall × clicked          | `book_id`                                                    |
+| `reader_fullscreen_entered` | Fullscreen toggled on      | `book_id`                                                    |
+| `reader_bookmark_added`     | Bookmark set               | `book_id`, `page_number`                                     |
+| `reader_download_clicked`   | Download button clicked    | `book_id`, `resolution` (screen/print)                       |
+| `reader_shared`             | Share action completed     | `book_id`, `share_method` (link/instagram/facebook/whatsapp) |
 
 ---
 
 ## 11.6 Conversion Events
 
-| Event | Trigger | Properties |
-|---|---|---|
-| `signup_started` | Auth modal opened or signup page loaded | `entry_point`, `auth_method` |
-| `signup_completed` | Account created | `auth_method` (google/apple/email), `entry_context` (wizard/paywall/landing) |
-| `login_completed` | Existing user signs in | `auth_method` |
-| `checkout_started` | Checkout page loaded | `plan` (single/monthly/annual), `entry_point` |
-| `payment_method_selected` | User selects payment type | `method` (apple_pay/google_pay/card) |
-| `payment_submitted` | Submit button clicked | `plan`, `amount`, `currency` |
-| `payment_succeeded` | Payment confirmed | `plan`, `amount`, `book_id?` |
-| `payment_failed` | Payment error | `failure_reason`, `plan`, `attempt_number` |
-| `subscription_created` | First subscription payment succeeds | `plan`, `billing_period` (monthly/annual) |
-| `subscription_cancelled` | Cancellation confirmed | `plan`, `days_active`, `reason?` (from exit survey) |
-| `subscription_reactivated` | Resubscribed after cancellation | `plan` |
+| Event                      | Trigger                                 | Properties                                                                   |
+| -------------------------- | --------------------------------------- | ---------------------------------------------------------------------------- |
+| `signup_started`           | Auth modal opened or signup page loaded | `entry_point`, `auth_method`                                                 |
+| `signup_completed`         | Account created                         | `auth_method` (google/apple/email), `entry_context` (wizard/paywall/landing) |
+| `login_completed`          | Existing user signs in                  | `auth_method`                                                                |
+| `checkout_started`         | Checkout page loaded                    | `plan` (single/monthly/annual), `entry_point`                                |
+| `payment_method_selected`  | User selects payment type               | `method` (apple_pay/google_pay/card)                                         |
+| `payment_submitted`        | Submit button clicked                   | `plan`, `amount`, `currency`                                                 |
+| `payment_succeeded`        | Payment confirmed                       | `plan`, `amount`, `book_id?`                                                 |
+| `payment_failed`           | Payment error                           | `failure_reason`, `plan`, `attempt_number`                                   |
+| `subscription_created`     | First subscription payment succeeds     | `plan`, `billing_period` (monthly/annual)                                    |
+| `subscription_cancelled`   | Cancellation confirmed                  | `plan`, `days_active`, `reason?` (from exit survey)                          |
+| `subscription_reactivated` | Resubscribed after cancellation         | `plan`                                                                       |
 
 ---
 
 ## 11.7 Social & Retention Events
 
-| Event | Trigger | Properties |
-|---|---|---|
-| `share_link_copied` | Share link copied | `book_id`, `context` (reader/library/dashboard) |
-| `share_social_clicked` | Social share button clicked | `book_id`, `platform` |
-| `gift_flow_started` | Gift purchase flow entered | — |
-| `gift_sent` | Gift delivery confirmed | `book_id`, `delivery_method` (now/scheduled) |
-| `referral_link_shared` | Referral link copied | `referring_user_id` |
-| `referral_converted` | Referred user signs up | `referral_source_user_id` |
-| `series_continued` | Second book in series created | `series_id`, `book_number` |
-| `birthday_reminder_set` | Birthday saved for a child | `days_until_birthday` |
-| `child_profile_created` | New child profile saved | `child_number` (1st, 2nd, etc.) |
+| Event                   | Trigger                       | Properties                                      |
+| ----------------------- | ----------------------------- | ----------------------------------------------- |
+| `share_link_copied`     | Share link copied             | `book_id`, `context` (reader/library/dashboard) |
+| `share_social_clicked`  | Social share button clicked   | `book_id`, `platform`                           |
+| `gift_flow_started`     | Gift purchase flow entered    | —                                               |
+| `gift_sent`             | Gift delivery confirmed       | `book_id`, `delivery_method` (now/scheduled)    |
+| `referral_link_shared`  | Referral link copied          | `referring_user_id`                             |
+| `referral_converted`    | Referred user signs up        | `referral_source_user_id`                       |
+| `series_continued`      | Second book in series created | `series_id`, `book_number`                      |
+| `birthday_reminder_set` | Birthday saved for a child    | `days_until_birthday`                           |
+| `child_profile_created` | New child profile saved       | `child_number` (1st, 2nd, etc.)                 |
 
 ---
 
@@ -2291,67 +2438,68 @@ All events carry these base properties:
 
 Base unit: 4px
 
-| Token | Value | Common use |
-|---|---|---|
-| `space-0` | 0px | — |
-| `space-1` | 4px | Micro gaps, icon padding |
-| `space-2` | 8px | Inline element gaps |
-| `space-3` | 12px | Input internal padding (vertical) |
-| `space-4` | 16px | Default component padding, list item gaps |
-| `space-5` | 20px | Card padding (mobile) |
-| `space-6` | 24px | Card padding (desktop), section gaps |
-| `space-8` | 32px | Component-to-component gaps |
-| `space-10` | 40px | Section padding |
-| `space-12` | 48px | Large section gaps |
-| `space-16` | 64px | Page section padding |
-| `space-20` | 80px | Hero/landing section padding |
-| `space-24` | 96px | — |
+| Token      | Value | Common use                                |
+| ---------- | ----- | ----------------------------------------- |
+| `space-0`  | 0px   | —                                         |
+| `space-1`  | 4px   | Micro gaps, icon padding                  |
+| `space-2`  | 8px   | Inline element gaps                       |
+| `space-3`  | 12px  | Input internal padding (vertical)         |
+| `space-4`  | 16px  | Default component padding, list item gaps |
+| `space-5`  | 20px  | Card padding (mobile)                     |
+| `space-6`  | 24px  | Card padding (desktop), section gaps      |
+| `space-8`  | 32px  | Component-to-component gaps               |
+| `space-10` | 40px  | Section padding                           |
+| `space-12` | 48px  | Large section gaps                        |
+| `space-16` | 64px  | Page section padding                      |
+| `space-20` | 80px  | Hero/landing section padding              |
+| `space-24` | 96px  | —                                         |
 
 ---
 
 ## 12.2 Border Radius Scale
 
-| Token | Value | Use |
-|---|---|---|
-| `radius-sm` | 4px | Input fields, tags (small variant) |
-| `radius-md` | 8px | Buttons, dropdown menus |
-| `radius-lg` | 12px | Cards, modals |
-| `radius-xl` | 16px | Drawers, book card images |
-| `radius-2xl` | 24px | Large feature cards |
-| `radius-full` | 9999px | Pills, avatars, toggle buttons |
+| Token         | Value  | Use                                |
+| ------------- | ------ | ---------------------------------- |
+| `radius-sm`   | 4px    | Input fields, tags (small variant) |
+| `radius-md`   | 8px    | Buttons, dropdown menus            |
+| `radius-lg`   | 12px   | Cards, modals                      |
+| `radius-xl`   | 16px   | Drawers, book card images          |
+| `radius-2xl`  | 24px   | Large feature cards                |
+| `radius-full` | 9999px | Pills, avatars, toggle buttons     |
 
 ---
 
 ## 12.3 Elevation (Shadow Scale)
 
-| Token | Value | Use |
-|---|---|---|
-| `shadow-none` | none | Flat elements |
-| `shadow-xs` | `0 1px 2px rgba(0,0,0,0.08)` | Subtle card lift |
-| `shadow-sm` | `0 2px 8px rgba(0,0,0,0.10)` | Default card |
-| `shadow-md` | `0 4px 16px rgba(0,0,0,0.12)` | Hover state, dropdowns |
-| `shadow-lg` | `0 8px 32px rgba(0,0,0,0.14)` | Modals, pickers |
-| `shadow-xl` | `0 16px 48px rgba(0,0,0,0.18)` | Bottom sheets, overlays |
-| `shadow-focus` | `0 0 0 3px {brand-primary-40}` | Focus ring |
+| Token          | Value                          | Use                     |
+| -------------- | ------------------------------ | ----------------------- |
+| `shadow-none`  | none                           | Flat elements           |
+| `shadow-xs`    | `0 1px 2px rgba(0,0,0,0.08)`   | Subtle card lift        |
+| `shadow-sm`    | `0 2px 8px rgba(0,0,0,0.10)`   | Default card            |
+| `shadow-md`    | `0 4px 16px rgba(0,0,0,0.12)`  | Hover state, dropdowns  |
+| `shadow-lg`    | `0 8px 32px rgba(0,0,0,0.14)`  | Modals, pickers         |
+| `shadow-xl`    | `0 16px 48px rgba(0,0,0,0.18)` | Bottom sheets, overlays |
+| `shadow-focus` | `0 0 0 3px {brand-primary-40}` | Focus ring              |
 
 ---
 
 ## 12.4 Typography Scale
 
-| Token | Size | Weight | Line height | Use |
-|---|---|---|---|---|
-| `text-xs` | 12px | 400 | 1.5 | Caption, metadata, legal text |
-| `text-sm` | 14px | 400 | 1.5 | Secondary body, labels |
-| `text-base` | 16px | 400 | 1.6 | Body text |
-| `text-md` | 18px | 400 | 1.5 | Large body |
-| `text-lg` | 20px | 600 | 1.4 | Card titles, section labels |
-| `text-xl` | 24px | 600 | 1.3 | Sub-headings |
-| `text-2xl` | 30px | 700 | 1.2 | Page headings |
-| `text-3xl` | 36px | 700 | 1.15 | Section headlines |
-| `text-4xl` | 48px | 800 | 1.1 | Hero headline |
-| `text-5xl` | 60px | 800 | 1.0 | Landing hero (desktop) |
+| Token       | Size | Weight | Line height | Use                           |
+| ----------- | ---- | ------ | ----------- | ----------------------------- |
+| `text-xs`   | 12px | 400    | 1.5         | Caption, metadata, legal text |
+| `text-sm`   | 14px | 400    | 1.5         | Secondary body, labels        |
+| `text-base` | 16px | 400    | 1.6         | Body text                     |
+| `text-md`   | 18px | 400    | 1.5         | Large body                    |
+| `text-lg`   | 20px | 600    | 1.4         | Card titles, section labels   |
+| `text-xl`   | 24px | 600    | 1.3         | Sub-headings                  |
+| `text-2xl`  | 30px | 700    | 1.2         | Page headings                 |
+| `text-3xl`  | 36px | 700    | 1.15        | Section headlines             |
+| `text-4xl`  | 48px | 800    | 1.1         | Hero headline                 |
+| `text-5xl`  | 60px | 800    | 1.0         | Landing hero (desktop)        |
 
 **Font families:**
+
 - `font-sans`: Primary UI font (system-ui fallback: Inter, -apple-system, Helvetica)
 - `font-serif`: Dedication page, book interior text (Georgia, "Times New Roman")
 - `font-display`: Marketing headlines (custom variable font — TBD in visual design)
@@ -2371,6 +2519,7 @@ xl:  1280px
 ```
 
 **Container max widths:**
+
 ```
 prose content:  720px
 standard layout: 1200px
@@ -2393,14 +2542,14 @@ wide layout:    1440px
 
 ## 12.7 Icon Sizes
 
-| Token | Size | Use |
-|---|---|---|
-| `icon-xs` | 12px | Badge indicators |
-| `icon-sm` | 16px | Inline icons in text |
-| `icon-md` | 20px | Button icons (default) |
-| `icon-lg` | 24px | Toolbar icons, nav icons |
-| `icon-xl` | 32px | Empty state icons |
-| `icon-2xl` | 48px | Feature section icons |
+| Token      | Size | Use                      |
+| ---------- | ---- | ------------------------ |
+| `icon-xs`  | 12px | Badge indicators         |
+| `icon-sm`  | 16px | Inline icons in text     |
+| `icon-md`  | 20px | Button icons (default)   |
+| `icon-lg`  | 24px | Toolbar icons, nav icons |
+| `icon-xl`  | 32px | Empty state icons        |
+| `icon-2xl` | 48px | Feature section icons    |
 
 All icons use an SVG icon system (not icon fonts). Icons are 24px artboard with variable interior sizing.
 
@@ -2408,16 +2557,17 @@ All icons use an SVG icon system (not icon fonts). Icons are 24px artboard with 
 
 ## 12.8 Motion Scale
 
-| Token | Value | Use |
-|---|---|---|
-| `motion-instant` | 80ms | Pressed states |
-| `motion-fast` | 150ms | Color/border transitions |
-| `motion-medium` | 250ms | Component enter/exit |
-| `motion-slow` | 400ms | Modal, drawer open |
-| `motion-deliberate` | 600ms | Reveal elements |
-| `motion-story` | 1000ms+ | Narrative sequences |
+| Token               | Value   | Use                      |
+| ------------------- | ------- | ------------------------ |
+| `motion-instant`    | 80ms    | Pressed states           |
+| `motion-fast`       | 150ms   | Color/border transitions |
+| `motion-medium`     | 250ms   | Component enter/exit     |
+| `motion-slow`       | 400ms   | Modal, drawer open       |
+| `motion-deliberate` | 600ms   | Reveal elements          |
+| `motion-story`      | 1000ms+ | Narrative sequences      |
 
 **Easing tokens:**
+
 ```
 ease-default:     cubic-bezier(0.4, 0, 0.2, 1)
 ease-in:          cubic-bezier(0.4, 0, 1, 1)
@@ -2430,42 +2580,42 @@ ease-decelerate:  cubic-bezier(0, 0, 0, 1)
 
 ## 12.9 Z-Index Scale
 
-| Token | Value | Layer |
-|---|---|---|
-| `z-base` | 0 | Normal content |
-| `z-raised` | 10 | Cards on hover |
-| `z-dropdown` | 100 | Dropdowns, floating menus |
-| `z-sticky` | 200 | Sticky headers |
-| `z-overlay` | 300 | Backdrop overlays |
-| `z-modal` | 400 | Modals, dialogs |
-| `z-drawer` | 450 | Drawers |
-| `z-toast` | 500 | Toast notifications |
-| `z-tooltip` | 600 | Tooltips |
+| Token        | Value | Layer                     |
+| ------------ | ----- | ------------------------- |
+| `z-base`     | 0     | Normal content            |
+| `z-raised`   | 10    | Cards on hover            |
+| `z-dropdown` | 100   | Dropdowns, floating menus |
+| `z-sticky`   | 200   | Sticky headers            |
+| `z-overlay`  | 300   | Backdrop overlays         |
+| `z-modal`    | 400   | Modals, dialogs           |
+| `z-drawer`   | 450   | Drawers                   |
+| `z-toast`    | 500   | Toast notifications       |
+| `z-tooltip`  | 600   | Tooltips                  |
 
 ---
 
 ## 12.10 Interaction Timing Reference
 
-| Interaction | Duration | Easing |
-|---|---|---|
-| Button press | 80ms | ease-in-out |
-| Button hover | 100ms | ease-out |
-| Color transition | 150ms | ease-default |
-| Page turn (reader) | 150ms | ease-in-out |
-| Tag selection | 100ms | ease-out |
-| Dropdown open | 200ms | ease-out |
-| Modal open | 200ms | ease-out |
-| Modal close | 150ms | ease-in |
-| Drawer open | 300ms | ease-decelerate |
-| Wizard step transition | 250ms | ease-in-out |
-| Toast appear | 200ms | ease-out |
-| Toast dismiss | 150ms | ease-in |
-| Skeleton shimmer | 1500ms | linear (loop) |
-| Book reveal sequence | 2500ms | (staged — see §8.4) |
+| Interaction            | Duration | Easing              |
+| ---------------------- | -------- | ------------------- |
+| Button press           | 80ms     | ease-in-out         |
+| Button hover           | 100ms    | ease-out            |
+| Color transition       | 150ms    | ease-default        |
+| Page turn (reader)     | 150ms    | ease-in-out         |
+| Tag selection          | 100ms    | ease-out            |
+| Dropdown open          | 200ms    | ease-out            |
+| Modal open             | 200ms    | ease-out            |
+| Modal close            | 150ms    | ease-in             |
+| Drawer open            | 300ms    | ease-decelerate     |
+| Wizard step transition | 250ms    | ease-in-out         |
+| Toast appear           | 200ms    | ease-out            |
+| Toast dismiss          | 150ms    | ease-in             |
+| Skeleton shimmer       | 1500ms   | linear (loop)       |
+| Book reveal sequence   | 2500ms   | (staged — see §8.4) |
 
 ---
 
-*End of UX Specification*
+_End of UX Specification_
 
 ---
 
@@ -2473,11 +2623,13 @@ ease-decelerate:  cubic-bezier(0, 0, 0, 1)
 **Status:** Ready for Design & Engineering Review
 
 **Companion documents:**
+
 - `PRD.md` — Product Requirements (what the product does)
 - `ARCHITECTURE.md` — Technical Architecture (how it's built)
 - `ROADMAP.md` — Implementation Roadmap (when it's built)
 
 **Next steps:**
+
 - Design team: produce Figma wireframes for all screens in Section 4, using tokens in Section 12
 - Frontend team: review Section 5 (Component Inventory) and establish the component library scaffold
 - QA team: use Section 10 (Edge Cases) to build the test plan

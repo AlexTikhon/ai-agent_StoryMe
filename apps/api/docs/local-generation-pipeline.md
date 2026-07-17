@@ -25,7 +25,7 @@ calls, no external AI providers, no cloud dependency.
    - Charges 1 credit the moment the run is durably scheduled, inside the
      same transaction as the `GenerationRun` create/`Book` transition/
      `OutboxEvent` write — an insufficient balance returns the stable `402
-     { code: 'INSUFFICIENT_CREDITS' }` and rolls everything back. See
+{ code: 'INSUFFICIENT_CREDITS' }` and rolls everything back. See
      `apps/api/docs/credits.md`, "Phase E2".
    - Transitions `status` to `char_build` (the first pipeline step) and
      returns immediately — it does **not** wait for generation to finish.
@@ -1776,7 +1776,7 @@ all." Two gaps remain, deliberately out of scope for this pass:
 - **Run-scoped artifact storage.** _Closed for images/character sheets by
   Phase B, Slice B3, and for PDFs by Slice B4 — see those sections below._
   Every new PDF is now written under `books/{bookId}/runs/{runId}/claims/
-  {fencingVersion}/...` (`pdfStorage.saveClaimPreviewPdf`), never the legacy
+{fencingVersion}/...` (`pdfStorage.saveClaimPreviewPdf`), never the legacy
   shared key, and `GenerationRunCoordinator.completeRun` is the single fenced
   transaction that atomically promotes one claim's `(runId, fencingVersion)`
   to `Book.publishedRunId`/`publishedRunFencingVersion` on success. A stale
@@ -1834,7 +1834,7 @@ been switched to it yet, and every existing positional
 caller is unchanged.
 
 - **Artifact ownership is `(runId, fencingVersion)`, not `runId` alone.**
-  `GenerationRunService.claim()` reclaims a stalled job's *same*
+  `GenerationRunService.claim()` reclaims a stalled job's _same_
   `GenerationRun.id` and unconditionally bumps `fencingVersion` — so two
   different BullMQ deliveries of one run share a `runId` but never a
   `fencingVersion`. A storage key scoped only to `runId` cannot distinguish
@@ -1851,7 +1851,7 @@ caller is unchanged.
   `20260715160805_phase_b1_artifact_namespace_pointers`).
 - **Every existing row remains legacy** (`lastGenerationRunId`/
   `lastGenerationFencingVersion` null, `publishedRunFencingVersion` null even
-  where `publishedRunId` is already set) until a run generated *after* the
+  where `publishedRunId` is already set) until a run generated _after_ the
   eventual pipeline cutover writes claim metadata for it. No migration
   backfill is possible or attempted — there is no historical per-write claim
   record to reconstruct.
@@ -1995,7 +1995,7 @@ never a side effect of a successful storage write.
   `savePreviewPdf(bookId, buffer)` is no longer called from any generation
   path. A successful write here does **not** itself publish anything — it is
   just bytes sitting at `books/{bookId}/runs/{runId}/claims/{fencingVersion}/
-  storyme-preview-{bookId}.pdf`, readable only once something resolves that
+storyme-preview-{bookId}.pdf`, readable only once something resolves that
   exact namespace as published.
 - **Publication is the one fenced coordinator transaction, not a storage
   event.** `GenerationRunCoordinator.completeRun` is the only place
@@ -2003,7 +2003,7 @@ never a side effect of a successful storage write.
   both together, atomically, in the same fenced transaction as the
   `GenerationRun` terminal write and the rest of `Book`'s completion update —
   never independently, never from `AgentService` or `PdfStorage`. A `stale_
-  fence` or `book_mirror_mismatch` outcome leaves both pointer fields exactly
+fence` or `book_mirror_mismatch` outcome leaves both pointer fields exactly
   as they were (the latter via a full transaction rollback, `GenerationRun`
   included); only an `'applied'` success ever moves them, and only to the
   exact `(ctx.runId, ctx.fencingVersion)` this attempt was fenced on. A run
@@ -2019,13 +2019,13 @@ never a side effect of a successful storage write.
   to decide ownership — only the published pointer pair below (plus the one
   disambiguating read of `previewPdfUrl`):
 
-| publishedRunId | publishedRunFencingVersion | previewPdfUrl | Resolves to |
-| --- | --- | --- | --- |
-| set | set | — | `{ kind: 'claim', runId, fencingVersion }` — the exact published claim |
-| set | `null` | — | `{ kind: 'legacy' }` — pre-Phase-B completion |
-| `null` | `null` | set | `{ kind: 'legacy' }` — pre-`GenerationRun` completion |
-| `null` | `null` | `null` | `{ kind: 'not_ready' }` — nothing published yet |
-| `null` | set | — | throws `InvalidGenerationArtifactPointerError` — never falls back to legacy |
+| publishedRunId | publishedRunFencingVersion | previewPdfUrl | Resolves to                                                                 |
+| -------------- | -------------------------- | ------------- | --------------------------------------------------------------------------- |
+| set            | set                        | —             | `{ kind: 'claim', runId, fencingVersion }` — the exact published claim      |
+| set            | `null`                     | —             | `{ kind: 'legacy' }` — pre-Phase-B completion                               |
+| `null`         | `null`                     | set           | `{ kind: 'legacy' }` — pre-`GenerationRun` completion                       |
+| `null`         | `null`                     | `null`        | `{ kind: 'not_ready' }` — nothing published yet                             |
+| `null`         | set                        | —             | throws `InvalidGenerationArtifactPointerError` — never falls back to legacy |
 
 - **Every production PDF read/existence path resolves through it.**
   `BooksService.getPreviewPdfBuffer` (the `GET /api/books/:id/pdf/preview`
@@ -2129,7 +2129,7 @@ unaffected by this feature existing.
    interval** (default 30 minutes) before touching anything else. Each pass
    logs one line at `info` level from `ClaimArtifactCleanupService`, e.g.:
    `Claim artifact cleanup (dryRun=true): discovered N object(s), M
-   malformed/skipped, ... protected: ... dry-run eligible, ...`.
+malformed/skipped, ... protected: ... dry-run eligible, ...`.
 4. **Confirm the protected/eligible/malformed counts look sane** before
    enabling real deletion:
    - `protectedPublished` / `protectedResumable` / `protectedActiveRun` /
@@ -2292,7 +2292,7 @@ statement inside the same transaction as the fenced `GenerationRun` write and
 the Book mirror write, and only after both have held. Concretely:
 
 1. `GenerationRun.updateMany` fenced on `(id, status: 'running',
-   fencingVersion)` — 0 rows matched means this claim is stale; the
+fencingVersion)` — 0 rows matched means this claim is stale; the
    transaction returns `'stale_fence'` immediately and the AgentLog insert is
    never reached.
 2. `Book.updateMany` fenced on `(id, activeRunId)` — 0 rows matched means the

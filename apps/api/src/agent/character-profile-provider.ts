@@ -34,7 +34,8 @@ export interface CharacterProfileProvider {
 
 export const CHARACTER_PROFILE_PROVIDER_TOKEN = 'CHARACTER_PROFILE_PROVIDER';
 
-const ILLUSTRATION_STYLE = 'warm children book illustration, soft colors, friendly character design';
+const ILLUSTRATION_STYLE =
+  'warm children book illustration, soft colors, friendly character design';
 
 /**
  * Builds the single consistency-prompt fragment folded into every page/
