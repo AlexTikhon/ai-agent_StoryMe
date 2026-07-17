@@ -196,7 +196,12 @@ function makeDiagnostics(
       characterProfileCreated: false,
       characterSheetGenerated: false,
       pagePromptsIncludeConsistencyData: false,
+      characterReferenceAvailable: false,
+      characterReferenceUsedForImages: false,
+      imageGenerationMode: 'text-to-image',
     },
+    resume: null,
+    imageFailures: [],
     ...overrides,
   };
 }
@@ -2415,6 +2420,9 @@ describe('BookDetailPage', () => {
               characterProfileCreated: true,
               characterSheetGenerated: false,
               pagePromptsIncludeConsistencyData: true,
+              characterReferenceAvailable: false,
+              characterReferenceUsedForImages: false,
+              imageGenerationMode: 'text-to-image',
             },
           }),
         ),
