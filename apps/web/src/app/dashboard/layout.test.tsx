@@ -5,6 +5,8 @@ import { useRouter, usePathname } from 'next/navigation';
 import DashboardLayout from './layout';
 import { useAuth } from '@/lib/auth/auth-context';
 import { authApi } from '@/lib/api/auth';
+import { creditsApi } from '@/lib/api/credits';
+import { CREDITS_UPDATED_EVENT } from '@/lib/credits-events';
 import { UserRole } from '@book/types';
 import type { UserDto } from '@book/types';
 
@@ -13,12 +15,25 @@ vi.mock('next/navigation', () => ({
   usePathname: vi.fn(),
 }));
 
+vi.mock('next/link', () => ({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  default: ({ href, children, className }: any) => (
+    <a href={href} className={className}>
+      {children}
+    </a>
+  ),
+}));
+
 vi.mock('@/lib/auth/auth-context', () => ({
   useAuth: vi.fn(),
 }));
 
 vi.mock('@/lib/api/auth', () => ({
   authApi: { resendVerification: vi.fn() },
+}));
+
+vi.mock('@/lib/api/credits', () => ({
+  creditsApi: { getBalance: vi.fn() },
 }));
 
 const MOCK_USER: UserDto = {
@@ -45,6 +60,10 @@ describe('DashboardLayout', () => {
       replace: replaceMock,
     } as unknown as ReturnType<typeof useRouter>);
     vi.mocked(usePathname).mockReturnValue('/dashboard');
+    vi.mocked(creditsApi.getBalance).mockReset().mockResolvedValue({
+      balance: 5,
+      creditsUpdatedAt: null,
+    });
   });
 
   afterEach(() => {
@@ -92,6 +111,7 @@ describe('DashboardLayout', () => {
     expect(screen.getByText('Protected content')).toBeDefined();
     expect(replaceMock).not.toHaveBeenCalled();
     expect(screen.getByText(/emma@example.com/)).toBeDefined();
+    await waitFor(() => expect(creditsApi.getBalance).toHaveBeenCalled());
   });
 
   it('shows a loading state instead of redirecting while the session is being restored', () => {
@@ -186,7 +206,7 @@ describe('DashboardLayout', () => {
     });
   });
 
-  it('does not show the verify-email banner for a verified user', () => {
+  it('does not show the verify-email banner for a verified user', async () => {
     vi.mocked(useAuth).mockReturnValue({
       user: MOCK_USER,
       status: 'authed',
@@ -203,9 +223,10 @@ describe('DashboardLayout', () => {
     );
 
     expect(screen.queryByRole('status')).toBeNull();
+    await waitFor(() => expect(creditsApi.getBalance).toHaveBeenCalled());
   });
 
-  it('does not render a logout button in dev mode', () => {
+  it('does not render a logout button in dev mode', async () => {
     vi.mocked(useAuth).mockReturnValue({
       user: null,
       status: 'authed',
@@ -222,5 +243,82 @@ describe('DashboardLayout', () => {
     );
 
     expect(screen.queryByRole('button', { name: /log out/i })).toBeNull();
+    await waitFor(() => expect(creditsApi.getBalance).toHaveBeenCalled());
+  });
+
+  it('renders the credit balance and a Buy credits link once authenticated', async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: MOCK_USER,
+      status: 'authed',
+      authMode: 'jwt',
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: logoutMock,
+    });
+
+    render(
+      <DashboardLayout>
+        <p>Protected content</p>
+      </DashboardLayout>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('5 credits')).toBeDefined();
+    });
+    expect(screen.getByRole('link', { name: /buy credits/i })).toHaveProperty(
+      'href',
+      expect.stringContaining('/dashboard/credits'),
+    );
+  });
+
+  it('does not hide protected children when the balance fetch fails', async () => {
+    vi.mocked(creditsApi.getBalance).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(useAuth).mockReturnValue({
+      user: MOCK_USER,
+      status: 'authed',
+      authMode: 'jwt',
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: logoutMock,
+    });
+
+    render(
+      <DashboardLayout>
+        <p>Protected content</p>
+      </DashboardLayout>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/credits unavailable/i)).toBeDefined();
+    });
+    expect(screen.getByText('Protected content')).toBeDefined();
+  });
+
+  it('refetches the balance when a credits-updated event is dispatched', async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: MOCK_USER,
+      status: 'authed',
+      authMode: 'jwt',
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: logoutMock,
+    });
+
+    render(
+      <DashboardLayout>
+        <p>Protected content</p>
+      </DashboardLayout>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('5 credits')).toBeDefined();
+    });
+
+    vi.mocked(creditsApi.getBalance).mockResolvedValueOnce({ balance: 15, creditsUpdatedAt: null });
+    window.dispatchEvent(new Event(CREDITS_UPDATED_EVENT));
+
+    await waitFor(() => {
+      expect(screen.getByText('15 credits')).toBeDefined();
+    });
   });
 });

@@ -4,6 +4,7 @@ export const BILLING_DISABLED_CODE = 'BILLING_DISABLED';
 export const INVALID_PACKAGE_CODE = 'INVALID_PACKAGE';
 export const INVALID_SIGNATURE_CODE = 'INVALID_SIGNATURE';
 export const CHECKOUT_UNAVAILABLE_CODE = 'CHECKOUT_UNAVAILABLE';
+export const INVALID_CHECKOUT_SESSION_ID_CODE = 'INVALID_CHECKOUT_SESSION_ID';
 
 /** Billing is off (STRIPE_BILLING_ENABLED=false) or misconfigured — checkout must fail without ever contacting Stripe. */
 export function billingDisabledException(): HttpException {
@@ -50,5 +51,17 @@ export function checkoutUnavailableException(): HttpException {
       code: CHECKOUT_UNAVAILABLE_CODE,
     },
     HttpStatus.BAD_GATEWAY,
+  );
+}
+
+/** A `:sessionId` path param that doesn't look like a Stripe Checkout Session id — rejected before ever querying the ledger for it. */
+export function invalidCheckoutSessionIdException(): HttpException {
+  return new HttpException(
+    {
+      error: 'Invalid checkout session id',
+      message: 'Invalid checkout session id',
+      code: INVALID_CHECKOUT_SESSION_ID_CODE,
+    },
+    HttpStatus.BAD_REQUEST,
   );
 }

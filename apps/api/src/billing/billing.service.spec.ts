@@ -66,12 +66,15 @@ function matchingLineItems() {
 
 describe('BillingService', () => {
   let prisma: MockPrisma;
-  let creditsService: { add: ReturnType<typeof vi.fn> };
+  let creditsService: { add: ReturnType<typeof vi.fn>; getBalance: ReturnType<typeof vi.fn> };
   let stripe: ReturnType<typeof fakeStripe>;
 
   beforeEach(() => {
     prisma = createMockPrisma();
-    creditsService = { add: vi.fn().mockResolvedValue({ id: 'tx-1' }) };
+    creditsService = {
+      add: vi.fn().mockResolvedValue({ id: 'tx-1' }),
+      getBalance: vi.fn(),
+    };
     stripe = fakeStripe();
   });
 
@@ -393,6 +396,99 @@ describe('BillingService', () => {
       await expect(service.handleWebhookEvent(Buffer.from('{}'), 'sig')).rejects.toThrow(
         'connection terminated',
       );
+    });
+  });
+
+  describe('getPackageCatalog', () => {
+    it('returns the resolved catalog with checkoutEnabled=true and never a Price ID', () => {
+      const service = buildService(fakeBillingConfig());
+
+      const result = service.getPackageCatalog();
+
+      expect(result).toEqual({
+        checkoutEnabled: true,
+        packages: [{ id: 'starter', credits: 10 }],
+      });
+      expect(JSON.stringify(result)).not.toMatch(/price/i);
+    });
+
+    it('falls back to the full static catalog with checkoutEnabled=false when billing is disabled', () => {
+      const service = buildService(
+        fakeBillingConfig({ isEnabled: vi.fn().mockReturnValue(false) }),
+      );
+
+      const result = service.getPackageCatalog();
+
+      expect(result.checkoutEnabled).toBe(false);
+      expect(result.packages).toEqual([
+        { id: 'starter', credits: 10 },
+        { id: 'pro', credits: 30 },
+        { id: 'bundle', credits: 100 },
+      ]);
+      expect(JSON.stringify(result)).not.toMatch(/price/i);
+    });
+
+    it('reports checkoutEnabled=false when isEnabled() is true but no Stripe client was constructed', () => {
+      const service = buildService(fakeBillingConfig(), null);
+
+      const result = service.getPackageCatalog();
+
+      expect(result.checkoutEnabled).toBe(false);
+    });
+  });
+
+  describe('getCheckoutStatus', () => {
+    it('rejects a malformed session id with INVALID_CHECKOUT_SESSION_ID and makes no DB query', async () => {
+      const service = buildService(fakeBillingConfig());
+
+      await expect(service.getCheckoutStatus(fakeUser(), 'not-a-session-id')).rejects.toMatchObject(
+        {
+          response: expect.objectContaining({ code: 'INVALID_CHECKOUT_SESSION_ID' }),
+        },
+      );
+      expect(prisma.creditTransaction.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('reports pending and performs no mutation for a session with no matching grant', async () => {
+      prisma.creditTransaction.findFirst.mockResolvedValue(null);
+      const service = buildService(fakeBillingConfig());
+
+      const result = await service.getCheckoutStatus(fakeUser({ id: 'user-1' }), 'cs_test_unknown');
+
+      expect(result).toEqual({ status: 'pending' });
+      expect(creditsService.add).not.toHaveBeenCalled();
+      expect(stripe.checkout.sessions.retrieve).not.toHaveBeenCalled();
+      expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    });
+
+    it('reports pending — indistinguishable from unknown — when the session belongs to a different user', async () => {
+      // Scoping idempotencyKey+userId in the same `where` (not a post-hoc
+      // check) means a session owned by someone else simply never matches.
+      prisma.creditTransaction.findFirst.mockResolvedValue(null);
+      const service = buildService(fakeBillingConfig());
+
+      const result = await service.getCheckoutStatus(fakeUser({ id: 'user-2' }), 'cs_test_123');
+
+      expect(result).toEqual({ status: 'pending' });
+      expect(prisma.creditTransaction.findFirst).toHaveBeenCalledWith({
+        where: {
+          idempotencyKey: checkoutSessionGrantIdempotencyKey('cs_test_123'),
+          userId: 'user-2',
+        },
+      });
+    });
+
+    it('reports credited with the granted amount and current balance for the owning user, never calling Stripe', async () => {
+      prisma.creditTransaction.findFirst.mockResolvedValue({ amount: 10 });
+      creditsService.getBalance.mockResolvedValue({ credits: 13, creditsUpdatedAt: null });
+      const service = buildService(fakeBillingConfig());
+
+      const result = await service.getCheckoutStatus(fakeUser({ id: 'user-1' }), 'cs_test_123');
+
+      expect(result).toEqual({ status: 'credited', creditsGranted: 10, balance: 13 });
+      expect(stripe.checkout.sessions.retrieve).not.toHaveBeenCalled();
+      expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(stripe.webhooks.constructEvent).not.toHaveBeenCalled();
     });
   });
 });

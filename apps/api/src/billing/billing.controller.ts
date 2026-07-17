@@ -1,6 +1,10 @@
-import { Body, Controller, Headers, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Param, Post, UseGuards } from '@nestjs/common';
 import type { User } from '@prisma/client';
-import type { CheckoutSessionDto } from '@book/types';
+import type {
+  CheckoutGrantStatusDto,
+  CheckoutSessionDto,
+  CreditPackageCatalogDto,
+} from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { RequireVerifiedEmailGuard } from '../auth/require-verified-email.guard';
@@ -34,5 +38,29 @@ export class BillingController {
     @Headers('idempotency-key') idempotencyKeyHeader: string | undefined,
   ): Promise<CheckoutSessionDto> {
     return this.billingService.createCheckoutSession(user, dto.packageId, idempotencyKeyHeader);
+  }
+
+  /** Server-owned package catalog for the frontend — see BillingService.getPackageCatalog for what it never exposes (Price IDs, secrets, webhook config). */
+  @Get('packages')
+  getPackages(): CreditPackageCatalogDto {
+    return this.billingService.getPackageCatalog();
+  }
+
+  /**
+   * Reports durable local grant state for a Checkout Session — safe for a
+   * frontend to poll (see BillingService.getCheckoutStatus): never a Stripe
+   * call, never a mutation, never distinguishes an unowned session from an
+   * unknown one.
+   */
+  @Get('checkout/:sessionId/status')
+  @RateLimit({
+    windowMsEnvKey: 'BILLING_CHECKOUT_STATUS_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'BILLING_CHECKOUT_STATUS_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  getCheckoutStatus(
+    @CurrentUser() user: User,
+    @Param('sessionId') sessionId: string,
+  ): Promise<CheckoutGrantStatusDto> {
+    return this.billingService.getCheckoutStatus(user, sessionId);
   }
 }

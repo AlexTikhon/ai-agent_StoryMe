@@ -158,6 +158,10 @@ function mockError(status: number, message: string): Response {
   return { ok: false, status, json: async () => ({ message }) } as unknown as Response;
 }
 
+function mockErrorWithCode(status: number, message: string, code: string): Response {
+  return { ok: false, status, json: async () => ({ message, code }) } as unknown as Response;
+}
+
 function mockPdfBlob(content = 'pdf-bytes', status = 200): Response {
   return {
     ok: true,
@@ -591,6 +595,25 @@ describe('BookDetailPage', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toContain('Missing required draft fields');
     });
+  });
+
+  it('shows an actionable buy-credits link when generation fails with INSUFFICIENT_CREDITS', async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK))
+      .mockResolvedValueOnce(
+        mockErrorWithCode(402, 'Insufficient credits', 'INSUFFICIENT_CREDITS'),
+      );
+
+    render(<BookDetailPage />);
+    await waitFor(() => screen.getByRole('button', { name: /generate story/i }));
+    await user.click(screen.getByRole('button', { name: /generate story/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/enough credits/i);
+    });
+    const link = within(screen.getByRole('alert')).getByRole('link', { name: /buy more credits/i });
+    expect(link).toHaveProperty('href', expect.stringContaining('/dashboard/credits'));
   });
 
   // ── Story plan section ────────────────────────────────────────────────────
@@ -2049,6 +2072,30 @@ describe('BookDetailPage', () => {
       });
     });
 
+    it('shows an actionable buy-credits link when retry fails with INSUFFICIENT_CREDITS', async () => {
+      const user = userEvent.setup();
+      const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(failedBook))
+        .mockResolvedValueOnce(
+          mockErrorWithCode(402, 'Insufficient credits', 'INSUFFICIENT_CREDITS'),
+        );
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /retry generation/i }));
+
+      await user.click(screen.getByRole('button', { name: /retry generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toMatch(/enough credits/i);
+      });
+      const link = within(screen.getByRole('alert')).getByRole('link', {
+        name: /buy more credits/i,
+      });
+      expect(link).toHaveProperty('href', expect.stringContaining('/dashboard/credits'));
+    });
+
     describe('polling resumption', () => {
       beforeEach(() => {
         vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
@@ -2160,6 +2207,33 @@ describe('BookDetailPage', () => {
         String(input).includes('/regenerate'),
       );
       expect(call).toBeUndefined();
+    });
+
+    it('shows an actionable buy-credits link when regenerate fails with INSUFFICIENT_CREDITS', async () => {
+      const user = userEvent.setup();
+      const completeBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(completeBook))
+        .mockResolvedValueOnce(
+          mockErrorWithCode(402, 'Insufficient credits', 'INSUFFICIENT_CREDITS'),
+        );
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /regenerate book/i }));
+      await user.click(screen.getByRole('button', { name: /regenerate book/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toMatch(/enough credits/i);
+      });
+      const link = within(screen.getByRole('alert')).getByRole('link', {
+        name: /buy more credits/i,
+      });
+      expect(link).toHaveProperty('href', expect.stringContaining('/dashboard/credits'));
     });
 
     it('shows a hint banner after saving an edit to a complete book, prompting regeneration', async () => {

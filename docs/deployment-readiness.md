@@ -261,6 +261,51 @@ real credentials are used in any automated test — Stripe's own
 `webhooks.constructEvent`/`generateTestHeaderString` helpers verify/sign
 fixtures locally.
 
+## Phase E4: credits dashboard, checkout redirect, and payment return flow {#phase-e4-credits}
+
+Builds the frontend purchase experience on top of Phase E3's checkout/webhook
+primitive and adds two safe authenticated reads — **no new way to grant
+credits; every grant still flows through the Phase E3 webhook exclusively.**
+
+Full design writeup: **[apps/api/docs/credits.md](../apps/api/docs/credits.md#phase-e4-credits-dashboard-checkout-redirect-and-payment-return-flow)**.
+Summary:
+
+- **`GET /api/billing/packages`** — server-owned catalog (`checkoutEnabled`
+  plus each package's `id`/`credits`), never a Price ID or monetary amount.
+  Falls back to the full static catalog with `checkoutEnabled: false` while
+  billing is disabled, so the UI can show a clear unavailable state.
+- **`GET /api/billing/checkout/:sessionId/status`** — authenticated,
+  rate-limited, bounds the session id to a safe charset before querying.
+  Reports only durable local grant state (never a Stripe call, never a
+  mutation) scoped to the authenticated user in the same query — an unowned
+  session and an unknown session both resolve identically to `pending`.
+- **`/dashboard/credits`** — balance, package cards, cursor-paginated
+  transaction history; one checkout submission at a time (guarded by a ref,
+  not React state, so a synchronous double-click can't race it); a fresh
+  `crypto.randomUUID()` Idempotency-Key per purchase attempt; redirects via
+  `window.location.assign` only after validating the returned URL is
+  `https://`.
+- **`/billing/success` / `/billing/cancel`** — the exact return URLs Phase E3
+  already emits. Success page validates `session_id` before ever calling the
+  status endpoint, polls on a bounded interval/timeout, and never claims a
+  payment failed on timeout (the webhook may simply still be in flight). A
+  page refresh is safe — the read is idempotent and never grants.
+- **Dashboard header** — a balance indicator and "Buy credits" link; a failed
+  balance fetch degrades to a text label without blocking navigation;
+  refetches on a `storyme:credits-updated` event the success page dispatches.
+- **Generation UX** — initial generate, retry, and regenerate all detect the
+  stable `INSUFFICIENT_CREDITS` error code and show a "Buy more credits" link
+  instead of (or alongside) the generic failure message; every other error
+  keeps its prior behavior.
+
+Verified: `pnpm --filter @book/types build`, `pnpm --filter @book/api
+typecheck`, `pnpm --filter @book/api test`, `pnpm --filter @book/api
+test:integration`, `pnpm --filter @book/web typecheck`, `pnpm --filter
+@book/web test`, a production-mode `pnpm --filter @book/web build` with
+`NEXT_PUBLIC_API_URL` set, `git diff --check`, and `eslint --max-warnings 0`
+on every changed file. No automated test contacts Stripe or renders raw
+card/payment details — Stripe Checkout remains fully hosted.
+
 ## Production readiness summary {#production-readiness-summary}
 
 ### MVP blockers (must fix before any deploy)
@@ -302,12 +347,13 @@ real transactional email provider are all done end-to-end.
 - **OAuth** (Google/Apple) — schema already reserves `oauthProvider`/
   `oauthId`; documented as a follow-up auth method, not a blocker for the
   current email/password + JWT flow.
-- ~~Stripe purchasing~~ **One-time credit purchases done (Phase E3)** — see
-  [Phase E3](#phase-e3-credits) above. Subscriptions, the Stripe customer
-  portal, cancellation, promotional codes, pay-per-book PaymentIntents, and
-  every frontend billing page remain unimplemented. Billing itself is
-  disabled by default (`STRIPE_BILLING_ENABLED=false`) until a deployment
-  supplies real Stripe configuration.
+- ~~Stripe purchasing~~ **One-time credit purchases, with a frontend purchase
+  flow, done (Phases E3/E4)** — see [Phase E3](#phase-e3-credits) and
+  [Phase E4](#phase-e4-credits) above. Subscriptions, the Stripe customer
+  portal, cancellation, and promotional codes remain unimplemented. Billing
+  itself is disabled by default (`STRIPE_BILLING_ENABLED=false`) until a
+  deployment supplies real Stripe configuration — the credits dashboard shows
+  a clear unavailable state in that case.
 - **Cancellation / partial-completion flow** — `BookStatus.Cancelled` and
   `BookStatus.Partial` are reserved schema states with no code path that
   produces them yet.

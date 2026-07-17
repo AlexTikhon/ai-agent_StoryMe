@@ -1,18 +1,27 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import Stripe from 'stripe';
-import type { CheckoutSessionDto } from '@book/types';
+import type {
+  CheckoutGrantStatusDto,
+  CheckoutSessionDto,
+  CreditPackageCatalogDto,
+} from '@book/types';
 import { PrismaService } from '../database/prisma.service';
 import { CreditsService } from '../credits/credits.service';
 import { BillingConfigService } from './billing-config.service';
+import { CREDIT_PACKAGES } from './billing-packages';
 import { STRIPE_CLIENT_TOKEN } from './stripe-client.provider';
 import { buildCheckoutIdempotencyKey } from './checkout-idempotency-key';
 import {
   billingDisabledException,
   checkoutUnavailableException,
+  invalidCheckoutSessionIdException,
   invalidPackageException,
   invalidSignatureException,
 } from './billing-errors';
+
+/** Bounds a `:sessionId` path param to a safe, Stripe-Checkout-Session-shaped charset/length before it's ever used to build a query — see apps/api/docs/credits.md, "Phase E4". */
+const CHECKOUT_SESSION_ID_PATTERN = /^cs_[A-Za-z0-9_]{1,255}$/;
 
 /** Deterministic, DB-enforced dedupe key for granting credits for one Checkout Session — never derived from the delivered event's own id, so duplicate deliveries, concurrent handlers, and differently-identified events for the same session all converge on exactly one grant. See apps/api/docs/credits.md, "Phase E3". */
 export function checkoutSessionGrantIdempotencyKey(sessionId: string): string {
@@ -91,6 +100,54 @@ export class BillingService {
       `Created checkout session ${session.id} for user ${user.id}, package ${pkg.id}`,
     );
     return { sessionId: session.id, url: session.url };
+  }
+
+  /**
+   * Server-owned package catalog for the frontend — never a Price ID, only
+   * the stable public id and its credit amount. `checkoutEnabled` mirrors the
+   * same billing/Stripe-client gate `createCheckoutSession` fails closed on,
+   * so the UI can show a clear unavailable state instead of a button that
+   * would 503. While disabled, falls back to the full static catalog (rather
+   * than `BillingConfigService.getAllPackages()`, which would filter to
+   * nothing once there's no live config to resolve Price IDs against) so the
+   * UI can still list what would be purchasable once billing is enabled.
+   */
+  getPackageCatalog(): CreditPackageCatalogDto {
+    const checkoutEnabled = this.billingConfig.isEnabled() && this.stripeClient !== null;
+    const packages = checkoutEnabled
+      ? this.billingConfig.getAllPackages().map((p) => ({ id: p.id, credits: p.credits }))
+      : CREDIT_PACKAGES.map((p) => ({ id: p.id, credits: p.credits }));
+    return { checkoutEnabled, packages };
+  }
+
+  /**
+   * Reports only durable local grant state for a Checkout Session — never
+   * makes a Stripe network call and never grants credits itself (that only
+   * ever happens via the webhook's `grantCreditsForCheckoutSession`). Looks
+   * up the exact-once grant transaction by the same
+   * `checkoutSessionGrantIdempotencyKey` the webhook uses, scoped to the
+   * authenticated user in the same query: a session that doesn't exist and a
+   * session that belongs to a different user both resolve identically to
+   * 'pending', so this endpoint can never be used to probe another user's
+   * purchases.
+   */
+  async getCheckoutStatus(user: User, sessionId: string): Promise<CheckoutGrantStatusDto> {
+    if (!CHECKOUT_SESSION_ID_PATTERN.test(sessionId)) {
+      throw invalidCheckoutSessionIdException();
+    }
+
+    const grant = await this.prisma.creditTransaction.findFirst({
+      where: {
+        idempotencyKey: checkoutSessionGrantIdempotencyKey(sessionId),
+        userId: user.id,
+      },
+    });
+    if (!grant) {
+      return { status: 'pending' };
+    }
+
+    const balance = await this.creditsService.getBalance(user.id);
+    return { status: 'credited', creditsGranted: grant.amount, balance: balance.credits };
   }
 
   /**

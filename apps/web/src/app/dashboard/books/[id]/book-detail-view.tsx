@@ -74,6 +74,7 @@ interface BookDetailViewProps {
   onGenerate: () => void;
   generating: boolean;
   generateError: string | null;
+  generateInsufficientCredits: boolean;
   onRefresh: () => void;
   refreshing: boolean;
   diagnostics: GenerationDiagnosticsDto | null;
@@ -81,6 +82,7 @@ interface BookDetailViewProps {
   onRegenerate: () => void;
   retrying: boolean;
   retryError: string | null;
+  retryInsufficientCredits: boolean;
   justEdited: boolean;
 }
 
@@ -92,6 +94,7 @@ export function BookDetailView({
   onGenerate,
   generating,
   generateError,
+  generateInsufficientCredits,
   onRefresh,
   refreshing,
   diagnostics,
@@ -99,6 +102,7 @@ export function BookDetailView({
   onRegenerate,
   retrying,
   retryError,
+  retryInsufficientCredits,
   justEdited,
 }: BookDetailViewProps) {
   const isDraft = book.status === BookStatus.Created;
@@ -211,6 +215,17 @@ export function BookDetailView({
               className="mt-2 rounded-lg bg-danger-light px-4 py-3 text-sm text-danger-base"
             >
               {retryError}
+              {retryInsufficientCredits && (
+                <>
+                  {' '}
+                  <Link
+                    href="/dashboard/credits"
+                    className="font-semibold underline hover:no-underline"
+                  >
+                    Buy more credits
+                  </Link>
+                </>
+              )}
             </p>
           )}
         </div>
@@ -339,6 +354,17 @@ export function BookDetailView({
           className="mb-4 rounded-lg bg-danger-light px-4 py-3 text-sm text-danger-base"
         >
           {generateError}
+          {generateInsufficientCredits && (
+            <>
+              {' '}
+              <Link
+                href="/dashboard/credits"
+                className="font-semibold underline hover:no-underline"
+              >
+                Buy more credits
+              </Link>
+            </>
+          )}
         </p>
       )}
 

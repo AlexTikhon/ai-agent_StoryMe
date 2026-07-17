@@ -5,8 +5,15 @@ import { useState, type FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { BookStatus } from '@book/types';
 import { booksApi } from '@/lib/api/books';
+import { ApiError } from '@/lib/api/client';
 import { useBookDetail } from './use-book-detail';
-import { defaultEditForm, formFromBook, validateEdit, EditFormFields, type EditForm } from './edit-form';
+import {
+  defaultEditForm,
+  formFromBook,
+  validateEdit,
+  EditFormFields,
+  type EditForm,
+} from './edit-form';
 import { BookDetailView, BookDetailSkeleton, NotFoundState } from './book-detail-view';
 
 export default function BookDetailPage() {
@@ -14,8 +21,18 @@ export default function BookDetailPage() {
   const id = params.id as string;
   const router = useRouter();
 
-  const { book, setBook, loading, loadError, notFound, retryLoad, diagnostics, diagnosticsError, refreshing, handleRefresh } =
-    useBookDetail(id);
+  const {
+    book,
+    setBook,
+    loading,
+    loadError,
+    notFound,
+    retryLoad,
+    diagnostics,
+    diagnosticsError,
+    refreshing,
+    handleRefresh,
+  } = useBookDetail(id);
 
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditForm>(defaultEditForm());
@@ -26,8 +43,10 @@ export default function BookDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generateInsufficientCredits, setGenerateInsufficientCredits] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [retryInsufficientCredits, setRetryInsufficientCredits] = useState(false);
 
   const startEdit = () => {
     if (!book) return;
@@ -88,11 +107,17 @@ export default function BookDetailPage() {
   const handleGenerate = async () => {
     setGenerating(true);
     setGenerateError(null);
+    setGenerateInsufficientCredits(false);
     try {
       const response = await booksApi.generate(id);
       setBook(response.book);
     } catch (err) {
-      setGenerateError(err instanceof Error ? err.message : 'Failed to start generation');
+      if (err instanceof ApiError && err.code === 'INSUFFICIENT_CREDITS') {
+        setGenerateError("You don't have enough credits to generate this book.");
+        setGenerateInsufficientCredits(true);
+      } else {
+        setGenerateError(err instanceof Error ? err.message : 'Failed to start generation');
+      }
     } finally {
       setGenerating(false);
     }
@@ -111,6 +136,7 @@ export default function BookDetailPage() {
     if (!window.confirm(confirmMessage)) return;
     setRetrying(true);
     setRetryError(null);
+    setRetryInsufficientCredits(false);
     try {
       const response = isComplete
         ? await booksApi.regenerateBook(id)
@@ -118,7 +144,12 @@ export default function BookDetailPage() {
       setBook(response.book);
       setJustEdited(false);
     } catch (err) {
-      setRetryError(err instanceof Error ? err.message : 'Failed to start regeneration');
+      if (err instanceof ApiError && err.code === 'INSUFFICIENT_CREDITS') {
+        setRetryError("You don't have enough credits to retry generation.");
+        setRetryInsufficientCredits(true);
+      } else {
+        setRetryError(err instanceof Error ? err.message : 'Failed to start regeneration');
+      }
     } finally {
       setRetrying(false);
     }
@@ -197,6 +228,7 @@ export default function BookDetailPage() {
                   }}
                   generating={generating}
                   generateError={generateError}
+                  generateInsufficientCredits={generateInsufficientCredits}
                   onRefresh={() => {
                     void handleRefresh();
                   }}
@@ -208,6 +240,7 @@ export default function BookDetailPage() {
                   }}
                   retrying={retrying}
                   retryError={retryError}
+                  retryInsufficientCredits={retryInsufficientCredits}
                   justEdited={justEdited}
                 />
               )}

@@ -390,6 +390,97 @@ remain entirely unimplemented. `Subscription`'s schema table and
 `stripeCustomerId`/`stripeSubscriptionId` fields exist but nothing writes to
 them yet.
 
+## Phase E4: credits dashboard, checkout redirect, and payment return flow
+
+Exposes safe reads on top of Phase E3's checkout/webhook primitive and builds
+the frontend purchase experience. **Still no new way to grant credits** —
+this phase adds no mutation endpoint; every credit grant still flows through
+the Phase E3 webhook exclusively.
+
+### New authenticated reads
+
+- **`GET /api/billing/packages`** — server-owned catalog for the frontend:
+  `{ checkoutEnabled, packages: [{ id, credits }] }`. Never a Price ID, secret,
+  or webhook config. `checkoutEnabled` mirrors the same
+  `STRIPE_BILLING_ENABLED` + Stripe-client gate `createCheckoutSession` fails
+  closed on. While disabled, falls back to the full static catalog (rather
+  than the live-config-resolved one, which would filter to nothing) so the UI
+  can still list what would be purchasable once billing is enabled — no
+  monetary price is ever shown, only the credit quantity ("10 credits").
+- **`GET /api/billing/checkout/:sessionId/status`** — authenticated,
+  Redis-backed per-user rate limited
+  (`BILLING_CHECKOUT_STATUS_RATE_LIMIT_WINDOW_MS`/`_MAX_ATTEMPTS`, a much
+  higher budget than the checkout-creation limit since it's a bounded-polling
+  local read). Bounds the `:sessionId` path param to a safe,
+  Stripe-Checkout-Session-shaped charset (`^cs_[A-Za-z0-9_]{1,255}$`) before
+  ever querying, rejecting anything else with
+  `400 { code: 'INVALID_CHECKOUT_SESSION_ID' }`. Looks up the exact-once grant
+  transaction by the same `checkoutSessionGrantIdempotencyKey(sessionId)` the
+  webhook writes, **scoped to the authenticated user in the same query** — a
+  session that doesn't exist and a session that belongs to a different user
+  both resolve identically to `{ status: 'pending' }`, so this endpoint can
+  never be used to probe another user's purchases. **Never makes a Stripe
+  network call and never grants credits itself** — it reports durable local
+  state only. A found grant returns
+  `{ status: 'credited', creditsGranted, balance }` (balance read fresh from
+  `CreditsService.getBalance`).
+
+Both DTOs (`CreditPackageCatalogDto`, `CheckoutGrantStatusDto`) live in
+`@book/types` alongside the Phase E3 `CheckoutSessionDto`.
+
+### Frontend
+
+- **`apps/web/src/lib/api/billing.ts`** (`billingApi`) and
+  **`apps/web/src/lib/api/credits.ts`** (`creditsApi`) — thin `apiFetch`
+  wrappers for the reads above plus the existing balance/transactions
+  endpoints. `billingApi.createCheckout` takes a caller-supplied
+  `Idempotency-Key`; it never generates one itself.
+- **`/dashboard/credits`** (`apps/web/src/app/dashboard/credits/page.tsx`) —
+  balance, package cards, and cursor-paginated transaction history. A
+  `submittingRef` (not React state) guards checkout submission so a
+  synchronous double-click can never start two Checkout Sessions even before
+  the first render commits the disabled button state. Each distinct purchase
+  attempt gets a fresh `crypto.randomUUID()` Idempotency-Key, reused only if
+  that same submission needs it again while still in flight. The returned
+  Stripe URL is validated (`new URL(url).protocol === 'https:'`) before
+  `window.location.assign` — a non-HTTPS or malformed value shows an error and
+  never navigates. Transaction rows never render `stripePaymentId`,
+  idempotency keys, or any internal id — `CreditTransactionDto` already omits
+  them (Phase E1).
+- **`/billing/success?session_id=...`** and **`/billing/cancel`**
+  (`apps/web/src/app/billing/`) — the exact return URLs Phase E3's
+  `BillingService.createCheckoutSession` already emits (`billing.service.ts`,
+  unchanged). The success page validates `session_id` client-side against the
+  same pattern the API enforces before ever calling
+  `billingApi.getCheckoutStatus`; a missing/malformed value shows an error and
+  makes no request. Polling is bounded (2s interval, 60s total) and stops on
+  unmount, a terminal `credited` result, or timeout — never on a bare 60s
+  giving up claiming the payment failed, since the webhook may simply still be
+  in flight. A page refresh re-runs the same idempotent read, never a mutation
+  — safe to reload any number of times. The cancel page makes no API call at
+  all.
+- **Dashboard layout** — a small balance indicator and "Buy credits" link in
+  the authenticated header. A failed balance fetch degrades to "Credits
+  unavailable" text; it never blocks children from rendering. Refetches
+  immediately on a `storyme:credits-updated` window event
+  (`apps/web/src/lib/credits-events.ts`), which the success page dispatches
+  once a session is confirmed `credited` — no need to wait for an unrelated
+  re-render to show the new balance.
+- **Generation UX** — `apps/web/src/app/dashboard/books/[id]/page.tsx`'s
+  `handleGenerate`/`handleRegenerate` (the latter covers both retry and full
+  regeneration) detect `ApiError.code === 'INSUFFICIENT_CREDITS'` and show a
+  "Buy more credits" link alongside the existing error banner, instead of the
+  generic failure message. Every other error keeps its prior generic-message
+  behavior unchanged.
+
+### Not in scope for Phase E4
+
+Same exclusions as Phase E3 — subscriptions, the Stripe customer portal,
+cancellation, promotional codes, and pay-per-book PaymentIntents remain
+entirely unimplemented. This phase adds no custom card form (Stripe Checkout
+remains fully hosted) and no way to grant credits outside the Phase E3
+webhook.
+
 ## Reference: `GENERATION_CREDIT_COST` and key helpers
 
 `apps/api/src/credits/credits.service.ts` exports:

@@ -219,6 +219,18 @@ export const envSchema = z
     BILLING_CHECKOUT_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(3_600_000),
     BILLING_CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
 
+    // Redis-backed per-user rate limit on GET
+    // /api/billing/checkout/:sessionId/status — a bounded-polling read (Phase
+    // E4's /billing/success page), so the budget is much higher than the
+    // checkout-creation limit above: it's a local DB read that never calls
+    // Stripe, not a real Checkout Session creation.
+    BILLING_CHECKOUT_STATUS_RATE_LIMIT_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60_000),
+    BILLING_CHECKOUT_STATUS_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(30),
+
     // OAuth (optional)
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
