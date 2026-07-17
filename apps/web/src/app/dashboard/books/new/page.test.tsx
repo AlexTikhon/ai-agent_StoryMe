@@ -324,6 +324,28 @@ describe('NewBookPage wizard', () => {
 
   // ── Child photo upload ─────────────────────────────────────────────────────
 
+  it('renders a styled photo picker and shows the selected file with change/remove actions', async () => {
+    const user = userEvent.setup();
+    render(<NewBookPage />);
+
+    expect(screen.getByText('Add a photo')).toBeDefined();
+    expect(screen.getByText('Browse')).toBeDefined();
+
+    const fileInput = screen.getByLabelText(/child's photo/i);
+    expect(fileInput.className).toContain('sr-only');
+
+    const file = new File(['fake-bytes'], 'oliver.jpg', { type: 'image/jpeg' });
+    await user.upload(fileInput, file);
+
+    expect(screen.getByText('oliver.jpg')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeDefined();
+    expect(screen.getByText('Change')).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(screen.getByText('Add a photo')).toBeDefined();
+    expect(screen.queryByText('oliver.jpg')).toBeNull();
+  });
+
   it('uploads the selected child photo to POST /books/:id/child-photo after creating the book', async () => {
     const user = userEvent.setup();
     vi.mocked(fetch)

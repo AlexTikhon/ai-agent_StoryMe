@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -269,44 +270,103 @@ function StepChild({ values, onChange, onNext }: StepChildProps) {
             className={inputCls}
           />
         </label>
-        <label className="flex flex-col gap-1.5 sm:col-span-2">
-          <span className="text-sm font-medium text-text-secondary">
+        <div className="flex flex-col gap-1.5 sm:col-span-2">
+          <label htmlFor="child-photo" className="text-sm font-medium text-text-secondary">
             Child&apos;s photo <span className="text-text-muted">(optional)</span>
-          </span>
-          <span className="text-xs text-text-muted">
-            Used only as inspiration for a stylized, illustrated storybook character — never
-            placed directly in the book. JPG, PNG, or WEBP, up to 5MB.
-          </span>
+          </label>
+          <p id="child-photo-help" className="text-xs leading-relaxed text-text-muted">
+            Used only as inspiration for a stylized, illustrated storybook character — never placed
+            directly in the book. JPG, PNG, or WEBP, up to 5MB.
+          </p>
           {photoPreviewUrl ? (
-            <div className="mt-1 flex items-center gap-3">
-              {/* eslint-disable-next-line @next/next/no-img-element -- ephemeral local object URL preview, not a served asset */}
-              <img
+            <div className="mt-1 flex items-center gap-3 rounded-xl border border-border-subtle bg-bg-subtle p-3">
+              <Image
                 src={photoPreviewUrl}
                 alt="Selected child photo preview"
-                className="h-16 w-16 rounded-lg object-cover"
+                width={64}
+                height={64}
+                unoptimized
+                className="h-16 w-16 shrink-0 rounded-lg border border-border-subtle object-cover shadow-xs"
               />
-              <button
-                type="button"
-                onClick={removePhoto}
-                className="text-sm font-medium text-danger-base underline"
-              >
-                Remove photo
-              </button>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-text-primary">
+                  {values.childPhoto?.name}
+                </p>
+                <p className="mt-0.5 text-xs text-text-muted">Ready to use as inspiration</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <label
+                    htmlFor="child-photo"
+                    className="inline-flex h-8 cursor-pointer items-center rounded-lg border border-border-default bg-white px-3 text-xs font-semibold text-text-secondary transition-colors hover:border-violet-300 hover:text-violet-700 focus-within:ring-2 focus-within:ring-violet-600 focus-within:ring-offset-2"
+                  >
+                    Change
+                    <input
+                      id="child-photo"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      aria-describedby="child-photo-help child-photo-error"
+                      onChange={handlePhotoChange}
+                      className="sr-only"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={removePhoto}
+                    className="inline-flex h-8 items-center rounded-lg px-3 text-xs font-semibold text-danger-base transition-colors hover:bg-danger-light"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
             </div>
           ) : (
-            <input
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              onChange={handlePhotoChange}
-              className="text-sm text-text-secondary"
-            />
+            <label
+              htmlFor="child-photo"
+              className="group mt-1 flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-border-default bg-bg-subtle px-4 py-3 transition-colors hover:border-violet-400 hover:bg-violet-50/50 focus-within:border-violet-600 focus-within:ring-2 focus-within:ring-violet-600 focus-within:ring-offset-2"
+            >
+              <span
+                aria-hidden="true"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-700 transition-colors group-hover:bg-violet-200"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  className="h-5 w-5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 16.5V7.75A1.75 1.75 0 0 1 5.75 6h2.1l.9-1.25h6.5l.9 1.25h2.1A1.75 1.75 0 0 1 20 7.75v8.75a1.75 1.75 0 0 1-1.75 1.75H5.75A1.75 1.75 0 0 1 4 16.5Z"
+                  />
+                  <circle cx="12" cy="12" r="3.25" />
+                </svg>
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-text-primary">Add a photo</span>
+                <span className="mt-0.5 block text-xs text-text-muted">
+                  Choose an image from your device
+                </span>
+              </span>
+              <span className="hidden rounded-lg border border-border-default bg-white px-3 py-1.5 text-xs font-semibold text-violet-700 shadow-xs transition-colors group-hover:border-violet-300 sm:inline-flex">
+                Browse
+              </span>
+              <input
+                id="child-photo"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                aria-describedby="child-photo-help child-photo-error"
+                onChange={handlePhotoChange}
+                className="sr-only"
+              />
+            </label>
           )}
           {photoError && (
-            <p role="alert" className="text-sm text-danger-base">
+            <p id="child-photo-error" role="alert" className="text-sm text-danger-base">
               {photoError}
             </p>
           )}
-        </label>
+        </div>
       </div>
       <div className="mt-6 flex justify-end">
         <button
