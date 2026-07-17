@@ -423,6 +423,166 @@ adjusted to self-close each example tag so the illustrated meaning survives
 formatting. `pnpm format:check` now passes with zero diff on `main`, and
 branch protection can safely require the **Lint, Format & Typecheck** check.
 
+## Phase F3: approval-protected migration release workflow {#phase-f3-migration}
+
+Closes the one item Phase F2 deliberately left undone (see "CI migration
+verification vs. a real release migration hook" above): a real hook for
+applying migrations to staging/production, distinct from CI's throwaway-
+database verification. Full operator-facing detail (invocation procedure,
+required GitHub Environment configuration, confirmation phrases, incident
+procedure) lives in
+[private-demo-deploy.md §5a](private-demo-deploy.md#phase-f3-migration-workflow);
+this section covers what was built and how it was verified.
+
+**`.github/workflows/migrate.yml`** — `workflow_dispatch`-only (never push,
+pull_request, schedule, or a deployment event), job `Apply Database
+Migrations`, dynamically bound to a GitHub Environment named `staging` or
+`production` matching the operator's selection. This is what GitHub
+Environment protection (required reviewers, branch restriction) actually
+gates — the workflow cannot enforce that configuration itself, only rely on
+it, so [private-demo-deploy.md §5a.2](private-demo-deploy.md#f3-required-environment-configuration)
+documents it as a required manual setup step, not something this phase
+configured. **This workflow owns database migration only** — it never
+deploys the API, worker, web app, Stripe configuration, storage, or email
+services.
+
+Before any dependency installs or database connection: a fast, dependency-free
+shell gate rejects an empty, malformed, or mismatched confirmation phrase
+(`APPLY_STAGING_MIGRATIONS` / `APPLY_PRODUCTION_MIGRATIONS`, distinct per
+environment) or an over-long release note. All three free-text
+`workflow_dispatch` inputs (environment choice, confirmation, release note)
+are passed through step `env:` blocks, never interpolated directly into a
+`run:` script body, to avoid shell-injection from operator-supplied text.
+
+**Target-identity guard** (`apps/api/src/config/migration-target-guard.ts`,
+CLI entry point `apps/api/scripts/migrate-target-guard.ts`, run via
+`pnpm --filter @book/api migrate:target-guard`) — a pure, no-I/O function
+that runs after Prisma Client generation and before `prisma migrate status`
+or `prisma migrate deploy` ever touches a database:
+
+- Requires `DATABASE_URL` to parse as a `postgresql://`/`postgres://` URL;
+  rejects empty, malformed, `localhost`, and loopback (`127.0.0.1`, `::1`,
+  `0.0.0.0`) hosts outright.
+- Compares the URL's actual hostname/database name against
+  `MIGRATION_DB_HOSTNAME`/`MIGRATION_DB_NAME` GitHub Environment
+  variables/secrets scoped to the same environment as `DATABASE_URL`.
+- Re-validates the confirmation phrase against the selected environment
+  (independent of the workflow's earlier fast-fail gate).
+- Requires a `production` run's triggering ref to be exactly `main`.
+- **Never prints** `DATABASE_URL` or any hostname/database-name/username/
+  password/query-parameter value derived from it — every issue message is
+  static text plus a stable check code, the same guarantee
+  `preflight-deploy-checks.ts` makes for env values (see
+  [Phase F1](private-demo-deploy.md#pre-deploy-preflight-check)). Safe to run
+  against a real production `DATABASE_URL` and log the result.
+
+Covered by 23 unit tests in `migration-target-guard.spec.ts` (fake local
+strings only, no network): valid staging/production targets, production from
+a non-main ref, wrong/swapped confirmation phrases, malformed and
+non-Postgres URLs, `localhost`/loopback rejection, hostname/database-name
+mismatches, missing expected-identity config, a password containing
+URL-encoded special characters, and an explicit assertion that no issue
+message emitted across any failing scenario contains the supplied URL,
+password, host, database name, or query parameters.
+
+**Workflow sequence** (after the confirmation gate and Environment approval):
+checkout the exact triggering commit (`ref: ${{ github.sha }}`) → print only
+the safe target label and commit SHA → set up the repo's pinned Node/pnpm
+versions (matching `ci.yml`'s `NODE_VERSION`/`PNPM_VERSION`) → `pnpm install
+--frozen-lockfile` → build `@book/types` → generate the Prisma Client → run
+the target guard → `pnpm --filter @book/api prisma:migrate:status` (new
+script, informational only — a pending-migrations result is expected
+pre-deploy and never fails this step) → exactly `pnpm --filter @book/api
+prisma:migrate:deploy` (no dynamically assembled shell string) → a
+post-deploy `prisma:migrate:status` check that **does** fail the job if the
+output doesn't confirm a clean state → a Step Summary naming the
+environment, commit SHA, run ID, success/failure, and the API-before-worker
+next step, with no connection details. Target validation, the deploy step,
+and post-deploy verification never use `continue-on-error`; nothing retries a
+failed migration automatically; nothing attempts rollback SQL — see
+[private-demo-deploy.md §5a.6](private-demo-deploy.md#f3-incident-procedure-a-failed-migration-run)
+for the incident procedure this implies.
+
+**Least privilege and concurrency**: top-level `permissions: contents:
+read` (matching `ci.yml`'s convention), `timeout-minutes: 20`, and a
+per-environment concurrency group (`migrate-<environment>`) so two runs
+against the same target can never overlap — deliberately **not**
+`cancel-in-progress`, since an in-flight `prisma migrate deploy` must never
+be killed mid-run by a newer dispatch.
+
+### Migration chain audit (Phase F3)
+
+Every existing migration under `apps/api/prisma/migrations/` was inspected
+for destructive or non-transactional operations before this workflow was
+added, since it's now capable of applying any of them to a real
+staging/production database:
+
+- **No `DROP TABLE`, `DROP TYPE`, or destructive `ALTER` of an already-shipped
+  column exists anywhere in the chain**, with one exception:
+  `20260715084922_phase_a1_delivery_token_fencing` runs `ALTER TABLE
+"generation_runs" DROP COLUMN "lease_attempt"` — an internal fencing
+  counter with no application-facing meaning (superseded the same migration
+  by `delivery_token`), not user data. Already applied to every existing
+  environment; **not rewritten**, per this phase's explicit scope (migrations
+  that have already shipped are never edited after the fact).
+- **No manual data-rewriting `UPDATE`/`DELETE` exists.** The only DML in the
+  chain is two idempotent `INSERT ... ON CONFLICT ("id") DO NOTHING`
+  singleton-row seeds (`20260714180027_phase_a_input_fencing_recovery_lease`,
+  `20260716000000_phase_c_claim_cleanup_lease`) — both insert a fixed
+  recovery-lease row used for leader election and are safe to re-run.
+- **Operator check for future long-lock risk**: the four `CHECK` constraints
+  added in `20260715160805_phase_b1_artifact_namespace_pointers` are added
+  without `NOT VALID`, so Postgres validates them against every existing row
+  under an `ACCESS EXCLUSIVE` lock at migration time — on the `books` table
+  specifically, since it is one of the largest and most actively written
+  tables in the schema. This was an acceptable one-time cost at the table
+  size when it shipped; flagging it here as the pattern to watch for in any
+  future `ALTER TABLE ... ADD CONSTRAINT ... CHECK (...)` against `books` (or
+  any other large/hot table) once real user data volume grows — prefer `ADD
+CONSTRAINT ... CHECK (...) NOT VALID` followed by a separate `VALIDATE
+CONSTRAINT` in a later migration, which takes only a brief lock rather than
+  holding one for the full table scan.
+- **Every enum extension (`ALTER TYPE ... ADD VALUE`)** in the chain (e.g.
+  `page_plan`, `story_draft`, `preview_ready` additions to `BookStatus`/
+  `AgentStep`) is additive and forward-only — Postgres 12+ permits this
+  inside a transaction as long as the new value isn't used in the same
+  transaction that added it, which none of these migrations do.
+- **The chain remains strictly forward-only**: every migration only adds
+  tables/columns/indexes/constraints/enum values or removes a single
+  internal-only column already covered above — nothing reorders, nothing
+  reverts a prior migration's change, and no migration file has been edited
+  after shipping.
+
+### Verification (Phase F3)
+
+- `pnpm --filter @book/api test` — includes the new 23-test
+  `migration-target-guard.spec.ts` suite (fake local strings, no network).
+- Manual guard CLI runs against fake local env vars: one fully valid staging
+  scenario (exit 0) and one deliberately mismatched production scenario
+  (wrong confirmation, wrong host, wrong database name, non-`main` ref — exit
+  1, 4 issues reported, no leaked values).
+- End-to-end command sequence (`prisma:migrate:status` →
+  `prisma:migrate:deploy` → `prisma:migrate:status`) run against a disposable,
+  explicitly created local Postgres database (dropped immediately after) —
+  confirms the exact commands the workflow calls apply the full migration
+  chain cleanly and that the post-deploy status text matches what the
+  workflow's grep check expects. No staging/production database or external
+  service was touched.
+- Both `.github/workflows/ci.yml` and `.github/workflows/migrate.yml` parsed
+  with `js-yaml` and confirmed to contain no duplicate mapping keys.
+- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `git diff --check`.
+- `actionlint` was not run — not already installed, and this phase does not
+  download an unpinned validator per its own constraints; the workflow's
+  expressions, dynamic environment binding, concurrency key, and shell
+  quoting were reviewed manually instead (see the workflow file's own
+  comments).
+- **Not verified, and only verifiable after a repository administrator
+  configures GitHub Environments**: real GitHub Environment protection
+  (required-reviewer pause, branch restriction enforcement), a real
+  `staging`/`production` `DATABASE_URL` secret resolving correctly, and an
+  actual run of the workflow end-to-end against a real staging/production
+  database. No such run was performed or triggered by this phase.
+
 ## Production readiness summary {#production-readiness-summary}
 
 ### MVP blockers (must fix before any deploy)

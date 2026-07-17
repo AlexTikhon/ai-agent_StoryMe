@@ -216,8 +216,12 @@ tell at a glance which tier a given var falls in.
 - [ ] `EMAIL_PROVIDER=resend` plus `RESEND_API_KEY` and `EMAIL_FROM` — real
       users need real verification/reset email, not a server-side log line.
 - [ ] `prisma migrate deploy` wired into an actual release pipeline instead
-      of being run by hand — see
-      [§5 Migration and release order](#5-migration-and-release-order).
+      of being run by hand — the approval-protected
+      [`.github/workflows/migrate.yml` workflow](#phase-f3-migration-workflow)
+      now exists for this, but still requires a repository administrator to
+      configure the `staging`/`production` GitHub Environments (see
+      [§5a.2](#f3-required-environment-configuration)) before a real run can
+      succeed — see [§5 Migration and release order](#5-migration-and-release-order).
 
   (The Redis-backed rate limiter this checklist previously asked for is
   already done — `RATE_LIMITER_TOKEN` resolves to `RedisRateLimiter`
@@ -513,7 +517,173 @@ intentionally, so that:
 
 Run `pnpm --filter @book/api prisma:migrate:deploy` from CI or a one-off
 release-step job with network access to the production database, and only
-start/restart the API container after it succeeds.
+start/restart the API container after it succeeds. **This is now available as
+a dedicated, approval-protected GitHub Actions workflow** — see
+[§5a below](#phase-f3-migration-workflow) — instead of running the command by
+hand from a local machine.
+
+## 5a. Manual migration release workflow (Phase F3) {#phase-f3-migration-workflow}
+
+Phase F2 ([deployment-readiness.md](deployment-readiness.md#phase-f2-ci))
+proved migrations apply cleanly in CI against a throwaway database, but
+deliberately left the real staging/production release hook unwired — see
+that phase's "CI migration verification vs. a real release migration hook"
+section. Phase F3 closes that gap with
+**`.github/workflows/migrate.yml`** ("Database Migration (Manual)",
+job `Apply Database Migrations`): a `workflow_dispatch`-only workflow that
+runs `pnpm --filter @book/api prisma:migrate:deploy` against a selected
+staging or production database, gated by GitHub Environment protection and an
+explicit target-identity guard.
+
+**This workflow owns database migration only.** It never deploys the API,
+worker, or web app, and never touches Stripe/storage/email configuration —
+those remain separate, existing deploy steps (see [§4](#4-setup-order) and
+[§7a](#4a-deploy-the-generation-worker) above). **Adding this workflow to the
+repository does not by itself configure any secret, reviewer, or deploy
+anything** — every item in [§5a.2](#f3-required-environment-configuration)
+below must be configured by a repository administrator before a real run can
+succeed.
+
+### §5a.1 How to run it
+
+1. GitHub → **Actions** → **Database Migration (Manual)** → **Run workflow**.
+2. Choose the branch/tag to run from (production requires `main` — see
+   [§5a.2](#f3-required-environment-configuration)).
+3. Fill in the inputs:
+   - **target_environment**: `staging` or `production`.
+   - **confirmation**: the exact phrase for that environment (case-sensitive,
+     no surrounding whitespace) — see [§5a.3](#f3-confirmation-phrases).
+   - **release_note** (optional): a short note for the audit trail, 500
+     characters or fewer.
+4. Run it. If the target GitHub Environment has required reviewers
+   configured, the run pauses for approval before the job starts — see
+   [§5a.2](#f3-required-environment-configuration).
+5. Read the job's **Step Summary** (or the job logs) for the outcome —
+   environment, commit SHA, workflow run ID, success/failure, and the
+   reminder to deploy the API before the worker next. It never contains a
+   hostname, database name, or credential.
+
+### §5a.2 Required GitHub Environment configuration {#f3-required-environment-configuration}
+
+The workflow dynamically binds its job to a GitHub Environment named exactly
+`staging` or `production` (whichever the operator selects) — this is what
+actually enforces reviewer approval and branch restriction, and the workflow
+has no way to enforce it itself if it's missing. **A repository administrator
+must create both Environments (Settings → Environments) and configure, for
+each:**
+
+| Setting                                                  | `staging`                                                                                                  | `production`                                                                                                                                                                                                                  |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Environment secret `DATABASE_URL`                        | **Required** — the staging database's connection string.                                                   | **Required** — the production database's connection string. **Never** a repository-wide secret — see below.                                                                                                                   |
+| Environment variable (or secret) `MIGRATION_DB_HOSTNAME` | **Required** — the expected staging DB hostname, used only for the guard's identity check (never printed). | **Required** — the expected production DB hostname.                                                                                                                                                                           |
+| Environment variable (or secret) `MIGRATION_DB_NAME`     | **Required** — the expected staging database name.                                                         | **Required** — the expected production database name.                                                                                                                                                                         |
+| Required reviewers                                       | Optional, recommended.                                                                                     | **Strongly recommended** — without at least one required reviewer, a run with a valid confirmation phrase applies immediately once dispatched.                                                                                |
+| Deployment branch restriction                            | Optional.                                                                                                  | **Required: restrict to `main`.** The target-identity guard also independently rejects a production run whose triggering ref isn't `main` — this is defense in depth, not a substitute for the Environment-level restriction. |
+
+**`DATABASE_URL` must be an _Environment_ secret scoped to `staging` or
+`production` individually — never a repository-level secret.** A
+repository-level `DATABASE_URL` would be visible to (and usable from) either
+environment binding, defeating the whole point of separating the two. The
+same applies to `MIGRATION_DB_HOSTNAME`/`MIGRATION_DB_NAME`: they must be
+scoped to the same environment as the `DATABASE_URL` they describe, or the
+guard is comparing against the wrong environment's expected identity.
+
+If any of the above is not yet configured, this workflow either fails at the
+target guard step (missing `MIGRATION_DB_HOSTNAME`/`MIGRATION_DB_NAME`) or
+fails to connect (missing/wrong `DATABASE_URL`) — it does not silently
+proceed against an unconfigured or wrong target.
+
+### §5a.3 Confirmation phrases {#f3-confirmation-phrases}
+
+- **staging**: `APPLY_STAGING_MIGRATIONS`
+- **production**: `APPLY_PRODUCTION_MIGRATIONS`
+
+Each phrase is valid for its own environment only — submitting the staging
+phrase against a `production` run (or vice versa) is rejected, both by the
+workflow's fast pre-install gate and, redundantly, by the target-identity
+guard script. See `CONFIRMATION_PHRASES` in
+`apps/api/src/config/migration-target-guard.ts` for the source of truth these
+values must stay in sync with.
+
+### §5a.4 What the target-identity guard checks
+
+Before `prisma migrate status` or `prisma migrate deploy` ever runs, the
+workflow runs `pnpm --filter @book/api migrate:target-guard`
+(`apps/api/scripts/migrate-target-guard.ts`, logic in
+`apps/api/src/config/migration-target-guard.ts`), which:
+
+- Requires `DATABASE_URL` to parse as a `postgresql://`/`postgres://` URL.
+- Rejects an empty, malformed, `localhost`, or loopback (`127.0.0.1`, `::1`,
+  `0.0.0.0`) host outright, regardless of what's "expected".
+- Compares the URL's actual hostname and database name against
+  `MIGRATION_DB_HOSTNAME`/`MIGRATION_DB_NAME` for the selected environment.
+- Re-checks the confirmation phrase against the selected environment.
+- For `production`, requires the triggering ref to be exactly `main`.
+- **Never prints** `DATABASE_URL`, or any hostname/database name/username/
+  password/query parameter derived from it — only stable check codes and
+  generic corrective instructions. Safe to run against a real production
+  `DATABASE_URL` and log the result.
+
+Any single mismatch exits non-zero and stops the workflow before Prisma runs;
+see `apps/api/src/config/migration-target-guard.spec.ts` for the full test
+matrix (valid/invalid staging and production targets, wrong/swapped
+confirmation phrases, malformed and non-Postgres URLs, localhost/loopback
+rejection, hostname/database-name mismatches, missing expected-identity
+config, and URL-encoded-password handling).
+
+### §5a.5 Rollback guidance
+
+Same rule as [§7 Rollback notes](#7-rollback-notes) below: **`prisma migrate
+deploy` only applies forward migrations — this workflow has no rollback
+mode, and a rollback must never revert an already-applied migration.** If a
+bad migration reaches staging or production, write and apply a new forward
+migration that undoes the change (a new PR + a new run of this workflow);
+never hand-edit `_prisma_migrations` or attempt to run an old migration
+backwards. Rolling the API/worker back to a pre-migration image is safe only
+if the migration was purely additive (new nullable column, new table) — a
+breaking migration (dropped/renamed column an older image still reads) needs
+a forward fix-up migration first, not just an image rollback.
+
+### §5a.6 Incident procedure: a failed migration run
+
+1. Read the failed job's logs and Step Summary — the failure is one of:
+   confirmation/target-guard rejection (nothing touched the database), a
+   `prisma migrate status`/`prisma migrate deploy` connection failure
+   (nothing applied), or a genuine migration error partway through
+   `prisma migrate deploy` (Prisma's own migration history table records
+   exactly which migration failed and stops there — it does not silently
+   skip ahead).
+2. **Do not re-run the workflow expecting an automatic retry** — it never
+   retries a failed migration for you (see [Failure behavior](#f3-failure-behavior)
+   below); diagnose the root cause from the preserved Prisma output first.
+3. **Do not attempt rollback SQL** and do not hand-edit
+   `_prisma_migrations`. If the failure was a genuine schema/data problem,
+   write a new forward migration that fixes it and run this workflow again
+   once that migration is merged to the branch this environment allows
+   (`main` for production).
+4. Once the migration history is clean again (`prisma migrate status`
+   reports no pending migrations and no failed migration), proceed with the
+   normal rollout order: API, then worker, then web — see
+   [§5](#5-migration-and-release-order) above.
+5. The full audit trail — who ran it, which environment, which commit, the
+   confirmation phrase's environment (never its raw value beyond pass/fail),
+   and every step's output — lives in the GitHub Actions run itself
+   (**Actions → Database Migration (Manual)**, then the specific run), plus
+   that run's Step Summary. Nothing about a run is logged anywhere else.
+
+### Failure behavior {#f3-failure-behavior}
+
+- Target validation, migration deployment, and post-deploy verification never
+  use `continue-on-error` — any failure in one of those three steps stops the
+  job there.
+- No step retries a failed migration automatically.
+- No step attempts rollback SQL.
+- A failure always stops before any application deployment step — there is
+  no API/worker/web deployment step in this workflow to begin with.
+- `DATABASE_URL` is passed only via step `env:` blocks, never echoed, and
+  never assembled into a dynamic shell string; Prisma's own diagnostic output
+  is preserved (not suppressed) so a real failure is still diagnosable from
+  the job logs, without ever printing the connection string itself.
 
 ## 6. Smoke test checklist
 

@@ -1,0 +1,214 @@
+name: Database Migration (Manual)
+
+# Phase F3 — approval-protected staging/production migration workflow.
+#
+# This workflow owns database migration ONLY. It never deploys the API,
+# worker, or web app, and never touches Stripe/storage/email config. See
+# "Database migration workflow" in docs/private-demo-deploy.md for the full
+# operator runbook (required GitHub Environment configuration, confirmation
+# phrases, rollout order, rollback guidance, incident procedure).
+#
+# Manually triggered only — never runs on push, pull_request, schedule, or a
+# deployment event. Triggering this workflow does not by itself configure any
+# secret, reviewer, or deploy anything; a repository administrator must set
+# up the "staging"/"production" GitHub Environments first (see the docs page
+# above) or this workflow has nothing valid to run against.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Database to migrate'
+        type: choice
+        required: true
+        options:
+          - staging
+          - production
+      confirmation:
+        description: >-
+          Exact confirmation phrase — staging: APPLY_STAGING_MIGRATIONS,
+          production: APPLY_PRODUCTION_MIGRATIONS. Must match the selected
+          target_environment exactly or the run is rejected before anything
+          else happens.
+        type: string
+        required: true
+      release_note:
+        description: 'Optional change/release note for the audit trail (max 500 characters)'
+        type: string
+        required: false
+
+# Least privilege — this workflow only reads repo contents to check out the
+# triggering commit; it never writes to the repo, comments on PRs, or touches
+# packages/releases.
+permissions:
+  contents: read
+
+# Per-environment concurrency: two migration runs against the same target can
+# never run at once. Deliberately NOT cancel-in-progress — an in-flight
+# `prisma migrate deploy` must never be killed mid-run by a newer dispatch;
+# the newer run queues behind it instead. Uses github.event.inputs (not the
+# bare `inputs` context) because that's the form guaranteed available at the
+# workflow's top level, outside any job.
+concurrency:
+  group: migrate-${{ github.event.inputs.target_environment }}
+  cancel-in-progress: false
+
+env:
+  PNPM_VERSION: 9.4.0
+  NODE_VERSION: 20
+
+jobs:
+  # Stable, single job/check name for audit history — the target environment
+  # and outcome are recorded in the job's own logs/step summary, not encoded
+  # into the check name itself.
+  migrate:
+    name: Apply Database Migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Dynamically bound to the GitHub Environment matching the operator's
+    # choice — this is what GitHub Environment protection rules (required
+    # reviewers, branch restriction) actually gate. See the docs page linked
+    # above for the exact configuration a repo admin must set up; this
+    # workflow cannot enforce that configuration itself, only rely on it.
+    environment: ${{ inputs.target_environment }}
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+      CONFIRMATION_INPUT: ${{ inputs.confirmation }}
+      RELEASE_NOTE: ${{ inputs.release_note }}
+    steps:
+      # Fast, dependency-free gate: reject an empty, malformed, or mismatched
+      # confirmation phrase (or an over-long release note) before installing
+      # any dependency or opening any database connection. All untrusted
+      # input is read from env vars set above, never interpolated directly
+      # into this script, to avoid shell injection from the free-text
+      # confirmation/release_note inputs.
+      - name: Validate confirmation phrase and inputs
+        run: |
+          set -euo pipefail
+
+          case "$TARGET_ENVIRONMENT" in
+            staging)
+              expected="APPLY_STAGING_MIGRATIONS"
+              ;;
+            production)
+              expected="APPLY_PRODUCTION_MIGRATIONS"
+              ;;
+            *)
+              echo "::error::Unknown target environment '$TARGET_ENVIRONMENT'."
+              exit 1
+              ;;
+          esac
+
+          if [ -z "${CONFIRMATION_INPUT:-}" ]; then
+            echo "::error::Confirmation phrase is required."
+            exit 1
+          fi
+
+          if [ "$CONFIRMATION_INPUT" != "$expected" ]; then
+            echo "::error::Confirmation phrase does not exactly match the required phrase for '$TARGET_ENVIRONMENT'. Expected exactly: $expected"
+            exit 1
+          fi
+
+          note_len=${#RELEASE_NOTE}
+          if [ "$note_len" -gt 500 ]; then
+            echo "::error::release_note must be 500 characters or fewer (got $note_len)."
+            exit 1
+          fi
+
+          echo "Confirmation phrase and inputs validated for target: $TARGET_ENVIRONMENT"
+
+      - name: Checkout triggering commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Show migration target
+        run: |
+          echo "Target environment: $TARGET_ENVIRONMENT"
+          echo "Commit SHA: ${{ github.sha }}"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @book/types
+        run: pnpm --filter @book/types build
+
+      - name: Generate Prisma client
+        run: pnpm --filter @book/api prisma:generate
+
+      # Validates DATABASE_URL's actual host/database identity against the
+      # environment-scoped expected values, the confirmation phrase again
+      # (now against the fully parsed target), and — for production — that
+      # this run originates from `main`. See
+      # apps/api/src/config/migration-target-guard.ts for the exact checks
+      # and apps/api/scripts/migrate-target-guard.ts for this CLI entry
+      # point. Never prints DATABASE_URL or anything derived from it. Not
+      # allowed to continue-on-error — any mismatch stops the workflow here,
+      # before Prisma ever runs.
+      - name: Run migration target guard
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EXPECTED_DB_HOSTNAME: ${{ vars.MIGRATION_DB_HOSTNAME }}
+          EXPECTED_DB_NAME: ${{ vars.MIGRATION_DB_NAME }}
+          CONFIRMATION_PHRASE: ${{ inputs.confirmation }}
+          GIT_REF: ${{ github.ref }}
+        run: pnpm --filter @book/api migrate:target-guard
+
+      # Informational only — pending migrations are the expected, normal
+      # pre-deploy state, not a workflow bug, so this step never fails the
+      # job on their account. A genuine connectivity/auth problem here still
+      # surfaces for real at the "Apply pending migrations" step below.
+      - name: Check migration status (pending migrations are expected here)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm --filter @book/api prisma:migrate:status || true
+
+      # Exactly the documented release command — no dynamically assembled
+      # shell string, no continue-on-error, no automatic retry.
+      - name: Apply pending migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm --filter @book/api prisma:migrate:deploy
+
+      # Must genuinely fail the job if the post-deploy state isn't clean —
+      # never continue-on-error.
+      - name: Verify migration status after deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          output="$(pnpm --filter @book/api prisma:migrate:status 2>&1)"
+          echo "$output"
+          if ! echo "$output" | grep -qi "up to date\|no pending migrations"; then
+            echo "::error::Post-deploy verification did not confirm a clean migration state."
+            exit 1
+          fi
+
+      - name: Write step summary
+        if: always()
+        run: |
+          {
+            echo "## Database Migration Summary"
+            echo ""
+            echo "- **Environment**: $TARGET_ENVIRONMENT"
+            echo "- **Commit SHA**: ${{ github.sha }}"
+            echo "- **Workflow run ID**: ${{ github.run_id }}"
+            echo "- **Result**: ${{ job.status }}"
+            echo ""
+            echo "### Next rollout step"
+            echo "1. Deploy the API service."
+            echo "2. Deploy the worker service."
+            echo ""
+            echo "_No connection details (host, database name, credentials) are included in this summary or in any step above._"
+          } >> "$GITHUB_STEP_SUMMARY"

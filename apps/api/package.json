@@ -21,12 +21,14 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:status": "prisma migrate status",
     "prisma:studio": "prisma studio",
     "render:pdf": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/render-pdf.ts",
     "smoke:pdf-storage": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/smoke-cloud-pdf-storage.ts",
     "smoke:real-generation": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/smoke-real-generation.ts",
     "preflight:deploy": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-deploy.ts",
-    "preflight:deploy:ci-check": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-deploy-ci-fixtures.ts"
+    "preflight:deploy:ci-check": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-deploy-ci-fixtures.ts",
+    "migrate:target-guard": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/migrate-target-guard.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.632.0",
