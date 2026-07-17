@@ -87,10 +87,11 @@ apps/web (Next.js, Vercel)  ──HTTPS, CORS──▶  apps/api (NestJS, Docker
 | Piece | Recommendation | Why |
 |---|---|---|
 | Web | **Vercel** | Zero-config Next.js hosting, matches Phase 5D's audited path exactly (no Dockerfile needed). |
-| API | **Render, Fly.io, or Railway** (Docker service) | All three run an arbitrary Dockerfile as a single always-on instance, which is what the current in-process generation runner needs (see [Known limitations](#known-limitations) — horizontal scaling is not yet safe). Pick whichever the team already has an account on; nothing below is provider-specific beyond "runs a Docker image and lets you set env vars." |
+| API | **Render, Fly.io, or Railway** (Docker service) | All three run an arbitrary Dockerfile as an always-on instance. Since Phase 3K, generation is a durable BullMQ/Redis queue rather than an in-process runner, so this pick is no longer forced by generation architecture — see [Known limitations](#known-limitations) for what still favors care before autoscaling (default `local` storage drivers, redundant recovery sweeps). Pick whichever the team already has an account on; nothing below is provider-specific beyond "runs a Docker image and lets you set env vars." |
+| Generation worker | **Same host as the API** (second Docker service, same image, `node dist/worker` start command) | Deployed separately from the API — see [§4a Deploy the generation worker](#4a-deploy-the-generation-worker). Must run as its own process/container in every deployed environment; `ENABLE_GENERATION_WORKER=true` is a local single-process dev convenience only, never set on either deployed service. |
 | Database | **Neon or Supabase** (managed Postgres), or the API host's own managed Postgres add-on if using Render/Railway | Either works; schema/migrations are plain Postgres, no provider-specific features used. |
 | Storage | **Cloudflare R2** | Already the primary implementation target (`PDF_STORAGE_DRIVER=r2` / `IMAGE_STORAGE_DRIVER=r2`), S3-compatible, no egress fees. AWS S3 works identically via `PDF_STORAGE_DRIVER=s3`. |
-| Redis | **A small managed Redis** (Upstash, Redis Cloud, or the API host's own Redis add-on) | Required for the app to boot and pass `/api/health` — see below. A free/smallest tier is enough; nothing performance-sensitive runs through it today. |
+| Redis | **A small managed Redis** (Upstash, Redis Cloud, or the API host's own Redis add-on) | Required for the app to boot, pass `/api/health`, and schedule/run every generation job (BullMQ, Phase 3K) — see below. A free/smallest tier is enough; nothing performance-sensitive runs through it today. |
 
 This is the same architecture already recommended in
 [deployment-readiness.md's Recommended deployment architecture](deployment-readiness.md#recommended-deployment-architecture);
@@ -98,8 +99,8 @@ this runbook just turns it into an ordered list of commands.
 
 ### Is Redis required? {#is-redis-required}
 
-**Yes, right now, but only to satisfy the app's boot-time checks — not for
-its intended purpose (queue-backed generation).**
+**Yes — both to satisfy the app's boot-time checks and for its intended
+purpose (queue-backed generation, Phase 3K, and Redis-backed rate limiting).**
 
 - `REDIS_URL` is a **required**, non-optional env var
   (`apps/api/src/config/env.schema.ts`) — the app refuses to start without a
@@ -145,9 +146,9 @@ ephemeral filesystem — see
 | `RESEND_API_KEY` | API | **Yes, if `EMAIL_PROVIDER=resend`** | `re_...` | Boot fails fast (env validation) if `EMAIL_PROVIDER=resend` is set without this. |
 | `EMAIL_FROM` | API | **Yes, if `EMAIL_PROVIDER=resend`** | `StoryMe <noreply@storyme.app>` | Must be a verified sender/domain in the Resend dashboard, or sends will fail at request time even though boot succeeds. |
 | `EMAIL_REPLY_TO` | API | No | `support@storyme.app` | Optional; omitted from the outbound email entirely when unset. |
-| `OPENAI_API_KEY` | API | Only if using real generation | `sk-...` | Required only when `STORY_GENERATION_PROVIDER=openai` or `IMAGE_GENERATION_PROVIDER_TOKEN=openai`. Leave the providers on `mock` (default) for a free/deterministic demo. |
+| `OPENAI_API_KEY` | API | Only if using real generation | `sk-...` | Required only when `STORY_GENERATION_PROVIDER=openai` or `IMAGE_GENERATION_PROVIDER=openai`. Leave the providers on `mock` (default) for a free/deterministic demo. |
 | `STORY_GENERATION_PROVIDER` | API | No (defaults to `mock`) | `mock` \| `openai` | Set to `openai` only if you want real story text and have budget. |
-| `IMAGE_GENERATION_PROVIDER_TOKEN` | API | No (defaults to `mock`) | `mock` \| `openai` | Same — real image generation costs money per call (see `REAL_GENERATION_MAX_PAGES` guardrail). |
+| `IMAGE_GENERATION_PROVIDER` | API | No (defaults to `mock`) | `mock` \| `openai` | Same — real image generation costs money per call (see `REAL_GENERATION_MAX_PAGES` guardrail). |
 | `PDF_STORAGE_DRIVER` | API | **Yes, set to `r2` or `s3`** | `r2` | Do not leave as default `local` — the container filesystem is ephemeral on every host in this runbook, so previously generated PDFs disappear on redeploy/restart. |
 | `IMAGE_STORAGE_DRIVER` | API | **Yes, set to `r2` or `s3`** | `r2` | Same reasoning as `PDF_STORAGE_DRIVER`, same ephemeral-filesystem risk for generated images. |
 | `PDF_STORAGE_BUCKET` | API | **Yes** (if using cloud storage) | `storyme-demo-previews` | Shared by both PDF and image storage (images go under an `images/` key prefix in the same bucket). |
@@ -156,13 +157,20 @@ ephemeral filesystem — see
 | `PDF_STORAGE_ACCESS_KEY_ID` | API | **Yes** (if using cloud storage) | `<r2-or-iam-access-key>` | Scope the credential to only this bucket if the provider supports it. |
 | `PDF_STORAGE_SECRET_ACCESS_KEY` | API | **Yes** (if using cloud storage) | `<r2-or-iam-secret>` | Treat as a secret — set via the host's secret manager, not committed anywhere. |
 | `PDF_STORAGE_PUBLIC_BASE_URL` | API | No | *(not currently read by any code path)* | Not present in `apps/api/src/config/env.schema.ts` or `pdf-storage.ts` today — PDFs are served through the API's own preview endpoint (`GET /api/books/:id/pdf/preview`), not a direct public bucket URL. Included here for completeness since the task template asked for it; there is nothing to set. |
+| `WEB_APP_URL` | API | **Yes** | `https://storyme-demo.vercel.app` | Used only to build links in verification/reset email; set to the deployed web origin, not `localhost`. |
+| `ENABLE_GENERATION_WORKER` | API + worker | No (leave unset/`false` on both deployed services) | `false` | Local single-process dev convenience only (`pnpm --filter @book/api dev` self-enables the processor). Never set `true` on a deployed **api** service — it would double-consume jobs alongside the dedicated worker service. The dedicated **worker** entrypoint (`worker.ts`) always registers the processor regardless of this var, so it doesn't need it set either. |
+| `STRIPE_BILLING_ENABLED` | API | No (defaults to `false`; optional feature) | `false` \| `true` | Credit purchases (Phase E3/E4) are opt-in. `false` (default): `POST /api/billing/checkout` fails closed with `BILLING_DISABLED`, no Stripe client ever constructed, `/dashboard/credits` shows an unavailable state. Set `true` only once every var below is also set — see [§3.3 Stripe webhook configuration](#stripe-webhook-configuration-and-test-mode-verification). |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_STARTER` / `STRIPE_PRICE_ID_PRO` / `STRIPE_PRICE_ID_BUNDLE` | API | **Yes, if `STRIPE_BILLING_ENABLED=true`** | `sk_test_...` / `whsec_...` / `price_...` | Boot fails fast (env validation, `env.schema.ts` `superRefine`) if `STRIPE_BILLING_ENABLED=true` is set without all five. Use **test-mode** keys/Price IDs for a private demo — see [§3.3](#stripe-webhook-configuration-and-test-mode-verification). |
 | `NEXT_PUBLIC_API_URL` | Web | **Yes** | `https://storyme-api-demo.onrender.com/api` | Baked in at **build time** (Next.js inlines `NEXT_PUBLIC_*` at build), not read at request time — must be set in Vercel's project env vars *before* the first build, and changing it requires a rebuild. Include the `/api` suffix. |
 | `NEXT_PUBLIC_AUTH_MODE` | Web | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt` | Same build-time-inlined caveat as `NEXT_PUBLIC_API_URL`. Must match the API's `AUTH_MODE` exactly. |
 
-Vars not covered above (`STRIPE_*`, `GOOGLE_*`, `ANTHROPIC_API_KEY`,
-`FAL_API_KEY`, `R2_ACCOUNT_ID`/`R2_*`) are optional and reserved for features
-not built yet — see `.env.example` for the full annotated list. They can be
-left unset.
+Vars not covered above (`GOOGLE_*`, `ANTHROPIC_API_KEY`, `FAL_API_KEY`,
+`R2_ACCOUNT_ID`/`R2_*`) are optional and reserved for features not built yet
+— see `.env.example` for the full annotated list. They can be left unset.
+`STRIPE_*` is a separate case: the *feature* (one-time credit purchases) is
+built and shipped (Phase E3/E4) — these vars are optional only because the
+feature itself is opt-in via `STRIPE_BILLING_ENABLED`, not because anything
+is unbuilt. See the table rows above.
 
 ### 3.1 Tiered checklist {#env-tiers}
 
@@ -197,7 +205,7 @@ tell at a glance which tier a given var falls in.
 - `AUTH_MODE` / `NEXT_PUBLIC_AUTH_MODE` — default to `jwt` already.
 - `EMAIL_PROVIDER` — defaults to `console` (logs the link instead of
   sending); fine for a trusted-operator private demo.
-- `STORY_GENERATION_PROVIDER` / `IMAGE_GENERATION_PROVIDER_TOKEN` — default
+- `STORY_GENERATION_PROVIDER` / `IMAGE_GENERATION_PROVIDER` — default
   to `mock`, deterministic, no network calls, no cost.
 - `AUTH_RATE_LIMIT_WINDOW_MS` / `AUTH_RATE_LIMIT_MAX_ATTEMPTS` — sane
   defaults (15 min / 10 attempts).
@@ -207,12 +215,98 @@ tell at a glance which tier a given var falls in.
 
 - [ ] `EMAIL_PROVIDER=resend` plus `RESEND_API_KEY` and `EMAIL_FROM` — real
       users need real verification/reset email, not a server-side log line.
-- [ ] A Redis-backed (shared) rate limiter in place of the current in-memory
-      one, if running more than one API instance — see
-      [Security notes](#security-notes).
 - [ ] `prisma migrate deploy` wired into an actual release pipeline instead
       of being run by hand — see
       [§5 Migration and release order](#5-migration-and-release-order).
+
+  (The Redis-backed rate limiter this checklist previously asked for is
+  already done — `RATE_LIMITER_TOKEN` resolves to `RedisRateLimiter`
+  unconditionally, safe across multiple API instances; see
+  [Security notes](#security-notes).)
+
+### 3.2 Environment ownership matrix {#env-ownership-matrix}
+
+Which process actually reads each var — useful when the API and worker are
+two separate deployed services with their own env var panels, and it's easy
+to set something on the wrong one (or forget the other).
+
+| Var group | API (`main.ts`) | Worker (`worker.ts`) | Web |
+|---|---|---|---|
+| `DATABASE_URL`, `REDIS_URL` | Required | Required | — |
+| `JWT_SECRET`, `JWT_REFRESH_SECRET`, `AUTH_MODE` | Required | Not read (worker has no HTTP surface, mints/verifies no tokens) | `NEXT_PUBLIC_AUTH_MODE` only, must match API's `AUTH_MODE` |
+| `ALLOWED_ORIGINS` | Required (CORS) | Not read | — |
+| `WEB_APP_URL` | Required (email link building) | Not read | — |
+| `PDF_STORAGE_*` / `IMAGE_STORAGE_*` | Required (serves previews) | Required (renders + saves PDFs/images) — **must be set identically on both**, see [PDF storage: separate worker guard](deployment-readiness.md#pdf-storage-worker-guard) | — |
+| `EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM` | Required (verification/reset emails) | Not read | — |
+| `STORY_GENERATION_PROVIDER`, `IMAGE_GENERATION_PROVIDER`, `OPENAI_API_KEY` | Not read at runtime (only the worker actually calls a generation provider) | Required if either provider is `openai` | — |
+| `STRIPE_*` | Required if `STRIPE_BILLING_ENABLED=true` (checkout + webhook endpoints live on the API) | Not read | — |
+| `ENABLE_GENERATION_WORKER` | Read, but must stay unset/`false` on a deployed **api** service | Not read (worker always registers the processor) | — |
+| `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_AUTH_MODE` | — | — | Required (build-time) |
+
+A var marked "Not read" is safe to leave unset on that service even if it's
+required on the other — setting it anyway is harmless (just noise), but
+omitting it from the *required* service is a boot failure or a silent
+misconfiguration depending on the var (see the [preflight
+command](#pre-deploy-preflight-check) below, which exists specifically to
+catch the silent cases before they reach production).
+
+### 3.3 Stripe webhook configuration and test-mode verification {#stripe-webhook-configuration-and-test-mode-verification}
+
+Only relevant if this deployment sets `STRIPE_BILLING_ENABLED=true`. Skip
+entirely for a demo that only exercises the schema-default starter credits.
+
+1. **Create test-mode Products/Prices** in the Stripe dashboard (Test mode
+   toggle, top right) — one-time (not recurring) Price for each of the three
+   catalog packages (`apps/api/src/billing/billing-packages.ts`: `starter` =
+   10 credits, `pro` = 30 credits, `bundle` = 100 credits). Copy each Price
+   ID into `STRIPE_PRICE_ID_STARTER` / `STRIPE_PRICE_ID_PRO` /
+   `STRIPE_PRICE_ID_BUNDLE`.
+2. **Create the webhook endpoint**: Stripe dashboard → Developers → Webhooks
+   → Add endpoint, URL `https://<your-api-host>/api/billing/webhook`, event
+   `checkout.session.completed` only (every other event type is a no-op
+   `2xx` in this codebase). Copy the endpoint's **Signing secret** into
+   `STRIPE_WEBHOOK_SECRET`.
+3. **Copy the test-mode secret key** (Developers → API keys, Test mode) into
+   `STRIPE_SECRET_KEY` — starts with `sk_test_`, never `sk_live_` for this
+   runbook.
+4. **Verify signature verification actually works** before trusting real
+   traffic: from a machine with the [Stripe
+   CLI](https://stripe.com/docs/stripe-cli) and network access to the
+   deployed API, `stripe listen --forward-to
+   https://<your-api-host>/api/billing/webhook` and `stripe trigger
+   checkout.session.completed` — confirm the API logs show the event
+   accepted (not a `400` signature-verification failure) and, for a session
+   whose metadata matches a real user/package, a credit grant.
+5. **End-to-end test-mode purchase**: from the deployed web app, sign in,
+   go to `/dashboard/credits`, buy a package using [Stripe's test
+   card](https://stripe.com/docs/testing) `4242 4242 4242 4242` (any future
+   expiry, any CVC) — confirm redirect to `/billing/success`, the balance
+   updates, and a `CreditTransaction` row exists. This is the exact flow the
+   [smoke test checklist](#6-smoke-test-checklist) below also covers.
+
+### 3.4 Pre-deploy preflight check {#pre-deploy-preflight-check}
+
+Before setting any of the above on a real host, validate the *combination*
+locally against a `.env` file (or an exported shell environment) shaped like
+the target deployment:
+
+```bash
+pnpm --filter @book/api preflight:deploy --role=api
+pnpm --filter @book/api preflight:deploy --role=worker
+```
+
+Run **both** roles — the api/worker env ownership split above means a
+combination that's valid for one role can be invalid for the other (e.g. a
+missing `RESEND_API_KEY` only fails the api role, since the worker never
+reads `EMAIL_PROVIDER` at all; a local storage driver fails both, since both
+processes read `PDF_STORAGE_*`/`IMAGE_STORAGE_*`). Validation-only, no
+network calls, and never prints a secret value — see
+`apps/api/scripts/preflight-deploy.ts` for exactly which invariants it
+checks. A clean exit (`0`) does not replace the [smoke test
+checklist](#6-smoke-test-checklist) below — it only catches cross-setting
+config mistakes *before* a container starts, not runtime/network issues
+(wrong credentials that parse fine but don't authenticate, an unreachable
+host, etc.).
 
 ## 4. Setup order
 
@@ -228,7 +322,7 @@ connection string for `DATABASE_URL`.
 Create the smallest managed Redis instance (Upstash/Redis Cloud/host
 add-on). Note the connection string for `REDIS_URL`. See
 [Is Redis required?](#is-redis-required) if this step feels skippable — it
-isn't, yet.
+isn't: both boot/health checks and every generation run depend on it.
 
 ### Step 3 — Provision the storage bucket
 
@@ -296,9 +390,66 @@ curl https://<your-api-host>/api/health
 # {"status":"ok","info":{"db":{"status":"up"},"redis":{"status":"up"}},...}
 ```
 
-If this doesn't return `200`/`"status":"ok"`, do not proceed to step 8 —
+If this doesn't return `200`/`"status":"ok"`, do not proceed to step 7a —
 fix DB/Redis connectivity first (check `db`/`redis` sub-status in the
 response body to tell which one is failing).
+
+### Step 7a — Deploy the generation worker {#4a-deploy-the-generation-worker}
+
+A second Docker service, built from the **same image** as the API (same
+`apps/api/Dockerfile`, same build context) but with a different start
+command and a distinct env panel — see [§3.2 Environment ownership
+matrix](#env-ownership-matrix) for exactly which vars it needs.
+
+```bash
+docker run -d --name storyme-worker-demo \
+  -e DATABASE_URL="postgresql://<user>:<pass>@<host>:5432/<db>" \
+  -e REDIS_URL="redis://<user>:<pass>@<host>:6379" \
+  -e PDF_STORAGE_DRIVER="r2" \
+  -e IMAGE_STORAGE_DRIVER="r2" \
+  -e PDF_STORAGE_BUCKET="<bucket>" \
+  -e PDF_STORAGE_REGION="auto" \
+  -e PDF_STORAGE_ENDPOINT="https://<account-id>.r2.cloudflarestorage.com" \
+  -e PDF_STORAGE_ACCESS_KEY_ID="<key>" \
+  -e PDF_STORAGE_SECRET_ACCESS_KEY="<secret>" \
+  storyme-api:demo node dist/worker
+```
+
+(`storyme-api:demo` is the same image tag built in [Step
+5](#step-5--build-the-api-image); only the container command changes —
+`node dist/worker` instead of the image's default `CMD`. On Render/Fly/
+Railway, this is a second service pointed at the same Dockerfile/image with
+its start command overridden to `node dist/worker`
+(`pnpm --filter @book/api start:prod:worker` locally).)
+
+**Ordering constraint — deploy the API before (or atomically with) the
+worker, never the worker first.** The worker consumes `GenerationRun`/
+`OutboxEvent` rows and `PDF_STORAGE_*`/`IMAGE_STORAGE_*` config that the API
+process defines the shape of (schema migrations from [Step
+6](#step-6--run-migrations-separate-step-not-inside-the-container) must
+already be applied, which they are by this point in the ordered list) — a
+worker started against a not-yet-migrated database, or with
+`PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` set differently than the API
+(see [PDF storage: separate worker guard](deployment-readiness.md#pdf-storage-worker-guard)),
+produces exactly the "book claims `complete` but preview 404s" incident that
+guard exists to prevent. Both processes are otherwise safe to run at
+mismatched versions briefly during a rolling deploy — they communicate only
+through the database and the BullMQ queue, never a direct API call to each
+other — but the worker must never be *ahead* of the API on schema or storage
+config.
+
+**Verify the worker actually started** (it has no HTTP endpoint to `curl`,
+so check logs instead):
+
+```bash
+docker logs storyme-worker-demo
+# expect: "Generation worker started — consuming book-generation jobs (no HTTP server)."
+```
+
+If `assertPdfStorageSupportsWorker`'s guard fires instead (a clear thrown
+error naming every required `PDF_STORAGE_*` var), the worker's
+`PDF_STORAGE_DRIVER` is `local` (or unset) while `NODE_ENV=production` —
+fix the worker's storage env vars to match the API's before retrying.
 
 ### Step 8 — Configure Web env vars
 
@@ -335,10 +486,19 @@ See [Smoke test checklist](#6-smoke-test-checklist) below.
 5. run `prisma migrate deploy`
 6. start API
 7. verify /api/health
+7a. deploy the generation worker (same image, after the API — never before)
 8. configure web env vars
 9. build/deploy web
 10. run smoke test
 ```
+
+**The worker must never start before the API/migrations on a first deploy.**
+It reads the same schema and depends on `PDF_STORAGE_*`/`IMAGE_STORAGE_*`
+being configured identically to the API — see [Step 7a's ordering
+constraint](#4a-deploy-the-generation-worker) for the full reasoning. On a
+routine redeploy (not first deploy), API and worker can roll out in either
+order or concurrently as long as neither's storage/schema config diverges
+from the other mid-rollout.
 
 **Migrations must never run inside the app process or the container's
 `CMD`.** `apps/api/Dockerfile`'s `CMD` is `node dist/main` only —
@@ -385,17 +545,44 @@ a real account.
       succeeds (a login attempt before verifying would have failed with
       `401 EMAIL_NOT_VERIFIED`).
 
+### Credits: purchase → webhook grant (only if `STRIPE_BILLING_ENABLED=true`)
+
+Skip this whole subsection for a deployment that leaves billing disabled —
+the schema-default starter balance (`User.credits` = 3) is enough to run the
+rest of this checklist once. See [§3.3 Stripe webhook
+configuration](#stripe-webhook-configuration-and-test-mode-verification) for
+one-time setup before this point.
+
+- [ ] Navigate to `/dashboard/credits` — confirm the current balance and the
+      three package cards render (not the "billing unavailable" state).
+- [ ] Buy the smallest package using [Stripe's test
+      card](https://stripe.com/docs/testing) `4242 4242 4242 4242` (any
+      future expiry, any CVC).
+- [ ] Confirm redirect to `/billing/success`, and that it resolves to a
+      granted state (not stuck "pending") within its polling window.
+- [ ] Confirm the balance on `/dashboard/credits` increased by exactly the
+      purchased package's credit amount, and the new `CreditTransaction`
+      appears in the paginated history with `reason: purchase`.
+- [ ] Tail the API logs during this step and confirm `POST
+      /api/billing/webhook` was received and returned `2xx` — this is the
+      concrete proof the webhook URL/secret configured in
+      [§3.3](#stripe-webhook-configuration-and-test-mode-verification) is
+      correct, not just that the checkout redirect worked.
+
 ### Book creation and generation
 
 - [ ] Navigate to `/dashboard`.
+- [ ] Note the current credit balance (`/dashboard/credits` if billing is
+      enabled, otherwise the schema-default `3`).
 - [ ] Click **Create Your First Book**, fill in the 3-step wizard, submit.
 - [ ] Confirm redirect to the new book's detail page with status `created`.
 - [ ] Click **Generate Story**; confirm the page polls and progresses through
       pipeline stages (`char_build` → … → `complete`).
+- [ ] Confirm the balance dropped by exactly 1 credit the moment generation
+      was scheduled (not when it completed) — proves `BooksService.createRunAndSchedule`'s
+      atomic charge is wired, not just the UI.
 - [ ] Confirm the generated story preview (story plan, page plan, draft
       text, images) renders on the detail page.
-- [ ] If generation fails, click **Retry generation** and confirm it
-      recovers.
 - [ ] Once `complete`, click **Open PDF** — confirm it opens
       `GET /api/books/:id/pdf/preview` in a new tab and renders.
 - [ ] Click **Download PDF** — confirm a file downloads.
@@ -405,7 +592,30 @@ a real account.
       the PDF — confirm it still works. This is the check that actually
       proves `PDF_STORAGE_DRIVER=r2`/`IMAGE_STORAGE_DRIVER=r2` is wired
       correctly; with the default `local` driver this step would fail.
-- [ ] Click **Log out** again to end this session before the next check.
+
+### Failed-run refund
+
+- [ ] Force one generation to fail — the simplest reliable way without real
+      OpenAI credentials is temporarily stopping the worker container
+      (`docker stop storyme-worker-demo`) right after clicking **Generate
+      Story** on a second book, then waiting for `GenerationRunRecoveryService`'s
+      periodic sweep to reconcile the abandoned `GenerationRun` against
+      BullMQ's own state and mark it failed (`GENERATION_RUN_RECOVERY_INTERVAL_MS`
+      / `RECOVERY_LEASE_MS` in `apps/api/src/agent/generation-run-recovery.service.ts`,
+      default 60s / 5min — the older `GenerationJobRecoveryService`/
+      `GENERATION_JOB_STALE_AFTER_MS` no longer marks `Book` failed at all,
+      see that service's own doc comment), then restarting the worker.
+- [ ] Confirm the book's status becomes `failed` and the detail page shows a
+      failure state with **Retry generation**.
+- [ ] Confirm the credit spent scheduling that run was refunded exactly
+      once — the balance should be back to what it was before this book was
+      created, and a second `CreditTransaction` (`reason:
+      refund_generation_failure`,
+      `apps/api/src/agent/generation-run-coordinator.service.ts`) appears in
+      the history alongside the original `reason: book_creation` debit.
+- [ ] Click **Retry generation** and confirm it succeeds normally (charging
+      1 credit again) with the worker back up.
+- [ ] Click **Log out** to end this session before the next check.
 
 ### Auth: forgot password → reset → old password rejected
 
@@ -434,16 +644,35 @@ a real account.
 - **API**: redeploy the previous Docker image tag on the platform (Render/
   Fly/Railway all keep prior deploys/images available for rollback). No
   database changes are needed for a code-only rollback.
+- **Worker**: redeploy the previous image tag on the worker service
+  independently of the API — they're separate services from the same image,
+  so rolling one back doesn't require rolling back the other. The only
+  constraint (see [Step 7a's ordering
+  note](#4a-deploy-the-generation-worker)) is that the worker's
+  `PDF_STORAGE_*`/`IMAGE_STORAGE_*` config and the applied schema must never
+  end up *ahead* of what the API expects — rolling the worker back to an
+  older image against an already-forward-migrated database is safe (the
+  worker only ever reads/writes rows, never runs migrations itself).
 - **Database**: `prisma migrate deploy` only applies forward migrations —
-  there is no automated rollback command. If a bad migration reaches
-  production, write and apply a new forward migration that undoes the
-  change; do not attempt to run an old migration backwards or hand-edit
-  `_prisma_migrations`.
+  there is no automated rollback command, and **a rollback must never revert
+  an already-applied migration**. If a bad migration reaches production,
+  write and apply a new forward migration that undoes the change; do not
+  attempt to run an old migration backwards or hand-edit
+  `_prisma_migrations`. This means an API/worker rollback to a pre-migration
+  image can still leave the *database* on the newer schema — only safe if
+  the migration was additive (new nullable column, new table); a rollback
+  after a breaking migration (dropped/renamed column an older image still
+  reads) needs a forward fix-up migration first, not just an image rollback.
 - **Web**: Vercel keeps prior deployments and supports instant rollback to
   any previous build via its dashboard/CLI — use that rather than
   re-running a build with an older commit.
 - **Storage**: PDFs/images are additive (new generations write new keys);
   rolling back the API doesn't delete or corrupt previously stored files.
+- **Stripe**: rolling back the API does not affect already-granted credits
+  or Stripe's own webhook delivery retries — a webhook delivered against a
+  rolled-back API version that can't yet handle it returns non-2xx and
+  Stripe retries automatically (see [Phase E3 summary](deployment-readiness.md#phase-e3-stripe-checkout-credit-purchases)),
+  so no manual replay is needed once the rollback completes.
 
 ## 8. Known limitations
 
@@ -472,9 +701,20 @@ restated for this private-demo scope:
   infrastructure** — see [Is Redis required?](#is-redis-required). It backs
   both the durable generation queue (Phase 3K) and the health check; don't
   skip provisioning it.
-- **No payments/credits enforcement** — `User.credits` and Stripe fields
-  exist in the schema but nothing charges credits or calls Stripe. Not
-  relevant to a private demo, but don't advertise it as a real limit.
+- ~~No payments/credits enforcement~~ **Superseded (Phases E1–E4).** Every
+  generation run charges 1 credit atomically at scheduling time and refunds
+  automatically on terminal failure (`CreditsService`,
+  `BooksService.createRunAndSchedule`), and one-time Stripe Checkout credit
+  purchases are implemented end-to-end (`POST /api/billing/checkout` + `POST
+  /api/billing/webhook`, plus the `/dashboard/credits` and
+  `/billing/success`/`/billing/cancel` frontend) — see [§3.3 Stripe webhook
+  configuration](#stripe-webhook-configuration-and-test-mode-verification)
+  and the [Credits: purchase → webhook grant](#6-smoke-test-checklist) smoke
+  check. Billing itself stays opt-in (`STRIPE_BILLING_ENABLED=false` by
+  default) — a deployment that leaves it disabled only relies on the
+  schema-default starter balance, which is a config choice, not a missing
+  feature. Subscriptions, the Stripe customer portal, cancellation, and
+  promotional codes remain unimplemented.
 - **No cancellation or partial-completion flow** — `BookStatus.Cancelled`
   and `BookStatus.Partial` are reserved schema states with no code path
   that produces them yet.
@@ -525,14 +765,20 @@ code. None of these require a code change — they're deploy-time discipline.
   refresh token — every signed-in user is logged out and must log back in;
   there is no graceful dual-secret rollover implemented today, so treat
   rotation as a deliberate, announced action, not a silent one.
-- **Do not run more than one API instance without a shared rate limiter.**
-  `AuthRateLimitGuard`/`RateLimiterService` is in-memory and per-process
-  (see [`docs/auth-architecture.md` §13.2](auth-architecture.md#132-why-in-memory-not-redis))
-  — correct for the single-instance deploy this runbook provisions, but
-  multiple replicas would each keep an independent counter, silently
-  multiplying the effective rate limit and weakening brute-force
-  protection. Don't enable autoscaling/multiple replicas for the API until
-  this moves to a shared (e.g. Redis-backed) store.
+- ~~Do not run more than one API instance without a shared rate limiter~~
+  **Superseded.** `AuthRateLimitGuard` and the generation/child-photo/
+  diagnostics guards now inject `RATE_LIMITER_TOKEN`, which resolves to a
+  Redis-backed `RedisRateLimiter` unconditionally
+  (`apps/api/src/rate-limit/rate-limit.module.ts`) — correct across multiple
+  API instances already, not just the single instance this runbook
+  provisions. See the superseded-reasoning note at
+  [`docs/auth-architecture.md` §13.2](auth-architecture.md#132-why-in-memory-not-redis)
+  for what changed and why this bullet used to say otherwise. Multiple API
+  replicas are still not exercised by this runbook's setup steps (it
+  provisions one instance), but rate limiting specifically is no longer the
+  blocker for doing so — see [Known limitations](#8-known-limitations) above
+  for what else still favors care before autoscaling (storage drivers,
+  redundant recovery sweeps).
 
 ## 10. Vercel + Railway: concrete deployment configuration
 
@@ -607,6 +853,34 @@ up automatically once the Railway service is linked to this repo):
   read by Railway; it doesn't change `docker build`, `docker-compose up`, or
   any local script.
 
+### 10.1a Railway (Generation worker)
+
+A **second** Railway service in the same project, built from the same
+`apps/api/Dockerfile` (same Root Directory, same `railway.json` build
+config) but with its **Start Command overridden** to `node dist/worker`
+(Service → Settings → Deploy → Custom Start Command) instead of the
+Dockerfile's default `CMD`.
+
+- **No `healthcheckPath`** — the worker has no HTTP server, so leave
+  Railway's health check unset for this service (or, if the platform
+  requires one, remove it rather than pointing it at a path that doesn't
+  exist). Verify liveness via logs instead — see [Step
+  7a](#4a-deploy-the-generation-worker)'s log-line check.
+- **Environment variables**: the worker subset of [§10.3
+  below](#103-environment-variables-by-service) — notably `DATABASE_URL`,
+  `REDIS_URL`, `PDF_STORAGE_*`/`IMAGE_STORAGE_*` (**must match the API
+  service's values exactly**), and `STORY_GENERATION_PROVIDER`/
+  `IMAGE_GENERATION_PROVIDER`/`OPENAI_API_KEY` if using real
+  generation. Do **not** set `AUTH_MODE`, `JWT_*`, `ALLOWED_ORIGINS`,
+  `EMAIL_*`, or `STRIPE_*` on this service — see [§3.2 Environment ownership
+  matrix](#env-ownership-matrix).
+- **Deploy order**: promote the worker service's deploy only after the API
+  service's migration step has succeeded and the API is healthy — same
+  constraint as [Step 7a](#4a-deploy-the-generation-worker), just phrased
+  for Railway's per-service deploy triggers instead of raw `docker run`.
+- **Managed Redis/Postgres**: reuse the same Railway plugins the API service
+  uses (same project) — do not provision separate instances.
+
 ### 10.2 Vercel (Web)
 
 `apps/web/vercel.json` (config-as-code, picked up automatically once the
@@ -659,7 +933,7 @@ grouped here by which platform's dashboard they get set in.
 | `EMAIL_FROM` | `StoryMe <noreply@yourdomain.com>` | Must be a verified sender/domain in Resend. |
 | `EMAIL_REPLY_TO` | `support@yourdomain.com` | Optional. |
 | `STORY_GENERATION_PROVIDER` | `mock` (or `openai`) | `mock` keeps the demo free/deterministic. |
-| `IMAGE_GENERATION_PROVIDER_TOKEN` | `mock` (or `openai`) | Same. |
+| `IMAGE_GENERATION_PROVIDER` | `mock` (or `openai`) | Same. |
 | `OPENAI_API_KEY` | `sk-...` | Only if either provider above is `openai`. |
 | `PDF_STORAGE_DRIVER` | `r2` (or `s3`, or leave `local`) | `local` is ephemeral on Railway's container filesystem — see [Storage decision note](deployment-readiness.md#storage-decision). |
 | `IMAGE_STORAGE_DRIVER` | `r2` (or `s3`, or leave `local`) | Same. |
@@ -746,6 +1020,16 @@ email address you control.
 2. **Wire the migration step into an actual deploy pipeline** (platform
    release-phase hook or CI job), rather than running it by hand per this
    runbook.
-3. **Move generation to a real queue+worker** before scaling to multiple
-   API instances — BullMQ/Redis are provisioned but not wired to any
-   processor yet.
+3. ~~Move generation to a real queue+worker before scaling to multiple API
+   instances — BullMQ/Redis are provisioned but not wired to any processor
+   yet.~~ **Resolved in Phase 3K** — `GenerationQueueProcessor` consumes
+   `QUEUES.BOOK_GENERATION` durably, and the worker runs as its own
+   entrypoint (`apps/api/src/worker.ts`) separate from the API — see [Step
+   7a](#4a-deploy-the-generation-worker) above and [Known blockers
+   item 5](deployment-readiness.md#known-blockers) in the underlying audit.
+   BullMQ already distributes jobs safely across multiple API/worker
+   instances; what still favors care before autoscaling either tier is the
+   default `local` storage drivers (not shared across instances — set
+   `PDF_STORAGE_DRIVER`/`IMAGE_STORAGE_DRIVER` to `r2`/`s3`, already required
+   by this runbook) and `GenerationRunRecoveryService`'s startup sweep
+   running redundantly on every instance's boot (safe, but wasted work).

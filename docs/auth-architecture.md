@@ -733,6 +733,11 @@ Goal: cap brute-force/credential-stuffing/registration-abuse volume against
 refresh-cookie logic itself. No email verification, no password reset — those
 remain open (see §12.5).
 
+> **Note:** §13.1 describes this phase's original in-memory design, later
+> replaced by a Redis-backed limiter without changing the guard's public
+> behavior — see the superseded note in [§13.2](#132-why-in-memory-not-redis)
+> before relying on "in-memory" as the current state.
+
 ### 13.1 Design
 
 - **`RateLimiterService`** (`apps/api/src/rate-limit/rate-limiter.service.ts`)
@@ -766,6 +771,21 @@ remain open (see §12.5).
   target.
 
 ### 13.2 Why in-memory, not Redis
+
+> **Superseded (Phase F1 audit).** A later hardening pass
+> (`apps/api/src/rate-limit/redis-rate-limiter.service.ts`) replaced the
+> in-memory limiter on the auth path with a Redis-backed one:
+> `RATE_LIMITER_TOKEN` now resolves to `RedisRateLimiter` unconditionally
+> (`apps/api/src/rate-limit/rate-limit.module.ts`), and `AuthRateLimitGuard`
+> injects that token, not `RateLimiterService` directly. The commit that made
+> this change explicitly deferred updating this doc section ("deployment/doc
+> reconciliation" left as follow-up), so the reasoning below is historical —
+> it explains why in-memory was the *original* choice, not the current
+> behavior. `RateLimiterService` (in-memory) still exists and is exported for
+> direct injection in unit tests that construct a guard without a Redis
+> connection, but no production request path uses it anymore. The auth path
+> is correct across multiple API instances today without further work — see
+> [deployment-readiness.md Production readiness summary](deployment-readiness.md#production-readiness-summary).
 
 The app already provisions Redis (`REDIS_URL`, `CacheModule`) and, since
 Phase 3K, depends on it for the generation pipeline (BullMQ — see

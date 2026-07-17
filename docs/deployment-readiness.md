@@ -335,10 +335,15 @@ real transactional email provider are all done end-to-end.
   doc's [Migration command](#migration-command).
 - ~~Move generation to a real queue + worker~~ **Done (Phase 3K)** — see
   [Known blockers](#known-blockers) item 5.
-- **Consider a Redis-backed rate limiter** before running more than one API
-  instance — `RateLimiterService` is in-memory/per-process today, correct
-  only for a single-instance deploy (see
-  [§13.2](auth-architecture.md#132-why-in-memory-not-redis)).
+- ~~Consider a Redis-backed rate limiter before running more than one API
+  instance~~ **Done** — `AuthRateLimitGuard` and the generation/child-photo/
+  diagnostics guards (`UserRateLimitGuard`) all inject `RATE_LIMITER_TOKEN`,
+  which resolves to `RedisRateLimiter` unconditionally
+  (`apps/api/src/rate-limit/rate-limit.module.ts`), correct across every API
+  instance. `RateLimiterService` (in-memory) is kept only for direct
+  injection in unit tests that construct a guard without a Redis connection —
+  see the superseded-reasoning note at
+  [§13.2](auth-architecture.md#132-why-in-memory-not-redis).
 - ~~Embed real fonts before shipping `ru`/`pl` output~~ **Done** — see
   [Known blockers](#known-blockers) item 6.
 
@@ -679,7 +684,7 @@ step-by-step diagnosis procedure this incident led to.
   `OPENAI_API_KEY` requirement correctly on the selected provider; the env
   schema just didn't match. Fixed via `.superRefine()`: `OPENAI_API_KEY` is
   now optional at the schema level and only required when
-  `STORY_GENERATION_PROVIDER` or `IMAGE_GENERATION_PROVIDER_TOKEN` is
+  `STORY_GENERATION_PROVIDER` or `IMAGE_GENERATION_PROVIDER` is
   (case-insensitively) `"openai"` — matching what `.env.example` and this
   doc's [Required env vars](#required-env-vars-production) section already
   claimed. See `env.schema.spec.ts` for coverage of both the mock-mode-boots
@@ -847,22 +852,27 @@ still pass unchanged.
   (`apps/api/src/auth/auth-rate-limit.guard.ts`), applied via `@UseGuards` to
   `POST /api/auth/{register,login,refresh,logout}` (not `GET /api/auth/me`,
   which already requires a valid bearer token and isn't a credential-guessing
-  target). Backed by `RateLimiterService`
-  (`apps/api/src/rate-limit/rate-limiter.service.ts`) — a small, dependency-free,
-  in-memory fixed-window counter keyed by IP (+ request email when present, so
-  one targeted email can't exhaust the budget for every other user sharing an
-  IP). Configurable via `AUTH_RATE_LIMIT_WINDOW_MS` /
+  target). Configurable via `AUTH_RATE_LIMIT_WINDOW_MS` /
   `AUTH_RATE_LIMIT_MAX_ATTEMPTS` (default 15 min / 10 attempts — generous
   enough not to interfere with local dev/demo use). Exceeding the limit
   returns `429 { "error": "Too many requests", "code": "RATE_LIMITED" }`
   (no detail on which key was hit, to avoid email enumeration).
-  **In-memory means single-process only** — correct for this app's current
-  single-instance deploy target (see
-  [Recommended deployment architecture](#recommended-deployment-architecture)
-  below), but a future multi-instance deploy needs a shared store (e.g.
-  Redis, already provisioned for other purposes — see
-  [Required services](#required-services)) behind the same
-  `consume()`/`reset()` shape so counts are consistent across instances.
+  **Superseded (Phase F1 audit)**: this phase's original backing store,
+  `RateLimiterService` (in-memory, single-process — described below as
+  originally shipped), was later replaced by a Redis-backed
+  `RedisRateLimiter` behind the same `RATE_LIMITER_TOKEN`
+  (`apps/api/src/rate-limit/rate-limit.module.ts`), so the "in-memory means
+  single-process only" caveat that followed no longer applies — see the
+  corrected [Production recommendations](#production-readiness-summary)
+  entry above and [auth-architecture.md §13.2](auth-architecture.md#132-why-in-memory-not-redis)
+  for the full note. Original text, preserved for history: backed by
+  `RateLimiterService` (`apps/api/src/rate-limit/rate-limiter.service.ts`) —
+  a small, dependency-free, in-memory fixed-window counter keyed by IP
+  (+ request email when present, so one targeted email can't exhaust the
+  budget for every other user sharing an IP); in-memory meant single-process
+  only, correct only for a single-instance deploy target, with a future
+  multi-instance deploy needing a shared store behind the same
+  `consume()`/`reset()` shape so counts stayed consistent across instances.
   No existing auth behavior, JWT cookies, or refresh flow changed; see
   `apps/api/src/rate-limit/rate-limiter.service.spec.ts` and
   `apps/api/src/auth/auth-rate-limit.guard.spec.ts` for coverage.
@@ -967,7 +977,7 @@ deploy (beyond local dev defaults):
 - `ALLOWED_ORIGINS` — set to the deployed web app's origin(s).
 - `PORT` — usually set by the host; API already respects it.
 - `OPENAI_API_KEY` — required only if `STORY_GENERATION_PROVIDER=openai` or
-  `IMAGE_GENERATION_PROVIDER_TOKEN=openai`; otherwise the mock providers need
+  `IMAGE_GENERATION_PROVIDER=openai`; otherwise the mock providers need
   no key.
 - `PDF_STORAGE_DRIVER=r2` (or `s3`) plus `PDF_STORAGE_BUCKET`,
   `PDF_STORAGE_REGION`, `PDF_STORAGE_ACCESS_KEY_ID`,

@@ -41,8 +41,9 @@ export const envSchema = z
     AUTH_MODE: z.enum(['dev', 'jwt']).default('jwt'),
 
     // Rate limiting on /api/auth/* (register, login, refresh, logout) — see
-    // apps/api/src/rate-limit/. In-memory, single-process; sane defaults that
-    // shouldn't interfere with normal local dev/demo usage.
+    // apps/api/src/rate-limit/. Redis-backed (RATE_LIMITER_TOKEN resolves to
+    // RedisRateLimiter), correct across every API instance; sane defaults
+    // that shouldn't interfere with normal local dev/demo usage.
     AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
     // Per-route+IP+email budget — tight, since a legitimate user rarely
     // retries the same credential this many times.
