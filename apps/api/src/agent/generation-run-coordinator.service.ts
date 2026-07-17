@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { BookStatus, GenerationRunStatus, type Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import {
+  CreditsService,
+  generationChargeIdempotencyKey,
+  generationRefundIdempotencyKey,
+} from '../credits/credits.service';
 import type { GenerationOutcome } from './generation-outcome';
 import { GENERATION_INPUT_SNAPSHOT_INVALID } from './generation-input-snapshot';
 
@@ -88,7 +93,10 @@ export class GenerationRunMirrorInvariantError extends Error {
 export class GenerationRunCoordinator {
   private readonly logger = new Logger(GenerationRunCoordinator.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly creditsService: CreditsService,
+  ) {}
 
   /**
    * Runs one fenced GenerationRun write, then — only if it matched — one
@@ -114,6 +122,18 @@ export class GenerationRunCoordinator {
      * GenerationOutcome.agentLogs's doc comment).
      */
     agentLogs?: readonly Prisma.AgentLogCreateManyInput[];
+    /**
+     * Whether this transition, once applied, should also refund the run's
+     * original charge — true for every terminal-*failure* path
+     * (completeRun's failed branch, failInvalidSnapshot, failAbandoned),
+     * always false for a success. Applied only after the GenerationRun
+     * fence and Book mirror check both hold (same ordering/placement as
+     * agentLogs above), and only when a matching charge CreditTransaction
+     * actually exists for this run — see refundIfCharged's doc comment for
+     * why eligibility is derived from that row, never from run status
+     * alone.
+     */
+    refundOnApply?: boolean;
   }): Promise<CoordinatorOutcome> {
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -139,6 +159,10 @@ export class GenerationRunCoordinator {
           });
         }
 
+        if (params.refundOnApply) {
+          await this.refundIfCharged(tx, params.runId);
+        }
+
         return 'applied';
       });
     } catch (err) {
@@ -148,6 +172,46 @@ export class GenerationRunCoordinator {
       }
       throw err;
     }
+  }
+
+  /**
+   * Refunds a failed run's original charge, but only if one actually
+   * exists — a run created before Phase E2 (or one whose scheduling
+   * transaction never reached the charge, though that can't happen for a
+   * run that got this far, since charge and run-creation are the same
+   * transaction) has no CreditTransaction at
+   * generationChargeIdempotencyKey(runId), and must never receive a free
+   * credit. The charge row itself — not GenerationRun.status — is the
+   * source of truth for eligibility, and also supplies the refund's
+   * amount/user/book: deriving those from the run or hardcoding
+   * GENERATION_CREDIT_COST would refund the wrong amount (or the wrong
+   * user/book entirely) if a future policy ever prices runs differently, or
+   * silently credit a legacy run this lookup was specifically added to
+   * exclude. The idempotency key on the refund itself
+   * (generationRefundIdempotencyKey) is defense-in-depth on top of the
+   * fencing this method's caller already provides — by the time this runs,
+   * the GenerationRun fence and Book mirror check above have both held, so
+   * a stale/superseded or already-terminal run's second attempt never
+   * reaches here at all.
+   */
+  private async refundIfCharged(tx: Prisma.TransactionClient, runId: string): Promise<void> {
+    const charge = await tx.creditTransaction.findUnique({
+      where: { idempotencyKey: generationChargeIdempotencyKey(runId) },
+    });
+    if (!charge) {
+      this.logger.log(
+        `Run ${runId} has no matching charge CreditTransaction — treating as a legacy/unbilled run and skipping refund.`,
+      );
+      return;
+    }
+
+    await this.creditsService.addInTransaction(tx, {
+      userId: charge.userId,
+      amount: -charge.amount,
+      reason: 'refund_generation_failure',
+      ...(charge.bookId && { bookId: charge.bookId }),
+      idempotencyKey: generationRefundIdempotencyKey(runId),
+    });
   }
 
   /**
@@ -209,6 +273,7 @@ export class GenerationRunCoordinator {
       runId: ctx.runId,
       bookData,
       agentLogs: outcome.agentLogs,
+      refundOnApply: outcome.status !== BookStatus.complete,
     });
 
     if (result === 'stale_fence') {
@@ -246,6 +311,7 @@ export class GenerationRunCoordinator {
       bookId: ctx.bookId,
       runId: ctx.runId,
       bookData: { activeRunId: null, status: BookStatus.failed, errorMessage },
+      refundOnApply: true,
     });
 
     if (result === 'stale_fence') {
@@ -292,6 +358,7 @@ export class GenerationRunCoordinator {
         failedStep: null,
         errorMessage: params.errorMessage,
       },
+      refundOnApply: true,
     });
 
     if (result === 'stale_fence') {

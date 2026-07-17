@@ -76,7 +76,9 @@ Built the internal credit accounting foundation the first post-MVP TODO
 itself only. **No API path deducts a credit for a generation run yet, and
 Stripe (checkout, webhooks, subscriptions, refunds) remains entirely
 unimplemented** — this phase is purely the safe-to-build-on primitive
-underneath both.
+underneath both. **Superseded by [Phase E2](#phase-e2-credits) below**, which
+wires this primitive into the generation lifecycle — Stripe itself remains
+unimplemented after E2 too.
 
 `User.credits` remains the canonical current balance (never derived by
 summing `credit_transactions`, since existing users start with the
@@ -154,6 +156,54 @@ cleanly to a live local Postgres and is idempotent on re-run (`prisma migrate
 deploy` reports "No pending migrations to apply" the second time), and
 `eslint --max-warnings 0` on every changed file.
 
+## Phase E2: generation credit charging and refunds {#phase-e2-credits}
+
+Wires the Phase E1 ledger primitive into the generation lifecycle — the
+second half of the first post-MVP TODO. **Generation credit enforcement is
+now implemented: every newly scheduled `GenerationRun` (initial generation,
+retry, or full regeneration) costs 1 credit, charged the moment the run is
+durably scheduled, not when generation completes; a run that later fails
+terminally is automatically refunded exactly once.** Stripe itself
+(checkout, webhooks, subscriptions, purchasing more credits) is still
+entirely unimplemented — this phase only spends the schema-default starter
+balance more accurately, it does not add any way to acquire more of it.
+
+Full design writeup, including the exact atomicity/idempotency/refund-
+eligibility invariants: **[apps/api/docs/credits.md](../apps/api/docs/credits.md#phase-e2-generation-credit-charging-and-refunds)**.
+Summary:
+
+- **Scheduling atomicity**: `BooksService.createRunAndSchedule` charges the
+  credit inside the exact same transaction that creates the `GenerationRun`,
+  transitions `Book`, and writes the `OutboxEvent` — an insufficient balance
+  (stable `402 { code: 'INSUFFICIENT_CREDITS' }`) rolls all four back
+  together, and the existing per-book DB-level partial-unique-index guard
+  still ensures a racing/duplicate scheduling request can never charge
+  without first winning its own run.
+- **Refund atomicity**: `GenerationRunCoordinator`'s single fenced
+  terminal-transition helper now also refunds, as its last step, whenever
+  the transition is a failure — gated on the `GenerationRun`/`Book` fence
+  already having held, and on a matching `generation:${runId}:charge`
+  `CreditTransaction` actually existing (a pre-Phase-E2 run has none, and is
+  correctly failed without ever receiving a free credit).
+- **No nested transactions, no duplicated ledger SQL**: `CreditsService`
+  gained `deductInTransaction`/`addInTransaction`, sharing their actual
+  balance-UPDATE/ledger-INSERT logic with the pre-existing `deduct`/`add` —
+  `CreditsService` remains the only place `User.credits` or
+  `CreditTransaction` is ever written.
+- No schema/migration changes were needed — refund eligibility is derived
+  from the deterministic `idempotencyKey` on the original charge row, not
+  from a new column.
+
+Verified: `pnpm --filter @book/api typecheck`, `pnpm --filter @book/api test`
+(1206 tests, 2 pre-existing skips), `pnpm --filter @book/api test:integration`
+(70 tests — adds a dedicated 10-test real-Postgres suite covering scheduling
+atomicity, concurrent-start race resolution, refund atomicity/eligibility,
+forced-rollback-on-ledger-failure, and the legacy/no-charge case), `prisma
+migrate deploy` confirming no pending migrations (this phase needed no schema
+change — refund eligibility is derived from the existing Phase E1
+`idempotency_key` column), `git diff --check`, and `eslint --max-warnings 0`
+on every changed file.
+
 ## Production readiness summary {#production-readiness-summary}
 
 ### MVP blockers (must fix before any deploy)
@@ -195,11 +245,12 @@ real transactional email provider are all done end-to-end.
 - **OAuth** (Google/Apple) — schema already reserves `oauthProvider`/
   `oauthId`; documented as a follow-up auth method, not a blocker for the
   current email/password + JWT flow.
-- **Payments/credits enforcement** — Phase E1 built the internal credit
-  accounting foundation (see [Phase E1](#phase-e1-credits) above), but
-  **nothing yet deducts a credit for a generation run**, and Stripe itself
-  (checkout, webhooks, subscriptions, refunds) remains entirely
-  unimplemented.
+- **Stripe purchasing** — Phase E1/E2 built the credit accounting foundation
+  and wired it into generation charging/refunds (see
+  [Phase E1](#phase-e1-credits) and [Phase E2](#phase-e2-credits) above), but
+  Stripe itself (checkout, webhooks, subscriptions, purchasing more credits)
+  remains entirely unimplemented — the schema-default starter balance is
+  still the only way an account gets credits.
 - **Cancellation / partial-completion flow** — `BookStatus.Cancelled` and
   `BookStatus.Partial` are reserved schema states with no code path that
   produces them yet.

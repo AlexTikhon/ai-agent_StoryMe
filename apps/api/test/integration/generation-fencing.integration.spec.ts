@@ -16,6 +16,7 @@ import {
 } from '../../src/agent/generation-execution.service';
 import { GenerationRunRecoveryService } from '../../src/agent/generation-run-recovery.service';
 import { GenerationRunCoordinator } from '../../src/agent/generation-run-coordinator.service';
+import { CreditsService } from '../../src/credits/credits.service';
 import type { GenerationOutcome } from '../../src/agent/generation-outcome';
 import { GenerationInputSnapshotBackfillService } from '../../src/agent/generation-input-snapshot-backfill.service';
 import { LocalImageAssetStorage } from '../../src/images/image-asset-storage';
@@ -259,7 +260,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
   });
 
   describe('Atomic terminal transition (GenerationRunCoordinator.completeRun — the actual production method)', () => {
-    const coordinator = new GenerationRunCoordinator(prisma);
+    const coordinator = new GenerationRunCoordinator(prisma, new CreditsService(prisma));
 
     function completedOutcome(overrides: Partial<GenerationOutcome> = {}): GenerationOutcome {
       return {
@@ -668,12 +669,12 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const serviceA = new GenerationRunRecoveryService(
         prismaA,
         neverPendingQueue,
-        new GenerationRunCoordinator(prismaA),
+        new GenerationRunCoordinator(prismaA, new CreditsService(prismaA)),
       ) as unknown as LeaseInternals;
       const serviceB = new GenerationRunRecoveryService(
         prismaB,
         neverPendingQueue,
-        new GenerationRunCoordinator(prismaB),
+        new GenerationRunCoordinator(prismaB, new CreditsService(prismaB)),
       ) as unknown as LeaseInternals;
 
       const generationA = await serviceA.acquireLease(60_000);
@@ -689,12 +690,12 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       const serviceA = new GenerationRunRecoveryService(
         prismaA,
         neverPendingQueue,
-        new GenerationRunCoordinator(prismaA),
+        new GenerationRunCoordinator(prismaA, new CreditsService(prismaA)),
       ) as unknown as LeaseInternals;
       const serviceB = new GenerationRunRecoveryService(
         prismaB,
         neverPendingQueue,
-        new GenerationRunCoordinator(prismaB),
+        new GenerationRunCoordinator(prismaB, new CreditsService(prismaB)),
       ) as unknown as LeaseInternals;
 
       const generationA = await serviceA.acquireLease(60_000);

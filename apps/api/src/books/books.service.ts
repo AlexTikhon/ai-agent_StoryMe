@@ -30,6 +30,11 @@ import {
 } from '@book/types';
 import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
+import {
+  CreditsService,
+  GENERATION_CREDIT_COST,
+  generationChargeIdempotencyKey,
+} from '../credits/credits.service';
 import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationJobService } from '../agent/generation-job.service';
@@ -119,6 +124,7 @@ export class BooksService {
     private readonly config: ConfigService<Env, true>,
     @Inject(RATE_LIMITER_TOKEN) private readonly rateLimiter: RateLimiter,
     private readonly childPhotoProcessor: ChildPhotoProcessor,
+    private readonly creditsService: CreditsService,
   ) {}
 
   /**
@@ -492,6 +498,16 @@ export class BooksService {
    * The actual BullMQ publish is deliberately NOT done here — see
    * OutboxDispatcherService — so a crash right after this transaction commits
    * can never lose the dispatch.
+   *
+   * Phase E2: every newly created run also charges GENERATION_CREDIT_COST
+   * credits here, inside this same transaction, via
+   * CreditsService.deductInTransaction keyed on
+   * generationChargeIdempotencyKey(run.id) — a user with insufficient
+   * balance gets the stable 402 INSUFFICIENT_CREDITS error and this whole
+   * transaction rolls back, leaving no run, no Book transition, and no
+   * OutboxEvent, exactly as if scheduling had never been attempted. Credits
+   * are charged the moment a run is durably scheduled, not when generation
+   * completes — see apps/api/docs/credits.md, "Phase E2".
    */
   private async createRunAndSchedule(params: {
     book: Book;
@@ -516,6 +532,13 @@ export class BooksService {
             inputHash,
             ...(params.retryOfRunId && { retryOfRunId: params.retryOfRunId }),
           },
+        });
+        await this.creditsService.deductInTransaction(tx, {
+          userId: params.book.userId,
+          amount: GENERATION_CREDIT_COST,
+          reason: 'book_creation',
+          bookId: params.book.id,
+          idempotencyKey: generationChargeIdempotencyKey(run.id),
         });
         const updatedBook = await tx.book.update({
           where: { id: params.book.id, status: params.fromStatus },

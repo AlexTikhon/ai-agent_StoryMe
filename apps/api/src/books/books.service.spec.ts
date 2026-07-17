@@ -1,7 +1,20 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { BadRequestException, ConflictException, Logger, NotFoundException } from '@nestjs/common';
-import { Prisma, type Book, type GenerationJob, type GenerationRun } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  HttpStatus,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  Prisma,
+  type Book,
+  type CreditTransaction,
+  type GenerationJob,
+  type GenerationRun,
+} from '@prisma/client';
 import { BooksService } from './books.service';
 import type { AgentService } from '../agent/agent.service';
 import type { GenerationQueueService } from '../agent/generation-queue.service';
@@ -21,6 +34,7 @@ import type { ImageAssetStorage } from '../images/image-asset-storage';
 import { InvalidGenerationArtifactPointerError } from '../agent/generation-artifact-namespace';
 import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
+import { INSUFFICIENT_CREDITS_CODE, type CreditsService } from '../credits/credits.service';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
 
@@ -230,6 +244,41 @@ function createMockChildPhotoProcessor() {
   } as never;
 }
 
+function makeCreditTransaction(overrides: Partial<CreditTransaction> = {}): CreditTransaction {
+  return {
+    id: 'credit-tx-1',
+    userId: 'u-1',
+    bookId: 'b-1',
+    amount: -1,
+    balanceAfter: 2,
+    reason: 'book_creation' as CreditTransaction['reason'],
+    stripePaymentId: null,
+    idempotencyKey: 'generation:run-1:charge',
+    createdAt: new Date('2026-01-01'),
+    ...overrides,
+  };
+}
+
+/** Defaults to a successful charge — tests that need the stable 402 override deductInTransaction to reject. */
+function createMockCreditsService(): jest.Mocked<CreditsService> {
+  return {
+    deductInTransaction: vi.fn().mockResolvedValue(makeCreditTransaction()),
+    addInTransaction: vi.fn().mockResolvedValue(makeCreditTransaction({ amount: 1 })),
+  } as unknown as jest.Mocked<CreditsService>;
+}
+
+/** Mirrors CreditsService.insufficientCreditsException's shape — the stable 402 the real service throws for a user with too few credits. */
+function insufficientCreditsError(): HttpException {
+  return new HttpException(
+    {
+      error: 'Insufficient credits',
+      message: 'Insufficient credits',
+      code: INSUFFICIENT_CREDITS_CODE,
+    },
+    HttpStatus.PAYMENT_REQUIRED,
+  );
+}
+
 // Prisma emits string enum values that match the schema — 'created', 'preview_ready', etc.
 const STATUS_CREATED = 'created' as Book['status'];
 const STATUS_IN_PROGRESS = 'preview_ready' as Book['status'];
@@ -305,6 +354,7 @@ describe('BooksService', () => {
   let config: ReturnType<typeof createMockConfig>;
   let rateLimiter: ReturnType<typeof createMockRateLimiter>;
   let childPhotoProcessor: ReturnType<typeof createMockChildPhotoProcessor>;
+  let creditsService: ReturnType<typeof createMockCreditsService>;
 
   beforeEach(() => {
     prisma = createMockPrisma();
@@ -339,6 +389,7 @@ describe('BooksService', () => {
     config = createMockConfig();
     rateLimiter = createMockRateLimiter();
     childPhotoProcessor = createMockChildPhotoProcessor();
+    creditsService = createMockCreditsService();
     service = new BooksService(
       prisma as never,
       agentService as never,
@@ -352,6 +403,7 @@ describe('BooksService', () => {
       config,
       rateLimiter,
       childPhotoProcessor,
+      creditsService as never,
     );
   });
 
@@ -841,6 +893,39 @@ describe('BooksService', () => {
       expect(generationQueueService.enqueue).not.toHaveBeenCalled();
     });
 
+    it('charges exactly one credit for the newly created run, keyed on its own id, inside the same transaction', async () => {
+      const book = makeBook({ status: STATUS_CREATED, userId: 'u-1' });
+      const started = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'run-1' });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(started);
+      prisma.generationRun.create.mockResolvedValue(makeGenerationRun({ id: 'run-1' }));
+
+      await service.startGeneration('u-1', 'b-1');
+
+      expect(creditsService.deductInTransaction).toHaveBeenCalledOnce();
+      expect(creditsService.deductInTransaction).toHaveBeenCalledWith(prisma, {
+        userId: 'u-1',
+        amount: 1,
+        reason: 'book_creation',
+        bookId: 'b-1',
+        idempotencyKey: 'generation:run-1:charge',
+      });
+    });
+
+    it('returns the stable 402 INSUFFICIENT_CREDITS error and rolls back the whole scheduling transaction when the user lacks balance', async () => {
+      const book = makeBook({ status: STATUS_CREATED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      creditsService.deductInTransaction.mockRejectedValue(insufficientCreditsError());
+
+      await expect(service.startGeneration('u-1', 'b-1')).rejects.toMatchObject({
+        status: HttpStatus.PAYMENT_REQUIRED,
+        response: expect.objectContaining({ code: INSUFFICIENT_CREDITS_CODE }),
+      });
+      expect(prisma.book.update).not.toHaveBeenCalled();
+      expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
+      expect(generationJobService.createQueued).not.toHaveBeenCalled();
+    });
+
     it('logs the status transition from created to char_build', async () => {
       const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       const book = makeBook({ status: STATUS_CREATED });
@@ -1123,6 +1208,37 @@ describe('BooksService', () => {
       });
     });
 
+    it("charges exactly one credit for the retry's own new run — independent of any prior run's charge/refund", async () => {
+      const book = makeBook({ status: STATUS_FAILED, userId: 'u-1' });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'retry-run-1' });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+      prisma.generationRun.create.mockResolvedValue(makeGenerationRun({ id: 'retry-run-1' }));
+
+      await service.retryGeneration('u-1', 'b-1');
+
+      expect(creditsService.deductInTransaction).toHaveBeenCalledOnce();
+      expect(creditsService.deductInTransaction).toHaveBeenCalledWith(prisma, {
+        userId: 'u-1',
+        amount: 1,
+        reason: 'book_creation',
+        bookId: 'b-1',
+        idempotencyKey: 'generation:retry-run-1:charge',
+      });
+    });
+
+    it('returns the stable 402 INSUFFICIENT_CREDITS error and never transitions Book when the user lacks balance', async () => {
+      const book = makeBook({ status: STATUS_FAILED });
+      prisma.book.findFirst.mockResolvedValue(book);
+      creditsService.deductInTransaction.mockRejectedValue(insufficientCreditsError());
+
+      await expect(service.retryGeneration('u-1', 'b-1')).rejects.toMatchObject({
+        status: HttpStatus.PAYMENT_REQUIRED,
+        response: expect.objectContaining({ code: INSUFFICIENT_CREDITS_CODE }),
+      });
+      expect(prisma.book.update).not.toHaveBeenCalled();
+    });
+
     it('creates a retry GenerationJob (legacy mirror) with attempt incremented past the post-increment retryCount', async () => {
       const book = makeBook({ status: STATUS_FAILED });
       // retryCount is already incremented by the prisma.book.update mock below.
@@ -1357,6 +1473,37 @@ describe('BooksService', () => {
         }),
       });
       expect(result.book.status).toBe('char_build');
+    });
+
+    it("charges exactly one credit for the regenerate's own new run", async () => {
+      const book = makeBook({ status: STATUS_COMPLETE, userId: 'u-1' });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'regen-run-1' });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+      prisma.generationRun.create.mockResolvedValue(makeGenerationRun({ id: 'regen-run-1' }));
+
+      await service.regenerateBook('u-1', 'b-1');
+
+      expect(creditsService.deductInTransaction).toHaveBeenCalledOnce();
+      expect(creditsService.deductInTransaction).toHaveBeenCalledWith(prisma, {
+        userId: 'u-1',
+        amount: 1,
+        reason: 'book_creation',
+        bookId: 'b-1',
+        idempotencyKey: 'generation:regen-run-1:charge',
+      });
+    });
+
+    it('returns the stable 402 INSUFFICIENT_CREDITS error and never transitions Book when the user lacks balance', async () => {
+      const book = makeBook({ status: STATUS_COMPLETE });
+      prisma.book.findFirst.mockResolvedValue(book);
+      creditsService.deductInTransaction.mockRejectedValue(insufficientCreditsError());
+
+      await expect(service.regenerateBook('u-1', 'b-1')).rejects.toMatchObject({
+        status: HttpStatus.PAYMENT_REQUIRED,
+        response: expect.objectContaining({ code: INSUFFICIENT_CREDITS_CODE }),
+      });
+      expect(prisma.book.update).not.toHaveBeenCalled();
     });
 
     it('regenerates a failed book too (not just complete)', async () => {

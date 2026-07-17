@@ -116,6 +116,7 @@ export class BooksController {
     return new StreamableFile(result.buffer);
   }
 
+  /** Charges 1 credit the moment the run is durably scheduled — returns the stable 402 `{ code: 'INSUFFICIENT_CREDITS' }` (never a raw balance) if the user's balance is too low. See apps/api/docs/credits.md, "Phase E2". */
   @Post(':id/generate')
   @HttpCode(200)
   @UseGuards(RequireVerifiedEmailGuard)
@@ -130,7 +131,7 @@ export class BooksController {
     return this.booksService.startGeneration(user.id, id);
   }
 
-  /** Resumes a failed book using the exact input the failed run used — see BooksService.retryGeneration. Use POST /:id/regenerate for a complete book, or to pick up edits made since a failure. */
+  /** Resumes a failed book using the exact input the failed run used — see BooksService.retryGeneration. Use POST /:id/regenerate for a complete book, or to pick up edits made since a failure. Creates a new GenerationRun and charges 1 credit again (independent of any refund the prior failed run received) — same stable 402 INSUFFICIENT_CREDITS as generate. See apps/api/docs/credits.md, "Phase E2". */
   @Post(':id/retry-generation')
   @HttpCode(200)
   @UseGuards(RequireVerifiedEmailGuard)
@@ -145,7 +146,7 @@ export class BooksController {
     return this.booksService.retryGeneration(user.id, id);
   }
 
-  /** Replaces a failed or complete book's story/images/PDF with a fresh run built from the book's current fields — see BooksService.regenerateBook. */
+  /** Replaces a failed or complete book's story/images/PDF with a fresh run built from the book's current fields — see BooksService.regenerateBook. Creates a new GenerationRun and charges 1 credit — same stable 402 INSUFFICIENT_CREDITS as generate. See apps/api/docs/credits.md, "Phase E2". */
   @Post(':id/regenerate')
   @HttpCode(200)
   @UseGuards(RequireVerifiedEmailGuard)

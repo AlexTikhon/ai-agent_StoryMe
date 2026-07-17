@@ -3,6 +3,7 @@ import { PrismaService } from '../../src/database/prisma.service';
 import { ClaimArtifactCleanupService } from '../../src/agent/claim-artifact-cleanup.service';
 import { GenerationRunRecoveryService } from '../../src/agent/generation-run-recovery.service';
 import { GenerationRunCoordinator } from '../../src/agent/generation-run-coordinator.service';
+import { CreditsService } from '../../src/credits/credits.service';
 import { LocalImageAssetStorage } from '../../src/images/image-asset-storage';
 import { LocalPdfStorage } from '../../src/pdf/pdf-storage';
 
@@ -48,7 +49,7 @@ describe('ClaimArtifactCleanupService / GenerationRunRecoveryService — indepen
     return new GenerationRunRecoveryService(
       prisma,
       neverPendingQueue,
-      new GenerationRunCoordinator(prisma),
+      new GenerationRunCoordinator(prisma, new CreditsService(prisma)),
     ) as unknown as RecoveryLeaseInternals;
   }
 
@@ -81,7 +82,10 @@ describe('ClaimArtifactCleanupService / GenerationRunRecoveryService — indepen
       where: { id: { in: ['claim_artifact_cleanup', 'generation_run_recovery'] } },
     });
     expect(rows).toHaveLength(2);
-    expect(rows.map((r) => r.id).sort()).toEqual(['claim_artifact_cleanup', 'generation_run_recovery']);
+    expect(rows.map((r) => r.id).sort()).toEqual([
+      'claim_artifact_cleanup',
+      'generation_run_recovery',
+    ]);
   });
 
   it('a live generation_run_recovery lease does not block claim_artifact_cleanup from acquiring, and vice versa', async () => {

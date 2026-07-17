@@ -22,6 +22,11 @@ calls, no external AI providers, no cloud dependency.
    - Requires no active (`queued`/`running`) `GenerationJob` already exists
      for the book — otherwise `ConflictException` (409, "Generation is
      already in progress for this book").
+   - Charges 1 credit the moment the run is durably scheduled, inside the
+     same transaction as the `GenerationRun` create/`Book` transition/
+     `OutboxEvent` write — an insufficient balance returns the stable `402
+     { code: 'INSUFFICIENT_CREDITS' }` and rolls everything back. See
+     `apps/api/docs/credits.md`, "Phase E2".
    - Transitions `status` to `char_build` (the first pipeline step) and
      returns immediately — it does **not** wait for generation to finish.
      See "Durable generation queue (Phase 3K)" below.

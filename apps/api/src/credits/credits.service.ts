@@ -51,6 +51,43 @@ export interface AddCreditsInput {
   idempotencyKey?: string;
 }
 
+/** Cost, in credits, of every newly created GenerationRun — initial generation, retry, and regeneration each create one run and each cost exactly this much. See apps/api/docs/credits.md, "Phase E2". */
+export const GENERATION_CREDIT_COST = 1;
+
+/**
+ * Deterministic idempotency keys for the two generation-owned credit
+ * mutations, derived from the durable GenerationRun id rather than any
+ * client-supplied value — see apps/api/docs/credits.md, "Phase E2". A run's
+ * id is minted once (inside the same transaction that charges it), so these
+ * are stable for that run's entire lifetime and unique across every run ever
+ * created.
+ */
+export function generationChargeIdempotencyKey(runId: string): string {
+  return `generation:${runId}:charge`;
+}
+
+export function generationRefundIdempotencyKey(runId: string): string {
+  return `generation:${runId}:refund`;
+}
+
+/** Input for a credit mutation made inside a caller's own Prisma transaction — see CreditsService.deductInTransaction/addInTransaction. Unlike the standalone deduct/add, idempotencyKey is required: internal generation-owned mutations always use a deterministic key, never an absent one. */
+export interface DeductCreditsInTransactionInput {
+  userId: string;
+  amount: number;
+  reason: CreditReason;
+  bookId?: string;
+  idempotencyKey: string;
+}
+
+export interface AddCreditsInTransactionInput {
+  userId: string;
+  amount: number;
+  reason: CreditReason;
+  bookId?: string;
+  stripePaymentId?: string;
+  idempotencyKey: string;
+}
+
 export interface CreditBalance {
   credits: number;
   creditsUpdatedAt: Date | null;
@@ -129,6 +166,47 @@ export class CreditsService {
     });
   }
 
+  /**
+   * Debits credits as one write inside a transaction the caller already
+   * holds — used by BooksService.createRunAndSchedule so the GenerationRun
+   * create, the credit debit, the Book transition, and the OutboxEvent
+   * insert all commit or roll back together (see apps/api/docs/credits.md,
+   * "Phase E2"). Never opens its own transaction (no nested
+   * `$transaction`) and never catches an idempotency-key conflict — either
+   * kind of failure here must abort and roll back the caller's entire
+   * transaction, not be swallowed and retried in place, so the run/Book/
+   * outbox writes made earlier in the same transaction are undone too.
+   */
+  async deductInTransaction(
+    tx: Prisma.TransactionClient,
+    input: DeductCreditsInTransactionInput,
+  ): Promise<CreditTransaction> {
+    this.assertValidAmount(input.amount);
+    return this.mutateCore(tx, {
+      userId: input.userId,
+      delta: -input.amount,
+      reason: input.reason,
+      bookId: input.bookId,
+      idempotencyKey: input.idempotencyKey,
+    });
+  }
+
+  /** Credits (refunds) as one write inside a transaction the caller already holds — see deductInTransaction's doc comment; same no-nested-transaction, no-swallowed-conflict reasoning applies to GenerationRunCoordinator's refund-on-failure write. */
+  async addInTransaction(
+    tx: Prisma.TransactionClient,
+    input: AddCreditsInTransactionInput,
+  ): Promise<CreditTransaction> {
+    this.assertValidAmount(input.amount);
+    return this.mutateCore(tx, {
+      userId: input.userId,
+      delta: input.amount,
+      reason: input.reason,
+      bookId: input.bookId,
+      stripePaymentId: input.stripePaymentId,
+      idempotencyKey: input.idempotencyKey,
+    });
+  }
+
   async getTransactions(
     userId: string,
     query: GetCreditTransactionsInput,
@@ -189,7 +267,7 @@ export class CreditsService {
    * balance change too.
    */
   private async mutate(input: MutateInput): Promise<CreditTransaction> {
-    const { userId, delta, reason, bookId, stripePaymentId, idempotencyKey } = input;
+    const { idempotencyKey } = input;
 
     if (idempotencyKey) {
       const existing = await this.prisma.creditTransaction.findUnique({
@@ -199,37 +277,7 @@ export class CreditsService {
     }
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const where: Prisma.UserWhereInput =
-          delta < 0 ? { id: userId, credits: { gte: -delta } } : { id: userId };
-        const result = await tx.user.updateMany({
-          where,
-          data: { credits: { increment: delta }, creditsUpdatedAt: new Date() },
-        });
-
-        if (result.count === 0) {
-          const exists = await tx.user.findUnique({ where: { id: userId }, select: { id: true } });
-          if (!exists) throw new NotFoundException('User not found');
-          throw insufficientCreditsException();
-        }
-
-        const user = await tx.user.findUniqueOrThrow({
-          where: { id: userId },
-          select: { credits: true },
-        });
-
-        return tx.creditTransaction.create({
-          data: {
-            userId,
-            bookId: bookId ?? null,
-            amount: delta,
-            balanceAfter: user.credits,
-            reason,
-            stripePaymentId: stripePaymentId ?? null,
-            idempotencyKey: idempotencyKey ?? null,
-          },
-        });
-      });
+      return await this.prisma.$transaction((tx) => this.mutateCore(tx, input));
     } catch (err) {
       if (idempotencyKey && isIdempotencyKeyViolation(err)) {
         const existing = await this.prisma.creditTransaction.findUnique({
@@ -239,5 +287,53 @@ export class CreditsService {
       }
       throw err;
     }
+  }
+
+  /**
+   * The actual balance UPDATE + CreditTransaction INSERT — the one place
+   * User.credits is ever written, shared by every caller regardless of
+   * whether it owns its own transaction (`mutate`, used by the public
+   * deduct/add) or is composing into a larger one it doesn't own
+   * (deductInTransaction/addInTransaction, used by generation scheduling and
+   * refunds). Takes a `Prisma.TransactionClient` rather than opening one
+   * itself — see this class's own doc comment for why the UPDATE+INSERT pair
+   * must always execute inside a transaction, just not necessarily one this
+   * method creates.
+   */
+  private async mutateCore(
+    tx: Prisma.TransactionClient,
+    input: MutateInput,
+  ): Promise<CreditTransaction> {
+    const { userId, delta, reason, bookId, stripePaymentId, idempotencyKey } = input;
+
+    const where: Prisma.UserWhereInput =
+      delta < 0 ? { id: userId, credits: { gte: -delta } } : { id: userId };
+    const result = await tx.user.updateMany({
+      where,
+      data: { credits: { increment: delta }, creditsUpdatedAt: new Date() },
+    });
+
+    if (result.count === 0) {
+      const exists = await tx.user.findUnique({ where: { id: userId }, select: { id: true } });
+      if (!exists) throw new NotFoundException('User not found');
+      throw insufficientCreditsException();
+    }
+
+    const user = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { credits: true },
+    });
+
+    return tx.creditTransaction.create({
+      data: {
+        userId,
+        bookId: bookId ?? null,
+        amount: delta,
+        balanceAfter: user.credits,
+        reason,
+        stripePaymentId: stripePaymentId ?? null,
+        idempotencyKey: idempotencyKey ?? null,
+      },
+    });
   }
 }

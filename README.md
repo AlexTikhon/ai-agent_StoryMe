@@ -41,14 +41,17 @@ match between API and web** or every request 401s.
 
 ## What it does not do yet
 
-- **No payments/credits enforcement.** Phase E1 added an internal credit
-  accounting foundation (`GET /api/credits/balance`,
-  `GET /api/credits/transactions`, an atomic `CreditsService` ledger — see
-  "Phase E1: Credit accounting foundation" in
-  [docs/deployment-readiness.md](docs/deployment-readiness.md)), but **no API
-  path deducts credits for a generation run yet**, and Stripe itself
-  (checkout, webhooks, subscriptions, refunds) is still entirely
-  unimplemented.
+- **No Stripe/purchasing.** Generation credit enforcement is implemented:
+  every `POST /books/:id/generate`, `retry-generation`, or `regenerate` call
+  charges 1 credit the moment the run is durably scheduled (not when
+  generation completes), returns the stable `402 { code:
+  'INSUFFICIENT_CREDITS' }` if the balance is too low, and a run that later
+  fails is automatically refunded exactly once — see
+  [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E2". Stripe
+  itself (checkout, webhooks, subscriptions, purchasing more credits) is
+  still entirely unimplemented — the schema-default starter balance
+  (`User.credits` defaults to `3`) is the only way an account currently gets
+  credits.
 - ~~No queue-backed generation.~~ Generation now runs on a durable
   BullMQ/Redis-backed queue (`GenerationQueueService`/`GenerationQueueProcessor`),
   not in-process — Redis is on the critical path for scheduling generation.
@@ -130,9 +133,9 @@ publicly.
 
 ## Known post-MVP TODOs
 
-- Wire credit deduction into the generation flow and build Stripe billing
-  (checkout, webhooks, subscriptions, refunds) on top of the Phase E1 credit
-  accounting foundation.
+- Build Stripe billing (checkout, webhooks, subscriptions, purchasing more
+  credits) on top of the Phase E1/E2 credit accounting foundation — the only
+  piece still missing is letting a user actually acquire more credits.
 - Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial
   generation recovery, user-initiated cancellation) or should be dropped.
 - `prisma:seed` was removed as a package script (previously pointed at a

@@ -1,5 +1,6 @@
 import { DynamicModule, Module, Provider } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { CreditsModule } from '../credits/credits.module';
 import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
@@ -92,7 +93,7 @@ export class BooksModule {
 
     return {
       module: BooksModule,
-      imports: [AuthModule],
+      imports: [AuthModule, CreditsModule],
       controllers: [BooksController],
       providers,
     };

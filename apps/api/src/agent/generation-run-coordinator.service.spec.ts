@@ -1,11 +1,34 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
+import type { CreditTransaction } from '@prisma/client';
 import { GenerationRunCoordinator } from './generation-run-coordinator.service';
 import { GENERATION_INPUT_SNAPSHOT_INVALID } from './generation-input-snapshot';
 import type { GenerationOutcome } from './generation-outcome';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
+import type { CreditsService } from '../credits/credits.service';
 
 type MockPrisma = ReturnType<typeof createMockPrisma>;
+
+function makeChargeTransaction(overrides: Partial<CreditTransaction> = {}): CreditTransaction {
+  return {
+    id: 'charge-tx-1',
+    userId: 'u-1',
+    bookId: 'b-1',
+    amount: -1,
+    balanceAfter: 2,
+    reason: 'book_creation' as CreditTransaction['reason'],
+    stripePaymentId: null,
+    idempotencyKey: 'generation:run-1:charge',
+    createdAt: new Date('2026-01-01'),
+    ...overrides,
+  };
+}
+
+function createMockCreditsService(): jest.Mocked<CreditsService> {
+  return {
+    addInTransaction: vi.fn().mockResolvedValue(makeChargeTransaction({ amount: 1 })),
+  } as unknown as jest.Mocked<CreditsService>;
+}
 
 function makeOutcome(overrides: Partial<GenerationOutcome> = {}): GenerationOutcome {
   return {
@@ -28,6 +51,7 @@ function makeOutcome(overrides: Partial<GenerationOutcome> = {}): GenerationOutc
 
 describe('GenerationRunCoordinator', () => {
   let prisma: MockPrisma;
+  let creditsService: ReturnType<typeof createMockCreditsService>;
   let coordinator: GenerationRunCoordinator;
 
   beforeEach(() => {
@@ -35,7 +59,12 @@ describe('GenerationRunCoordinator', () => {
     prisma.$transaction.mockImplementation((cb: (tx: MockPrisma) => unknown) => cb(prisma));
     prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
     prisma.book.updateMany.mockResolvedValue({ count: 1 });
-    coordinator = new GenerationRunCoordinator(prisma as never);
+    // Default: no matching charge — most existing tests below predate Phase
+    // E2 credit charging and don't care about refund behavior; tests that do
+    // override this explicitly.
+    prisma.creditTransaction.findUnique.mockResolvedValue(null);
+    creditsService = createMockCreditsService();
+    coordinator = new GenerationRunCoordinator(prisma as never, creditsService as never);
   });
 
   describe('completeRun', () => {
@@ -200,6 +229,83 @@ describe('GenerationRunCoordinator', () => {
 
       expect(result).toBe('book_mirror_mismatch');
     });
+
+    describe('Phase E2 — refund on failure', () => {
+      it('refunds the exact amount/user/book from the matching charge transaction when a run fails', async () => {
+        prisma.creditTransaction.findUnique.mockResolvedValue(
+          makeChargeTransaction({ userId: 'u-9', bookId: 'b-9', amount: -1 }),
+        );
+
+        const result = await coordinator.completeRun(
+          { runId: 'run-1', bookId: 'b-1', fencingVersion: 0 },
+          makeOutcome({ status: 'failed' as GenerationOutcome['status'], bookUpdate: {} }),
+        );
+
+        expect(result).toBe('applied');
+        expect(prisma.creditTransaction.findUnique).toHaveBeenCalledWith({
+          where: { idempotencyKey: 'generation:run-1:charge' },
+        });
+        expect(creditsService.addInTransaction).toHaveBeenCalledWith(prisma, {
+          userId: 'u-9',
+          amount: 1,
+          reason: 'refund_generation_failure',
+          bookId: 'b-9',
+          idempotencyKey: 'generation:run-1:refund',
+        });
+      });
+
+      it('never refunds a successful completion, even when a matching charge exists', async () => {
+        prisma.creditTransaction.findUnique.mockResolvedValue(makeChargeTransaction());
+
+        await coordinator.completeRun(
+          { runId: 'run-1', bookId: 'b-1', fencingVersion: 3 },
+          makeOutcome(),
+        );
+
+        expect(prisma.creditTransaction.findUnique).not.toHaveBeenCalled();
+        expect(creditsService.addInTransaction).not.toHaveBeenCalled();
+      });
+
+      it('never refunds a legacy/unbilled run — no matching charge transaction exists', async () => {
+        prisma.creditTransaction.findUnique.mockResolvedValue(null);
+
+        const result = await coordinator.completeRun(
+          { runId: 'run-1', bookId: 'b-1', fencingVersion: 0 },
+          makeOutcome({ status: 'failed' as GenerationOutcome['status'], bookUpdate: {} }),
+        );
+
+        expect(result).toBe('applied');
+        expect(creditsService.addInTransaction).not.toHaveBeenCalled();
+      });
+
+      it('never refunds on a stale fence — the refund lookup never runs', async () => {
+        prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
+        prisma.creditTransaction.findUnique.mockResolvedValue(makeChargeTransaction());
+
+        const result = await coordinator.completeRun(
+          { runId: 'run-1', bookId: 'b-1', fencingVersion: 3 },
+          makeOutcome({ status: 'failed' as GenerationOutcome['status'], bookUpdate: {} }),
+        );
+
+        expect(result).toBe('stale_fence');
+        expect(prisma.creditTransaction.findUnique).not.toHaveBeenCalled();
+        expect(creditsService.addInTransaction).not.toHaveBeenCalled();
+      });
+
+      it('never refunds on a book mirror mismatch — the refund lookup never runs', async () => {
+        prisma.book.updateMany.mockResolvedValue({ count: 0 });
+        prisma.creditTransaction.findUnique.mockResolvedValue(makeChargeTransaction());
+
+        const result = await coordinator.completeRun(
+          { runId: 'run-1', bookId: 'b-1', fencingVersion: 3 },
+          makeOutcome({ status: 'failed' as GenerationOutcome['status'], bookUpdate: {} }),
+        );
+
+        expect(result).toBe('book_mirror_mismatch');
+        expect(prisma.creditTransaction.findUnique).not.toHaveBeenCalled();
+        expect(creditsService.addInTransaction).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('failInvalidSnapshot', () => {
@@ -250,6 +356,36 @@ describe('GenerationRunCoordinator', () => {
       );
 
       expect(result).toBe('book_mirror_mismatch');
+    });
+
+    it('requests one refund when a matching charge exists', async () => {
+      prisma.creditTransaction.findUnique.mockResolvedValue(
+        makeChargeTransaction({ userId: 'u-1', bookId: 'b-1', amount: -1 }),
+      );
+
+      await coordinator.failInvalidSnapshot(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 1 },
+        'invalid',
+      );
+
+      expect(creditsService.addInTransaction).toHaveBeenCalledWith(prisma, {
+        userId: 'u-1',
+        amount: 1,
+        reason: 'refund_generation_failure',
+        bookId: 'b-1',
+        idempotencyKey: 'generation:run-1:refund',
+      });
+    });
+
+    it('never refunds a legacy/unbilled run — no matching charge transaction exists', async () => {
+      prisma.creditTransaction.findUnique.mockResolvedValue(null);
+
+      await coordinator.failInvalidSnapshot(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 1 },
+        'invalid',
+      );
+
+      expect(creditsService.addInTransaction).not.toHaveBeenCalled();
     });
   });
 
@@ -317,6 +453,36 @@ describe('GenerationRunCoordinator', () => {
       );
 
       expect(result).toBe('book_mirror_mismatch');
+    });
+
+    it('requests one refund when a matching charge exists (BullMQ retry exhaustion / recovery sweep)', async () => {
+      prisma.creditTransaction.findUnique.mockResolvedValue(
+        makeChargeTransaction({ userId: 'u-1', bookId: 'b-1', amount: -1 }),
+      );
+
+      await coordinator.failAbandoned(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 2, fromStatus: 'running' },
+        { errorCode: 'GENERATION_ABANDONED', errorMessage: 'interrupted' },
+      );
+
+      expect(creditsService.addInTransaction).toHaveBeenCalledWith(prisma, {
+        userId: 'u-1',
+        amount: 1,
+        reason: 'refund_generation_failure',
+        bookId: 'b-1',
+        idempotencyKey: 'generation:run-1:refund',
+      });
+    });
+
+    it('never refunds a legacy/unbilled run — no matching charge transaction exists', async () => {
+      prisma.creditTransaction.findUnique.mockResolvedValue(null);
+
+      await coordinator.failAbandoned(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 2, fromStatus: 'running' },
+        { errorCode: 'GENERATION_ABANDONED', errorMessage: 'interrupted' },
+      );
+
+      expect(creditsService.addInTransaction).not.toHaveBeenCalled();
     });
   });
 });

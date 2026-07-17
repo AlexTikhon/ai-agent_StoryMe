@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { GenerationRunStatus, type Prisma, type Book, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../../src/database/prisma.service';
+import { CreditsService } from '../../src/credits/credits.service';
 import { GenerationRunCoordinator } from '../../src/agent/generation-run-coordinator.service';
 import type { GenerationOutcome } from '../../src/agent/generation-outcome';
 import { buildInputSnapshot, hashInputSnapshot } from '../../src/agent/generation-input-snapshot';
@@ -31,7 +32,7 @@ import {
  */
 describe('PDF publication (Phase B, Slice B4 — real Postgres + local storage)', () => {
   const prisma = new PrismaService();
-  const coordinator = new GenerationRunCoordinator(prisma);
+  const coordinator = new GenerationRunCoordinator(prisma, new CreditsService(prisma));
   const storage = new LocalPdfStorage();
   const userIds: string[] = [];
   const bookIdsForStorageCleanup: string[] = [];
