@@ -191,9 +191,33 @@ export const envSchema = z
     // flight at once (bounded parallelism, not a raw throughput target).
     CLAIM_CLEANUP_DELETE_CONCURRENCY: z.coerce.number().int().positive().default(5),
 
-    // Stripe (optional in dev)
+    // ─── Stripe billing (Phase E3) ──────────────────────────────────────────
+    // Safe-by-default kill switch: "false" (default) means POST
+    // /api/billing/checkout fails closed with a stable BILLING_DISABLED error
+    // and never constructs a Stripe client or makes a network call. Only
+    // flipping this to "true" turns on the superRefine block below, which
+    // then requires every other Stripe var (including all three package
+    // Price IDs) to be present — a partially configured enabled deployment
+    // fails at startup, not at first checkout request. WEB_APP_URL is
+    // deliberately not re-checked here: it is already a required, validated
+    // (z.string().url()), always-defaulted field above, so it can never be
+    // absent regardless of this flag.
+    STRIPE_BILLING_ENABLED: z.enum(['true', 'false']).default('false'),
     STRIPE_SECRET_KEY: z.string().optional(),
     STRIPE_WEBHOOK_SECRET: z.string().optional(),
+    // Server-owned credit package catalog (apps/api/src/billing/billing-packages.ts)
+    // — maps each stable public package id to a real Stripe Price ID. Never
+    // read from the client; a request only ever supplies the public id.
+    STRIPE_PRICE_ID_STARTER: z.string().optional(),
+    STRIPE_PRICE_ID_PRO: z.string().optional(),
+    STRIPE_PRICE_ID_BUNDLE: z.string().optional(),
+
+    // Redis-backed per-user rate limit on POST /api/billing/checkout — same
+    // mechanism as GENERATION_RATE_LIMIT_* above. Tight budget: legitimate
+    // checkout retries are rare, and each call creates a real Stripe Checkout
+    // Session.
+    BILLING_CHECKOUT_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(3_600_000),
+    BILLING_CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
 
     // OAuth (optional)
     GOOGLE_CLIENT_ID: z.string().optional(),
@@ -228,6 +252,25 @@ export const envSchema = z
           message: 'EMAIL_FROM is required when EMAIL_PROVIDER=resend',
           path: ['EMAIL_FROM'],
         });
+      }
+    }
+
+    if (env.STRIPE_BILLING_ENABLED === 'true') {
+      const required: Array<[keyof Env, string]> = [
+        ['STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY'],
+        ['STRIPE_WEBHOOK_SECRET', 'STRIPE_WEBHOOK_SECRET'],
+        ['STRIPE_PRICE_ID_STARTER', 'STRIPE_PRICE_ID_STARTER'],
+        ['STRIPE_PRICE_ID_PRO', 'STRIPE_PRICE_ID_PRO'],
+        ['STRIPE_PRICE_ID_BUNDLE', 'STRIPE_PRICE_ID_BUNDLE'],
+      ];
+      for (const [key, label] of required) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${label} is required when STRIPE_BILLING_ENABLED=true`,
+            path: [key],
+          });
+        }
       }
     }
   });

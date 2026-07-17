@@ -335,4 +335,78 @@ describe('envSchema', () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe('STRIPE_BILLING_ENABLED conditional requirement', () => {
+    const REQUIRED = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+    const STRIPE_VARS = {
+      STRIPE_SECRET_KEY: 'sk_test_123',
+      STRIPE_WEBHOOK_SECRET: 'whsec_123',
+      STRIPE_PRICE_ID_STARTER: 'price_starter',
+      STRIPE_PRICE_ID_PRO: 'price_pro',
+      STRIPE_PRICE_ID_BUNDLE: 'price_bundle',
+    };
+
+    it('defaults to disabled and boots with no Stripe vars at all', () => {
+      const result = envSchema.safeParse({ ...REQUIRED });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.STRIPE_BILLING_ENABLED).toBe('false');
+      }
+    });
+
+    it('boots with no Stripe vars when STRIPE_BILLING_ENABLED is explicitly "false"', () => {
+      const result = envSchema.safeParse({ ...REQUIRED, STRIPE_BILLING_ENABLED: 'false' });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects STRIPE_BILLING_ENABLED=true with no Stripe vars set, naming every missing one', () => {
+      const result = envSchema.safeParse({ ...REQUIRED, STRIPE_BILLING_ENABLED: 'true' });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const paths = result.error.errors.map((e) => e.path.join('.'));
+        expect(paths).toContain('STRIPE_SECRET_KEY');
+        expect(paths).toContain('STRIPE_WEBHOOK_SECRET');
+        expect(paths).toContain('STRIPE_PRICE_ID_STARTER');
+        expect(paths).toContain('STRIPE_PRICE_ID_PRO');
+        expect(paths).toContain('STRIPE_PRICE_ID_BUNDLE');
+      }
+    });
+
+    it('rejects STRIPE_BILLING_ENABLED=true when only some package Price IDs are set (partial config)', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        STRIPE_BILLING_ENABLED: 'true',
+        STRIPE_SECRET_KEY: 'sk_test_123',
+        STRIPE_WEBHOOK_SECRET: 'whsec_123',
+        STRIPE_PRICE_ID_STARTER: 'price_starter',
+        // STRIPE_PRICE_ID_PRO and STRIPE_PRICE_ID_BUNDLE deliberately missing
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const paths = result.error.errors.map((e) => e.path.join('.'));
+        expect(paths).toContain('STRIPE_PRICE_ID_PRO');
+        expect(paths).toContain('STRIPE_PRICE_ID_BUNDLE');
+        expect(paths).not.toContain('STRIPE_SECRET_KEY');
+      }
+    });
+
+    it('accepts STRIPE_BILLING_ENABLED=true when every required Stripe var is set', () => {
+      const result = envSchema.safeParse({
+        ...REQUIRED,
+        STRIPE_BILLING_ENABLED: 'true',
+        ...STRIPE_VARS,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects an unknown STRIPE_BILLING_ENABLED value', () => {
+      const result = envSchema.safeParse({ ...REQUIRED, STRIPE_BILLING_ENABLED: 'yes' });
+      expect(result.success).toBe(false);
+    });
+  });
 });

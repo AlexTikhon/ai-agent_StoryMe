@@ -1607,6 +1607,18 @@ The webhook handler receives all Stripe events. The endpoint `/api/billing/webho
 
 Always return 200 to Stripe even on internal errors (otherwise Stripe retries for 3 days). Log the error to Sentry for investigation.
 
+> **Correction (Phase E3 — the actual implementation):** the rest of this
+> section (§7.4) describes an aspirational design that predates any real
+> code and was never built as written — no Redis dedupe-by-`event.id`, no
+> Sentry, and only `checkout.session.completed` for one-time purchases is
+> handled (payment_intent/invoice/subscription events are unimplemented). The
+> "always return 200 even on internal errors" guidance above is also
+> **deliberately not followed**: the real webhook returns a non-2xx response
+> on a genuine transient Stripe/DB failure so Stripe retries, and only
+> acknowledges 200 once a grant is durably committed (or was already a
+> no-op). See [apps/api/docs/credits.md, "Phase E3"](apps/api/docs/credits.md#phase-e3-stripe-checkout-credit-purchases-and-idempotent-webhooks)
+> for what's actually implemented.
+
 ## 7.5 Credit System
 
 Credits are consumed when:

@@ -2742,6 +2742,17 @@ interface RedeemCreditResponseDto {
 
 **Error handling:** Always return `200` to Stripe even on internal errors. Log to Sentry. Never return non-2xx â€” Stripe will retry for 3 days.
 
+> **Correction (Phase E3 — the actual implementation):** this section
+> predates any real code. The real endpoint is `POST /api/billing/webhook`
+> (not `/v1/webhooks/stripe`), there is no Redis event-id dedupe or Sentry,
+> and only `checkout.session.completed` for one-time purchases is handled.
+> The "always return 200 even on internal errors" guidance above is
+> **deliberately not followed** — a genuine transient Stripe/DB failure
+> returns a non-2xx response so Stripe retries; only a successful grant (or
+> a business-logic no-op) returns 200. See
+> [apps/api/docs/credits.md, "Phase E3"](apps/api/docs/credits.md#phase-e3-stripe-checkout-credit-purchases-and-idempotent-webhooks)
+> for what's actually implemented.
+
 ---
 
 ### checkout.session.completed

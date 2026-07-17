@@ -1,10 +1,12 @@
 # Credits
 
 Covers the internal credit-accounting system: the ledger primitive built in
-Phase E1, and Phase E2's wiring of that primitive into the generation
-lifecycle (scheduling-time charge, failure-time refund). Stripe itself
-(checkout, webhooks, subscriptions, purchase) remains entirely unimplemented
-— see "Not in scope" at the end of each phase's section below.
+Phase E1, Phase E2's wiring of that primitive into the generation lifecycle
+(scheduling-time charge, failure-time refund), and Phase E3's Stripe
+Checkout integration for one-time credit purchases. Subscriptions, the
+Stripe customer portal, cancellation, promotional codes, and pay-per-book
+PaymentIntents remain entirely unimplemented — see "Not in scope" at the end
+of each phase's section below.
 
 ## Phase E1: credit accounting foundation
 
@@ -194,6 +196,199 @@ Stripe (checkout, webhooks, subscriptions, purchase flow), frontend billing
 UI, cancellation, partial-completion refund/charge behavior, and Redis-backed
 balance caching are all still unimplemented — this phase is scoped to
 wiring the existing ledger primitive into the generation lifecycle only.
+
+## Phase E3: Stripe Checkout credit purchases and idempotent webhooks
+
+Lets an authenticated user buy more credits via Stripe Checkout — the first
+way to acquire credits beyond the schema-default starter balance. Scoped
+strictly to one-time purchases: **subscriptions, the Stripe customer portal,
+cancellation, promotional codes, and pay-per-book PaymentIntents are all
+still unimplemented** (see "Not in scope" below).
+
+### Server-owned package catalog
+
+`apps/api/src/billing/billing-packages.ts` defines the only three purchasable
+packages — a client sends a `packageId` and nothing else; it can never
+influence which Stripe Price, quantity, currency, or credit amount gets
+charged/granted:
+
+| `packageId` | Credits | Price ID env var |
+| --- | --- | --- |
+| `starter` | 10 | `STRIPE_PRICE_ID_STARTER` |
+| `pro` | 30 | `STRIPE_PRICE_ID_PRO` |
+| `bundle` | 100 | `STRIPE_PRICE_ID_BUNDLE` |
+
+`BillingConfigService` resolves a `packageId` against this catalog and the
+live env config (`billing-config.service.ts`) — an unknown id, or a known id
+whose Price ID env var isn't configured, both resolve to `undefined` and are
+rejected the same way (never a partial/guessed price).
+
+### Configuration
+
+`STRIPE_BILLING_ENABLED` (`env.schema.ts`) gates the whole feature — **false
+by default**. While false, `POST /api/billing/checkout` fails closed with a
+stable `503 { code: 'BILLING_DISABLED' }` and never constructs a Stripe
+client or makes a network call (`stripeClientProvider` resolves to `null`).
+Flipping it to `true` makes the schema's `superRefine` block **require**
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and all three package Price ID
+vars — a partially configured enabled deployment fails at **startup** with a
+clear, non-secret validation error per missing var, not at first checkout
+request. `WEB_APP_URL` (used to build the Checkout success/cancel URLs) is
+already unconditionally required/validated by its own schema entry, so it
+needs no extra check here. See `.env.example` for operational comments and
+test-mode placeholder values.
+
+### Authenticated checkout endpoint
+
+`POST /api/billing/checkout` (`billing.controller.ts`), behind the same
+`AuthModeGuard` + `RequireVerifiedEmailGuard` every paid generation endpoint
+uses, plus a dedicated Redis-backed per-user rate limit
+(`BILLING_CHECKOUT_RATE_LIMIT_WINDOW_MS`/`_MAX_ATTEMPTS`, same
+`UserRateLimitGuard` mechanism as `POST /books/:id/generate`). Body is
+`{ packageId }` only. `BillingService.createCheckoutSession`:
+
+- Resolves `packageId` through `BillingConfigService` — rejects unknown/
+  unavailable ids with `400 { code: 'INVALID_PACKAGE' }`.
+- Creates a Stripe Checkout Session with `mode: 'payment'`, exactly one
+  server-resolved `{ price: pkg.priceId, quantity: 1 }` line item,
+  success/cancel URLs derived from `WEB_APP_URL`, and metadata containing
+  only `{ userId, packageId }` — never a Price ID, amount, or currency taken
+  from the request.
+- **Never grants credits itself** — only returns `{ sessionId, url }`
+  (`CheckoutSessionDto`), the minimum the future frontend needs to redirect
+  to Stripe's hosted page. The grant happens only once the webhook below
+  observes a paid session.
+- Any Stripe-side failure (network error, no hosted URL returned) surfaces as
+  `502 { code: 'CHECKOUT_UNAVAILABLE' }` — never a raw Stripe error.
+
+**Idempotency-Key header**: an optional `Idempotency-Key` request header lets
+a client-retried HTTP request (e.g. a network timeout on the first attempt)
+avoid creating a second Stripe Checkout Session for the same intent.
+`buildCheckoutIdempotencyKey` (`checkout-idempotency-key.ts`) always prefixes
+the value with the authenticated user's id before it's ever used as the
+actual Stripe idempotency key — an untrusted raw header value can never
+collide across two different users, even if they happen to send the exact
+same string. The header is also bounded to a safe charset/length
+(`^[A-Za-z0-9_-]{1,200}$`); a missing or unsafe header falls back to a fresh
+random suffix (`checkout:${userId}:auto:${uuid}`) — the request still
+succeeds, it just isn't deduplicated against a retry that doesn't resend the
+same header.
+
+### Public Stripe webhook and raw-body requirement
+
+`POST /api/billing/webhook` (`billing-webhook.controller.ts`) sits outside
+every auth guard — Stripe signature verification is its only authentication.
+Verifying that signature requires the **exact, unmodified raw request
+bytes** Stripe signed, not a re-serialization of the parsed JSON body (which
+can silently differ in whitespace/key order). `main.ts` passes `rawBody:
+true` to `NestFactory.create`, which makes Nest populate `req.rawBody` (a
+`Buffer`) on every request alongside the normal parsed `req.body` — every
+other JSON endpoint in the app is unaffected; no `express.json()`/
+`express.raw()` wiring had to change.
+
+`BillingService.handleWebhookEvent`:
+
+- Rejects a missing/invalid `Stripe-Signature` header with
+  `400 { code: 'INVALID_SIGNATURE' }` — via Stripe's own
+  `stripe.webhooks.constructEvent(rawBody, signature, webhookSecret)`, never
+  a hand-rolled HMAC check. Never logs the raw payload, the signature, or
+  any secret — only stable Stripe event/session ids and outcomes.
+- Handles only `checkout.session.completed`. Every other event type Stripe
+  might deliver to the same endpoint (Stripe requires selecting event types
+  per-endpoint, but the webhook must still tolerate whatever is configured)
+  returns normally — a 2xx with no mutation, not an error.
+
+### Payment verification (before granting anything)
+
+A signed `checkout.session.completed` event is **not** by itself permission
+to grant credits — `BillingService`'s private `grantCreditsForCheckoutSession`
+re-verifies every condition below, in order, before ever calling
+`CreditsService.add`. Any failed check is treated as "nothing to grant" and
+returns normally (2xx, no mutation); only a genuine Stripe/DB failure while
+verifying propagates as a thrown error (see "Retry behavior" below):
+
+1. `session.mode === 'payment'` (never `subscription`/`setup`).
+2. `session.payment_status === 'paid'`.
+3. `session.metadata.userId` still refers to an existing `User` row.
+4. `session.metadata.packageId` maps to the server-owned catalog.
+5. The session's **actual Stripe-side line items** — re-fetched via
+   `stripe.checkout.sessions.retrieve(sessionId, { expand: ['line_items'] })`,
+   never trusted from the webhook payload or its metadata — are exactly one
+   item whose `price.id` matches the resolved package's Price ID and whose
+   `quantity` is `1`.
+
+### Exactly-once credit grant
+
+Once verified, the grant goes through the same `CreditsService.add` every
+other credit mutation in this codebase uses — `BillingService` never writes
+`User.credits` or `CreditTransaction` directly:
+
+```ts
+creditsService.add({
+  userId,
+  amount: pkg.credits,
+  reason: 'purchase',
+  stripePaymentId: session.id,
+  idempotencyKey: `stripe:checkout:${session.id}`, // checkoutSessionGrantIdempotencyKey(session.id)
+});
+```
+
+The idempotency key is derived **only from the Checkout Session id**, never
+from the delivered event's own `event.id` — so a redelivery of the same
+event, a genuinely concurrent pair of webhook deliveries, and a *different*
+Stripe event id that happens to reference the same session (Stripe can emit
+more than one event per session in some flows) all converge on the exact
+same key and therefore the exact same single `CreditTransaction` row, via
+the identical DB-enforced unique-constraint mechanism Phase E1 built (see
+above) — not a hand-rolled dedupe table.
+
+### Retry behavior — corrects stale guidance
+
+**On a transient Stripe/DB failure while verifying or granting (a network
+error retrieving line items, a dropped DB connection during the ledger
+insert), the webhook handler returns a non-2xx response so Stripe retries
+the delivery** — it never acknowledges a payment whose grant wasn't durably
+committed. This deliberately **contradicts** the "always return 200 to
+Stripe even on internal errors" guidance in the older, aspirational
+`BACKEND_DESIGN.md` §7.4 and `API_SPEC.md` §20 — those documents predate any
+real implementation and describe a design this codebase does not follow.
+Only a *business-logic* "nothing to grant" outcome (unpaid session, unknown
+package, mismatched price, etc. — see "Payment verification" above) returns
+2xx; a failure that could have left a payment ungranted never does.
+
+### Logging
+
+Only stable, safe identifiers are ever logged: Stripe event id, Checkout
+Session id, package id, user id, and outcome (granted / skipped / reason).
+Never the raw webhook payload, the `Stripe-Signature` header, any secret, a
+customer email, or other payment details.
+
+### Rollout
+
+1. In the Stripe Dashboard (test mode first), create three one-time Prices
+   matching the catalog above and copy their Price IDs.
+2. Create a webhook endpoint pointed at
+   `https://<api-host>/api/billing/webhook`, subscribed at minimum to
+   `checkout.session.completed`, and copy its signing secret.
+3. Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, the three
+   `STRIPE_PRICE_ID_*` vars, and a real `WEB_APP_URL` in the deployment's
+   environment. Leave `STRIPE_BILLING_ENABLED=false` until all of the above
+   are confirmed correct — the app fails to boot if it's set to `true` with
+   anything missing.
+4. Set `STRIPE_BILLING_ENABLED=true` and redeploy. Verify with a real
+   test-mode checkout (`4242 4242 4242 4242`) that the session completes and
+   the purchasing user's balance increases by the expected amount.
+5. Rollback: set `STRIPE_BILLING_ENABLED=false` again — checkout immediately
+   fails closed; no code path is disabled by removing the Stripe env vars
+   themselves (the schema simply stops requiring them).
+
+### Not in scope for Phase E3
+
+Subscriptions, the Stripe customer portal, cancellation, promotional codes,
+pay-per-book PaymentIntents, and every frontend billing page/redirect flow
+remain entirely unimplemented. `Subscription`'s schema table and
+`stripeCustomerId`/`stripeSubscriptionId` fields exist but nothing writes to
+them yet.
 
 ## Reference: `GENERATION_CREDIT_COST` and key helpers
 

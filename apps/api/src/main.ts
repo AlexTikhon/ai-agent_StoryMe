@@ -26,6 +26,12 @@ async function bootstrap(): Promise<void> {
     AppModule.register({ enableGenerationWorker }),
     {
       logger: ['error', 'warn', 'log', 'debug'],
+      // Preserves the exact, unmodified raw request body (req.rawBody) on
+      // every request alongside the normal parsed req.body — required so
+      // POST /api/billing/webhook can verify Stripe's HMAC signature against
+      // the exact bytes Stripe sent, without disabling JSON body parsing for
+      // every other endpoint. See apps/api/docs/credits.md, "Phase E3".
+      rawBody: true,
     },
   );
 

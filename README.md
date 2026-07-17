@@ -41,16 +41,22 @@ match between API and web** or every request 401s.
 
 ## What it does not do yet
 
-- **No Stripe/purchasing.** Generation credit enforcement is implemented:
-  every `POST /books/:id/generate`, `retry-generation`, or `regenerate` call
+- **Generation credit enforcement is implemented:** every
+  `POST /books/:id/generate`, `retry-generation`, or `regenerate` call
   charges 1 credit the moment the run is durably scheduled (not when
   generation completes), returns the stable `402 { code:
   'INSUFFICIENT_CREDITS' }` if the balance is too low, and a run that later
   fails is automatically refunded exactly once — see
-  [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E2". Stripe
-  itself (checkout, webhooks, subscriptions, purchasing more credits) is
-  still entirely unimplemented — the schema-default starter balance
-  (`User.credits` defaults to `3`) is the only way an account currently gets
+  [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E2".
+- **One-time credit purchasing via Stripe Checkout is implemented**
+  (`POST /api/billing/checkout` + the `POST /api/billing/webhook` credit
+  grant) — see [apps/api/docs/credits.md](apps/api/docs/credits.md),
+  "Phase E3". Disabled by default (`STRIPE_BILLING_ENABLED=false`) until a
+  deployment supplies real Stripe configuration. **Subscriptions, the Stripe
+  customer portal, cancellation, promotional codes, pay-per-book
+  PaymentIntents, and every frontend billing page remain unimplemented** —
+  the schema-default starter balance (`User.credits` defaults to `3`) and a
+  one-time Checkout purchase are currently the only two ways an account gets
   credits.
 - ~~No queue-backed generation.~~ Generation now runs on a durable
   BullMQ/Redis-backed queue (`GenerationQueueService`/`GenerationQueueProcessor`),
@@ -133,9 +139,11 @@ publicly.
 
 ## Known post-MVP TODOs
 
-- Build Stripe billing (checkout, webhooks, subscriptions, purchasing more
-  credits) on top of the Phase E1/E2 credit accounting foundation — the only
-  piece still missing is letting a user actually acquire more credits.
+- ~~Build Stripe billing (checkout, webhooks, purchasing more credits) on top
+  of the Phase E1/E2 credit accounting foundation~~ **One-time purchases
+  done (Phase E3)** — see [apps/api/docs/credits.md](apps/api/docs/credits.md),
+  "Phase E3". Subscriptions, the Stripe customer portal, cancellation,
+  promotional codes, and a frontend billing page are still missing.
 - Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial
   generation recovery, user-initiated cancellation) or should be dropped.
 - `prisma:seed` was removed as a package script (previously pointed at a

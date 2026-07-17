@@ -204,6 +204,63 @@ change — refund eligibility is derived from the existing Phase E1
 `idempotency_key` column), `git diff --check`, and `eslint --max-warnings 0`
 on every changed file.
 
+## Phase E3: Stripe Checkout credit purchases {#phase-e3-credits}
+
+Lets an authenticated user buy more credits — the first way to acquire
+credits beyond the schema-default starter balance, closing the last piece of
+the first post-MVP TODO. **Scoped strictly to one-time purchases:
+subscriptions, the Stripe customer portal, cancellation, promotional codes,
+pay-per-book PaymentIntents, and frontend billing pages all remain
+unimplemented.**
+
+Full design writeup, including the exact package catalog, config gating,
+signature verification, payment-verification checklist, and idempotency
+mechanism: **[apps/api/docs/credits.md](../apps/api/docs/credits.md#phase-e3-stripe-checkout-credit-purchases-and-idempotent-webhooks)**.
+Summary:
+
+- **`POST /api/billing/checkout`** — authenticated, verified-email-gated,
+  Redis-backed per-user rate limited. Creates a Stripe Checkout Session for
+  exactly one server-resolved package (`starter`=10, `pro`=30, `bundle`=100
+  credits) at quantity 1 — a client only ever sends `packageId`, never a
+  Price ID or amount. Never grants credits itself.
+- **`POST /api/billing/webhook`** — public (Stripe signature verification is
+  its only authentication), requires the exact raw request body (`main.ts`'s
+  new `rawBody: true` bootstrap option). Handles only
+  `checkout.session.completed`; every other event type returns 2xx with no
+  mutation.
+- **Payment is re-verified before any grant**: mode, payment status, that the
+  metadata-referenced user still exists, that the packageId maps to the
+  server catalog, and that the session's actual Stripe-side line items
+  (re-fetched, never trusted from metadata) match that package's Price ID
+  and quantity.
+- **Exactly-once grant**: routes through the existing `CreditsService.add`
+  (reason `purchase`) with a deterministic key derived only from the
+  Checkout Session id (`stripe:checkout:${session.id}`) — never the
+  delivered event's own id — so redeliveries, concurrent handlers, and
+  differently-identified events for the same session all converge on one
+  `CreditTransaction` row, via the same DB-enforced unique constraint Phase
+  E1 built.
+- **Retriable on transient failure**: a genuine Stripe/DB error while
+  verifying or granting returns a non-2xx response so Stripe retries — this
+  deliberately corrects the older `BACKEND_DESIGN.md`/`API_SPEC.md`
+  "always return 200" guidance, which predates any real implementation.
+- **Safe by default**: `STRIPE_BILLING_ENABLED` defaults to `false`;
+  checkout fails closed with no Stripe client ever constructed while it's
+  false, and enabling it makes the env schema require every Stripe var
+  (secret key, webhook secret, all three Price IDs) at startup, not at first
+  request.
+
+Verified: `pnpm --filter @book/api typecheck`, `pnpm --filter @book/api
+test`, `pnpm --filter @book/api test:integration` (adds a dedicated
+real-Postgres suite proving the exactly-once grant under concurrency and
+duplicate/distinct event ids, plus an HTTP-stack test proving webhook
+signature verification runs against the true raw request bytes and that
+ordinary JSON parsing is unaffected), `git diff --check`, and
+`eslint --max-warnings 0` on every changed file. No Stripe network access or
+real credentials are used in any automated test — Stripe's own
+`webhooks.constructEvent`/`generateTestHeaderString` helpers verify/sign
+fixtures locally.
+
 ## Production readiness summary {#production-readiness-summary}
 
 ### MVP blockers (must fix before any deploy)
@@ -245,12 +302,12 @@ real transactional email provider are all done end-to-end.
 - **OAuth** (Google/Apple) — schema already reserves `oauthProvider`/
   `oauthId`; documented as a follow-up auth method, not a blocker for the
   current email/password + JWT flow.
-- **Stripe purchasing** — Phase E1/E2 built the credit accounting foundation
-  and wired it into generation charging/refunds (see
-  [Phase E1](#phase-e1-credits) and [Phase E2](#phase-e2-credits) above), but
-  Stripe itself (checkout, webhooks, subscriptions, purchasing more credits)
-  remains entirely unimplemented — the schema-default starter balance is
-  still the only way an account gets credits.
+- ~~Stripe purchasing~~ **One-time credit purchases done (Phase E3)** — see
+  [Phase E3](#phase-e3-credits) above. Subscriptions, the Stripe customer
+  portal, cancellation, promotional codes, pay-per-book PaymentIntents, and
+  every frontend billing page remain unimplemented. Billing itself is
+  disabled by default (`STRIPE_BILLING_ENABLED=false`) until a deployment
+  supplies real Stripe configuration.
 - **Cancellation / partial-completion flow** — `BookStatus.Cancelled` and
   `BookStatus.Partial` are reserved schema states with no code path that
   produces them yet.

@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { AuthModule } from './auth/auth.module';
+import { BillingModule } from './billing/billing.module';
 import { BooksModule, type BooksModuleOptions } from './books/books.module';
 import { CacheModule } from './cache/cache.module';
 import { CreditsModule } from './credits/credits.module';
@@ -43,6 +44,7 @@ export class AppModule {
         AuthModule,
         BooksModule.register(options),
         CreditsModule,
+        BillingModule,
       ],
     };
   }
