@@ -3,6 +3,7 @@ import { render, screen, waitFor, within, fireEvent, act } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { useRouter, useParams } from 'next/navigation';
 import BookDetailPage from './page';
+import { CREDITS_UPDATED_EVENT } from '@/lib/credits-events';
 import { SupportedLanguage, BookStatus, AgentStep } from '@book/types';
 import type {
   BookDto,
@@ -2298,6 +2299,483 @@ describe('BookDetailPage', () => {
       await waitFor(() => {
         expect(screen.queryByText(/regenerate the book to update/i)).toBeNull();
       });
+    });
+  });
+
+  // ── Cancel generation (Phase G2) ──────────────────────────────────────────
+
+  describe('Cancel generation', () => {
+    const ACTIVE_GENERATION_STATUSES = [
+      BookStatus.CharBuild,
+      BookStatus.StoryPlan,
+      BookStatus.PagePlan,
+      BookStatus.StoryDraft,
+      BookStatus.ChapterGen,
+      BookStatus.IllustPlan,
+      BookStatus.PreviewReady,
+      BookStatus.ImageGen,
+      BookStatus.QaReview,
+      BookStatus.Layout,
+      BookStatus.PdfRender,
+    ];
+
+    it.each(ACTIVE_GENERATION_STATUSES)(
+      'shows the Cancel generation button for active status %s',
+      async (status) => {
+        vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ...MOCK_BOOK, status }));
+        render(<BookDetailPage />);
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /cancel generation/i })).toBeDefined();
+        });
+      },
+    );
+
+    it.each([BookStatus.Created, BookStatus.Complete, BookStatus.Failed, BookStatus.Cancelled])(
+      'does not show the Cancel generation button for terminal/draft status %s',
+      async (status) => {
+        vi.mocked(fetch).mockResolvedValueOnce(mockOk({ ...MOCK_BOOK, status }));
+        render(<BookDetailPage />);
+        await waitFor(() => screen.getByRole('heading', { level: 1 }));
+        expect(screen.queryByRole('button', { name: /cancel generation/i })).toBeNull();
+      },
+    );
+
+    it('sends no request when the confirmation is declined', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(false));
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(activeBook));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      expect(window.confirm).toHaveBeenCalled();
+      const cancelCall = fetchMock.fetchFn.mock.calls.find(([input]) =>
+        String(input).includes('/cancel'),
+      );
+      expect(cancelCall).toBeUndefined();
+    });
+
+    it('accurately explains durability, provider behavior, and refunds in the confirmation copy', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const confirmSpy = vi.fn().mockReturnValue(false);
+      vi.stubGlobal('confirm', confirmSpy);
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(activeBook));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      const message = confirmSpy.mock.calls[0]?.[0] as string;
+      expect(message).toMatch(/permanent|cannot be undone/i);
+      expect(message).toMatch(/may continue in the background/i);
+      expect(message).toMatch(/its result will not be published/i);
+      expect(message).toMatch(/will be refunded/i);
+      // Never claims the provider request itself is aborted.
+      expect(message).not.toMatch(/\babort/i);
+    });
+
+    it('sends exactly one POST /books/:id/cancel request when confirmed', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const cancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(activeBook))
+        .mockResolvedValueOnce(mockOk({ book: cancelled, creditsRefunded: 1 }));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        const cancelCalls = fetchMock.fetchFn.mock.calls.filter(([input]) =>
+          String(input).includes('/cancel'),
+        );
+        expect(cancelCalls.length).toBe(1);
+        const [, init] = cancelCalls[0] as [unknown, RequestInit | undefined];
+        expect(init?.method).toBe('POST');
+      });
+    });
+
+    it('cannot submit twice under rapid/double clicks', async () => {
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      let resolveCancel: (value: Response) => void = () => {};
+      const pending = new Promise<Response>((resolve) => {
+        resolveCancel = resolve;
+      });
+      const fetchFn = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/cancel')) return pending;
+        if (url.includes('/generation-diagnostics')) {
+          return Promise.resolve(mockOk(DEFAULT_DIAGNOSTICS));
+        }
+        return Promise.resolve(mockOk(activeBook));
+      });
+      vi.stubGlobal('fetch', fetchFn);
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+
+      const button = screen.getByRole('button', { name: /cancel generation/i });
+      fireEvent.click(button);
+      fireEvent.click(button);
+      fireEvent.click(button);
+
+      const cancelCallsBeforeResolve = fetchFn.mock.calls.filter(([input]) =>
+        String(input).includes('/cancel'),
+      );
+      expect(cancelCallsBeforeResolve.length).toBe(1);
+
+      resolveCancel(
+        mockOk({ book: { ...activeBook, status: BookStatus.Cancelled }, creditsRefunded: 1 }),
+      );
+      await waitFor(() => expect(screen.getByText('cancelled')).toBeDefined());
+    });
+
+    it('disables the button and announces a pending/cancelling state while the request is in flight', async () => {
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      let resolveCancel: (value: Response) => void = () => {};
+      const pending = new Promise<Response>((resolve) => {
+        resolveCancel = resolve;
+      });
+      const fetchFn = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/cancel')) return pending;
+        if (url.includes('/generation-diagnostics')) {
+          return Promise.resolve(mockOk(DEFAULT_DIAGNOSTICS));
+        }
+        return Promise.resolve(mockOk(activeBook));
+      });
+      vi.stubGlobal('fetch', fetchFn);
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      fireEvent.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        const button = screen.getByRole('button', { name: /cancelling generation/i });
+        expect(button).toBeDisabled();
+        expect(button.textContent).toMatch(/cancelling/i);
+      });
+
+      resolveCancel(
+        mockOk({ book: { ...activeBook, status: BookStatus.Cancelled }, creditsRefunded: 1 }),
+      );
+      await waitFor(() => expect(screen.getByText('cancelled')).toBeDefined());
+    });
+
+    it('replaces book state and shows a refund message when creditsRefunded > 0, dispatching credits-updated', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const cancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(activeBook))
+        .mockResolvedValueOnce(mockOk({ book: cancelled, creditsRefunded: 1 }));
+
+      const onCreditsUpdated = vi.fn();
+      window.addEventListener(CREDITS_UPDATED_EVENT, onCreditsUpdated);
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('status').textContent).toMatch(
+          /generation cancelled\. 1 credit refunded\./i,
+        );
+      });
+      expect(screen.getByText('cancelled')).toBeDefined();
+      expect(onCreditsUpdated).toHaveBeenCalledTimes(1);
+
+      window.removeEventListener(CREDITS_UPDATED_EVENT, onCreditsUpdated);
+    });
+
+    it('shows a "no credit charge found" message when creditsRefunded is 0, without dispatching credits-updated', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const cancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(activeBook))
+        .mockResolvedValueOnce(mockOk({ book: cancelled, creditsRefunded: 0 }));
+
+      const onCreditsUpdated = vi.fn();
+      window.addEventListener(CREDITS_UPDATED_EVENT, onCreditsUpdated);
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('status').textContent).toMatch(
+          /generation cancelled\. no credit charge was found to refund\./i,
+        );
+      });
+      expect(onCreditsUpdated).not.toHaveBeenCalled();
+
+      window.removeEventListener(CREDITS_UPDATED_EVENT, onCreditsUpdated);
+    });
+
+    it('pluralizes the refund message for more than one credit', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const cancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(activeBook))
+        .mockResolvedValueOnce(mockOk({ book: cancelled, creditsRefunded: 2 }));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('status').textContent).toMatch(
+          /generation cancelled\. 2 credits refunded\./i,
+        );
+      });
+    });
+
+    it('shows a calm "already cancelled" outcome and refetches on BOOK_ALREADY_CANCELLED', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const alreadyCancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(activeBook))
+        .mockResolvedValueOnce(
+          mockErrorWithCode(409, 'Book generation already cancelled', 'BOOK_ALREADY_CANCELLED'),
+        )
+        .mockResolvedValueOnce(mockOk(alreadyCancelled));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('status').textContent).toMatch(/already cancelled/i);
+      });
+      expect(screen.getByText('cancelled')).toBeDefined();
+      // A calm status outcome, not a generic failure alert.
+      expect(screen.queryByRole('alert')).toBeNull();
+      const getCalls = fetchMock.fetchFn.mock.calls.filter(
+        ([input]) => String(input) === 'http://localhost:4000/api/books/book-1',
+      );
+      expect(getCalls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('refetches and shows an honest message on BOOK_NOT_IN_PROGRESS after completion won the race, without claiming a refund', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const completedBook: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(activeBook))
+        .mockResolvedValueOnce(
+          mockErrorWithCode(409, 'Book is not currently generating', 'BOOK_NOT_IN_PROGRESS'),
+        )
+        .mockResolvedValueOnce(mockOk(completedBook));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toMatch(/already finished successfully/i);
+      });
+      // Must never falsely claim a refund occurred (a negative statement
+      // like "nothing was refunded" is fine — a positive credit count is not).
+      expect(screen.getByRole('alert').textContent).not.toMatch(/\d+ credit/i);
+      expect(screen.getByText('complete')).toBeDefined();
+    });
+
+    it('keeps the active book state and allows retry on a generic/transient cancellation failure', async () => {
+      const user = userEvent.setup();
+      const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+      const cancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(activeBook))
+        .mockResolvedValueOnce(mockError(500, 'Internal server error'))
+        .mockResolvedValueOnce(mockOk({ book: cancelled, creditsRefunded: 1 }));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+      await user.click(screen.getByRole('button', { name: /cancel generation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert').textContent).toContain('Internal server error');
+      });
+      // Book state (still actively generating) is preserved, and the button is retryable.
+      expect(screen.getByText('story_draft')).toBeDefined();
+      const retryButton = screen.getByRole('button', { name: /cancel generation/i });
+      expect(retryButton).not.toBeDisabled();
+
+      await user.click(retryButton);
+      await waitFor(() => expect(screen.getByText('cancelled')).toBeDefined());
+    });
+
+    describe('polling interaction', () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('stops polling once the returned status is Cancelled', async () => {
+        const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+        const cancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+        vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(mockOk(activeBook))
+          .mockResolvedValueOnce(mockOk({ book: cancelled, creditsRefunded: 1 }));
+
+        render(<BookDetailPage />);
+        await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+
+        fireEvent.click(screen.getByRole('button', { name: /cancel generation/i }));
+        await waitFor(() => expect(screen.getByText('cancelled')).toBeDefined());
+
+        const callCountAfterCancel = vi.mocked(fetch).mock.calls.length;
+        await act(async () => {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2500);
+          });
+        });
+        expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterCancel);
+      });
+
+      it('does not let a stale in-flight poll response overwrite an already-applied cancellation', async () => {
+        const activeBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
+        const cancelled: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+        vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+
+        // The poll tick's GET .../book-1 resolves *after* the cancel POST,
+        // simulating an in-flight request that started before the user
+        // clicked Cancel but lands after the cancellation already applied.
+        let resolveStalePoll: (value: Response) => void = () => {};
+        const stalePoll = new Promise<Response>((resolve) => {
+          resolveStalePoll = resolve;
+        });
+        let pollGetCount = 0;
+        const fetchFn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          if (url.includes('/generation-diagnostics')) {
+            return Promise.resolve(mockOk(DEFAULT_DIAGNOSTICS));
+          }
+          if (url.includes('/cancel')) {
+            return Promise.resolve(mockOk({ book: cancelled, creditsRefunded: 1 }));
+          }
+          if (init?.method === undefined || init.method === 'GET') {
+            pollGetCount += 1;
+            if (pollGetCount === 1) return Promise.resolve(mockOk(activeBook));
+            return stalePoll;
+          }
+          return Promise.resolve(mockOk(activeBook));
+        });
+        vi.stubGlobal('fetch', fetchFn);
+
+        render(<BookDetailPage />);
+        await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+
+        // Trigger the poll tick — its GET is now in flight (pollGetCount === 2, unresolved).
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+
+        // Cancel completes while the stale poll GET is still pending.
+        fireEvent.click(screen.getByRole('button', { name: /cancel generation/i }));
+        await waitFor(() => expect(screen.getByText('cancelled')).toBeDefined());
+
+        // Now let the stale poll response (still reporting the old active status) resolve.
+        resolveStalePoll(mockOk(activeBook));
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        // The stale response must not have reverted the cancelled status.
+        expect(screen.getByText('cancelled')).toBeDefined();
+        expect(screen.queryByRole('button', { name: /cancel generation/i })).toBeNull();
+      });
+    });
+
+    it('makes a cancelled book eligible for Regenerate book (not Retry generation)', async () => {
+      const cancelledBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(cancelledBook));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /regenerate book/i })).toBeDefined();
+      });
+      expect(screen.queryByRole('button', { name: /^retry generation$/i })).toBeNull();
+    });
+
+    it('calls the regenerate endpoint (not retry-generation) for a cancelled book', async () => {
+      const user = userEvent.setup();
+      const cancelledBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      const regenerated: BookDto = { ...MOCK_BOOK, status: BookStatus.CharBuild };
+      vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockOk(cancelledBook))
+        .mockResolvedValueOnce(mockOk({ book: regenerated }));
+
+      render(<BookDetailPage />);
+      await waitFor(() => screen.getByRole('button', { name: /regenerate book/i }));
+      await user.click(screen.getByRole('button', { name: /regenerate book/i }));
+
+      await waitFor(() => {
+        const call = fetchMock.fetchFn.mock.calls.find(([input]) =>
+          String(input).includes('/regenerate'),
+        );
+        expect(call).toBeDefined();
+      });
+      expect(
+        fetchMock.fetchFn.mock.calls.find(([input]) => String(input).includes('/retry-generation')),
+      ).toBeUndefined();
+    });
+
+    it('keeps a previously published PDF downloadable after a cancelled regeneration', async () => {
+      const cancelledWithPriorPdf: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Cancelled,
+        previewPdfUrl: '/files/books/book-1/storybook.pdf',
+        bookPreview: makeBookPreview(),
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(cancelledWithPriorPdf));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { name: /previous pdf still available/i }),
+        ).toBeDefined();
+      });
+      expect(screen.getByRole('link', { name: /open pdf/i })).toBeDefined();
+      expect(screen.getByRole('button', { name: /download pdf/i })).toBeDefined();
+    });
+
+    it('hides the PDF panel (with a cancellation note) when a cancelled book never published a PDF', async () => {
+      const cancelledNoPdf: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(cancelledNoPdf));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/cancelled before a pdf was produced/i)).toBeDefined();
+      });
+      expect(screen.queryByRole('link', { name: /open pdf/i })).toBeNull();
     });
   });
 

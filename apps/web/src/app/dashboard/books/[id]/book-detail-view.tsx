@@ -84,6 +84,10 @@ interface BookDetailViewProps {
   retryError: string | null;
   retryInsufficientCredits: boolean;
   justEdited: boolean;
+  onCancel: () => void;
+  cancelling: boolean;
+  cancelError: string | null;
+  cancelMessage: string | null;
 }
 
 export function BookDetailView({
@@ -104,12 +108,22 @@ export function BookDetailView({
   retryError,
   retryInsufficientCredits,
   justEdited,
+  onCancel,
+  cancelling,
+  cancelError,
+  cancelMessage,
 }: BookDetailViewProps) {
   const isDraft = book.status === BookStatus.Created;
   const missingFields = getMissingDraftFields(book);
   const canGenerate = isDraft && missingFields.length === 0;
   const canEditOrDelete = !isGeneratingBookStatus(book.status);
-  const canRegenerate = book.status === BookStatus.Failed || book.status === BookStatus.Complete;
+  const isCancelled = book.status === BookStatus.Cancelled;
+  // A cancelled book is eligible for a fresh regeneration, matching the
+  // backend rule (BooksService.regenerateBook) — retry generation remains
+  // limited to failed books, since a cancellation was voluntary, not a
+  // failure to resume.
+  const canRegenerate =
+    book.status === BookStatus.Failed || book.status === BookStatus.Complete || isCancelled;
   const storyPlan = book.storyPlan ?? null;
   const pages: PagePlan[] | undefined =
     storyPlan?.pages && storyPlan.pages.length > 0 ? storyPlan.pages : undefined;
@@ -124,7 +138,11 @@ export function BookDetailView({
       <div className="mb-5 flex items-center justify-between gap-2">
         <span
           className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-            isDraft ? 'bg-stone-100 text-text-muted' : 'bg-violet-50 text-violet-700'
+            isDraft
+              ? 'bg-stone-100 text-text-muted'
+              : isCancelled
+                ? 'bg-amber-100 text-amber-800'
+                : 'bg-violet-50 text-violet-700'
           }`}
         >
           {book.status}
@@ -198,10 +216,10 @@ export function BookDetailView({
         <div className="mb-6">
           <button
             onClick={onRegenerate}
-            disabled={retrying}
+            disabled={retrying || cancelling}
             className="w-full rounded-xl bg-violet-600 py-2 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500 disabled:opacity-60"
           >
-            {book.status === BookStatus.Complete
+            {book.status === BookStatus.Complete || isCancelled
               ? retrying
                 ? 'Regenerating…'
                 : 'Regenerate book'
@@ -339,6 +357,38 @@ export function BookDetailView({
       {!isDraft && isGeneratingBookStatus(book.status) && (
         <p className="mb-4 rounded-lg bg-violet-50 px-4 py-3 text-sm text-violet-700">
           {generationStatusMessage(book.status)} This draft can no longer be edited.
+        </p>
+      )}
+
+      {isGeneratingBookStatus(book.status) && (
+        <div className="mb-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={cancelling}
+            aria-label={cancelling ? 'Cancelling generation' : 'Cancel generation'}
+            className="w-full rounded-xl border border-danger-base/20 bg-danger-light py-2 text-sm font-semibold text-danger-base transition-all hover:bg-red-100 disabled:opacity-60"
+          >
+            {cancelling ? 'Cancelling…' : 'Cancel generation'}
+          </button>
+        </div>
+      )}
+
+      {cancelMessage && (
+        <p
+          role="status"
+          className="mb-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+        >
+          {cancelMessage}
+        </p>
+      )}
+
+      {cancelError && (
+        <p
+          role="alert"
+          className="mb-4 rounded-lg bg-danger-light px-4 py-3 text-sm text-danger-base"
+        >
+          {cancelError}
         </p>
       )}
 
@@ -820,8 +870,15 @@ function PdfSection({ book }: { book: BookDto }) {
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
 
+  const isCancelled = book.status === BookStatus.Cancelled;
+  // Cancellation never touches previewPdfUrl/bookPreview (see
+  // GenerationRunCoordinator.cancelGeneration) — a PDF published by an
+  // earlier successful run survives a later regeneration's cancellation
+  // untouched, so it stays visible/downloadable here.
   const pdfApiUrl =
-    book.status === BookStatus.Complete && book.previewPdfUrl ? bookPdfPreviewUrl(book.id) : null;
+    (book.status === BookStatus.Complete || isCancelled) && book.previewPdfUrl
+      ? bookPdfPreviewUrl(book.id)
+      : null;
   const previewPages = book.bookPreview?.pages;
   const hasGeneratedPages = Array.isArray(previewPages) && previewPages.length > 0;
   const canDownloadPdf = Boolean(pdfApiUrl) && hasGeneratedPages;
@@ -881,6 +938,19 @@ function PdfSection({ book }: { book: BookDto }) {
     );
   }
 
+  const pdfActions = pdfApiUrl && (
+    <PdfReadyActions
+      pdfApiUrl={pdfApiUrl}
+      opening={opening}
+      openError={openError}
+      downloading={downloading}
+      downloadError={downloadError}
+      canDownloadPdf={canDownloadPdf}
+      onOpen={(e) => void handleOpen(e)}
+      onDownload={() => void handleDownload()}
+    />
+  );
+
   if (book.status === BookStatus.Complete) {
     if (pdfApiUrl) {
       return (
@@ -889,39 +959,7 @@ function PdfSection({ book }: { book: BookDto }) {
             Your PDF is ready
           </h2>
           <p className="mb-4 text-xs text-emerald-600">Preview PDF · locally generated file</p>
-          <div className="flex flex-wrap items-center gap-3">
-            <a
-              href={pdfApiUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => {
-                void handleOpen(e);
-              }}
-              className="inline-flex h-9 items-center rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500"
-            >
-              {opening ? 'Opening…' : 'Open PDF'}
-            </a>
-            {canDownloadPdf ? (
-              <button
-                type="button"
-                onClick={() => void handleDownload()}
-                disabled={downloading}
-                className="inline-flex h-9 items-center rounded-xl border border-border-default px-4 text-sm font-semibold text-text-secondary transition-all hover:bg-stone-100 disabled:opacity-60"
-              >
-                {downloading ? 'Preparing PDF…' : 'Download PDF'}
-              </button>
-            ) : (
-              <p className="text-xs text-text-muted">No pages available to export yet.</p>
-            )}
-          </div>
-          {(openError ?? downloadError) && (
-            <p
-              role="alert"
-              className="mt-3 rounded-lg bg-danger-light px-3 py-2 text-xs text-danger-base"
-            >
-              {openError ?? downloadError}
-            </p>
-          )}
+          {pdfActions}
         </div>
       );
     }
@@ -930,6 +968,31 @@ function PdfSection({ book }: { book: BookDto }) {
       <div className="mb-6 rounded-xl border border-stone-200 bg-stone-50 p-4">
         <p className="text-sm text-text-muted">
           Book is complete, but PDF link is not available yet.
+        </p>
+      </div>
+    );
+  }
+
+  if (isCancelled) {
+    if (pdfApiUrl) {
+      return (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <h2 className="mb-1 font-display text-base font-semibold text-amber-800">
+            Previous PDF still available
+          </h2>
+          <p className="mb-4 text-xs text-amber-700">
+            This generation run was cancelled, but the PDF from an earlier successful run is still
+            here.
+          </p>
+          {pdfActions}
+        </div>
+      );
+    }
+
+    return (
+      <div className="mb-6 rounded-xl border border-stone-200 bg-stone-50 p-4">
+        <p className="text-sm text-text-muted">
+          Generation was cancelled before a PDF was produced.
         </p>
       </div>
     );
@@ -944,6 +1007,62 @@ function PdfSection({ book }: { book: BookDto }) {
   }
 
   return null;
+}
+
+function PdfReadyActions({
+  pdfApiUrl,
+  opening,
+  openError,
+  downloading,
+  downloadError,
+  canDownloadPdf,
+  onOpen,
+  onDownload,
+}: {
+  pdfApiUrl: string;
+  opening: boolean;
+  openError: string | null;
+  downloading: boolean;
+  downloadError: string | null;
+  canDownloadPdf: boolean;
+  onOpen: (e: MouseEvent<HTMLAnchorElement>) => void;
+  onDownload: () => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-3">
+        <a
+          href={pdfApiUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={onOpen}
+          className="inline-flex h-9 items-center rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-brand transition-all hover:bg-violet-500"
+        >
+          {opening ? 'Opening…' : 'Open PDF'}
+        </a>
+        {canDownloadPdf ? (
+          <button
+            type="button"
+            onClick={onDownload}
+            disabled={downloading}
+            className="inline-flex h-9 items-center rounded-xl border border-border-default px-4 text-sm font-semibold text-text-secondary transition-all hover:bg-stone-100 disabled:opacity-60"
+          >
+            {downloading ? 'Preparing PDF…' : 'Download PDF'}
+          </button>
+        ) : (
+          <p className="text-xs text-text-muted">No pages available to export yet.</p>
+        )}
+      </div>
+      {(openError ?? downloadError) && (
+        <p
+          role="alert"
+          className="mt-3 rounded-lg bg-danger-light px-3 py-2 text-xs text-danger-base"
+        >
+          {openError ?? downloadError}
+        </p>
+      )}
+    </>
+  );
 }
 
 // ── Skeleton / Not Found ──────────────────────────────────────────────────────

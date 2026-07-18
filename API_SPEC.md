@@ -1556,15 +1556,16 @@ interface BookStatusResponseDto {
 
 ### POST /v1/books/{bookId}/cancel
 
-> **Corrected (Phase G1).** The rules below on this endpoint replace this
-> section's earlier draft, which predated any real implementation and
-> described a refund policy (before `image_gen` only, never during
-> `pdf_render`, always exactly one credit) this codebase does not follow.
-> Implemented at `POST /api/books/:id/cancel` — backend cancellation only, no
-> frontend Cancel button yet (Phase G2). Full mechanism writeup:
+> **Corrected (Phase G1); frontend wired up (Phase G2).** The rules below on
+> this endpoint replace this section's earlier draft, which predated any real
+> implementation and described a refund policy (before `image_gen` only,
+> never during `pdf_render`, always exactly one credit) this codebase does not
+> follow. Implemented at `POST /api/books/:id/cancel`, with a "Cancel
+> generation" control in the web app's book detail page (confirmation dialog,
+> race-safe pending state, refund messaging). Full mechanism writeup:
 > `apps/api/docs/local-generation-pipeline.md`, "Phase G1 — user-initiated
-> cancellation"; credit-ledger detail: `apps/api/docs/credits.md`, "Phase
-> G1: cancellation refunds."
+> cancellation" and "Phase G2 — frontend cancellation UX"; credit-ledger
+> detail: `apps/api/docs/credits.md`, "Phase G1: cancellation refunds."
 
 **Purpose:** Cancel an in-progress (`queued`/`running`) generation run.
 

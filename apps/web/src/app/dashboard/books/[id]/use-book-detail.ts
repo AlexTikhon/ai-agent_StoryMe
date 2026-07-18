@@ -77,7 +77,13 @@ export function useBookDetail(id: string) {
       void booksApi
         .get(id)
         .then((data) => {
-          if (!cancelled) setBook(data);
+          if (cancelled) return;
+          // A user-initiated POST /:id/cancel response can land while this
+          // poll is already in flight. Reading `current` here (rather than
+          // the `book` closed over by this effect) always reflects the
+          // latest committed state, so a stale non-cancelled poll response
+          // can never clobber an already-applied cancellation.
+          setBook((current) => (current?.status === BookStatus.Cancelled ? current : data));
         })
         .catch(() => {});
       void booksApi

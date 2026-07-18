@@ -1828,10 +1828,10 @@ Phase D's own "Known limitations" below for the precise residual gap.
 
 Adds `POST /api/books/:id/cancel` — the first way a user can voluntarily stop
 an in-progress generation before it finishes. **Backend only: this phase
-implements the authoritative cancellation mechanism and API contract, but
-there is no Cancel button in the web app yet — that is Phase G2.** Partial
-completion (`BookStatus.Partial`) remains explicitly unimplemented; a
-cancelled run's outcome is simply never published, not partially published.
+implements the authoritative cancellation mechanism and API contract; the web
+app's Cancel button is Phase G2, below.** Partial completion
+(`BookStatus.Partial`) remains explicitly unimplemented; a cancelled run's
+outcome is simply never published, not partially published.
 
 ### Business policy
 
@@ -2039,9 +2039,109 @@ raw database error:
 
 No SSE/WebSocket cancellation event, no subscription to watch cancellation
 happen live, no provider-level request cancellation (an in-flight OpenAI
-call is not aborted — see "Queue cleanup" above), no frontend Cancel button
-(Phase G2), and no partial-completion support (`BookStatus.Partial` remains
-entirely unreachable).
+call is not aborted — see "Queue cleanup" above), and no partial-completion
+support (`BookStatus.Partial` remains entirely unreachable).
+
+## Phase G2 — frontend cancellation UX
+
+Adds the web app's "Cancel generation" control to the book detail page
+(`apps/web/src/app/dashboard/books/[id]/`), consuming the Phase G1
+`POST /api/books/:id/cancel` contract. No backend changes.
+
+### Visibility and confirmation
+
+- The button renders only while `isGeneratingBookStatus(book.status)` is true
+  (`use-book-detail.ts`) — never for `created`, `complete`, `failed`, or
+  `cancelled`. This is the same helper the polling effect already uses, so
+  the button and the polling loop always agree on what counts as "active."
+- Clicking it opens a `window.confirm` dialog (the same primitive
+  `retry-generation`/`regenerate` already use) whose copy explicitly covers
+  all four things a user needs to know before confirming: the action is
+  permanent; an already-started provider call may keep running in the
+  background even though it's requested; that call's result will never be
+  published; and any existing generation charge will be refunded. It
+  deliberately never claims the provider request itself is aborted — see
+  "Queue cleanup" in Phase G1 above for why that would be false.
+
+### Pending state and duplicate protection
+
+`BookDetailPage.handleCancel` (`page.tsx`) guards against double submission
+with a `useRef` boolean (`cancellingRef`) checked and set **before** the
+`await window.confirm`/fetch call — a plain `cancelling` state variable alone
+cannot prevent a second synchronous click in the same tick, since React state
+updates aren't visible until the next render. While the request is in
+flight, the button is disabled, its accessible name switches to "Cancelling
+generation" (via `aria-label`, not just its visible text), and the sibling
+regenerate/retry button is disabled too (`cancelling` is threaded into
+`BookDetailView`'s `disabled` props) — though in practice the two controls
+are already mutually exclusive by status, since regenerate/retry only render
+for `failed`/`complete`/`cancelled`, never for an active generation status.
+
+### Outcome handling
+
+`handleCancel` replaces `book` with the exact `BookDto` the endpoint returned
+— it never guesses or optimistically adjusts status or credit balance.
+
+- **`creditsRefunded > 0`:** shows "Generation cancelled. N credit(s)
+  refunded." (`role="status"`) and dispatches `notifyCreditsUpdated()`
+  (`apps/web/src/lib/credits-events.ts`, the same event
+  `/billing/success` already fires) so any mounted balance indicator
+  refetches immediately.
+- **`creditsRefunded === 0`:** shows "Generation cancelled. No credit charge
+  was found to refund." — no event dispatch, since nothing changed.
+- **`BOOK_ALREADY_CANCELLED`:** refetches the book and shows a calm
+  `role="status"` "Generation was already cancelled." message — not a
+  generic failure alert, since the end state (cancelled) is exactly what the
+  user wanted.
+- **`BOOK_NOT_IN_PROGRESS`:** refetches the book (completion or failure may
+  have won the race) and shows a `role="alert"` message derived from the
+  _refreshed_ status (`describeNotInProgressStatus` in `page.tsx`) —
+  "already finished successfully... nothing was refunded" for `complete`,
+  "already failed..." for `failed`, etc. Never claims a cancellation or
+  refund occurred.
+- **Generic/transient failure (network error, 5xx):** the book state is left
+  untouched (still showing the active generation status), a `role="alert"`
+  error is shown, and the button re-enables so the user can simply click
+  Cancel again.
+
+### Race safety against polling
+
+The existing 2.5s poll (`use-book-detail.ts`) and a cancel response can both
+be in flight at once. The poll's `.then` handler was changed from an
+unconditional `setBook(data)` to a functional update:
+
+```ts
+setBook((current) => (current?.status === BookStatus.Cancelled ? current : data));
+```
+
+React guarantees the `current` a functional updater sees is the latest
+_applied_ state, regardless of microtask/macrotask ordering between the
+poll's fetch and the cancel's fetch — so a poll response that started before
+the cancel request but resolves after it can never revert an already-applied
+`cancelled` status back to a stale in-progress one. Once `book.status`
+becomes `cancelled`, the polling effect's own dependency
+(`[id, book?.status]`) re-evaluates `isGeneratingBookStatus` to `false` and
+the interval is torn down — no explicit "stop polling on cancel" call was
+needed.
+
+### Cancelled-state UX
+
+- `BookDetailView`'s `canRegenerate` now also accepts `cancelled` (alongside
+  `failed`/`complete`), matching `BooksService.regenerateBook`'s Phase G1
+  rule; the button reads "Regenerate book" for `complete`/`cancelled`, same
+  as it already did for `complete`. `retryGeneration` is untouched — it stays
+  `failed`-only on both ends.
+- The status badge (book detail header and dashboard `BookCard`) renders
+  `cancelled` in a distinct amber treatment instead of the shared
+  draft-gray/active-violet split, so a cancelled book doesn't read as either
+  "still a draft" or "actively generating."
+- `PdfSection` now also renders for `cancelled`: since cancellation never
+  touches `previewPdfUrl`/`bookPreview` (see Phase G1's step 6 above), a
+  cancelled-during-regeneration book that still has a PDF from an earlier
+  successful run shows a "Previous PDF still available" panel with the same
+  Open/Download actions as the `complete` panel (factored into a shared
+  `PdfReadyActions` component). A cancelled book with no prior PDF shows a
+  plain "Generation was cancelled before a PDF was produced" note instead.
 
 ## Phase B — claim-scoped artifact storage (Slices B1–B2)
 

@@ -1,6 +1,7 @@
 import type {
   BookDto,
   BooksPageDto,
+  CancelGenerationResponse,
   CreateBookInput,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
@@ -45,6 +46,10 @@ export const booksApi = {
   /** Replaces a failed or complete book's story/images/PDF with a fresh run built from the book's current fields. */
   regenerateBook: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/regenerate`, { method: 'POST' }),
+
+  /** Cancels an in-progress (queued/running) generation run. Backend refunds the original charge (if any) and the returned book is the sole source of truth — see CancelGenerationResponse. */
+  cancelGeneration: (id: string): Promise<CancelGenerationResponse> =>
+    apiFetch(`/books/${id}/cancel`, { method: 'POST' }),
 
   remove: (id: string): Promise<void> => apiFetch(`/books/${id}`, { method: 'DELETE' }),
 

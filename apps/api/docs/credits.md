@@ -545,12 +545,19 @@ run is already correctly inactive by that index without any migration).
 
 ### Not in scope for Phase G1
 
-No frontend Cancel button (Phase G2), no SSE/subscription to observe
-cancellation happen live, no provider-level request cancellation (an
-in-flight OpenAI call already started by `AgentService` is not aborted —
-its result simply can never be published once fenced out), and no
-partial-completion charge/refund behavior (`BookStatus.Partial` remains
-entirely unimplemented).
+No SSE/subscription to observe cancellation happen live, no provider-level
+request cancellation (an in-flight OpenAI call already started by
+`AgentService` is not aborted — its result simply can never be published once
+fenced out), and no partial-completion charge/refund behavior
+(`BookStatus.Partial` remains entirely unimplemented).
+
+The web app's "Cancel generation" control (Phase G2 —
+`apps/api/docs/local-generation-pipeline.md`, "Phase G2 — frontend
+cancellation UX") surfaces this refund outcome directly: "N credit(s)
+refunded" when `creditsRefunded > 0`, dispatching the same
+`storyme:credits-updated` event `/billing/success` uses so the dashboard
+balance refetches, or "No credit charge was found to refund" when it's `0` —
+never a guessed or optimistically-adjusted balance.
 
 ## Reference: `GENERATION_CREDIT_COST` and key helpers
 

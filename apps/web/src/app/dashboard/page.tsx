@@ -111,6 +111,7 @@ interface BookCardProps {
 
 function BookCard({ book, onDelete, deleting }: BookCardProps) {
   const isDraft = book.status === BookStatus.Created;
+  const isCancelled = book.status === BookStatus.Cancelled;
   const editable = isBookEditable(book.status);
 
   return (
@@ -124,7 +125,11 @@ function BookCard({ book, onDelete, deleting }: BookCardProps) {
         </Link>
         <span
           className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-            isDraft ? 'bg-stone-100 text-text-muted' : 'bg-violet-50 text-violet-700'
+            isDraft
+              ? 'bg-stone-100 text-text-muted'
+              : isCancelled
+                ? 'bg-amber-100 text-amber-800'
+                : 'bg-violet-50 text-violet-700'
           }`}
         >
           {book.status}

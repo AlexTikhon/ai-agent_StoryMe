@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { booksApi } from './books';
 import { setAccessToken } from '../auth/token-store';
 import { SupportedLanguage, BookStatus } from '@book/types';
-import type { BookDto, BooksPageDto, GenerateBookResponse } from '@book/types';
+import type {
+  BookDto,
+  BooksPageDto,
+  CancelGenerationResponse,
+  GenerateBookResponse,
+} from '@book/types';
 
 const MOCK_BOOK: BookDto = {
   id: 'book-1',
@@ -203,6 +208,32 @@ describe('booksApi', () => {
       expect(url).toBe('http://localhost:4000/api/books/book-1/regenerate');
       expect(init.method).toBe('POST');
       expect(result).toEqual(regenerated);
+    });
+  });
+
+  describe('cancelGeneration()', () => {
+    it('sends POST /books/:id/cancel and returns CancelGenerationResponse', async () => {
+      const cancelled: CancelGenerationResponse = {
+        book: { ...MOCK_BOOK, status: BookStatus.Cancelled },
+        creditsRefunded: 1,
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(cancelled));
+
+      const result = await booksApi.cancelGeneration('book-1');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/cancel');
+      expect(init.method).toBe('POST');
+      expect(result).toEqual(cancelled);
+    });
+
+    it('propagates the stable BOOK_ALREADY_CANCELLED error code', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(mockError(409, 'Book generation already cancelled'));
+
+      await expect(booksApi.cancelGeneration('book-1')).rejects.toThrow(
+        'Book generation already cancelled',
+      );
     });
   });
 
