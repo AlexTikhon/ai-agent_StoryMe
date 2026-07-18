@@ -60,6 +60,7 @@ function createMockGenerationRunCoordinator(): jest.Mocked<GenerationRunCoordina
   return {
     completeRun: vi.fn().mockResolvedValue('applied'),
     failAbandoned: vi.fn().mockResolvedValue('applied'),
+    cancelGeneration: vi.fn(),
   } as unknown as jest.Mocked<GenerationRunCoordinator>;
 }
 
@@ -106,6 +107,7 @@ function createMockImageAssetStorage(): jest.Mocked<ImageAssetStorage> {
 function createMockGenerationQueueService(): jest.Mocked<GenerationQueueService> {
   return {
     enqueue: vi.fn().mockResolvedValue(undefined),
+    removeIfSafe: vi.fn().mockResolvedValue(undefined),
     getQueueDiagnostics: vi.fn().mockResolvedValue({
       queueName: 'book-generation',
       workerCount: 1,
@@ -166,6 +168,9 @@ function createMockGenerationJobService(): jest.Mocked<GenerationJobService> {
     markFailed: vi
       .fn()
       .mockResolvedValue(makeGenerationJob({ status: 'failed' as GenerationJob['status'] })),
+    markCancelled: vi
+      .fn()
+      .mockResolvedValue(makeGenerationJob({ status: 'cancelled' as GenerationJob['status'] })),
     countActiveForUser: vi.fn().mockResolvedValue(0),
     countCreatedForUserSince: vi.fn().mockResolvedValue(0),
   } as unknown as jest.Mocked<GenerationJobService>;
@@ -1296,6 +1301,14 @@ describe('BooksService', () => {
       expect(prisma.book.update).not.toHaveBeenCalled();
     });
 
+    it('Phase G1: throws ConflictException for a cancelled book — use regenerateBook instead, never retryGeneration', async () => {
+      const book = makeBook({ status: 'cancelled' as Book['status'] });
+      prisma.book.findFirst.mockResolvedValue(book);
+
+      await expect(service.retryGeneration('u-1', 'b-1')).rejects.toThrow(ConflictException);
+      expect(prisma.book.update).not.toHaveBeenCalled();
+    });
+
     it('throws ConflictException for a complete book — use regenerateBook instead', async () => {
       const book = makeBook({ status: STATUS_COMPLETE });
       prisma.book.findFirst.mockResolvedValue(book);
@@ -1518,6 +1531,29 @@ describe('BooksService', () => {
       });
     });
 
+    it('Phase G1: regenerates a cancelled book, charging its new run independently of any earlier cancellation refund', async () => {
+      const book = makeBook({ status: 'cancelled' as Book['status'] });
+      const cleared = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'regen-run-1' });
+      prisma.book.findFirst.mockResolvedValue(book);
+      prisma.book.update.mockResolvedValue(cleared);
+      prisma.generationRun.create.mockResolvedValue(makeGenerationRun({ id: 'regen-run-1' }));
+
+      const result = await service.regenerateBook('u-1', 'b-1');
+
+      expect(prisma.book.update).toHaveBeenCalledWith({
+        where: { id: 'b-1', status: 'cancelled' },
+        data: expect.objectContaining({ status: 'char_build', activeRunId: 'regen-run-1' }),
+      });
+      expect(creditsService.deductInTransaction).toHaveBeenCalledWith(prisma, {
+        userId: 'u-1',
+        amount: 1,
+        reason: 'book_creation',
+        bookId: 'b-1',
+        idempotencyKey: 'generation:regen-run-1:charge',
+      });
+      expect(result.book.status).toBe('char_build');
+    });
+
     it('never links retryOfRunId — a regenerate always starts a fresh lineage', async () => {
       const book = makeBook({ status: STATUS_COMPLETE });
       const cleared = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'run-1' });
@@ -1574,6 +1610,110 @@ describe('BooksService', () => {
         });
         expect(prisma.book.update).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  // ─── cancelGeneration (Phase G1) ───────────────────────────────────────────────
+
+  describe('cancelGeneration', () => {
+    it('maps "applied" to the CancelGenerationResponse shape and runs both best-effort follow-ups', async () => {
+      const cancelledBook = makeBook({ status: 'cancelled' as Book['status'], activeRunId: null });
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({
+        kind: 'applied',
+        book: cancelledBook,
+        creditsRefunded: 1,
+        runId: 'run-1',
+      });
+      generationJobService.findActive.mockResolvedValue(makeGenerationJob());
+
+      const result = await service.cancelGeneration('u-1', 'b-1');
+
+      expect(generationRunCoordinator.cancelGeneration).toHaveBeenCalledWith({
+        bookId: 'b-1',
+        userId: 'u-1',
+      });
+      expect(result.creditsRefunded).toBe(1);
+      expect(result.book.status).toBe('cancelled');
+      expect(generationJobService.markCancelled).toHaveBeenCalledWith('job-1');
+      expect(generationQueueService.removeIfSafe).toHaveBeenCalledWith('run-1');
+    });
+
+    it('returns creditsRefunded: 0 for a legacy/unbilled cancelled run', async () => {
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({
+        kind: 'applied',
+        book: makeBook({ status: 'cancelled' as Book['status'] }),
+        creditsRefunded: 0,
+        runId: 'run-1',
+      });
+
+      const result = await service.cancelGeneration('u-1', 'b-1');
+
+      expect(result.creditsRefunded).toBe(0);
+    });
+
+    it('never touches the legacy GenerationJob mirror when none is active', async () => {
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({
+        kind: 'applied',
+        book: makeBook({ status: 'cancelled' as Book['status'] }),
+        creditsRefunded: 0,
+        runId: 'run-1',
+      });
+      generationJobService.findActive.mockResolvedValue(null);
+
+      await service.cancelGeneration('u-1', 'b-1');
+
+      expect(generationJobService.markCancelled).not.toHaveBeenCalled();
+    });
+
+    it('a legacy GenerationJob update failure never fails the request (best-effort, already logged/swallowed by markJob)', async () => {
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({
+        kind: 'applied',
+        book: makeBook({ status: 'cancelled' as Book['status'] }),
+        creditsRefunded: 0,
+        runId: 'run-1',
+      });
+      generationJobService.findActive.mockResolvedValue(makeGenerationJob());
+      generationJobService.markCancelled.mockRejectedValue(new Error('db blip'));
+
+      await expect(service.cancelGeneration('u-1', 'b-1')).resolves.toBeDefined();
+    });
+
+    it('throws NotFoundException for "not_found"', async () => {
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({ kind: 'not_found' });
+
+      await expect(service.cancelGeneration('u-1', 'missing')).rejects.toThrow(NotFoundException);
+      expect(generationQueueService.removeIfSafe).not.toHaveBeenCalled();
+    });
+
+    it('throws a stable 409 BOOK_ALREADY_CANCELLED for "already_cancelled"', async () => {
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({ kind: 'already_cancelled' });
+
+      await expect(service.cancelGeneration('u-1', 'b-1')).rejects.toMatchObject({
+        status: HttpStatus.CONFLICT,
+        response: expect.objectContaining({ code: 'BOOK_ALREADY_CANCELLED' }),
+      });
+    });
+
+    it('throws a stable 409 BOOK_NOT_IN_PROGRESS for "not_in_progress"', async () => {
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({ kind: 'not_in_progress' });
+
+      await expect(service.cancelGeneration('u-1', 'b-1')).rejects.toMatchObject({
+        status: HttpStatus.CONFLICT,
+        response: expect.objectContaining({ code: 'BOOK_NOT_IN_PROGRESS' }),
+      });
+    });
+
+    it('rethrows GenerationRunMirrorInvariantError for "book_mirror_mismatch" rather than a stable 4xx', async () => {
+      generationRunCoordinator.cancelGeneration.mockResolvedValue({
+        kind: 'book_mirror_mismatch',
+        runId: 'run-1',
+        bookId: 'b-1',
+      });
+
+      await expect(service.cancelGeneration('u-1', 'b-1')).rejects.toThrow(
+        GenerationRunMirrorInvariantError,
+      );
+      expect(generationQueueService.removeIfSafe).not.toHaveBeenCalled();
     });
   });
 

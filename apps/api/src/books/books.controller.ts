@@ -24,6 +24,7 @@ import type { User } from '@prisma/client';
 import type {
   BookDto,
   BooksPageDto,
+  CancelGenerationResponse,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
 } from '@book/types';
@@ -159,6 +160,28 @@ export class BooksController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<GenerateBookResponse> {
     return this.booksService.regenerateBook(user.id, id);
+  }
+
+  /**
+   * Phase G1 — backend cancellation only; no frontend Cancel button yet (see
+   * Phase G2). Empty body — nothing is read from it. Ownership is derived
+   * exclusively from the authenticated user (@CurrentUser()), never a
+   * request field. See BooksService.cancelGeneration for the stable
+   * 404/409 error contract and GenerationRunCoordinator.cancelGeneration for
+   * the underlying fenced transaction.
+   */
+  @Post(':id/cancel')
+  @HttpCode(200)
+  @UseGuards(RequireVerifiedEmailGuard)
+  @RateLimit({
+    windowMsEnvKey: 'CANCEL_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'CANCEL_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  cancel(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<CancelGenerationResponse> {
+    return this.booksService.cancelGeneration(user.id, id);
   }
 
   @Delete(':id')

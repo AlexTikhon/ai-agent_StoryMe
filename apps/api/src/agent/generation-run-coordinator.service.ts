@@ -1,11 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { BookStatus, GenerationRunStatus, type Prisma } from '@prisma/client';
+import { BookStatus, GenerationRunStatus, type Book, type Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import {
   CreditsService,
+  generationCancellationRefundIdempotencyKey,
   generationChargeIdempotencyKey,
   generationRefundIdempotencyKey,
 } from '../credits/credits.service';
+import { OUTBOX_STATUS_CANCELLED, OUTBOX_STATUS_PENDING } from '../outbox/outbox.service';
 import type { GenerationOutcome } from './generation-outcome';
 import { GENERATION_INPUT_SNAPSHOT_INVALID } from './generation-input-snapshot';
 
@@ -47,8 +49,24 @@ export interface AbandonedRunRef extends ClaimedRunRef {
  */
 export type CoordinatorOutcome = 'applied' | 'stale_fence' | 'book_mirror_mismatch';
 
-/** Internal-only signal used to abort (and thus roll back) a transaction whose Book write matched zero rows despite its GenerationRun fence holding — see CoordinatorOutcome's 'book_mirror_mismatch' doc. Never escapes this file. */
-class BookMirrorMismatchError extends Error {}
+/**
+ * Internal-only signal used to abort (and thus roll back) a transaction whose
+ * Book write matched zero rows despite its GenerationRun fence holding — see
+ * CoordinatorOutcome's 'book_mirror_mismatch' doc. Never escapes this file.
+ * Carries the run/book identity (optional — runFencedTerminalTransition's own
+ * callers already know both from `params`, but cancelGeneration resolves them
+ * inside its own transaction and needs them back at its catch site to build a
+ * typed CancelGenerationOutcome) purely for that one extra caller's benefit.
+ */
+class BookMirrorMismatchError extends Error {
+  constructor(
+    message: string,
+    readonly runId?: string,
+    readonly bookId?: string,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Thrown by a caller that received a `'book_mirror_mismatch'`
@@ -68,6 +86,46 @@ export class GenerationRunMirrorInvariantError extends Error {
     this.name = 'GenerationRunMirrorInvariantError';
   }
 }
+
+/**
+ * Phase G1: result of GenerationRunCoordinator.cancelGeneration — a richer
+ * discriminated union than CoordinatorOutcome because the caller (BooksService
+ * .cancelGeneration) must map several distinct "nothing was cancelled"
+ * reasons to different stable HTTP responses (404 vs. two different 409
+ * codes), not just one generic "not applied":
+ *
+ *   - 'applied' — the run was queued/running and is now cancelled; `book` is
+ *     the fully reloaded row (including any refund-free/refunded credit
+ *     side effect already committed), `creditsRefunded` is the exact amount
+ *     refunded (0 for a legacy/unbilled run), and `runId` is the cancelled
+ *     run's id — returned so a caller can drive best-effort post-commit
+ *     cleanup (BooksService.cancelGeneration's BullMQ removal) without a
+ *     second lookup.
+ *   - 'not_found' — no Book with this id belongs to this user (never
+ *     distinguished from "doesn't exist at all" — see findOwnedOrThrow's own
+ *     doc comment for why).
+ *   - 'already_cancelled' — this book's generation was already cancelled
+ *     (by an earlier request, or a request that's racing this one and won).
+ *   - 'not_in_progress' — the book has no active (queued/running) run right
+ *     now, for any other reason: never started (`created`), or already
+ *     `complete`/`failed`/`partial` — including the specific race where a
+ *     concurrent completion won before this cancellation's fenced write ran.
+ *   - 'book_mirror_mismatch' — the GenerationRun fence held but
+ *     Book.activeRunId no longer pointed at it; see CoordinatorOutcome's own
+ *     doc comment for why this is an invariant failure, never folded into
+ *     'not_in_progress'.
+ */
+export type CancelGenerationOutcome =
+  | {
+      readonly kind: 'applied';
+      readonly book: Book;
+      readonly creditsRefunded: number;
+      readonly runId: string;
+    }
+  | { readonly kind: 'not_found' }
+  | { readonly kind: 'already_cancelled' }
+  | { readonly kind: 'not_in_progress' }
+  | { readonly kind: 'book_mirror_mismatch'; readonly runId: string; readonly bookId: string };
 
 /**
  * The single choke point that publishes a GenerationRun's terminal outcome —
@@ -367,5 +425,183 @@ export class GenerationRunCoordinator {
       );
     }
     return result;
+  }
+
+  /**
+   * Phase G1 — the authoritative user-initiated cancellation transaction.
+   * Unlike completeRun/failInvalidSnapshot/failAbandoned (which all fence a
+   * *pre-resolved* claim a background caller already owns), this method also
+   * owns resolving *and verifying* that identity itself — cancellation is
+   * HTTP-request-driven, so ownership can never be assumed the way it is for
+   * a claim the pipeline itself created. Everything below runs inside one
+   * Prisma transaction:
+   *
+   *   1. Load `Book`, scoped to `(id, userId, deletedAt: null)` — a missing/
+   *      not-owned/soft-deleted book is indistinguishable, both `'not_found'`.
+   *   2. If `Book.activeRunId` is null, there is no active run to cancel —
+   *      report `'already_cancelled'` if the book's own status already says
+   *      so, otherwise `'not_in_progress'` (covers `created`, `complete`,
+   *      `failed`, `partial`).
+   *   3. Otherwise load that exact `GenerationRun` (scoped to `id, bookId,
+   *      userId` — the same three-way ownership check `runWhere` below
+   *      re-verifies in the actual fenced write) and read its current
+   *      `status`/`fencingVersion`.
+   *   4. Conditionally transition it to `cancelled` — fenced on run id, book
+   *      id, user id, its exact observed status (`queued` or `running` only),
+   *      and its exact observed `fencingVersion` — while also incrementing
+   *      `fencingVersion`, so any already-running worker's next heartbeat (or
+   *      its own next `applyFencedBookWrite`/`completeRun` call) loses
+   *      ownership immediately, the same fencing guarantee every other
+   *      terminal transition in this class already provides.
+   *   5. If that fenced write matched zero rows, something else won the race
+   *      (a concurrent cancellation, or a concurrent completion) — re-read
+   *      the run once more to report the accurate outcome (`'already_cancelled'`
+   *      if it's now `cancelled`, `'not_in_progress'` otherwise, e.g. a
+   *      completion won).
+   *   6. Only if the run transition held: conditionally update `Book`
+   *      (`activeRunId` still pointing at this run) to `status: cancelled`,
+   *      clear `activeRunId`/`errorMessage`/`failedStep` — deliberately never
+   *      touching `previewPdfUrl`/`pdfUrl`/`bookPreview`/etc., so a
+   *      previously published pointer from an earlier successful run survives
+   *      a later regeneration's cancellation untouched. Zero rows matched
+   *      here means the run/Book mirror invariant is broken — the whole
+   *      transaction rolls back (`'book_mirror_mismatch'`), exactly like
+   *      runFencedTerminalTransition's own handling.
+   *   7. Suppress any still-`pending` OutboxEvent for this run
+   *      (`OUTBOX_STATUS_CANCELLED`) so a dispatcher sweep can never newly
+   *      enqueue it — a sweep that already read it as pending before this
+   *      commits may still enqueue the BullMQ job, but GenerationRunService
+   *      .claim then finds the run no longer queued/running and returns null,
+   *      a safe no-op (see GenerationQueueProcessor.process).
+   *   8. Look up the original charge (`generationChargeIdempotencyKey`) and,
+   *      only if one exists, refund its exact amount/user/book via
+   *      CreditsService.addInTransaction with reason
+   *      `refund_generation_cancelled` and a distinct deterministic key
+   *      (`generationCancellationRefundIdempotencyKey`) — never
+   *      `refund_generation_failure`, and never a hardcoded amount. A
+   *      legacy/unbilled run has no matching charge and is cancelled with
+   *      `creditsRefunded: 0`.
+   *
+   * Any failure at any step (including the refund insert hitting its own
+   * idempotency-key conflict) throws out of the transaction callback and
+   * rolls back every write made so far in this same call — there is no
+   * partial-cancellation state this method can leave behind.
+   */
+  async cancelGeneration(params: {
+    bookId: string;
+    userId: string;
+  }): Promise<CancelGenerationOutcome> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const book = await tx.book.findFirst({
+          where: { id: params.bookId, userId: params.userId, deletedAt: null },
+        });
+        if (!book) return { kind: 'not_found' };
+
+        if (!book.activeRunId) {
+          return book.status === BookStatus.cancelled
+            ? { kind: 'already_cancelled' }
+            : { kind: 'not_in_progress' };
+        }
+
+        const run = await tx.generationRun.findFirst({
+          where: { id: book.activeRunId, bookId: book.id, userId: params.userId },
+        });
+        const isActive =
+          run !== null &&
+          (run.status === GenerationRunStatus.queued || run.status === GenerationRunStatus.running);
+        if (!isActive) {
+          return run?.status === GenerationRunStatus.cancelled
+            ? { kind: 'already_cancelled' }
+            : { kind: 'not_in_progress' };
+        }
+
+        const runUpdate = await tx.generationRun.updateMany({
+          where: {
+            id: run.id,
+            bookId: book.id,
+            userId: params.userId,
+            status: run.status,
+            fencingVersion: run.fencingVersion,
+          },
+          data: {
+            status: GenerationRunStatus.cancelled,
+            cancelledAt: new Date(),
+            fencingVersion: { increment: 1 },
+          },
+        });
+        if (runUpdate.count === 0) {
+          // Lost a race against a concurrent cancellation or a concurrent
+          // completion — re-read to report which one actually won, rather
+          // than guessing from the pre-write snapshot above.
+          const latest = await tx.generationRun.findUnique({ where: { id: run.id } });
+          return latest?.status === GenerationRunStatus.cancelled
+            ? { kind: 'already_cancelled' }
+            : { kind: 'not_in_progress' };
+        }
+
+        const bookUpdate = await tx.book.updateMany({
+          where: { id: book.id, userId: params.userId, activeRunId: run.id },
+          data: {
+            status: BookStatus.cancelled,
+            activeRunId: null,
+            errorMessage: null,
+            failedStep: null,
+          },
+        });
+        if (bookUpdate.count === 0) {
+          throw new BookMirrorMismatchError(
+            `GenerationRun ${run.id} (book ${book.id}) passed its cancellation fencing check, but Book.activeRunId no longer pointed at it — the run/Book mirror invariant is broken. Rolling back the entire cancellation transaction rather than leaving GenerationRun cancelled while Book stays stuck.`,
+            run.id,
+            book.id,
+          );
+        }
+
+        // Suppress a still-pending outbox event so a dispatcher sweep can
+        // never newly enqueue this cancelled run — see this method's own doc
+        // comment, point 7, for why a sweep that already read it as pending
+        // before this commits is still safe (claim() becomes a no-op).
+        await tx.outboxEvent.updateMany({
+          where: {
+            aggregateType: 'generation_run',
+            aggregateId: run.id,
+            status: OUTBOX_STATUS_PENDING,
+          },
+          data: { status: OUTBOX_STATUS_CANCELLED },
+        });
+
+        let creditsRefunded = 0;
+        const charge = await tx.creditTransaction.findUnique({
+          where: { idempotencyKey: generationChargeIdempotencyKey(run.id) },
+        });
+        if (charge) {
+          await this.creditsService.addInTransaction(tx, {
+            userId: charge.userId,
+            amount: -charge.amount,
+            reason: 'refund_generation_cancelled',
+            ...(charge.bookId && { bookId: charge.bookId }),
+            idempotencyKey: generationCancellationRefundIdempotencyKey(run.id),
+          });
+          creditsRefunded = -charge.amount;
+        } else {
+          this.logger.log(
+            `Run ${run.id} has no matching charge CreditTransaction — cancelling as a legacy/unbilled run with creditsRefunded: 0.`,
+          );
+        }
+
+        const updatedBook = await tx.book.findUniqueOrThrow({ where: { id: book.id } });
+        return { kind: 'applied', book: updatedBook, creditsRefunded, runId: run.id };
+      });
+    } catch (err) {
+      if (err instanceof BookMirrorMismatchError) {
+        this.logger.error(err.message);
+        return {
+          kind: 'book_mirror_mismatch',
+          runId: err.runId ?? '',
+          bookId: err.bookId ?? params.bookId,
+        };
+      }
+      throw err;
+    }
   }
 }

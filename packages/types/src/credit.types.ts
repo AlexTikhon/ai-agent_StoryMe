@@ -3,6 +3,8 @@ export enum CreditReason {
   BookCreation = 'book_creation',
   RegenPage = 'regen_page',
   RefundGenerationFailure = 'refund_generation_failure',
+  /** Phase G1: compensating credit for a user-initiated cancellation (POST /books/:id/cancel) — distinct from RefundGenerationFailure. */
+  RefundGenerationCancelled = 'refund_generation_cancelled',
   Purchase = 'purchase',
   SubscriptionGrant = 'subscription_grant',
   PromotionalGrant = 'promotional_grant',

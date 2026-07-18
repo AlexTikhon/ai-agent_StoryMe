@@ -67,6 +67,13 @@ export const envSchema = z
     CHILD_PHOTO_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(20),
     DIAGNOSTICS_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
     DIAGNOSTICS_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(60),
+    // Phase G1: POST /:id/cancel — a user reacting to an in-progress
+    // generation they want to stop, so this budget is looser than
+    // GENERATION_RATE_LIMIT above (which gates starting a new *paid* run);
+    // cancelling is free and a user may legitimately retry the request if an
+    // earlier attempt raced a concurrent completion/cancellation.
+    CANCEL_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(3_600_000),
+    CANCEL_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(30),
 
     // Business-rule generation caps (distinct from the raw per-route request
     // throttle above) — how many actual paid generation runs one user may

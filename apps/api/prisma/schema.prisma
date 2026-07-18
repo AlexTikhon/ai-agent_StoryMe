@@ -48,12 +48,13 @@ enum BookLanguage {
 
 // Mirrors the pipeline state machine in BACKEND_DESIGN §3.12
 //
-// `partial` and `cancelled` are reserved terminal states for future
-// generation-workflow features (partial-completion recovery, user-initiated
-// cancellation — see ROADMAP.md). No code path in the current MVP pipeline
-// sets a Book to either status; they're kept here (and handled defensively
-// as terminal in generation-job-recovery.service.ts and the web book-detail
-// page) so those features can land without a state-machine migration later.
+// `partial` remains a reserved terminal state for a future generation-
+// workflow feature (partial-completion recovery) — no code path sets a Book
+// to it yet. `cancelled` is reachable since Phase G1: BooksService.
+// cancelGeneration (POST /books/:id/cancel) transitions an active
+// (queued/running) run's Book to `cancelled` via GenerationRunCoordinator.
+// cancelGeneration — see apps/api/docs/local-generation-pipeline.md,
+// "Phase G1 — user-initiated cancellation".
 enum BookStatus {
   created
   char_build
@@ -99,6 +100,11 @@ enum CreditReason {
   book_creation
   regen_page
   refund_generation_failure
+  // Phase G1: compensating credit for a user-initiated cancellation
+  // (POST /books/:id/cancel) — deliberately distinct from
+  // refund_generation_failure so a cancellation refund is never
+  // indistinguishable from an automatic failure refund in the ledger.
+  refund_generation_cancelled
   purchase
   subscription_grant
   promotional_grant
@@ -164,11 +170,18 @@ enum GenerationRunKind {
   regenerate
 }
 
+// Phase G1: `cancelled` is a distinct terminal status from `failed` — a
+// user-initiated cancellation (POST /books/:id/cancel), never produced by
+// the pipeline itself. The active-run partial unique index below
+// (generation_runs_one_active_per_book, `WHERE status IN ('queued',
+// 'running')`) already treats `cancelled` as terminal without any change,
+// since it was never in that WHERE list to begin with.
 enum GenerationRunStatus {
   queued
   running
   completed
   failed
+  cancelled
 }
 
 // ═══════════════════════════════════════════
@@ -752,6 +765,10 @@ model GenerationRun {
   startedAt      DateTime?           @map("started_at")
   completedAt    DateTime?           @map("completed_at")
   failedAt       DateTime?           @map("failed_at")
+  // Phase G1: set only by GenerationRunCoordinator.cancelGeneration's fenced
+  // transition — never by the pipeline itself. Null for every run that was
+  // never cancelled.
+  cancelledAt    DateTime?           @map("cancelled_at")
   createdAt      DateTime            @default(now()) @map("created_at")
   updatedAt      DateTime            @updatedAt @map("updated_at")
 

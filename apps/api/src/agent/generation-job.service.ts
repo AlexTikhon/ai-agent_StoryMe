@@ -112,4 +112,12 @@ export class GenerationJobService {
       },
     });
   }
+
+  /** Phase G1: marks the legacy diagnostics mirror cancelled after the authoritative GenerationRun/Book cancellation transaction has already committed — never the other way around (see BooksService.cancelGeneration). Reuses `completedAt` as the terminal timestamp field, same as markCompleted, since GenerationJob has no dedicated cancelledAt column. */
+  markCancelled(jobId: string): Promise<GenerationJob> {
+    return this.prisma.generationJob.update({
+      where: { id: jobId },
+      data: { status: GenerationJobStatus.cancelled, completedAt: new Date() },
+    });
+  }
 }

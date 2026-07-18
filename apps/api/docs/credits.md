@@ -2,11 +2,14 @@
 
 Covers the internal credit-accounting system: the ledger primitive built in
 Phase E1, Phase E2's wiring of that primitive into the generation lifecycle
-(scheduling-time charge, failure-time refund), and Phase E3's Stripe
-Checkout integration for one-time credit purchases. Subscriptions, the
-Stripe customer portal, cancellation, promotional codes, and pay-per-book
-PaymentIntents remain entirely unimplemented — see "Not in scope" at the end
-of each phase's section below.
+(scheduling-time charge, failure-time refund), Phase E3's Stripe Checkout
+integration for one-time credit purchases, and Phase G1's cancellation-time
+refund. **Subscription cancellation** (billing), the Stripe customer portal,
+promotional codes, and pay-per-book PaymentIntents remain entirely
+unimplemented — see "Not in scope" at the end of each phase's section below.
+**Generation cancellation** (a user voluntarily stopping an in-progress
+book) is implemented as of Phase G1 — see its own section near the end of
+this document; do not confuse the two "cancellation" concepts.
 
 ## Phase E1: credit accounting foundation
 
@@ -193,9 +196,11 @@ unit and real-Postgres integration coverage.
 ### Not in scope for Phase E2
 
 Stripe (checkout, webhooks, subscriptions, purchase flow), frontend billing
-UI, cancellation, partial-completion refund/charge behavior, and Redis-backed
-balance caching are all still unimplemented — this phase is scoped to
-wiring the existing ledger primitive into the generation lifecycle only.
+UI, generation cancellation (added by Phase G1 — see near the end of this
+document), partial-completion refund/charge behavior (still unimplemented —
+`BookStatus.Partial` remains unreachable), and Redis-backed balance caching
+are all still unimplemented — this phase is scoped to wiring the existing
+ledger primitive into the generation lifecycle only.
 
 ## Phase E3: Stripe Checkout credit purchases and idempotent webhooks
 
@@ -481,12 +486,80 @@ entirely unimplemented. This phase adds no custom card form (Stripe Checkout
 remains fully hosted) and no way to grant credits outside the Phase E3
 webhook.
 
+## Phase G1: cancellation refunds
+
+Wires a third compensating-credit path alongside Phase E2's automatic
+failure refund: `POST /api/books/:id/cancel` lets a user voluntarily stop an
+in-progress (`queued`/`running`) `GenerationRun` before it finishes. Full
+mechanism writeup (the fenced transaction itself, race semantics, outbox/
+queue safety): **[apps/api/docs/local-generation-pipeline.md](local-generation-pipeline.md#phase-g1--user-initiated-cancellation)**.
+This section covers only the credit-ledger side.
+
+**Eligibility, amount, and idempotency mirror the existing failure-refund
+design exactly** — `GenerationRunCoordinator.cancelGeneration` looks up the
+original charge by `generationChargeIdempotencyKey(runId)` inside its own
+fenced transaction and, only if one exists, refunds via
+`CreditsService.addInTransaction` for the charge's exact `amount`/`userId`/
+`bookId`, never a hardcoded value:
+
+- **A billed run** — a matching charge exists — is refunded exactly once.
+- **A legacy/unbilled run** — no matching charge (predates Phase E2, or was
+  otherwise never charged) — is cancelled with `creditsRefunded: 0`, the
+  same rule that already protects the failure-refund path from ever
+  granting a free credit.
+- **Refund eligibility never depends on which pipeline step the run was on**
+  when cancelled — this deliberately corrects the aspirational, never-
+  implemented `API_SPEC.md` §"POST /v1/books/{bookId}/cancel" guidance
+  (refund only before `image_gen`, never during `pdf_render`), which
+  predates any real implementation.
+
+**One new `CreditReason`, never reused from the failure path:**
+`refund_generation_cancelled` (migration
+`20260718000000_phase_g1_generation_cancellation`) — deliberately distinct
+from `refund_generation_failure` so a ledger reader (a support dashboard, an
+audit export) can always tell a voluntary cancellation refund apart from an
+automatic failure refund, even though only one of the two paths can ever
+apply to a given run in practice (a run reaches exactly one terminal
+status). The refund's own idempotency key,
+`generationCancellationRefundIdempotencyKey(runId)`
+(`generation:${runId}:cancel_refund`), is likewise distinct from
+`generationRefundIdempotencyKey(runId)`'s `generation:${runId}:refund`.
+
+**Race-safe by construction, not by new locking.** Cancellation and
+completion both write through the same `GenerationRun`
+`status`+`fencingVersion` fence every other terminal transition already
+uses — whichever commits first wins, and the loser's own fenced write
+matches zero rows before it ever reaches its refund/no-refund decision. Two
+concurrent cancellation requests are serialized by Postgres's row lock on
+the `GenerationRun` row itself, so exactly one refund is ever inserted, not
+two. Proven against real Postgres (not mocks) in
+`test/integration/generation-cancellation.integration.spec.ts`.
+
+**Schema**: adds `cancelled` to `GenerationRunStatus`, a nullable
+`GenerationRun.cancelledAt` timestamp, and the `refund_generation_cancelled`
+`CreditReason` value — no change to `credit_transactions`' shape (reuses the
+existing `idempotency_key` column Phase E1 built) and no change to the
+`generation_runs_one_active_per_book` partial unique index (`cancelled` was
+never in its `WHERE status IN ('queued', 'running')` list, so a cancelled
+run is already correctly inactive by that index without any migration).
+
+### Not in scope for Phase G1
+
+No frontend Cancel button (Phase G2), no SSE/subscription to observe
+cancellation happen live, no provider-level request cancellation (an
+in-flight OpenAI call already started by `AgentService` is not aborted —
+its result simply can never be published once fenced out), and no
+partial-completion charge/refund behavior (`BookStatus.Partial` remains
+entirely unimplemented).
+
 ## Reference: `GENERATION_CREDIT_COST` and key helpers
 
 `apps/api/src/credits/credits.service.ts` exports:
 
 - `GENERATION_CREDIT_COST` (`1`) — the cost of one `GenerationRun`.
 - `generationChargeIdempotencyKey(runId)` / `generationRefundIdempotencyKey(runId)`
-  — the two deterministic key builders described above.
+  / `generationCancellationRefundIdempotencyKey(runId)` — the three
+  deterministic key builders described above (charge, automatic failure
+  refund, and Phase G1's voluntary cancellation refund, respectively).
 - `deductInTransaction(tx, input)` / `addInTransaction(tx, input)` — the
   transaction-composing mutation methods described above.

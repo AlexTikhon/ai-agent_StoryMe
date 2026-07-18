@@ -66,9 +66,15 @@ match between API and web** or every request 401s.
   not in-process — Redis is on the critical path for scheduling generation.
   See "Durable generation queue (Phase 3K)" in
   `apps/api/docs/local-generation-pipeline.md`.
-- **No cancellation or partial-completion flow.** `BookStatus.Cancelled` and
-  `BookStatus.Partial` exist in the schema/types as reserved states for
-  future work but no code path currently produces them.
+- ~~No cancellation flow.~~ **Backend user-initiated generation cancellation
+  is implemented (Phase G1):** `POST /api/books/:id/cancel` fences out an
+  in-progress (`queued`/`running`) run, refunds its original charge exactly
+  once (`0` for a legacy/unbilled run), and lets a cancelled book start a
+  fresh regeneration — see
+  [apps/api/docs/local-generation-pipeline.md](apps/api/docs/local-generation-pipeline.md),
+  "Phase G1 — user-initiated cancellation." **There is no frontend Cancel
+  button yet** (Phase G2). `BookStatus.Partial` remains an entirely
+  unreached reserved state — no code path produces it.
 - ~~Russian/Polish PDF output is not production-ready.~~ The PDF renderer
   now embeds Noto Sans (OFL-licensed, Latin/Cyrillic/Greek coverage), so
   `ru` and `pl` books render correctly. See "Font / Unicode support" in
@@ -148,8 +154,14 @@ publicly.
   [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E3" and
   "Phase E4". Subscriptions, the Stripe customer portal, cancellation, and
   promotional codes are still missing.
-- Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial
-  generation recovery, user-initiated cancellation) or should be dropped.
+- ~~Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial
+  generation recovery, user-initiated cancellation) or should be dropped.~~
+  **`Cancelled` is now reachable — backend user-initiated cancellation is
+  implemented (Phase G1)**, see
+  [apps/api/docs/local-generation-pipeline.md](apps/api/docs/local-generation-pipeline.md),
+  "Phase G1." The frontend Cancel button is still missing (Phase G2).
+  `BookStatus.Partial` (partial-completion recovery) remains undecided/
+  unreachable.
 - `prisma:seed` was removed as a package script (previously pointed at a
   nonexistent `apps/api/prisma/seed.ts`, and the seed data ROADMAP.md
   originally described assumed password-based login, which doesn't match the

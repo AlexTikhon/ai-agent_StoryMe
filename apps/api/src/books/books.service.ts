@@ -25,6 +25,7 @@ import {
   SupportedLanguage,
   type BookDto,
   type BooksPageDto,
+  type CancelGenerationResponse,
   type GenerateBookResponse,
   type GenerationDiagnosticsDto,
 } from '@book/types';
@@ -87,6 +88,33 @@ function isOneActiveRunViolation(err: unknown): boolean {
 
 function isRecordNotFound(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025';
+}
+
+/** Phase G1: stable code for a repeated POST /books/:id/cancel — see API_SPEC.md. */
+export const BOOK_ALREADY_CANCELLED_CODE = 'BOOK_ALREADY_CANCELLED';
+/** Phase G1: stable code for POST /books/:id/cancel on a book with no active (queued/running) run — created/complete/failed/partial all land here. */
+export const BOOK_NOT_IN_PROGRESS_CODE = 'BOOK_NOT_IN_PROGRESS';
+
+function alreadyCancelledException(): HttpException {
+  return new HttpException(
+    {
+      error: 'Book generation already cancelled',
+      message: 'Book generation already cancelled',
+      code: BOOK_ALREADY_CANCELLED_CODE,
+    },
+    HttpStatus.CONFLICT,
+  );
+}
+
+function notInProgressException(): HttpException {
+  return new HttpException(
+    {
+      error: 'Book is not currently generating',
+      message: 'Book is not currently generating',
+      code: BOOK_NOT_IN_PROGRESS_CODE,
+    },
+    HttpStatus.CONFLICT,
+  );
 }
 
 /** Book.status value written the moment generation is scheduled — the first pipeline step, non-terminal. */
@@ -420,11 +448,23 @@ export class BooksService {
    * changes the hash and forces a full regeneration instead of silently
    * reusing stale content (the bug this phase's retry/regenerate split
    * fixes).
+   *
+   * Phase G1: also available for a `cancelled` book — the documented way to
+   * start a fresh attempt after a user-initiated cancellation. This new run
+   * is independently charged (createRunAndSchedule's usual
+   * GENERATION_CREDIT_COST debit), regardless of whether the cancelled run
+   * it replaces was refunded. `retryGeneration` deliberately does NOT accept
+   * `cancelled` — retry remains specific to resuming a *failed* run's exact
+   * input; a cancellation was voluntary, not a failure to resume.
    */
   async regenerateBook(userId: string, bookId: string): Promise<GenerateBookResponse> {
     const book = await this.findOwnedOrThrow(bookId, userId);
-    if (book.status !== BookStatus.failed && book.status !== BookStatus.complete) {
-      throw new ConflictException('Only failed or complete books can be regenerated');
+    if (
+      book.status !== BookStatus.failed &&
+      book.status !== BookStatus.complete &&
+      book.status !== BookStatus.cancelled
+    ) {
+      throw new ConflictException('Only failed, complete, or cancelled books can be regenerated');
     }
     if (await this.generationRunService.findActiveForBook(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
@@ -436,7 +476,7 @@ export class BooksService {
       fromStatus: book.status,
       kind: 'regenerate',
       isRetry: true,
-      conflictMessage: 'Only failed or complete books can be regenerated',
+      conflictMessage: 'Only failed, complete, or cancelled books can be regenerated',
       inputSnapshot: buildInputSnapshot(book),
     });
 
@@ -480,6 +520,55 @@ export class BooksService {
     });
 
     return { book: toBookDto(updated) };
+  }
+
+  /**
+   * Phase G1 — POST /books/:id/cancel. Delegates the entire fenced
+   * cancellation transaction to GenerationRunCoordinator.cancelGeneration
+   * (see its own doc comment for the exact ordering: ownership verification,
+   * fenced run transition, Book mirror update, outbox suppression, and
+   * conditional refund, all inside one transaction) and maps its typed
+   * CancelGenerationOutcome onto this endpoint's stable HTTP contract. Two
+   * follow-ups run only after that transaction has already committed, are
+   * both best-effort, and can never roll back or fail an already-applied
+   * cancellation:
+   *   - the legacy GenerationJob diagnostics mirror is marked cancelled only
+   *     now, never before (GenerationJob is not authoritative — see
+   *     markJob's own doc comment, reused here);
+   *   - GenerationQueueService.removeIfSafe best-effort removes a
+   *     still-waiting/delayed BullMQ job; an active one is deliberately left
+   *     alone (see that method's own doc comment for why the committed DB
+   *     fencing above, not queue removal, is the actual correctness
+   *     mechanism).
+   */
+  async cancelGeneration(userId: string, bookId: string): Promise<CancelGenerationResponse> {
+    const result = await this.generationRunCoordinator.cancelGeneration({ bookId, userId });
+
+    switch (result.kind) {
+      case 'not_found':
+        throw new NotFoundException('Book not found');
+      case 'already_cancelled':
+        throw alreadyCancelledException();
+      case 'not_in_progress':
+        throw notInProgressException();
+      case 'book_mirror_mismatch':
+        throw new GenerationRunMirrorInvariantError(result.runId, result.bookId);
+      case 'applied':
+        break;
+    }
+
+    const legacyJob = await this.generationJobService.findActive(bookId).catch(() => null);
+    if (legacyJob) {
+      await this.markJob(
+        this.generationJobService.markCancelled(legacyJob.id),
+        legacyJob.id,
+        bookId,
+        'cancelled',
+      );
+    }
+    await this.generationQueueService.removeIfSafe(result.runId);
+
+    return { book: toBookDto(result.book), creditsRefunded: result.creditsRefunded };
   }
 
   /**

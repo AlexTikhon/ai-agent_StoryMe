@@ -70,6 +70,17 @@ export function generationRefundIdempotencyKey(runId: string): string {
   return `generation:${runId}:refund`;
 }
 
+/**
+ * Phase G1: deterministic idempotency key for a user-initiated cancellation's
+ * compensating refund — distinct from generationRefundIdempotencyKey (the
+ * automatic-failure refund) so the two can never collide even in the
+ * (structurally prevented — a run can only ever reach one terminal status)
+ * case both were somehow attempted for the same run.
+ */
+export function generationCancellationRefundIdempotencyKey(runId: string): string {
+  return `generation:${runId}:cancel_refund`;
+}
+
 /** Input for a credit mutation made inside a caller's own Prisma transaction — see CreditsService.deductInTransaction/addInTransaction. Unlike the standalone deduct/add, idempotencyKey is required: internal generation-owned mutations always use a deterministic key, never an absent one. */
 export interface DeductCreditsInTransactionInput {
   userId: string;

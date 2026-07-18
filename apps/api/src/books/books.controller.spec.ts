@@ -1,7 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  HttpStatus,
+  NotFoundException,
+} from '@nestjs/common';
 import type { Response } from 'express';
-import type { BookDto, GenerateBookResponse, GenerationDiagnosticsDto } from '@book/types';
+import type {
+  BookDto,
+  CancelGenerationResponse,
+  GenerateBookResponse,
+  GenerationDiagnosticsDto,
+} from '@book/types';
 import type { User } from '@prisma/client';
 import { BooksController } from './books.controller';
 import type { BooksService } from './books.service';
@@ -23,6 +34,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     update: vi.fn(),
     startGeneration: vi.fn(),
     retryGeneration: vi.fn(),
+    cancelGeneration: vi.fn(),
     remove: vi.fn(),
     getPreviewPdfBuffer: vi.fn(),
     getGenerationDiagnostics: vi.fn(),
@@ -184,6 +196,55 @@ describe('BooksController.retryGeneration', () => {
     await expect(controller.retryGeneration(FAKE_USER, 'missing')).rejects.toThrow(
       NotFoundException,
     );
+  });
+});
+
+describe('BooksController.cancel', () => {
+  it('delegates to booksService.cancelGeneration with the current user and book id, and returns its response', async () => {
+    const booksService = createMockBooksService();
+    const response: CancelGenerationResponse = {
+      book: { ...BOOK_DTO, status: 'cancelled' } as BookDto,
+      creditsRefunded: 1,
+    };
+    booksService.cancelGeneration.mockResolvedValue(response);
+    const controller = new BooksController(booksService);
+
+    const result = await controller.cancel(FAKE_USER, 'b-1');
+
+    expect(booksService.cancelGeneration).toHaveBeenCalledWith('u-1', 'b-1');
+    expect(result).toBe(response);
+  });
+
+  it('propagates NotFoundException for a missing or unowned book', async () => {
+    const booksService = createMockBooksService();
+    booksService.cancelGeneration.mockRejectedValue(new NotFoundException('Book not found'));
+    const controller = new BooksController(booksService);
+
+    await expect(controller.cancel(FAKE_USER, 'missing')).rejects.toThrow(NotFoundException);
+  });
+
+  it('propagates a 409 BOOK_ALREADY_CANCELLED conflict without swallowing it', async () => {
+    const booksService = createMockBooksService();
+    const conflict = new HttpException(
+      { error: 'Book generation already cancelled', code: 'BOOK_ALREADY_CANCELLED' },
+      HttpStatus.CONFLICT,
+    );
+    booksService.cancelGeneration.mockRejectedValue(conflict);
+    const controller = new BooksController(booksService);
+
+    await expect(controller.cancel(FAKE_USER, 'b-1')).rejects.toThrow(conflict);
+  });
+
+  it('propagates a 409 BOOK_NOT_IN_PROGRESS conflict without swallowing it', async () => {
+    const booksService = createMockBooksService();
+    const conflict = new HttpException(
+      { error: 'Book is not currently generating', code: 'BOOK_NOT_IN_PROGRESS' },
+      HttpStatus.CONFLICT,
+    );
+    booksService.cancelGeneration.mockRejectedValue(conflict);
+    const controller = new BooksController(booksService);
+
+    await expect(controller.cancel(FAKE_USER, 'b-1')).rejects.toThrow(conflict);
   });
 });
 

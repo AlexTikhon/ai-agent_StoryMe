@@ -485,4 +485,195 @@ describe('GenerationRunCoordinator', () => {
       expect(creditsService.addInTransaction).not.toHaveBeenCalled();
     });
   });
+
+  describe('cancelGeneration (Phase G1)', () => {
+    function makeBook(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'b-1',
+        userId: 'u-1',
+        status: 'char_build',
+        activeRunId: 'run-1',
+        deletedAt: null,
+        ...overrides,
+      };
+    }
+
+    function makeRun(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'run-1',
+        bookId: 'b-1',
+        userId: 'u-1',
+        status: 'running',
+        fencingVersion: 2,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      prisma.book.findFirst.mockResolvedValue(makeBook());
+      prisma.generationRun.findFirst.mockResolvedValue(makeRun());
+      prisma.outboxEvent.updateMany.mockResolvedValue({ count: 1 });
+      prisma.book.findUniqueOrThrow.mockResolvedValue(
+        makeBook({ status: 'cancelled', activeRunId: null }),
+      );
+    });
+
+    it('applies cancellation for a running run, fences on id/bookId/userId/status/fencingVersion, bumps fencingVersion, and sets cancelledAt', async () => {
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result.kind).toBe('applied');
+      expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
+        where: { id: 'run-1', bookId: 'b-1', userId: 'u-1', status: 'running', fencingVersion: 2 },
+        data: {
+          status: 'cancelled',
+          cancelledAt: expect.any(Date),
+          fencingVersion: { increment: 1 },
+        },
+      });
+    });
+
+    it('applies cancellation for a queued (never-claimed) run', async () => {
+      prisma.generationRun.findFirst.mockResolvedValue(
+        makeRun({ status: 'queued', fencingVersion: 0 }),
+      );
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result.kind).toBe('applied');
+      expect(prisma.generationRun.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ status: 'queued', fencingVersion: 0 }),
+        }),
+      );
+    });
+
+    it('conditionally updates Book to cancelled, clears activeRunId/errorMessage/failedStep, and never touches published pointer fields', async () => {
+      await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(prisma.book.updateMany).toHaveBeenCalledWith({
+        where: { id: 'b-1', userId: 'u-1', activeRunId: 'run-1' },
+        data: { status: 'cancelled', activeRunId: null, errorMessage: null, failedStep: null },
+      });
+    });
+
+    it('suppresses a pending outbox event for this run, never touching a dispatched/other event', async () => {
+      await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
+        where: { aggregateType: 'generation_run', aggregateId: 'run-1', status: 'pending' },
+        data: { status: 'cancelled' },
+      });
+    });
+
+    it('refunds the exact amount/user/book from the matching charge, using reason refund_generation_cancelled and a distinct idempotency key from the failure-refund path', async () => {
+      prisma.creditTransaction.findUnique.mockResolvedValue(
+        makeChargeTransaction({ userId: 'u-9', bookId: 'b-9', amount: -1 }),
+      );
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toMatchObject({ kind: 'applied', creditsRefunded: 1, runId: 'run-1' });
+      expect(prisma.creditTransaction.findUnique).toHaveBeenCalledWith({
+        where: { idempotencyKey: 'generation:run-1:charge' },
+      });
+      expect(creditsService.addInTransaction).toHaveBeenCalledWith(prisma, {
+        userId: 'u-9',
+        amount: 1,
+        reason: 'refund_generation_cancelled',
+        bookId: 'b-9',
+        idempotencyKey: 'generation:run-1:cancel_refund',
+      });
+    });
+
+    it('returns creditsRefunded: 0 and never calls addInTransaction for a legacy/unbilled run', async () => {
+      prisma.creditTransaction.findUnique.mockResolvedValue(null);
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toMatchObject({ kind: 'applied', creditsRefunded: 0 });
+      expect(creditsService.addInTransaction).not.toHaveBeenCalled();
+    });
+
+    it('returns "not_found" when no Book matches (missing, not owned, or soft-deleted)', async () => {
+      prisma.book.findFirst.mockResolvedValue(null);
+
+      const result = await coordinator.cancelGeneration({ bookId: 'missing', userId: 'u-1' });
+
+      expect(result).toEqual({ kind: 'not_found' });
+      expect(prisma.generationRun.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('returns "already_cancelled" (fast path) when Book.activeRunId is null and Book.status is already cancelled', async () => {
+      prisma.book.findFirst.mockResolvedValue(makeBook({ activeRunId: null, status: 'cancelled' }));
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toEqual({ kind: 'already_cancelled' });
+      expect(prisma.generationRun.findFirst).not.toHaveBeenCalled();
+      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each(['created', 'complete', 'failed', 'partial'])(
+      'returns "not_in_progress" (fast path) when Book.activeRunId is null and Book.status is "%s"',
+      async (status) => {
+        prisma.book.findFirst.mockResolvedValue(makeBook({ activeRunId: null, status }));
+
+        const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+        expect(result).toEqual({ kind: 'not_in_progress' });
+      },
+    );
+
+    it('returns "not_in_progress" when the run referenced by activeRunId is already completed', async () => {
+      prisma.generationRun.findFirst.mockResolvedValue(makeRun({ status: 'completed' }));
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toEqual({ kind: 'not_in_progress' });
+      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns "already_cancelled" when the run referenced by activeRunId is already cancelled (Book row observed stale relative to the run row)', async () => {
+      prisma.generationRun.findFirst.mockResolvedValue(makeRun({ status: 'cancelled' }));
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toEqual({ kind: 'already_cancelled' });
+      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('re-reads and returns "already_cancelled" when the fenced update loses a race against a concurrent cancellation', async () => {
+      prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
+      prisma.generationRun.findUnique.mockResolvedValue(makeRun({ status: 'cancelled' }));
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toEqual({ kind: 'already_cancelled' });
+      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+      expect(creditsService.addInTransaction).not.toHaveBeenCalled();
+    });
+
+    it('re-reads and returns "not_in_progress" when the fenced update loses a race against a concurrent completion', async () => {
+      prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
+      prisma.generationRun.findUnique.mockResolvedValue(makeRun({ status: 'completed' }));
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toEqual({ kind: 'not_in_progress' });
+      expect(prisma.book.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns "book_mirror_mismatch", never refunds, and never suppresses the outbox when the run fence holds but Book.activeRunId no longer matches', async () => {
+      const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      prisma.book.updateMany.mockResolvedValue({ count: 0 });
+      prisma.creditTransaction.findUnique.mockResolvedValue(makeChargeTransaction());
+
+      const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+      expect(result).toEqual({ kind: 'book_mirror_mismatch', runId: 'run-1', bookId: 'b-1' });
+      expect(prisma.outboxEvent.updateMany).not.toHaveBeenCalled();
+      expect(creditsService.addInTransaction).not.toHaveBeenCalled();
+      errorSpy.mockRestore();
+    });
+  });
 });

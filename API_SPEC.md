@@ -462,6 +462,7 @@ All error codes are stable strings. The frontend maps these to localized user me
 | `BOOK_GENERATION_IN_PROGRESS` | 409  | Cannot modify book during active generation | Book is still generating                | Yes (wait) |
 | `BOOK_NOT_COMPLETE`           | 409  | Operation requires book status = complete   | Book is not finished yet                | Yes (wait) |
 | `BOOK_ALREADY_CANCELLED`      | 409  | Book generation already cancelled           | —                                       | No         |
+| `BOOK_NOT_IN_PROGRESS`        | 409  | No active run to cancel (Phase G1)          | Nothing is currently generating         | No         |
 | `BOOK_REGEN_LIMIT_REACHED`    | 409  | Page regeneration limit exceeded            | Max regenerations reached for this page | No         |
 | `BOOK_DRAFT_EXPIRED`          | 410  | Wizard draft has expired                    | Your draft expired, please start over   | No         |
 | `BOOK_DELETE_IN_PROGRESS`     | 409  | Book is being deleted                       | —                                       | Yes (wait) |
@@ -1555,37 +1556,72 @@ interface BookStatusResponseDto {
 
 ### POST /v1/books/{bookId}/cancel
 
-**Purpose:** Cancel an in-progress generation job.
+> **Corrected (Phase G1).** The rules below on this endpoint replace this
+> section's earlier draft, which predated any real implementation and
+> described a refund policy (before `image_gen` only, never during
+> `pdf_render`, always exactly one credit) this codebase does not follow.
+> Implemented at `POST /api/books/:id/cancel` — backend cancellation only, no
+> frontend Cancel button yet (Phase G2). Full mechanism writeup:
+> `apps/api/docs/local-generation-pipeline.md`, "Phase G1 — user-initiated
+> cancellation"; credit-ledger detail: `apps/api/docs/credits.md`, "Phase
+> G1: cancellation refunds."
 
-**Auth required:** Yes
+**Purpose:** Cancel an in-progress (`queued`/`running`) generation run.
+
+**Auth required:** Yes (`AuthModeGuard` + `RequireVerifiedEmailGuard`, same
+as `generate`/`retry-generation`/`regenerate`)
 
 **Request body:** Empty
 
 **Response `200`:**
 
 ```typescript
-interface BookCancelResponseDto {
-  bookId: string;
-  status: 'cancelled';
-  creditsRefunded: number; // 1 (always refunds)
+interface CancelGenerationResponse {
+  book: BookDto;
+  creditsRefunded: number;
 }
 ```
 
 **Status codes:**
 
-| Status | Condition                                                      |
-| ------ | -------------------------------------------------------------- |
-| 200    | Cancellation accepted                                          |
-| 404    | Book not found                                                 |
-| 409    | Book already cancelled (`BOOK_ALREADY_CANCELLED`)              |
-| 409    | Book already complete — cannot cancel (`BOOK_NOT_IN_PROGRESS`) |
+| Status | Condition                                                                                                                                                 |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 200    | Cancellation accepted                                                                                                                                     |
+| 404    | Book not found / not owned by caller / soft-deleted                                                                                                       |
+| 409    | Book already cancelled (`BOOK_ALREADY_CANCELLED`)                                                                                                         |
+| 409    | Book has no active run to cancel (`BOOK_NOT_IN_PROGRESS`) — covers `created`, `complete`, `failed`, `partial`, or a completion that won a concurrent race |
+
+**Refund policy (Phase G1 — replaces the earlier draft above):**
+
+- Every accepted cancellation of a **billed** run refunds its original
+  charge in full, regardless of which pipeline step it was on — there is no
+  "too late to refund" step.
+- A **legacy/unbilled** run (no matching charge, e.g. created before
+  generation credit charging existed) is still cancelled, but
+  `creditsRefunded` is `0` — never a fabricated `1`.
+- The refunded amount always equals the original charge's own amount, never
+  a hardcoded constant (currently always `1` in practice, since every run
+  costs `GENERATION_CREDIT_COST`, but the mechanism does not assume that).
 
 **Side effects:**
 
-- Signals BullMQ to cancel active jobs for this book
-- Credits refunded if cancelled before `image_gen` phase
-- No credits refunded if cancelled during `pdf_render` (delivery imminent)
-- Sends `generation.cancelled` SSE event
+- Fences out any worker currently executing the run — its next heartbeat (or
+  DB write) is rejected, and it can never publish a Book outcome for this
+  run once cancelled.
+- Suppresses a still-pending dispatch of this run so it can never be newly
+  enqueued to BullMQ after cancellation.
+- Best-effort removes a not-yet-picked-up BullMQ job; an already-active
+  (worker-locked) job is left alone — the committed DB cancellation, not
+  queue removal, is the real correctness mechanism. An in-flight external
+  provider request already started by the pipeline may still finish, but
+  its result can never be published.
+- **No SSE event is sent** — there is no `generation.cancelled` (or any
+  other) SSE/WebSocket surface implemented anywhere in this codebase yet;
+  see §14 for that subsystem's actual (unimplemented) status. The web app
+  polls `GET /:id` instead, same as every other status transition.
+- A cancelled book may start a fresh full regeneration via
+  `POST /:id/regenerate` (independently charged); `POST /:id/retry-generation`
+  remains specific to a `failed` book and does **not** accept a cancelled one.
 
 ---
 

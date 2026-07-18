@@ -4,6 +4,8 @@ import { PrismaService } from '../database/prisma.service';
 
 export const OUTBOX_STATUS_PENDING = 'pending';
 export const OUTBOX_STATUS_DISPATCHED = 'dispatched';
+/** Phase G1: terminal status for an outbox event suppressed by a cancellation before it was ever dispatched — never describes an event that was actually published to BullMQ (see GenerationRunCoordinator.cancelGeneration). */
+export const OUTBOX_STATUS_CANCELLED = 'cancelled';
 
 /**
  * Thin read/write wrapper around OutboxEvent — write-side creation happens

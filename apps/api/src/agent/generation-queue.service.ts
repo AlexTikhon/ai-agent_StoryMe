@@ -81,6 +81,43 @@ export class GenerationQueueService {
     return true;
   }
 
+  /**
+   * Phase G1: best-effort BullMQ cleanup for a run whose cancellation has
+   * ALREADY been committed to Postgres by GenerationRunCoordinator
+   * .cancelGeneration — this method is never the correctness mechanism for
+   * cancellation, only tidying. A `waiting`/`delayed`/`prioritized` job
+   * (never yet picked up by a worker) is safely removed outright. An
+   * `active` job is left alone — BullMQ has no safe way to yank a lock out
+   * from under a worker mid-processing, so pretending to force-remove it
+   * would either throw or silently no-op; the worker's own heartbeat/
+   * AbortSignal check (GenerationRunService.heartbeat fencing on the
+   * now-cancelled status) is what actually stops it, independent of Redis.
+   * A missing job (already completed/removed, or the outbox never actually
+   * dispatched it) and any removal failure are both logged and swallowed —
+   * neither can undo or fail the already-committed cancellation.
+   */
+  async removeIfSafe(runId: string): Promise<void> {
+    try {
+      const job = await this.queue.getJob(runId);
+      if (!job) {
+        this.logger.log(`No BullMQ job found for cancelled run ${runId} — nothing to remove.`);
+        return;
+      }
+      const state = await job.getState();
+      if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
+        await job.remove();
+        this.logger.log(`Removed BullMQ job for cancelled run ${runId} (state was "${state}").`);
+      } else {
+        this.logger.log(
+          `BullMQ job for cancelled run ${runId} is "${state}" — leaving it alone; the committed DB cancellation/fencing, not queue removal, is what stops it from publishing an outcome.`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Best-effort BullMQ cleanup failed for cancelled run ${runId}: ${message}`);
+    }
+  }
+
   /** Non-secret queue health for GET /:id/generation-diagnostics — see QueueDiagnostics. */
   async getQueueDiagnostics(): Promise<QueueDiagnostics> {
     const [counts, workers] = await Promise.all([

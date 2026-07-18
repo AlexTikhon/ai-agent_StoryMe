@@ -1824,6 +1824,225 @@ Phase D's own "Known limitations" below for the precise residual gap.
   every layer in one run. Adding one is straightforward but was not done in
   this pass — flagged here rather than silently left uncovered.
 
+## Phase G1 — user-initiated cancellation
+
+Adds `POST /api/books/:id/cancel` — the first way a user can voluntarily stop
+an in-progress generation before it finishes. **Backend only: this phase
+implements the authoritative cancellation mechanism and API contract, but
+there is no Cancel button in the web app yet — that is Phase G2.** Partial
+completion (`BookStatus.Partial`) remains explicitly unimplemented; a
+cancelled run's outcome is simply never published, not partially published.
+
+### Business policy
+
+- A cancellation accepted before completion terminates the run without
+  publishing its outcome — no `Book` fields the pipeline would have written
+  on success/failure (`previewPdfUrl`, `storyPlan`, etc.) are touched.
+- Every accepted cancellation of a **billed** run refunds its original charge
+  exactly once, regardless of which pipeline step the run was on when
+  cancelled — there is no "too late to refund" step, unlike the stale
+  `API_SPEC.md` guidance this phase corrects (see below).
+- If successful completion wins the race first, cancellation is rejected
+  (`409 BOOK_NOT_IN_PROGRESS`) and no cancellation refund occurs.
+- A legacy/unbilled run (created before Phase E2 credit charging existed, or
+  otherwise missing its charge `CreditTransaction`) may still be cancelled,
+  but receives `creditsRefunded: 0` — the same eligibility rule
+  `GenerationRunCoordinator`'s failure-refund path already uses (see "Refund
+  atomicity" in `apps/api/docs/credits.md`).
+- A second cancellation of the same book returns a stable
+  `409 { code: 'BOOK_ALREADY_CANCELLED' }`.
+
+**This intentionally replaces stale/contradictory guidance in the old
+`API_SPEC.md`** — that document (predating any real implementation) claimed
+credits refund only before `image_gen`, never during `pdf_render`, and always
+refund exactly one credit. None of that is true here: eligibility is derived
+from whether a charge `CreditTransaction` exists (see below), independent of
+pipeline step, and the refunded amount is always the charge's own amount, not
+a hardcoded `1` (even though `GENERATION_CREDIT_COST` is currently always
+`1` in practice).
+
+### `GenerationRunCoordinator.cancelGeneration` — the authoritative transaction
+
+Unlike `completeRun`/`failInvalidSnapshot`/`failAbandoned` (Phase A.1 — all
+fence a **pre-resolved** claim a background caller already trusts),
+`cancelGeneration` is HTTP-request-driven and also owns resolving **and
+verifying** that identity itself, inside one Prisma transaction
+(`apps/api/src/agent/generation-run-coordinator.service.ts`):
+
+1. Loads `Book` scoped to `(id, userId, deletedAt: null)` — a missing,
+   not-owned, or soft-deleted book is indistinguishable, both `'not_found'`.
+2. If `Book.activeRunId` is `null`, there is no active run to cancel:
+   `'already_cancelled'` if `Book.status` already says so, otherwise
+   `'not_in_progress'` (covers `created`, `complete`, `failed`, `partial`).
+3. Otherwise loads that exact `GenerationRun` — scoped to
+   `(id, bookId, userId)`, the same three-way ownership check the fenced
+   write below re-verifies — and reads its current `status`/`fencingVersion`.
+4. Conditionally transitions it to `cancelled`, fenced on run id, book id,
+   user id, its exact observed status (`queued` or `running` only), and its
+   exact observed `fencingVersion` — while also **incrementing**
+   `fencingVersion` and setting `cancelledAt`. The `fencingVersion` bump
+   means any already-running worker's next `GenerationRunService.heartbeat`
+   call (fenced on `deliveryToken` + `fencingVersion`) loses ownership
+   immediately and aborts via `AgentService.assertNotSuperseded` at its next
+   checkpoint — the same mechanism a superseding claim already uses (see
+   "Correct BullMQ redelivery ownership" above); cancellation needed no new
+   worker-side code.
+5. If that fenced write matched zero rows, something else won the race — a
+   concurrent cancellation, or a concurrent completion — so the run is
+   re-read once more to report the accurate outcome (`'already_cancelled'`
+   if it's now `cancelled`, `'not_in_progress'` if a completion won).
+6. Only if the run transition held: conditionally updates `Book`
+   (`activeRunId` still pointing at this run) — `status: cancelled`,
+   `activeRunId: null`, `errorMessage: null`, `failedStep: null` —
+   deliberately **never** touching `previewPdfUrl`/`pdfUrl`/`bookPreview`/
+   etc., so a previously published pointer from an earlier successful run
+   survives a later regeneration's cancellation untouched. Zero rows matched
+   here is a `'book_mirror_mismatch'` (see `CoordinatorOutcome`'s own doc
+   comment) — the entire transaction rolls back, exactly like every other
+   terminal transition in this class.
+7. Suppresses a still-`pending` `OutboxEvent` for this run
+   (`status: 'cancelled'`, a new terminal outbox status alongside the
+   existing `'pending'`/`'dispatched'`) so a dispatcher sweep can never newly
+   enqueue it. See "Outbox race safety" below.
+8. Looks up the original charge (`generationChargeIdempotencyKey(runId)`)
+   and, only if one exists, refunds its exact amount/user/book via
+   `CreditsService.addInTransaction` with reason `refund_generation_cancelled`
+   (a new `CreditReason` — deliberately never `refund_generation_failure`,
+   the reason the automatic failure-refund path uses) and a distinct
+   deterministic key, `generationCancellationRefundIdempotencyKey(runId)`
+   (`generation:${runId}:cancel_refund`) — never colliding with the
+   failure-refund key (`generation:${runId}:refund`), even though only one
+   of the two paths can ever apply to a given run in practice (a run can only
+   reach one terminal status).
+
+Any failure at any step — including the refund insert hitting its own
+idempotency-key conflict — throws out of the transaction callback and rolls
+back every write made so far in that same call.
+
+### Race semantics
+
+Cancellation and completion compete purely through the same DB-level
+fencing every other terminal transition already relies on — no new locking
+primitive was added:
+
+- **Cancellation wins:** the old worker's later `completeRun` call fences on
+  the `fencingVersion` it observed at claim time, which cancellation has
+  since bumped — its `GenerationRun` `updateMany` matches zero rows, so it
+  returns `'stale_fence'` and writes no `Book` outcome, publication pointer,
+  `AgentLog` row, or second ledger mutation. No cancellation-specific code
+  was needed for this — it falls out of the existing fencing mechanism.
+- **Completion wins:** cancellation's own `GenerationRun` fence (step 4
+  above) finds the run already `completed`/`failed`, so it returns
+  `'not_in_progress'` and never reaches the refund lookup.
+- **Two concurrent cancellations:** Postgres's row lock on the
+  `GenerationRun` row serializes the two `updateMany` calls — exactly one
+  matches (`'applied'`), the other's WHERE clause re-evaluates against the
+  winner's already-committed `cancelled` status and matches zero rows
+  (`'already_cancelled'` after the re-read in step 5). Exactly one refund is
+  ever inserted. Proven against real Postgres via two calls fired together
+  with `Promise.all` (genuinely overlapping transactions, not sequenced by
+  the test) in `test/integration/generation-cancellation.integration.spec.ts`.
+- **`book_mirror_mismatch`** remains an invariant failure, never a successful
+  cancellation — the whole transaction rolls back, same as every other
+  coordinator method.
+
+### Outbox race safety
+
+`OutboxDispatcherService`'s sweep and a cancellation can race in either
+order, and both interleavings stay safe:
+
+- **Cancel-before-dispatch:** the event is already `'cancelled'` by the time
+  the next sweep runs `OutboxService.findPending` (which only ever selects
+  `status: 'pending'`), so it is never enqueued at all.
+- **Dispatch-before-cancel:** a sweep that already read the event as
+  `'pending'` and called `GenerationQueueService.enqueue` (creating the
+  BullMQ job) before the cancellation transaction commits leaves the BullMQ
+  job in existence — but that job's eventual `GenerationRunService.claim`
+  call now matches zero rows (the run is no longer `queued`/`running`) and
+  returns `null`, which `GenerationQueueProcessor.process` already treats as
+  a normal no-op. Cancellation's own outbox suppression `updateMany` (scoped
+  to `status: 'pending'`) simply matches zero rows in this interleaving and
+  never falsely relabels an already-`dispatched` event.
+
+Both interleavings are exercised directly against real Postgres in
+`test/integration/generation-cancellation.integration.spec.ts`, "Outbox
+race."
+
+### Queue cleanup: best-effort, never the correctness mechanism
+
+`GenerationQueueService.removeIfSafe(runId)` runs only **after** the DB
+transaction above has already committed (`BooksService.cancelGeneration`) —
+a `waiting`/`delayed`/`prioritized` BullMQ job (never yet picked up by a
+worker) is removed outright; an `active` job (currently locked by a worker)
+is deliberately left alone, since BullMQ has no safe way to yank a lock out
+from under a worker mid-processing, and forcing it would either throw or
+silently no-op. Any removal failure (including "job not found," the expected
+case once a job has already completed or was already removed) is logged and
+swallowed — it can never undo or fail the already-committed cancellation.
+**The committed DB terminal status and fencing are the actual correctness
+mechanism; Redis/BullMQ removal is pure tidying.** An in-flight external
+provider request (an OpenAI story/image call `AgentService` already
+started) may still finish and return bytes after cancellation — but that
+result can never be published, since every write path back to `Book` is
+fenced on the same `fencingVersion` cancellation already bumped.
+
+### Legacy `GenerationJob` diagnostics mirror
+
+`GenerationJobService.markCancelled(jobId)` is called by
+`BooksService.cancelGeneration` only **after** the authoritative transaction
+above has committed — `GenerationJob` is not authoritative for cancellation
+any more than it is for any other terminal transition (see "Generation jobs
+(Phase 3I)" above). A failure to update this legacy row is logged and
+swallowed (the same `markJob` helper `runGenerationPipeline` already uses);
+it can never roll back or fail an already-applied cancellation.
+
+### API contract
+
+`POST /api/books/:id/cancel` (`BooksController.cancel`) — normal
+`AuthModeGuard` + `RequireVerifiedEmailGuard`, an empty body (nothing is read
+from it — ownership comes exclusively from `@CurrentUser()`), UUID-validated
+`:id`, and a dedicated Redis-backed per-user rate limit
+(`CANCEL_RATE_LIMIT_WINDOW_MS`/`_MAX_ATTEMPTS`, looser than
+`GENERATION_RATE_LIMIT_*` since cancelling is free and a legitimate client
+may retry after losing a race). Response:
+
+```ts
+interface CancelGenerationResponse {
+  book: BookDto;
+  creditsRefunded: number;
+}
+```
+
+Stable errors — never a run id, fencing version, balance, queue detail, or
+raw database error:
+
+| Status | Code                     | Condition                                                                                                       |
+| ------ | ------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| 404    | —                        | book missing / not owned / soft-deleted                                                                         |
+| 409    | `BOOK_ALREADY_CANCELLED` | this book's generation was already cancelled                                                                    |
+| 409    | `BOOK_NOT_IN_PROGRESS`   | no active (queued/running) run — `created`/`complete`/`failed`/`partial`, or a completion won a concurrent race |
+
+### Follow-up behavior
+
+- **Regeneration is allowed.** `BooksService.regenerateBook` now also
+  accepts `status === cancelled` (alongside `failed`/`complete`) — the
+  documented way to start a fresh attempt after a cancellation. That new run
+  is charged independently via the usual `GENERATION_CREDIT_COST` debit,
+  regardless of whether the cancelled run it replaces was refunded.
+- **Retry is not.** `BooksService.retryGeneration` deliberately still only
+  accepts `status === failed` — retry resumes a _failed_ run's exact input;
+  a cancellation was voluntary, not a failure to resume, so a cancelled book
+  gets the stable `409` "Only failed books can be retried" it already got
+  for any other non-`failed` status.
+
+### What this phase does not do
+
+No SSE/WebSocket cancellation event, no subscription to watch cancellation
+happen live, no provider-level request cancellation (an in-flight OpenAI
+call is not aborted — see "Queue cleanup" above), no frontend Cancel button
+(Phase G2), and no partial-completion support (`BookStatus.Partial` remains
+entirely unreachable).
+
 ## Phase B — claim-scoped artifact storage (Slices B1–B2)
 
 Closes the "Run-scoped artifact storage" gap flagged above, one slice at a

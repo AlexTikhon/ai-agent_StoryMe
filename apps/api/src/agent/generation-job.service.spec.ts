@@ -77,6 +77,19 @@ describe('GenerationJobService', () => {
     });
   });
 
+  describe('markCancelled', () => {
+    it('sets status cancelled and stamps completedAt as the terminal timestamp', async () => {
+      prisma.generationJob.update.mockResolvedValue({ id: 'job-1' });
+
+      await service.markCancelled('job-1');
+
+      expect(prisma.generationJob.update).toHaveBeenCalledWith({
+        where: { id: 'job-1' },
+        data: { status: 'cancelled', completedAt: expect.any(Date) },
+      });
+    });
+  });
+
   describe('findStaleActiveJobs', () => {
     it('queries for queued or running jobs updated before the cutoff, oldest first', async () => {
       prisma.generationJob.findMany.mockResolvedValue([]);

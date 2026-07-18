@@ -11,6 +11,7 @@ const REASON_LABELS: Record<CreditReason, string> = {
   [CreditReason.BookCreation]: 'Book creation',
   [CreditReason.RegenPage]: 'Page regeneration',
   [CreditReason.RefundGenerationFailure]: 'Refund — generation failed',
+  [CreditReason.RefundGenerationCancelled]: 'Refund — generation cancelled',
   [CreditReason.Purchase]: 'Credit purchase',
   [CreditReason.SubscriptionGrant]: 'Subscription grant',
   [CreditReason.PromotionalGrant]: 'Promotional grant',

@@ -113,6 +113,64 @@ describe('GenerationQueueService', () => {
     });
   });
 
+  describe('removeIfSafe (Phase G1)', () => {
+    function makeRemovableJob(state: string, remove = vi.fn().mockResolvedValue(undefined)) {
+      return { getState: vi.fn().mockResolvedValue(state), remove };
+    }
+
+    it('is a no-op when no BullMQ job exists for the run', async () => {
+      const queue = createMockQueue();
+      queue.getJob.mockResolvedValue(undefined);
+      const service = new GenerationQueueService(queue as never);
+
+      await service.removeIfSafe('run-1');
+
+      expect(queue.getJob).toHaveBeenCalledWith('run-1');
+    });
+
+    it.each(['waiting', 'delayed', 'prioritized'])(
+      'removes the job outright when its state is "%s"',
+      async (state) => {
+        const remove = vi.fn().mockResolvedValue(undefined);
+        const queue = createMockQueue();
+        queue.getJob.mockResolvedValue(makeRemovableJob(state, remove) as never);
+        const service = new GenerationQueueService(queue as never);
+
+        await service.removeIfSafe('run-1');
+
+        expect(remove).toHaveBeenCalled();
+      },
+    );
+
+    it('leaves an "active" (currently locked by a worker) job alone — never calls job.remove()', async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const queue = createMockQueue();
+      queue.getJob.mockResolvedValue(makeRemovableJob('active', remove) as never);
+      const service = new GenerationQueueService(queue as never);
+
+      await service.removeIfSafe('run-1');
+
+      expect(remove).not.toHaveBeenCalled();
+    });
+
+    it('swallows a job.remove() failure and never throws', async () => {
+      const remove = vi.fn().mockRejectedValue(new Error('locked'));
+      const queue = createMockQueue();
+      queue.getJob.mockResolvedValue(makeRemovableJob('waiting', remove) as never);
+      const service = new GenerationQueueService(queue as never);
+
+      await expect(service.removeIfSafe('run-1')).resolves.toBeUndefined();
+    });
+
+    it('swallows a queue.getJob() failure and never throws', async () => {
+      const queue = createMockQueue();
+      queue.getJob.mockRejectedValue(new Error('Redis unreachable'));
+      const service = new GenerationQueueService(queue as never);
+
+      await expect(service.removeIfSafe('run-1')).resolves.toBeUndefined();
+    });
+  });
+
   describe('getQueueDiagnostics', () => {
     it('returns the queue name, job counts, and connected worker count', async () => {
       const queue = createMockQueue();
