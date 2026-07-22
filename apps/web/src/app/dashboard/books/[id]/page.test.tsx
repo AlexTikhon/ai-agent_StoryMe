@@ -1523,20 +1523,48 @@ describe('BookDetailPage', () => {
       .mockResolvedValueOnce(mockOk(completeBook))
       .mockResolvedValueOnce(mockPdfBlob());
 
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const replaceMock = vi.fn();
+    const popup = {
+      opener: window,
+      location: { replace: replaceMock },
+      close: vi.fn(),
+    } as unknown as Window;
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup);
 
     render(<BookDetailPage />);
     const openLink = await screen.findByRole('link', { name: /open pdf/i });
     await user.click(openLink);
 
-    await waitFor(() => {
-      expect(openSpy).toHaveBeenCalledWith('blob:mock-url', '_blank', 'noopener,noreferrer');
-    });
+    expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank');
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('blob:mock-url'));
 
     const calls = fetchMock.fetchFn.mock.calls as [string, RequestInit][];
     const [pdfUrl] = calls[calls.length - 1];
     expect(pdfUrl).toBe('http://localhost:4000/api/books/book-1/pdf/preview');
     expect(global.URL.createObjectURL).toHaveBeenCalled();
+    expect(popup.opener).toBeNull();
+
+    openSpy.mockRestore();
+  });
+
+  it('shows a useful error and does not fetch the PDF when the browser blocks the new tab', async () => {
+    const user = userEvent.setup();
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+
+    render(<BookDetailPage />);
+    await user.click(await screen.findByRole('link', { name: /open pdf/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/browser blocked the pdf tab/i);
+    expect(
+      fetchMock.fetchFn.mock.calls.filter(([url]) => String(url).includes('/pdf/preview')),
+    ).toHaveLength(0);
 
     openSpy.mockRestore();
   });
