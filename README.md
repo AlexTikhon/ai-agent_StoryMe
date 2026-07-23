@@ -4,6 +4,17 @@ A personalized children's-storybook generator: fill in a child's name, age,
 and a theme, and the pipeline produces a short illustrated story and a
 downloadable PDF.
 
+**Start with [docs/CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md).** It is the
+source of truth for implemented behavior, real routes, providers, storage,
+workflow, limitations, local setup, and tests.
+
+The root [PRD](PRD.md), [API specification](API_SPEC.md),
+[architecture](ARCHITECTURE.md), [backend design](BACKEND_DESIGN.md),
+[frontend design](FRONTEND_DESIGN.md), [UX specification](UX_SPEC.md),
+[design system](DESIGN_SYSTEM.md), and [roadmap](ROADMAP.md) are historical
+or future design references. They preserve useful intent and superseded
+decisions but are not implementation contracts.
+
 This is a pnpm/Turborepo monorepo:
 
 - `apps/api` (`@book/api`) — NestJS API, Prisma/Postgres
@@ -26,6 +37,14 @@ generate a book → download the PDF).
 - Render and preview/download the finished book as a PDF.
 - Retry generation after a failure.
 
+For the complete implemented/unimplemented boundary, use
+[CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md#implemented-and-unimplemented).
+Privacy and local artifacts are covered by
+[LOCAL_DATA_AND_PRIVACY.md](docs/LOCAL_DATA_AND_PRIVACY.md). The code-derived
+audit and recommended future phases are
+[CODEBASE_AUDIT.md](docs/CODEBASE_AUDIT.md) and
+[SMALL_PROD_PLAN.md](docs/SMALL_PROD_PLAN.md).
+
 ## Authentication
 
 Real email/password auth (JWT access token + rotating `HttpOnly` refresh
@@ -39,7 +58,10 @@ credential check. See `apps/api/src/auth/dev-auth.guard.ts` and
 `apps/api/src/auth/auth-mode.guard.ts`. **The two `AUTH_MODE` values must
 match between API and web** or every request 401s.
 
-## What it does not do yet
+## Historical completion notes
+
+The notes below preserve the sequence in which features landed. They are not
+the current product boundary; use `docs/CURRENT_PRODUCT.md` for that.
 
 - **Generation credit enforcement is implemented:** every
   `POST /books/:id/generate`, `retry-generation`, or `regenerate` call
@@ -90,7 +112,7 @@ Story and image generation each have a provider switch, both defaulting to a
 deterministic **mock** provider (no network calls, safe for tests/CI):
 
 - `STORY_GENERATION_PROVIDER` — `mock` (default) | `openai`
-- `IMAGE_GENERATION_PROVIDER_TOKEN` — `mock` (default) | `openai`
+- `IMAGE_GENERATION_PROVIDER` — `mock` (default) | `openai`
 
 Setting either to `openai` requires `OPENAI_API_KEY` and calls the real
 OpenAI API (real image generation costs money per call — see the

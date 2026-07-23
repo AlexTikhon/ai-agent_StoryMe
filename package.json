@@ -8,11 +8,14 @@
     "pnpm": ">=9.0.0"
   },
   "scripts": {
+    "archive:clean": "node scripts/archive-clean.mjs",
+    "archive:clean:test": "node --test scripts/archive-clean.test.mjs",
+    "privacy:cleanup-local": "node scripts/cleanup-local-data.mjs",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "turbo run test && pnpm archive:clean:test",
     "migrate:deploy": "pnpm --filter @book/api prisma:migrate:deploy",
     "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,md}\" --ignore-path .gitignore",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,md}\" --ignore-path .gitignore"

@@ -35,7 +35,7 @@ cp .env.example apps/api/.env
 
 The defaults in `.env.example` already point at the Docker Postgres instance
 and use mock story/image generation — no edits needed for a local demo. Leave
-`STORY_GENERATION_PROVIDER` and `IMAGE_GENERATION_PROVIDER_TOKEN` unset (or
+`STORY_GENERATION_PROVIDER` and `IMAGE_GENERATION_PROVIDER` unset (or
 `"mock"`) unless you intend to spend real OpenAI credits (see
 [Troubleshooting](#troubleshooting)).
 
@@ -174,7 +174,7 @@ after a book completed, regenerate the book.
 
 **OpenAI key missing / want to use mock provider mode**
 Mock mode is the default and needs no key — leave `STORY_GENERATION_PROVIDER`
-and `IMAGE_GENERATION_PROVIDER_TOKEN` unset in `apps/api/.env`. To use real
+and `IMAGE_GENERATION_PROVIDER` unset in `apps/api/.env`. To use real
 OpenAI generation, set both to `"openai"` and provide a real
 `OPENAI_API_KEY`; real image generation costs money per call (see
 `REAL_GENERATION_MAX_PAGES` guardrail in `.env.example`).

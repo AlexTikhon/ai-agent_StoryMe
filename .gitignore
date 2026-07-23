@@ -54,6 +54,12 @@ desktop.ini
 
 # Docker volumes (local dev data)
 .docker-data/
+*.db
+*.db3
+*.sqlite
+*.sqlite3
+*.dump
+*.backup
 
 # pnpm
 .pnpm-store/
@@ -66,3 +72,6 @@ minio-data/
 
 # Local PDF render output
 tmp/
+
+# Clean review archives are local deliverables, not repository source
+storyme-clean-*.tar.gz
