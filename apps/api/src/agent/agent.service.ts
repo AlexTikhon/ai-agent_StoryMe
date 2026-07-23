@@ -1,9 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
-import { renderStorybookPdf, type ImageBufferResolver } from '../pdf/pdf-renderer';
 import { PDF_STORAGE_TOKEN, publishedPreviewPdfExists, type PdfStorage } from '../pdf/pdf-storage';
 import {
-  buildImageBufferResolver,
   claimCharacterSheetAssetKey,
   claimImageAssetKey,
   IMAGE_ASSET_STORAGE_TOKEN,
@@ -21,8 +19,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { CHILD_PHOTO_INTEGRITY_MISMATCH } from '../books/child-photo.constants';
 import type {
-  BookLayout,
-  BookLayoutEntry,
   BookPreview,
   CharacterCard,
   CharacterProfile,
@@ -56,228 +52,8 @@ import {
   type GenerationArtifactNamespace,
 } from './generation-artifact-namespace';
 import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generation-claim-artifacts';
-
-// ── Layout engine constants ────────────────────────────────────────────────────
-
-const LAYOUT_CANVAS = { width: 2400, height: 2400, unit: 'px' as const };
-const LAYOUT_SAFE_AREA = { x: 180, y: 180, width: 2040, height: 2040 };
-const LAYOUT_BLEED = 90;
-const LAYOUT_DISPLAY_FONT = 'Fraunces';
-const LAYOUT_BODY_FONT = 'Plus Jakarta Sans';
-
-/**
- * Every story page uses this single stable template: image on top, story
- * text below, consistent margins/font sizes. Previously pages cycled through
- * three templates (including two narrow side-by-side columns), which meant
- * any page whose image didn't resolve at render time was still squeezed into
- * a narrow text column. One template for every page removes that failure
- * mode entirely.
- */
-const PAGE_IMAGE_BOX = { x: 180, y: 180, width: 2040, height: 1210 };
-const PAGE_TEXT_BOX = { x: 180, y: 1420, width: 2040, height: 800 };
-
-function buildBookLayout(
-  bookId: string,
-  bookPreview: BookPreview,
-  imageResult: ImageGenerationResult,
-): BookLayout {
-  const entries: BookLayoutEntry[] = [];
-
-  // Cover — full-bleed image with title overlay
-  const coverImage = imageResult.images.find((img) => img.kind === 'cover');
-  entries.push({
-    id: `${bookId}-layout-cover`,
-    kind: 'cover',
-    template: 'cover_full_bleed',
-    trimSize: 'square_8x8',
-    canvas: LAYOUT_CANVAS,
-    safeArea: LAYOUT_SAFE_AREA,
-    bleed: LAYOUT_BLEED,
-    ...(coverImage
-      ? {
-          imageBlock: {
-            box: { x: 0, y: 0, width: 2400, height: 2400 },
-            imageUrl: coverImage.imageUrl,
-            altText: coverImage.altText,
-            objectFit: 'cover' as const,
-          },
-        }
-      : {}),
-    textBlock: {
-      box: { x: 180, y: 1620, width: 2040, height: 600 },
-      text: bookPreview.cover.title,
-      fontFamily: LAYOUT_DISPLAY_FONT,
-      fontSize: 32,
-      lineHeight: 1.2,
-      align: 'center',
-      verticalAlign: 'bottom',
-      color: '#FFFFFF',
-    },
-    notes: ['Full-bleed cover image; title overlaid at bottom within safe area'],
-  });
-
-  // Interior pages — all use the single stable image_top_text_bottom template
-  for (const page of bookPreview.pages) {
-    const pageImage = imageResult.images.find(
-      (img) => img.kind === 'page' && img.pageNumber === page.pageNumber,
-    );
-
-    if (!pageImage) {
-      // No image available for this page (e.g. a gap in image generation) —
-      // use the dedicated text-only template so the full safe area is used
-      // for text instead of leaving an empty gap where an image block would
-      // have been.
-      entries.push({
-        id: `${bookId}-layout-page-${page.pageNumber}`,
-        kind: 'page',
-        pageNumber: page.pageNumber,
-        template: 'text_only',
-        trimSize: 'square_8x8',
-        canvas: LAYOUT_CANVAS,
-        safeArea: LAYOUT_SAFE_AREA,
-        bleed: LAYOUT_BLEED,
-        textBlock: {
-          box: { x: 180, y: 180, width: 2040, height: 2040 },
-          text: page.text,
-          fontFamily: LAYOUT_BODY_FONT,
-          fontSize: 20,
-          lineHeight: 1.6,
-          align: 'left',
-          verticalAlign: 'top',
-          color: '#1C1917',
-        },
-        notes: ['Template: text_only (no image available for this page)'],
-      });
-      continue;
-    }
-
-    entries.push({
-      id: `${bookId}-layout-page-${page.pageNumber}`,
-      kind: 'page',
-      pageNumber: page.pageNumber,
-      template: 'image_top_text_bottom',
-      trimSize: 'square_8x8',
-      canvas: LAYOUT_CANVAS,
-      safeArea: LAYOUT_SAFE_AREA,
-      bleed: LAYOUT_BLEED,
-      ...(pageImage
-        ? {
-            imageBlock: {
-              box: PAGE_IMAGE_BOX,
-              imageUrl: pageImage.imageUrl,
-              altText: pageImage.altText,
-              objectFit: 'cover' as const,
-            },
-          }
-        : {}),
-      textBlock: {
-        box: PAGE_TEXT_BOX,
-        text: page.text,
-        fontFamily: LAYOUT_BODY_FONT,
-        fontSize: 18,
-        lineHeight: 1.5,
-        align: 'left',
-        verticalAlign: 'top',
-        color: '#1C1917',
-      },
-      notes: ['Template: image_top_text_bottom'],
-    });
-  }
-
-  // Back cover — decorative image with summary text overlay
-  const backImage = imageResult.images.find((img) => img.kind === 'back_cover');
-  entries.push({
-    id: `${bookId}-layout-back-cover`,
-    kind: 'back_cover',
-    template: 'back_cover_summary',
-    trimSize: 'square_8x8',
-    canvas: LAYOUT_CANVAS,
-    safeArea: LAYOUT_SAFE_AREA,
-    bleed: LAYOUT_BLEED,
-    ...(backImage
-      ? {
-          imageBlock: {
-            box: { x: 0, y: 0, width: 2400, height: 2400 },
-            imageUrl: backImage.imageUrl,
-            altText: backImage.altText,
-            objectFit: 'cover' as const,
-          },
-        }
-      : {}),
-    textBlock: {
-      box: { x: 300, y: 600, width: 1800, height: 1200 },
-      text: `${bookPreview.backCover.message}\n\n${bookPreview.backCover.educationalSummary}`,
-      fontFamily: LAYOUT_BODY_FONT,
-      fontSize: 16,
-      lineHeight: 1.6,
-      align: 'center',
-      verticalAlign: 'middle',
-      color: '#FFFFFF',
-    },
-    notes: ['Back cover uses full-bleed image; summary text overlaid at center'],
-  });
-
-  return {
-    status: 'complete',
-    trimSize: 'square_8x8',
-    entries,
-    metadata: {
-      title: bookPreview.title,
-      childName: bookPreview.cover.childName,
-      totalPages: bookPreview.pages.length,
-      generatedAt: '1970-01-01T00:00:00.000Z',
-    },
-  };
-}
-
-/** Human-readable label for a layout entry, used in logs and error messages. */
-function describeEntry(entry: BookLayoutEntry): string {
-  return entry.kind === 'page' && entry.pageNumber != null
-    ? `page ${entry.pageNumber}`
-    : entry.kind;
-}
-
-/**
- * Guards against ever rendering a placeholder in place of a real illustration.
- *
- * Every layout entry that was planned to have an image (entry.imageBlock is
- * set) must have real, resolvable bytes in ImageAssetStorage before we hand
- * the layout to the PDF renderer. If any are missing because the provider or
- * ImageAssetStorage failed, this throws a single clear error naming every
- * affected page instead of silently falling through to the renderer's
- * placeholder-rectangle fallback.
- */
-function assertAllImagesResolved(
-  logger: Logger,
-  bookId: string,
-  layout: BookLayout,
-  resolveImageBuffer: ImageBufferResolver,
-): void {
-  const missing: string[] = [];
-
-  for (const entry of layout.entries) {
-    if (!entry.imageBlock) continue;
-    const label = describeEntry(entry);
-    const buffer = resolveImageBuffer(entry.imageBlock, entry);
-    if (!buffer) {
-      logger.error(
-        `Missing generated illustration for ${label} (entry ${entry.id}, book ${bookId}) — no bytes found in image storage.`,
-      );
-      missing.push(label);
-    } else {
-      logger.log(
-        `Resolved illustration for ${label} (entry ${entry.id}, book ${bookId}): ${entry.imageBlock.imageUrl}, ${buffer.length} bytes.`,
-      );
-    }
-  }
-
-  if (missing.length > 0) {
-    throw new Error(
-      `Cannot render PDF for book ${bookId}: missing generated illustration(s) for ${missing.join(', ')}. ` +
-        'Check the image_gen step logs above for provider/storage errors.',
-    );
-  }
-}
+import { bookLayoutStage } from './book-layout.stage';
+import { pdfPublicationStage } from './pdf-publication.stage';
 
 /** Stable diagnostics label for one planned image entry: 'cover' | 'page_<n>' | 'back_cover'. */
 function imageAssetLabel(entry: GeneratedImageEntry): string {
@@ -544,7 +320,7 @@ export class AgentService {
    * keep going. The caller surfaces generatedCount/failedCount/lastError via
    * ImageGenerationResult.generatedImageCount/failedImageCount/lastImageError
    * for diagnostics — but any entry left without saved bytes here causes
-   * assertAllImagesResolved to throw before the PDF is rendered (see
+   * PdfPublicationStage to reject before rendering (see
    * startBookGeneration's Phase 2), failing the book with a clear error
    * instead of silently rendering a placeholder for it.
    *
@@ -1151,7 +927,11 @@ export class AgentService {
 
     const imageDurationMs = Date.now() - imageStartedAt;
     const layoutStartedAt = Date.now();
-    const bookLayout = buildBookLayout(book.id, bookPreview, imageGenerationResult);
+    const bookLayout = bookLayoutStage.execute({
+      bookId: book.id,
+      bookPreview,
+      imageGenerationResult,
+    });
     const layoutDurationMs = Date.now() - layoutStartedAt;
 
     // Phase 1: persist all layout data and advance status to 'layout'
@@ -1179,13 +959,13 @@ export class AgentService {
         lastGenerationFencingVersion: ctx.fencingVersion,
         ...characterProfileUpdateData,
       },
-      AgentStep.layout,
+      bookLayoutStage.step,
     );
 
     // Phase 2: render PDF (pdf_render step) — checked again here for the same
     // reason as before image generation: a superseded attempt must not keep
     // doing storage/render work once it's been signaled.
-    this.assertNotSuperseded(ctx, AgentStep.pdf_render);
+    this.assertNotSuperseded(ctx, pdfPublicationStage.step);
 
     let previewPdfUrl: string | null = null;
     let pdfRenderLogStatus: AgentLogStatus = AgentLogStatus.success;
@@ -1193,25 +973,15 @@ export class AgentService {
     const pdfStartedAt = Date.now();
 
     try {
-      const resolveImageBuffer = await buildImageBufferResolver(
-        this.imageAssetStorage,
-        book.id,
-        bookLayout.entries,
-        currentNamespace,
-      );
-      assertAllImagesResolved(this.logger, book.id, bookLayout, resolveImageBuffer);
-      this.logger.log(
-        `Rendering PDF for book ${book.id}: ${bookLayout.entries.length} pages — ${bookLayout.entries.map((e) => describeEntry(e)).join(', ')}.`,
-      );
-      const buffer = await renderStorybookPdf(bookLayout, { resolveImageBuffer });
-      this.logger.log(`PDF rendered for book ${book.id}: ${buffer.length} bytes.`);
-      // Phase B, Slice B4: every new PDF is written under this attempt's own
-      // claim namespace, never the legacy shared key — a successful write
-      // here does not itself publish anything (see GenerationRunCoordinator.
-      // completeRun, the only publication boundary); a claim whose later DB
-      // completion loses the fence leaves this write an unpublished orphan.
-      const saved = await this.pdfStorage.saveClaimPreviewPdf(book.id, currentNamespace, buffer);
-      previewPdfUrl = saved.url;
+      const published = await pdfPublicationStage.execute({
+        bookId: book.id,
+        bookLayout,
+        namespace: currentNamespace,
+        imageAssetStorage: this.imageAssetStorage,
+        pdfStorage: this.pdfStorage,
+        logger: this.logger,
+      });
+      previewPdfUrl = published.previewPdfUrl;
     } catch (err) {
       pdfRenderLogStatus = AgentLogStatus.error;
       pdfRenderError = err instanceof Error ? err.message : String(err);
@@ -1417,7 +1187,7 @@ export class AgentService {
       {
         bookId: book.id,
         agent: 'LocalPipelineAgent',
-        step: AgentStep.layout,
+        step: bookLayoutStage.step,
         status: AgentLogStatus.success,
         attempt: 1,
         traceId,
@@ -1426,7 +1196,7 @@ export class AgentService {
       {
         bookId: book.id,
         agent: 'LocalPipelineAgent',
-        step: AgentStep.pdf_render,
+        step: pdfPublicationStage.step,
         status: pdfRenderLogStatus,
         attempt: 1,
         traceId,
@@ -1437,12 +1207,12 @@ export class AgentService {
 
     return {
       status: finalStatus,
-      completedStep: AgentStep.pdf_render,
+      completedStep: pdfPublicationStage.step,
       bookUpdate: finalBookUpdate,
       ...(pdfRenderError && {
         errorCode: 'GENERATION_FAILED',
         errorMessage: pdfRenderError,
-        failedStep: AgentStep.pdf_render,
+        failedStep: pdfPublicationStage.step,
       }),
       agentLogs,
     };
