@@ -49,6 +49,18 @@ import { GenerationInputSnapshotBackfillService } from '../agent/generation-inpu
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
 import type { GenerationOutcome } from '../agent/generation-outcome';
 import {
+  assertPaidProviderCallBudget,
+  requiredPaidProviderCallsForBook,
+} from '../agent/generation-provider-telemetry';
+import {
+  STORY_GENERATION_PROVIDER_TOKEN,
+  type StoryGenerationProvider,
+} from '../agent/story-generation-provider';
+import {
+  CHARACTER_PROFILE_PROVIDER_TOKEN,
+  type CharacterProfileProvider,
+} from '../agent/character-profile-provider';
+import {
   buildInputSnapshot,
   hashInputSnapshot,
   GENERATION_INPUT_SNAPSHOT_INVALID,
@@ -101,6 +113,7 @@ export const BOOK_ALREADY_CANCELLED_CODE = 'BOOK_ALREADY_CANCELLED';
 /** Phase G1: stable code for POST /books/:id/cancel on a book with no active (queued/running) run — created/complete/failed/partial all land here. */
 export const BOOK_NOT_IN_PROGRESS_CODE = 'BOOK_NOT_IN_PROGRESS';
 export const IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE = 'IMAGE_GENERATION_BUDGET_INSUFFICIENT';
+export const PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE = 'PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT';
 
 function alreadyCancelledException(): HttpException {
   return new HttpException(
@@ -162,6 +175,10 @@ export class BooksService {
     private readonly creditsService: CreditsService,
     @Inject(IMAGE_GENERATION_PROVIDER_TOKEN)
     private readonly imageGenerationProvider: ImageGenerationProvider,
+    @Inject(STORY_GENERATION_PROVIDER_TOKEN)
+    private readonly storyGenerationProvider: StoryGenerationProvider,
+    @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
+    private readonly characterProfileProvider: CharacterProfileProvider,
   ) {}
 
   /**
@@ -182,6 +199,30 @@ export class BooksService {
         error: 'Image generation capacity is temporarily unavailable',
         message: 'Image generation capacity is temporarily unavailable',
         code: IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
+      });
+    }
+  }
+
+  /** Refuses a run whose complete paid-provider plan exceeds the operator cap. */
+  private assertPaidProviderCallBudget(inputSnapshot: GenerationInputSnapshot): void {
+    const requiredCalls = requiredPaidProviderCallsForBook(
+      inputSnapshot.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
+      {
+        storyProvider: this.storyGenerationProvider.providerName,
+        characterProfileProvider: this.characterProfileProvider.providerName,
+        imageProvider: this.imageGenerationProvider.providerName,
+      },
+    );
+    const configuredLimit = this.config.get('MAX_PAID_PROVIDER_CALLS_PER_RUN', {
+      infer: true,
+    });
+    try {
+      assertPaidProviderCallBudget(requiredCalls, configuredLimit);
+    } catch {
+      throw new ServiceUnavailableException({
+        error: 'Generation provider capacity is temporarily unavailable',
+        message: 'Generation provider capacity is temporarily unavailable',
+        code: PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE,
       });
     }
   }
@@ -639,6 +680,7 @@ export class BooksService {
     retryOfRunId?: string;
   }): Promise<Book> {
     this.assertCompleteImageBudget(params.inputSnapshot);
+    this.assertPaidProviderCallBudget(params.inputSnapshot);
     const inputHash = hashInputSnapshot(params.inputSnapshot);
 
     let created: { book: Book; run: GenerationRun };

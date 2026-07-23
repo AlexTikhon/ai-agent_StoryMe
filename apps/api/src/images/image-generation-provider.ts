@@ -102,6 +102,8 @@ export interface ImageGenerationProvider {
   readonly providerName?: string;
   /** Underlying model identifier, if applicable (mock providers have none). */
   readonly modelName?: string;
+  /** Version of the provider's image prompt contract. */
+  readonly promptVersion?: string;
   generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput>;
   generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput>;
   /** Safe (no secrets/prompts/bytes) rate-limiter diagnostics snapshot, if this provider is rate-limited. Only OpenAIImageGenerationProvider implements this. */
@@ -123,6 +125,7 @@ export const IMAGE_GENERATION_PROVIDER_TOKEN = 'IMAGE_GENERATION_PROVIDER';
  */
 export class MockImageGenerationProvider implements ImageGenerationProvider {
   readonly providerName = 'mock' as const;
+  readonly promptVersion = 'mock-image-v1';
 
   async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {
     return {

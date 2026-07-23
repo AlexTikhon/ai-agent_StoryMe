@@ -5,6 +5,7 @@ import type {
   BookLength,
   GenerationJobSummary,
   GenerationMetadata,
+  GenerationProviderUsage,
   IllustrationStyle,
   ImageGenerationFailureDetail,
   Pronouns,
@@ -373,6 +374,8 @@ export interface ImageGenerationResult {
   resume?: ResumeDiagnostics;
   /** Per-asset failure diagnostics for every image-generation call that failed this run (see ImageGenerationFailureDetail). Empty when nothing failed. */
   imageFailures?: ImageGenerationFailureDetail[];
+  /** Safe prompt/version/call/cost metadata for the latest run. Undefined for legacy books. */
+  providerUsage?: GenerationProviderUsage;
 }
 
 // ─── Book request (wizard output / API input) ─────────────────────────────────
@@ -565,4 +568,6 @@ export interface GenerationDiagnosticsDto {
   resume: ResumeDiagnostics | null;
   /** Per-asset failure diagnostics for the most recent generation run's failed image-generation calls (see ImageGenerationFailureDetail). Empty when nothing failed or none was ever computed. */
   imageFailures: ImageGenerationFailureDetail[];
+  /** Safe paid-call budget and per-call metadata for the latest run, or null for legacy/incomplete runs. */
+  providerUsage: GenerationProviderUsage | null;
 }

@@ -112,6 +112,38 @@ export interface AgentLogEntry {
 /** Provider identifiers surfaced for generation diagnostics — never a secret, never a raw response. */
 export type GenerationProviderName = 'mock' | 'openai' | 'unknown';
 
+export type GenerationProviderOperation =
+  'character_profile' | 'character_sheet' | 'story' | 'illustration';
+
+/**
+ * Safe metadata for one logical provider invocation. Prompt text and provider
+ * responses are deliberately excluded; promptHash fingerprints the versioned
+ * normalized input without making that input part of diagnostics.
+ */
+export interface GenerationProviderCallMetadata {
+  callIndex: number;
+  operation: GenerationProviderOperation;
+  assetLabel?: string;
+  provider: GenerationProviderName;
+  model?: string;
+  promptVersion: string;
+  promptHash: string;
+  attempt: number;
+  durationMs: number;
+  status: 'success' | 'error';
+  estimatedCostUsd?: number;
+}
+
+/** Per-run paid-provider budget and the calls actually made by the latest run. */
+export interface GenerationProviderUsage {
+  maxPaidCalls: number;
+  plannedPaidCalls: number;
+  actualPaidCalls: number;
+  /** Present only when every paid call had an operator-configured estimate. */
+  estimatedCostUsd?: number;
+  calls: GenerationProviderCallMetadata[];
+}
+
 /**
  * Safe, non-secret summary of one book generation run. Deliberately excludes
  * prompts, generated image bytes/base64, and raw provider responses — see
@@ -126,6 +158,7 @@ export interface GenerationMetadata {
   generatedPages?: number;
   generatedImageCount?: number;
   failedImageCount?: number;
+  providerUsage?: GenerationProviderUsage;
   startedAt?: string;
   completedAt?: string;
   failedAt?: string;

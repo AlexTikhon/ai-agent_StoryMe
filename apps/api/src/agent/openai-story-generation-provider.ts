@@ -253,6 +253,7 @@ export interface OpenAIStoryGenerationProviderOptions {
  */
 export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
   readonly providerName = 'openai' as const;
+  readonly promptVersion = 'openai-story-v1';
   private readonly logger = new Logger(OpenAIStoryGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;

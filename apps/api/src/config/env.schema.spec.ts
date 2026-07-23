@@ -58,7 +58,31 @@ describe('envSchema', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.PORT).toBe(4000);
+      expect(result.data.MAX_PAID_PROVIDER_CALLS_PER_RUN).toBe(17);
     }
+  });
+
+  it('accepts non-negative provider cost estimates and rejects negative values', () => {
+    const required = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+    expect(
+      envSchema.safeParse({
+        ...required,
+        OPENAI_STORY_ESTIMATED_COST_USD: '0.02',
+        OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD: '0',
+        OPENAI_IMAGE_ESTIMATED_COST_USD: '0.04',
+      }).success,
+    ).toBe(true);
+    expect(
+      envSchema.safeParse({
+        ...required,
+        OPENAI_IMAGE_ESTIMATED_COST_USD: '-0.01',
+      }).success,
+    ).toBe(false);
   });
 
   it('applies PDF_STORAGE_DRIVER default of local', () => {

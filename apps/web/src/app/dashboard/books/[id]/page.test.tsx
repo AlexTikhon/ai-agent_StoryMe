@@ -203,6 +203,7 @@ function makeDiagnostics(
     },
     resume: null,
     imageFailures: [],
+    providerUsage: null,
     ...overrides,
   };
 }

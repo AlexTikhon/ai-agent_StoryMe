@@ -81,6 +81,9 @@ describe('formatDiagnosticsSummary', () => {
         characterReferenceUsedForImages: true,
         imageGenerationMode: 'character-reference-edit',
       },
+      resume: null,
+      imageFailures: [],
+      providerUsage: null,
       ...overrides,
     };
   }
