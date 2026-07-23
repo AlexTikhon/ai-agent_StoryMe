@@ -103,7 +103,8 @@ management, reader and image thumbnails/previews, single-page editing/regenerati
 repair, hard-delete/data-erasure workflow, Playwright E2E, and production/admin gating for
 diagnostics.
 
-Known limitations: `AgentService` and the generation portion of `BooksService` remain oversized;
+Known limitations: `AgentService` and the worker-execution/cancellation portion of `BooksService`
+remain oversized; admission and transactional scheduling now live in `BookGenerationService`;
 `GenerationJob` is still written and recovered as a best-effort legacy mirror, although product
 diagnostics now read authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
 local storage cannot serve separately deployed API/worker processes; console email does not
