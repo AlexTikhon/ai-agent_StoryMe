@@ -1411,9 +1411,9 @@ describe('AgentService', () => {
       });
     });
 
-    // ── MAX_GENERATED_IMAGES_PER_BOOK cost cap ────────────────────────────────
+    // ── MAX_GENERATED_IMAGES_PER_BOOK atomic book budget ──────────────────────
 
-    describe('MAX_GENERATED_IMAGES_PER_BOOK cost cap (real provider only)', () => {
+    describe('MAX_GENERATED_IMAGES_PER_BOOK complete-book budget (real provider only)', () => {
       function makeRealImageProvider() {
         return {
           providerName: 'openai' as const,
@@ -1444,7 +1444,7 @@ describe('AgentService', () => {
         }
       }
 
-      it('caps real generation calls to MAX_GENERATED_IMAGES_PER_BOOK, then fails the book at pdf_render for the uncapped pages', async () => {
+      it('rejects an insufficient budget before making any paid page-image request', async () => {
         await withMaxGeneratedImagesEnv('2', async () => {
           const book = makeBook();
           const realProvider = makeRealImageProvider();
@@ -1459,25 +1459,15 @@ describe('AgentService', () => {
           );
           setupMocks();
 
-          const result = await runGeneration(realService, prisma, book);
+          await expect(runGeneration(realService, prisma, book)).rejects.toThrow(
+            /Complete book generation requires 8 illustrations/,
+          );
 
-          expect(realProvider.generateImage).toHaveBeenCalledTimes(2);
-          // +1 for the char_build character-sheet save.
-          expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(3);
-
-          const updateArg = prisma.book.update.mock.calls[0]?.[0];
-          const imageGenerationResult = updateArg?.data?.imageGenerationResult as Record<
-            string,
-            unknown
-          >;
-          expect(imageGenerationResult.imageByteProvider).toBe('openai');
-          expect(imageGenerationResult.generatedImageCount).toBe(2);
-          expect(imageGenerationResult.failedImageCount).toBe(0);
-
-          // The cap left more planned illustrations than were generated, so
-          // rendering must fail loudly rather than silently placeholder them.
-          expect(result.status).toBe('failed');
-          expect(result.failedStep).toBe('pdf_render');
+          expect(realProvider.generateImage).not.toHaveBeenCalled();
+          // Character profile/sheet precedes image planning in this direct
+          // defense-in-depth path. Normal API scheduling rejects even earlier,
+          // before the run and credit transaction.
+          expect(realProvider.generateCharacterSheet).toHaveBeenCalledOnce();
           expect(renderStorybookPdf).not.toHaveBeenCalled();
         });
       });
@@ -1498,7 +1488,7 @@ describe('AgentService', () => {
         });
       });
 
-      it('defaults to 3 real images when MAX_GENERATED_IMAGES_PER_BOOK is unset', async () => {
+      it('defaults to enough budget for every illustration in a normal book', async () => {
         await withMaxGeneratedImagesEnv(undefined, async () => {
           const book = makeBook();
           const realProvider = makeRealImageProvider();
@@ -1513,9 +1503,10 @@ describe('AgentService', () => {
           );
           setupMocks();
 
-          await runGeneration(realService, prisma, book);
+          const result = await runGeneration(realService, prisma, book);
 
-          expect(realProvider.generateImage).toHaveBeenCalledTimes(3);
+          expect(realProvider.generateImage).toHaveBeenCalledTimes(8);
+          expect(result.status).toBe('complete');
         });
       });
     });

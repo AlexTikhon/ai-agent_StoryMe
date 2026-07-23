@@ -25,7 +25,7 @@ import {
   DEFAULT_OPENAI_MAX_RETRIES,
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   fetchWithRetry,
-  OpenAIRequestError,
+  safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -319,12 +319,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
         },
       });
     } catch (err) {
-      const message =
-        err instanceof OpenAIRequestError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
+      const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `Story generation failed: provider=openai model=${this.model} reason=${message}`,
       );
@@ -332,12 +327,11 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     }
 
     if (!response.ok) {
-      const bodyText = await response.text().catch(() => '');
       this.logger.error(
         `Story generation failed: provider=openai model=${this.model} status=${response.status}`,
       );
       throw new StoryGenerationProviderError(
-        `OpenAI request failed with status ${response.status}: ${bodyText.slice(0, 500)}`,
+        `OpenAI request failed with status ${response.status}`,
       );
     }
 

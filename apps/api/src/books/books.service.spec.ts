@@ -31,6 +31,7 @@ import type { GenerationExecutionContext } from '../agent/generation-execution-c
 import type { GenerationOutcome } from '../agent/generation-outcome';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
+import type { ImageGenerationProvider } from '../images/image-generation-provider';
 import { InvalidGenerationArtifactPointerError } from '../agent/generation-artifact-namespace';
 import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
@@ -226,6 +227,7 @@ const GENERATION_GUARD_ENV = {
   MAX_CONCURRENT_GENERATIONS_PER_USER: 2,
   GENERATION_USER_WINDOW_MS: 86_400_000,
   MAX_GENERATIONS_PER_USER_PER_WINDOW: 20,
+  MAX_GENERATED_IMAGES_PER_BOOK: 14,
 } as const;
 
 function createMockConfig(overrides: Partial<typeof GENERATION_GUARD_ENV> = {}) {
@@ -247,6 +249,16 @@ function createMockChildPhotoProcessor() {
       .fn()
       .mockResolvedValue({ buffer: Buffer.from('processed-bytes'), contentType: 'image/jpeg' }),
   } as never;
+}
+
+function createMockImageGenerationProvider(
+  providerName: 'mock' | 'openai' = 'mock',
+): jest.Mocked<ImageGenerationProvider> {
+  return {
+    providerName,
+    generateImage: vi.fn(),
+    generateCharacterSheet: vi.fn(),
+  } as unknown as jest.Mocked<ImageGenerationProvider>;
 }
 
 function makeCreditTransaction(overrides: Partial<CreditTransaction> = {}): CreditTransaction {
@@ -360,6 +372,26 @@ describe('BooksService', () => {
   let rateLimiter: ReturnType<typeof createMockRateLimiter>;
   let childPhotoProcessor: ReturnType<typeof createMockChildPhotoProcessor>;
   let creditsService: ReturnType<typeof createMockCreditsService>;
+  let imageGenerationProvider: ReturnType<typeof createMockImageGenerationProvider>;
+
+  function rebuildService(): void {
+    service = new BooksService(
+      prisma as never,
+      agentService as never,
+      pdfStorage as never,
+      imageAssetStorage as never,
+      generationQueueService as never,
+      generationJobService as never,
+      generationRunService as never,
+      generationRunCoordinator as never,
+      snapshotBackfill as never,
+      config,
+      rateLimiter,
+      childPhotoProcessor,
+      creditsService as never,
+      imageGenerationProvider,
+    );
+  }
 
   beforeEach(() => {
     prisma = createMockPrisma();
@@ -395,21 +427,8 @@ describe('BooksService', () => {
     rateLimiter = createMockRateLimiter();
     childPhotoProcessor = createMockChildPhotoProcessor();
     creditsService = createMockCreditsService();
-    service = new BooksService(
-      prisma as never,
-      agentService as never,
-      pdfStorage as never,
-      imageAssetStorage as never,
-      generationQueueService as never,
-      generationJobService as never,
-      generationRunService as never,
-      generationRunCoordinator as never,
-      snapshotBackfill as never,
-      config,
-      rateLimiter,
-      childPhotoProcessor,
-      creditsService as never,
-    );
+    imageGenerationProvider = createMockImageGenerationProvider();
+    rebuildService();
   });
 
   // ─── create ──────────────────────────────────────────────────────────────────
@@ -848,6 +867,26 @@ describe('BooksService', () => {
   // ─── startGeneration ─────────────────────────────────────────────────────────
 
   describe('startGeneration', () => {
+    it('rejects an incomplete OpenAI image budget before creating a run or charging credit', async () => {
+      const book = makeBook({ status: STATUS_CREATED, pageCount: 6 });
+      prisma.book.findFirst.mockResolvedValue(book);
+      config = createMockConfig({ MAX_GENERATED_IMAGES_PER_BOOK: 7 });
+      imageGenerationProvider = createMockImageGenerationProvider('openai');
+      rebuildService();
+
+      await expect(service.startGeneration('u-1', 'b-1')).rejects.toMatchObject({
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        response: expect.objectContaining({
+          code: 'IMAGE_GENERATION_BUDGET_INSUFFICIENT',
+        }),
+      });
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(creditsService.deductInTransaction).not.toHaveBeenCalled();
+      expect(prisma.generationRun.create).not.toHaveBeenCalled();
+      expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
+    });
+
     it('transitions status to char_build, sets activeRunId, and returns quickly, without waiting for the pipeline', async () => {
       const book = makeBook({ status: STATUS_CREATED });
       const started = makeBook({ status: STATUS_CHAR_BUILD, activeRunId: 'run-1' });

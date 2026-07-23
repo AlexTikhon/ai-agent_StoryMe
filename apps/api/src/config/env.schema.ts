@@ -100,6 +100,11 @@ export const envSchema = z
     // invalid value is still caught at boot, just one layer down from here.
     STORY_GENERATION_PROVIDER: z.string().optional(),
     IMAGE_GENERATION_PROVIDER: z.string().optional(),
+    // A real book needs one illustration per story page plus cover and back
+    // cover. The default covers the current 12-page product maximum; runtime
+    // scheduling still checks each immutable input snapshot before charging.
+    REAL_GENERATION_MAX_PAGES: z.coerce.number().int().positive().default(12),
+    MAX_GENERATED_IMAGES_PER_BOOK: z.coerce.number().int().positive().default(14),
 
     // Transactional email provider selection. Loose optional string (not a
     // z.enum) for the same reason as STORY_GENERATION_PROVIDER above — the

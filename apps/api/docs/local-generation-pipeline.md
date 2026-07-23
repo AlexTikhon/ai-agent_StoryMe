@@ -57,8 +57,7 @@ bookPreview, imageGenerationResult }`. If this call throws, `AgentService`
   `AgentLog` row with `status: 'error'`, and returns immediately — none of
   the steps below run.
 - (b) `generateAndSaveImageAssets` (private helper) — for every
-  `GeneratedImageEntry` in the provider's `imageGenerationResult` (up to the
-  `MAX_GENERATED_IMAGES_PER_BOOK` cap for the real provider), calls the
+  `GeneratedImageEntry` in the provider's `imageGenerationResult`, calls the
   injected `ImageGenerationProvider.generateImage({ bookId, entry,
 characterCard })` (see "Image generation provider boundary" below) to get
   real image bytes, then saves them through
@@ -501,28 +500,22 @@ bytes, so `assertAllImagesResolved` (see below and
 
 ### Per-book illustration budget — `MAX_GENERATED_IMAGES_PER_BOOK`
 
-A second, tighter cost guardrail lives in `AgentService.generateAndSaveImageAssets`
-itself (`apps/api/src/agent/agent.service.ts`), not the provider: when the
-injected `ImageGenerationProvider.providerName === 'openai'`, only the first
-`MAX_GENERATED_IMAGES_PER_BOOK` entries (default `3` if unset/malformed — see
-`resolveMaxGeneratedImagesPerBook` in `apps/api/src/images/image-generation-provider.ts`)
-of a book's `images` array (cover, then pages in order, then back cover) are
-actually sent to the provider. The remaining entries are skipped entirely —
-no network call, no cost, and also no saved bytes for those entries.
-`MockImageGenerationProvider` is never capped (`providerName === 'mock'`),
-since it's free — every test/CI run, which always uses the mock provider,
-still gets one real (mock) image per entry, unaffected by this cap.
+`MAX_GENERATED_IMAGES_PER_BOOK` is an atomic budget for real, paid image
+generation, not a partial-generation cap. For an OpenAI image run it must
+cover the complete planned set: cover + every page + back cover. The default
+is `14`, enough for the maximum 12-page book.
 
-**Since `assertAllImagesResolved` requires every planned illustration to have
-real bytes before rendering (see `apps/api/docs/pdf-rendering.md`), capping
-below the book's total illustration count now makes the book fail at
-`pdf_render` instead of completing with placeholders for the capped pages.**
-Set `MAX_GENERATED_IMAGES_PER_BOOK` to at least the book's total image count
-(cover + pages + back cover) for a full real-image local test run — e.g. `9`
-for a 7-page book. This is still deliberately independent of
-`REAL_GENERATION_MAX_PAGES` above: that guardrail rejects any single page
-request beyond a page-number threshold; this one limits the _count_ of real
-illustrations per book to control cost.
+`BooksService` checks the budget before the GenerationRun/credit/outbox
+transaction. If it is too low, the generation endpoint returns `503` with
+code `IMAGE_GENERATION_BUDGET_INSUFFICIENT`; no run is scheduled, no credit is
+charged, and no image provider call is made. `AgentService` repeats the check
+immediately before image generation as defense in depth for direct/internal
+callers. `MockImageGenerationProvider` is free and bypasses this budget.
+
+To lower real-image cost, choose a shorter `pageCount`; do not set a budget
+that can fund only part of a book. This remains independent of
+`REAL_GENERATION_MAX_PAGES`, which limits the highest page number accepted by
+the real provider.
 
 ### Manual end-to-end smoke test
 
@@ -597,18 +590,16 @@ cover). Run it deliberately, not routinely.
    ```
 
    **Do not set `MAX_GENERATED_IMAGES_PER_BOOK` below the book's total planned
-   illustration count.** Since `assertAllImagesResolved` requires every
-   planned illustration to have real bytes before a book can reach
-   `complete` (see "Per-book illustration budget" above), a cap that's too
-   low doesn't produce a cheaper partial book — it makes the whole run fail
-   at `pdf_render` instead. **A book's total planned illustration count is
+   illustration count.** The API rejects an underfunded real-image run before
+   scheduling or charging it; it never starts a cheaper partial book. **A
+   book's total planned illustration count is
    `2 + pageCount` (cover + pages + back cover)**. `SMOKE_PAGE_COUNT`
    defaults to `MIN_BOOK_PAGE_COUNT` (4 pages, so 6 planned illustrations) —
    the cheapest page count that can still reach a real `complete` book, since
    `resolveTargetPageCount` clamps anything lower back up to 4 anyway. Leave
-   `MAX_GENERATED_IMAGES_PER_BOOK` unset (or at its existing local `.env`
-   value) as long as it's `>= 6`; raise it only if you also raise
-   `SMOKE_PAGE_COUNT` for a longer full-book review.
+   `MAX_GENERATED_IMAGES_PER_BOOK` unset (default `14`) or keep its local
+   `.env` value at `>= 6`; raise it only if you also raise `SMOKE_PAGE_COUNT`
+   beyond what that value covers.
 
 2. Run (from `apps/api`, with a local Postgres + Redis up, e.g. via
    `pnpm --filter @book/api dev`'s existing stack):
@@ -687,10 +678,9 @@ Test'`, or `userId` of the `smoke-real-generation@storyme.local` user), and
    one chat-completion call for the story, one vision-capable chat-completion
    call for the character profile (only if a photo is uploaded, otherwise
    still one text-only call), one image-generation call for the character
-   sheet, and one image-generation call per illustration actually sent to the
-   provider (capped by `MAX_GENERATED_IMAGES_PER_BOOK`). Keep the cap low for
-   routine QA; only raise it when you specifically need to review a fully
-   illustrated book.
+   sheet, and one image-generation call per planned illustration. For routine
+   QA, use the shortest supported `pageCount`; the atomic
+   `MAX_GENERATED_IMAGES_PER_BOOK` budget must still cover the complete book.
 
 ### Character consistency: text-level vs. visual-reference
 
@@ -2929,21 +2919,22 @@ re-verified here — see "Test coverage" below.
 
 ## Failure states summary
 
-| State                                            | Trigger                                                                                                                                                                                                                                                             | HTTP surface                                                                                                                                                                                                                            |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BadRequestException` (400)                      | `generate` called with missing draft fields                                                                                                                                                                                                                         | `POST /:id/generate`                                                                                                                                                                                                                    |
-| `ConflictException` (409)                        | `update`/`remove` after `status !== created`                                                                                                                                                                                                                        | `PATCH /:id`, `DELETE /:id`                                                                                                                                                                                                             |
-| `ConflictException` (409)                        | `generate` called when `status !== created`                                                                                                                                                                                                                         | `POST /:id/generate`                                                                                                                                                                                                                    |
-| `ConflictException` (409)                        | `retry-generation` called when `status !== failed`                                                                                                                                                                                                                  | `POST /:id/retry-generation`                                                                                                                                                                                                            |
-| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I)                                                                                                                                            | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
-| `InternalServerErrorException` (500)             | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K)                                                                                                                                                                      | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
-| `ConflictException` (409)                        | preview requested before `previewPdfUrl` is set                                                                                                                                                                                                                     | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
-| `NotFoundException` (404)                        | book missing / not owned / soft-deleted                                                                                                                                                                                                                             | any `:id` route                                                                                                                                                                                                                         |
-| `NotFoundException` (404)                        | `previewPdfUrl` set but file missing from storage                                                                                                                                                                                                                   | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
-| `BookStatus.failed`                              | PDF render or `pdfStorage.savePreviewPdf` throws                                                                                                                                                                                                                    | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H                                                                                                                  |
-| `BookStatus.failed`                              | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`)                                                                                                                                                                                         | observed via polling — see above                                                                                                                                                                                                        |
-| `BookStatus.failed`                              | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`)                                                                                                                                                                           | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H)                                                                                                                                            |
-| `BookStatus.failed` (`failedStep: 'pdf_render'`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them), or `MAX_GENERATED_IMAGES_PER_BOOK` capped an entry — `assertAllImagesResolved` then fails the book before rendering | observed via polling `GET /:id` or `GET /:id/generation-diagnostics`; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError`, and the `pdf_render` `AgentLog` row's `error` for which page(s) were missing |
+| State                                            | Trigger                                                                                                                                                                                                         | HTTP surface                                                                                                                                                                                                                            |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BadRequestException` (400)                      | `generate` called with missing draft fields                                                                                                                                                                     | `POST /:id/generate`                                                                                                                                                                                                                    |
+| `ConflictException` (409)                        | `update`/`remove` after `status !== created`                                                                                                                                                                    | `PATCH /:id`, `DELETE /:id`                                                                                                                                                                                                             |
+| `ConflictException` (409)                        | `generate` called when `status !== created`                                                                                                                                                                     | `POST /:id/generate`                                                                                                                                                                                                                    |
+| `ConflictException` (409)                        | `retry-generation` called when `status !== failed`                                                                                                                                                              | `POST /:id/retry-generation`                                                                                                                                                                                                            |
+| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I)                                                                                        | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `ServiceUnavailableException` (503)              | real-image budget cannot cover cover + every page + back cover (`IMAGE_GENERATION_BUDGET_INSUFFICIENT`) — rejected before run creation or credit charge                                                         | `POST /:id/generate`, `POST /:id/retry-generation`, `POST /:id/regenerate`                                                                                                                                                              |
+| `InternalServerErrorException` (500)             | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K)                                                                                                                  | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `ConflictException` (409)                        | preview requested before `previewPdfUrl` is set                                                                                                                                                                 | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
+| `NotFoundException` (404)                        | book missing / not owned / soft-deleted                                                                                                                                                                         | any `:id` route                                                                                                                                                                                                                         |
+| `NotFoundException` (404)                        | `previewPdfUrl` set but file missing from storage                                                                                                                                                               | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
+| `BookStatus.failed`                              | PDF render or `pdfStorage.savePreviewPdf` throws                                                                                                                                                                | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H                                                                                                                  |
+| `BookStatus.failed`                              | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`)                                                                                                                                     | observed via polling — see above                                                                                                                                                                                                        |
+| `BookStatus.failed`                              | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`)                                                                                                                       | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H)                                                                                                                                            |
+| `BookStatus.failed` (`failedStep: 'pdf_render'`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them) — `assertAllImagesResolved` then fails the book before rendering | observed via polling `GET /:id` or `GET /:id/generation-diagnostics`; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError`, and the `pdf_render` `AgentLog` row's `error` for which page(s) were missing |
 
 ## Test coverage
 
@@ -3240,28 +3231,27 @@ here touches Railway or any cloud storage; `PDF_STORAGE_DRIVER`/
    book, click **Generate Story**. Story text/prompts now come from
    `OPENAI_STORY_MODEL` (a real OpenAI chat completion) and every illustration
    (cover, every page, back cover) comes from `OPENAI_IMAGE_MODEL` (real
-   OpenAI image generation), as long as `MAX_GENERATED_IMAGES_PER_BOOK` covers
-   the book's total illustration count. If it doesn't, or any individual
-   image request fails, the book is marked `failed` at the `pdf_render` step
-   instead of completing with placeholder pages — check the book detail
-   page's diagnostics panel (or `GET /api/books/:id/generation-diagnostics`
-   directly) for `generatedImageCount`/`failedImageCount`, and the API logs
-   for the `Missing generated illustration for ...` line naming the page.
+   OpenAI image generation). `MAX_GENERATED_IMAGES_PER_BOOK` must cover the
+   complete illustration set or scheduling returns `503` before charging.
+   If an individual image request later fails, the book is marked `failed` at
+   the `pdf_render` step instead of completing with placeholder pages — check
+   the book detail page's diagnostics panel (or `GET
+/api/books/:id/generation-diagnostics` directly) for
+   `generatedImageCount`/`failedImageCount`, and the API logs for the
+   `Missing generated illustration for ...` line naming the page.
 6. **Alternative: the scripted smoke test** —
    `pnpm --filter @book/api smoke:real-generation` runs the same real pipeline
    once end-to-end without the web app, printing a diagnostics summary. See
    "Manual end-to-end smoke test" above; it makes real, billed API calls same
    as the UI flow.
 
-**Controlling image cost**: `MAX_GENERATED_IMAGES_PER_BOOK` (default `3`) caps
-how many illustrations are actually requested from OpenAI per book. Since
-every planned illustration must have real bytes for the PDF to render (see
-above), set it to the book's total illustration count for a full test, or
-pick a shorter `pageCount` when creating the book to keep the total (and the
-bill) small — don't lower the cap below the book's total illustration count,
-or generation will fail. `REAL_GENERATION_MAX_PAGES` (default `12`) is a
-separate, higher hard limit on page number. Story generation is always
-exactly one chat-completion call per book regardless of page count.
+**Controlling image cost**: `MAX_GENERATED_IMAGES_PER_BOOK` (default `14`) is
+an atomic upper budget that must cover every illustration in the book. An
+underfunded request is rejected before scheduling or charging. Pick a shorter
+`pageCount` when creating the book to reduce the total and the bill.
+`REAL_GENERATION_MAX_PAGES` (default `12`) is a separate hard limit on page
+number. Story generation is always exactly one chat-completion call per book
+regardless of page count.
 
 **Where local files live**:
 

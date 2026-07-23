@@ -1,4 +1,9 @@
-import type { CharacterCard, CharacterProfile, GeneratedImageEntry } from '@book/types';
+import {
+  DEFAULT_BOOK_PAGE_COUNT,
+  type CharacterCard,
+  type CharacterProfile,
+  type GeneratedImageEntry,
+} from '@book/types';
 import { generateMockImagePng } from './mock-image-producer';
 import type { ImageAssetContentType } from './image-asset-storage';
 
@@ -134,21 +139,43 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
   }
 }
 
-const DEFAULT_MAX_GENERATED_IMAGES_PER_BOOK = 3;
+export const DEFAULT_MAX_GENERATED_IMAGES_PER_BOOK = 14;
+export const BOOK_IMAGE_BUDGET_OVERHEAD = 2;
+
+export class ImageGenerationBudgetError extends Error {
+  constructor(
+    readonly requiredImages: number,
+    readonly configuredLimit: number,
+  ) {
+    super(
+      `Complete book generation requires ${requiredImages} illustrations, but MAX_GENERATED_IMAGES_PER_BOOK is ${configuredLimit}`,
+    );
+    this.name = 'ImageGenerationBudgetError';
+  }
+}
 
 /**
- * Cost guardrail for real (paid) image generation: caps how many of a book's
- * image entries (cover/pages/back_cover, taken in their existing order)
- * AgentService.generateAndSaveImageAssets actually sends to the real
- * ImageGenerationProvider. Entries beyond the cap are skipped before any API
- * call is made and fall back to the existing placeholder-rectangle rendering
- * — the same fallback any entry ImageAssetStorage has no bytes for already
- * gets (see buildImageBufferResolver in image-asset-storage.ts). Only applies
- * when the real provider is selected; MockImageGenerationProvider is free, so
- * AgentService never caps it.
+ * Cost guardrail for real (paid) image generation. It is an atomic per-book
+ * budget, not a partial-generation cap: scheduling must reject a book before
+ * charging when the configured limit cannot cover every required
+ * illustration. AgentService repeats the assertion before image API calls as
+ * defense in depth. MockImageGenerationProvider is free and bypasses it.
  */
 export function resolveMaxGeneratedImagesPerBook(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env['MAX_GENERATED_IMAGES_PER_BOOK'];
   const n = raw ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_GENERATED_IMAGES_PER_BOOK;
+}
+
+export function requiredGeneratedImagesForBook(pageCount: number | null | undefined): number {
+  return (pageCount ?? DEFAULT_BOOK_PAGE_COUNT) + BOOK_IMAGE_BUDGET_OVERHEAD;
+}
+
+export function assertCompleteBookImageBudget(
+  requiredImages: number,
+  configuredLimit = resolveMaxGeneratedImagesPerBook(),
+): void {
+  if (configuredLimit < requiredImages) {
+    throw new ImageGenerationBudgetError(requiredImages, configuredLimit);
+  }
 }

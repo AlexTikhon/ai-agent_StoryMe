@@ -10,6 +10,7 @@ import {
   type ImageAssetStorage,
 } from '../images/image-asset-storage';
 import {
+  assertCompleteBookImageBudget,
   hasImageGenerationFailureDetails,
   IMAGE_GENERATION_PROVIDER_TOKEN,
   resolveMaxGeneratedImagesPerBook,
@@ -241,11 +242,10 @@ function describeEntry(entry: BookLayoutEntry): string {
  *
  * Every layout entry that was planned to have an image (entry.imageBlock is
  * set) must have real, resolvable bytes in ImageAssetStorage before we hand
- * the layout to the PDF renderer. If any are missing — whether because
- * MAX_GENERATED_IMAGES_PER_BOOK capped that entry, the real provider failed
- * for it, or the save to ImageAssetStorage failed — this throws a single
- * clear error naming every affected page instead of silently falling through
- * to the renderer's placeholder-rectangle fallback.
+ * the layout to the PDF renderer. If any are missing because the provider or
+ * ImageAssetStorage failed, this throws a single clear error naming every
+ * affected page instead of silently falling through to the renderer's
+ * placeholder-rectangle fallback.
  */
 function assertAllImagesResolved(
   logger: Logger,
@@ -274,8 +274,7 @@ function assertAllImagesResolved(
   if (missing.length > 0) {
     throw new Error(
       `Cannot render PDF for book ${bookId}: missing generated illustration(s) for ${missing.join(', ')}. ` +
-        'Check the image_gen step logs above for provider/storage errors, or raise MAX_GENERATED_IMAGES_PER_BOOK ' +
-        'if the real image provider is capping generation for this book.',
+        'Check the image_gen step logs above for provider/storage errors.',
     );
   }
 }
@@ -549,14 +548,11 @@ export class AgentService {
    * startBookGeneration's Phase 2), failing the book with a clear error
    * instead of silently rendering a placeholder for it.
    *
-   * Before any of that, real (paid) generation is capped to the first
-   * MAX_GENERATED_IMAGES_PER_BOOK entries (default 3, see
-   * resolveMaxGeneratedImagesPerBook) when the injected provider is the real
-   * one — entries beyond the cap never reach the provider at all, so they
-   * cost nothing but also have no bytes, which means a book with more planned
-   * illustrations than the cap will now fail at the PDF-render step. Raise
-   * MAX_GENERATED_IMAGES_PER_BOOK to cover every page for a full real-image
-   * test run. The free mock provider is never capped.
+   * Before any paid call, the real provider also verifies defensively that
+   * MAX_GENERATED_IMAGES_PER_BOOK can cover the complete planned image set.
+   * BooksService performs the primary check before scheduling or charging;
+   * this duplicate boundary protects direct/internal callers from partial
+   * paid generation. The free mock provider is not budget-limited.
    */
   private async generateAndSaveImageAssets(
     bookId: string,
@@ -573,13 +569,8 @@ export class AgentService {
   }> {
     const isRealProvider = this.imageGenerationProvider.providerName === 'openai';
     const limit = isRealProvider ? resolveMaxGeneratedImagesPerBook() : images.length;
-    const imagesToGenerate = images.slice(0, limit);
-
-    if (imagesToGenerate.length < images.length) {
-      this.logger.log(
-        `Capping real illustration generation to ${imagesToGenerate.length}/${images.length} images for book ${bookId} (MAX_GENERATED_IMAGES_PER_BOOK); the remaining ${images.length - imagesToGenerate.length} page(s) will have no illustration and PDF rendering will fail unless the cap is raised.`,
-      );
-    }
+    if (isRealProvider) assertCompleteBookImageBudget(images.length, limit);
+    const imagesToGenerate = images;
 
     const providerName = toGenerationProviderName(this.imageGenerationProvider.providerName);
     const modelName = this.imageGenerationProvider.modelName;

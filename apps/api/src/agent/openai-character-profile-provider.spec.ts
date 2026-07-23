@@ -113,15 +113,17 @@ describe('OpenAICharacterProfileProvider', () => {
   });
 
   it('throws a clear error when the HTTP response is not ok', async () => {
+    const text = vi.fn().mockResolvedValue('invalid api key');
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
       json: async () => ({}),
-      text: async () => 'invalid api key',
+      text,
     });
     const provider = new OpenAICharacterProfileProvider({ apiKey: 'sk-bad', fetchImpl });
 
     await expect(provider.buildProfile(makeInput())).rejects.toThrow(/status 401/);
+    expect(text).not.toHaveBeenCalled();
   });
 
   it('throws a clear error when the response content fails schema validation', async () => {
@@ -151,6 +153,8 @@ describe('OpenAICharacterProfileProvider', () => {
       throw new Error('expected buildProfile to reject');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      expect(message).toContain('OpenAI request failed due to a network error');
+      expect(message).not.toContain('network down');
       expect(message).not.toContain('sk-super-secret-key');
     }
   });
