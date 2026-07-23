@@ -202,6 +202,7 @@ export interface OpenAIImageGenerationProviderOptions {
  */
 export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
   readonly providerName = 'openai' as const;
+  readonly promptVersion = 'openai-image-v1';
   private readonly logger = new Logger(OpenAIImageGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;

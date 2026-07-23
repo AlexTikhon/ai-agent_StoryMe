@@ -105,6 +105,14 @@ export const envSchema = z
     // scheduling still checks each immutable input snapshot before charging.
     REAL_GENERATION_MAX_PAGES: z.coerce.number().int().positive().default(12),
     MAX_GENERATED_IMAGES_PER_BOOK: z.coerce.number().int().positive().default(14),
+    // Logical paid-provider calls for a complete maximum-length run:
+    // profile + story + character sheet + 14 book illustrations.
+    MAX_PAID_PROVIDER_CALLS_PER_RUN: z.coerce.number().int().positive().default(17),
+    // Operator-maintained estimates. Optional because silently hardcoding
+    // vendor pricing would make historical cost diagnostics misleading.
+    OPENAI_STORY_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
+    OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
+    OPENAI_IMAGE_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
 
     // Transactional email provider selection. Loose optional string (not a
     // z.enum) for the same reason as STORY_GENERATION_PROVIDER above — the

@@ -7,6 +7,7 @@ import type {
   GenerationJobSummary,
   GenerationMetadata,
   GenerationProviderName,
+  GenerationProviderUsage,
   ImageGenerationFailureDetail,
   PdfStorageDiagnostics,
   QueueDiagnostics,
@@ -88,6 +89,13 @@ function buildImageFailureDiagnostics(
   return Array.isArray(failures) ? (failures as ImageGenerationFailureDetail[]) : [];
 }
 
+function buildProviderUsage(
+  imageGenerationResult: Book['imageGenerationResult'],
+): GenerationProviderUsage | null {
+  const usage = (imageGenerationResult as { providerUsage?: unknown } | null)?.providerUsage;
+  return usage ? (usage as GenerationProviderUsage) : null;
+}
+
 /**
  * Builds the safe, non-secret GenerationMetadata view for a book from
  * already-persisted columns (Book.generationTimeMs/aiModelVersions/
@@ -110,6 +118,7 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
   const imageModel = aiModelVersions?.image ?? imageLog?.model ?? undefined;
   const generatedPages = generatedPageCount(book.bookPreview);
   const { generatedImageCount, failedImageCount } = imageCounts(book.imageGenerationResult);
+  const providerUsage = buildProviderUsage(book.imageGenerationResult);
 
   return {
     storyProvider: toProviderName(storyLog?.provider),
@@ -120,6 +129,7 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
     ...(generatedPages !== undefined && { generatedPages }),
     ...(generatedImageCount !== undefined && { generatedImageCount }),
     ...(failedImageCount !== undefined && { failedImageCount }),
+    ...(providerUsage && { providerUsage }),
     ...(startedAt && { startedAt }),
     ...(book.status === 'complete' && terminalAt && { completedAt: terminalAt }),
     ...(book.status === 'failed' && terminalAt && { failedAt: terminalAt }),
@@ -248,5 +258,6 @@ export function buildGenerationDiagnostics(
     characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
     resume: buildResumeDiagnostics(book.imageGenerationResult),
     imageFailures: buildImageFailureDiagnostics(book.imageGenerationResult),
+    providerUsage: buildProviderUsage(book.imageGenerationResult),
   };
 }

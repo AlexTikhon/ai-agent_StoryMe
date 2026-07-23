@@ -77,6 +77,8 @@ export interface StoryGenerationProvider {
   readonly providerName?: string;
   /** Underlying model identifier, if applicable (mock providers have none). */
   readonly modelName?: string;
+  /** Version of the provider's prompt contract; bump whenever prompt semantics change. */
+  readonly promptVersion?: string;
   generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult>;
 }
 
@@ -791,6 +793,7 @@ export function buildImageGenerationResult(
  * hashing the book's own fields.
  */
 export class MockStoryGenerationProvider implements StoryGenerationProvider {
+  readonly promptVersion = 'mock-story-v1';
   readonly providerName = 'mock' as const;
 
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {

@@ -137,6 +137,7 @@ export interface OpenAICharacterProfileProviderOptions {
  */
 export class OpenAICharacterProfileProvider implements CharacterProfileProvider {
   readonly providerName = 'openai' as const;
+  readonly promptVersion = 'openai-character-profile-v1';
   private readonly logger = new Logger(OpenAICharacterProfileProvider.name);
   private readonly apiKey: string;
   private readonly model: string;

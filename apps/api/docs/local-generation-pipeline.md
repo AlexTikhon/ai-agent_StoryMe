@@ -519,6 +519,38 @@ that can fund only part of a book. This remains independent of
 `REAL_GENERATION_MAX_PAGES`, which limits the highest page number accepted by
 the real provider.
 
+### Whole-run provider-call budget and safe cost metadata
+
+`MAX_PAID_PROVIDER_CALLS_PER_RUN` (default `17`) covers every planned OpenAI
+call in a run: character profile, story, character sheet, cover, each story
+page, and back cover. `BooksService` checks the complete plan before creating
+a GenerationRun, charging a credit, or writing an outbox event; insufficient
+capacity returns `503` with `PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT`.
+`AgentService` repeats the check for direct/internal callers, and the telemetry
+collector prevents the runtime count from crossing the configured maximum.
+
+Each logical provider invocation records safe metadata in
+`imageGenerationResult.providerUsage` and exposes it from generation
+diagnostics: provider/model, operation and optional asset label, prompt
+contract version, SHA-256 prompt fingerprint, logical attempt number,
+duration, success/error status, and optional estimated cost. Raw prompts,
+photo/image bytes, API keys, and provider response bodies are never persisted.
+
+Provider prices are deliberately not hardcoded. Operators may configure
+`OPENAI_STORY_ESTIMATED_COST_USD`,
+`OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD`, and
+`OPENAI_IMAGE_ESTIMATED_COST_USD`. A run-level `estimatedCostUsd` is emitted
+only when every paid call in that run has a configured estimate. These are
+operational estimates, not billing ledger entries.
+
+Story-provider output also passes deterministic cross-artifact validation
+before any illustration call: story and preview pages must be contiguous and
+match the requested count; the image plan must contain one cover, one image
+per page and one back cover; IDs must be unique; and every image prompt must
+retain the text/character safety instructions. Invalid output fails at
+`story_plan`. Retry/resume continues to regenerate only missing or invalid
+artifacts; already valid claim-scoped assets are reused.
+
 ### Manual end-to-end smoke test
 
 `apps/api/scripts/smoke-real-generation.ts`

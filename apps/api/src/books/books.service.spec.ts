@@ -32,6 +32,8 @@ import type { GenerationOutcome } from '../agent/generation-outcome';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
 import type { ImageGenerationProvider } from '../images/image-generation-provider';
+import type { StoryGenerationProvider } from '../agent/story-generation-provider';
+import type { CharacterProfileProvider } from '../agent/character-profile-provider';
 import { InvalidGenerationArtifactPointerError } from '../agent/generation-artifact-namespace';
 import { GENERATION_INTERRUPTED_MESSAGE } from '../agent/generation-job-recovery.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
@@ -228,6 +230,7 @@ const GENERATION_GUARD_ENV = {
   GENERATION_USER_WINDOW_MS: 86_400_000,
   MAX_GENERATIONS_PER_USER_PER_WINDOW: 20,
   MAX_GENERATED_IMAGES_PER_BOOK: 14,
+  MAX_PAID_PROVIDER_CALLS_PER_RUN: 17,
 } as const;
 
 function createMockConfig(overrides: Partial<typeof GENERATION_GUARD_ENV> = {}) {
@@ -259,6 +262,24 @@ function createMockImageGenerationProvider(
     generateImage: vi.fn(),
     generateCharacterSheet: vi.fn(),
   } as unknown as jest.Mocked<ImageGenerationProvider>;
+}
+
+function createMockStoryGenerationProvider(
+  providerName: 'mock' | 'openai' = 'mock',
+): jest.Mocked<StoryGenerationProvider> {
+  return {
+    providerName,
+    generateStory: vi.fn(),
+  } as unknown as jest.Mocked<StoryGenerationProvider>;
+}
+
+function createMockCharacterProfileProvider(
+  providerName: 'mock' | 'openai' = 'mock',
+): jest.Mocked<CharacterProfileProvider> {
+  return {
+    providerName,
+    buildProfile: vi.fn(),
+  } as unknown as jest.Mocked<CharacterProfileProvider>;
 }
 
 function makeCreditTransaction(overrides: Partial<CreditTransaction> = {}): CreditTransaction {
@@ -373,6 +394,8 @@ describe('BooksService', () => {
   let childPhotoProcessor: ReturnType<typeof createMockChildPhotoProcessor>;
   let creditsService: ReturnType<typeof createMockCreditsService>;
   let imageGenerationProvider: ReturnType<typeof createMockImageGenerationProvider>;
+  let storyGenerationProvider: ReturnType<typeof createMockStoryGenerationProvider>;
+  let characterProfileProvider: ReturnType<typeof createMockCharacterProfileProvider>;
 
   function rebuildService(): void {
     service = new BooksService(
@@ -390,6 +413,8 @@ describe('BooksService', () => {
       childPhotoProcessor,
       creditsService as never,
       imageGenerationProvider,
+      storyGenerationProvider,
+      characterProfileProvider,
     );
   }
 
@@ -428,6 +453,8 @@ describe('BooksService', () => {
     childPhotoProcessor = createMockChildPhotoProcessor();
     creditsService = createMockCreditsService();
     imageGenerationProvider = createMockImageGenerationProvider();
+    storyGenerationProvider = createMockStoryGenerationProvider();
+    characterProfileProvider = createMockCharacterProfileProvider();
     rebuildService();
   });
 
@@ -878,6 +905,28 @@ describe('BooksService', () => {
         status: HttpStatus.SERVICE_UNAVAILABLE,
         response: expect.objectContaining({
           code: 'IMAGE_GENERATION_BUDGET_INSUFFICIENT',
+        }),
+      });
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(creditsService.deductInTransaction).not.toHaveBeenCalled();
+      expect(prisma.generationRun.create).not.toHaveBeenCalled();
+      expect(prisma.outboxEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects an insufficient whole-run paid-call budget before creating a run or charging credit', async () => {
+      const book = makeBook({ status: STATUS_CREATED, pageCount: 6 });
+      prisma.book.findFirst.mockResolvedValue(book);
+      config = createMockConfig({ MAX_PAID_PROVIDER_CALLS_PER_RUN: 10 });
+      imageGenerationProvider = createMockImageGenerationProvider('openai');
+      storyGenerationProvider = createMockStoryGenerationProvider('openai');
+      characterProfileProvider = createMockCharacterProfileProvider('openai');
+      rebuildService();
+
+      await expect(service.startGeneration('u-1', 'b-1')).rejects.toMatchObject({
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        response: expect.objectContaining({
+          code: 'PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT',
         }),
       });
 

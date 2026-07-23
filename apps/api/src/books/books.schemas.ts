@@ -151,12 +151,35 @@ const generatedImageEntrySchema = z.object({
   seed: z.string(),
 });
 
+const generationProviderCallMetadataSchema = z.object({
+  callIndex: z.number().int().positive(),
+  operation: z.enum(['character_profile', 'character_sheet', 'story', 'illustration']),
+  assetLabel: z.string().optional(),
+  provider: z.enum(['mock', 'openai', 'unknown']),
+  model: z.string().optional(),
+  promptVersion: z.string(),
+  promptHash: z.string().regex(/^[a-f0-9]{64}$/),
+  attempt: z.number().int().positive(),
+  durationMs: z.number().nonnegative(),
+  status: z.enum(['success', 'error']),
+  estimatedCostUsd: z.number().nonnegative().optional(),
+});
+
+const generationProviderUsageSchema = z.object({
+  maxPaidCalls: z.number().int().positive(),
+  plannedPaidCalls: z.number().int().nonnegative(),
+  actualPaidCalls: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative().optional(),
+  calls: z.array(generationProviderCallMetadataSchema),
+});
+
 export const imageGenerationResultSchema = z.object({
   provider: z.literal('local_mock'),
   status: z.literal('complete'),
   images: z.array(generatedImageEntrySchema),
   createdAt: z.string(),
   imageByteProvider: z.string().nullable().optional(),
+  providerUsage: generationProviderUsageSchema.optional(),
 });
 
 const layoutBoxSchema = z.object({

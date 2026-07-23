@@ -687,6 +687,38 @@ describe('AgentService', () => {
       expect(result.imageByteProvider).toBe('mock');
     });
 
+    it('persists safe per-call provider usage without raw prompts', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      await runGeneration(service, prisma, book);
+
+      const updateArg = prisma.book.update.mock.calls[0]?.[0];
+      const result = updateArg?.data?.imageGenerationResult as Record<string, unknown>;
+      const usage = result.providerUsage as {
+        plannedPaidCalls: number;
+        actualPaidCalls: number;
+        estimatedCostUsd: number;
+        calls: Array<Record<string, unknown>>;
+      };
+      expect(usage).toMatchObject({
+        plannedPaidCalls: 0,
+        actualPaidCalls: 0,
+        estimatedCostUsd: 0,
+      });
+      expect(usage.calls).toHaveLength(11);
+      expect(usage.calls.map((call) => call.operation)).toEqual([
+        'character_profile',
+        'character_sheet',
+        'story',
+        ...Array(8).fill('illustration'),
+      ]);
+      expect(usage.calls.every((call) => /^[a-f0-9]{64}$/.test(String(call.promptHash)))).toBe(
+        true,
+      );
+      expect(JSON.stringify(usage)).not.toContain('preserve the exact same appearance');
+    });
+
     it('imageGenerationResult includes a cover image', async () => {
       const book = makeBook({ childName: 'Mia', theme: 'friendship' });
       setupMocks();
@@ -2151,7 +2183,7 @@ describe('AgentService', () => {
         }
       });
 
-      it('falls back to the text_only template (no imageBlock) when a page has no matching image', async () => {
+      it('rejects a provider result when its image plan is missing a page', async () => {
         const book = makeBook({ childName: 'Mia', theme: 'friendship', pageCount: 4 });
         setupMocks();
         const noImageForPage2Provider: StoryGenerationProvider = {
@@ -2178,15 +2210,15 @@ describe('AgentService', () => {
           generationExecutionService as never,
         );
 
-        await runGeneration(serviceWithGap, prisma, book);
+        const outcome = await runGeneration(serviceWithGap, prisma, book);
 
-        const updateArg = prisma.book.update.mock.calls[0]?.[0];
-        const layout = updateArg?.data?.bookLayout as Record<string, unknown>;
-        const entries = layout.entries as Array<Record<string, unknown>>;
-        const page2Entry = entries.find((e) => e.kind === 'page' && e.pageNumber === 2);
-        expect(page2Entry?.template).toBe('text_only');
-        expect(page2Entry?.imageBlock).toBeUndefined();
-        expect(page2Entry?.textBlock).toBeDefined();
+        expect(outcome).toMatchObject({
+          status: 'failed',
+          failedStep: 'story_plan',
+          errorCode: 'GENERATION_FAILED',
+        });
+        expect(outcome.errorMessage).toContain('image plan must contain exactly one cover');
+        expect(prisma.book.update).not.toHaveBeenCalled();
       });
     });
   });

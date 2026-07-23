@@ -404,6 +404,41 @@ describe('buildGenerationDiagnostics', () => {
   it('defaults imageFailures to an empty array when imageGenerationResult has none', () => {
     const diagnostics = buildGenerationDiagnostics(makeBook({ imageGenerationResult: null }), []);
     expect(diagnostics.imageFailures).toEqual([]);
+    expect(diagnostics.providerUsage).toBeNull();
+  });
+
+  it('surfaces safe provider usage in diagnostics and generation metadata', () => {
+    const providerUsage = {
+      maxPaidCalls: 17,
+      plannedPaidCalls: 2,
+      actualPaidCalls: 1,
+      estimatedCostUsd: 0.02,
+      calls: [
+        {
+          callIndex: 1,
+          operation: 'story',
+          provider: 'openai',
+          model: 'story-model',
+          promptVersion: 'story-v2',
+          promptHash: 'a'.repeat(64),
+          attempt: 1,
+          durationMs: 20,
+          status: 'success',
+          estimatedCostUsd: 0.02,
+        },
+      ],
+    };
+    const diagnostics = buildGenerationDiagnostics(
+      makeBook({
+        imageGenerationResult: {
+          providerUsage,
+        } as unknown as Book['imageGenerationResult'],
+      }),
+      [],
+    );
+
+    expect(diagnostics.providerUsage).toEqual(providerUsage);
+    expect(diagnostics.generationMetadata.providerUsage).toEqual(providerUsage);
   });
 
   it('surfaces imageFailures from imageGenerationResult', () => {

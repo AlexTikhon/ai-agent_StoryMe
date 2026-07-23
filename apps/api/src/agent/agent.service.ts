@@ -18,18 +18,19 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { CHILD_PHOTO_INTEGRITY_MISMATCH } from '../books/child-photo.constants';
-import type {
-  BookPreview,
-  CharacterCard,
-  CharacterProfile,
-  GeneratedImageEntry,
-  GenerationProviderName,
-  ImageGenerationFailureDetail,
-  ImageGenerationResult,
-  ResumeDiagnostics,
+import {
+  type BookPreview,
+  type CharacterCard,
+  type CharacterProfile,
+  type GeneratedImageEntry,
+  type GenerationProviderName,
+  type ImageGenerationFailureDetail,
+  type ImageGenerationResult,
+  type ResumeDiagnostics,
 } from '@book/types';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
+  resolveTargetPageCount,
   type StoryGenerationProvider,
   type StoryGenerationResult,
 } from './story-generation-provider';
@@ -54,6 +55,12 @@ import {
 import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generation-claim-artifacts';
 import { bookLayoutStage } from './book-layout.stage';
 import { pdfPublicationStage } from './pdf-publication.stage';
+import {
+  GenerationProviderTelemetry,
+  requiredPaidProviderCallsForBook,
+  resolveMaxPaidProviderCallsPerRun,
+} from './generation-provider-telemetry';
+import { validateStoryGenerationResult } from './story-generation-result-validator';
 
 /** Stable diagnostics label for one planned image entry: 'cover' | 'page_<n>' | 'back_cover'. */
 function imageAssetLabel(entry: GeneratedImageEntry): string {
@@ -63,6 +70,10 @@ function imageAssetLabel(entry: GeneratedImageEntry): string {
 /** Safe provider label for ImageGenerationFailureDetail — never a secret, never a raw response. */
 function toGenerationProviderName(raw: string | undefined): GenerationProviderName {
   return raw === 'mock' || raw === 'openai' ? raw : 'unknown';
+}
+
+function promptVersion(provider: { readonly promptVersion?: string }, fallback: string): string {
+  return provider.promptVersion ?? fallback;
 }
 
 /**
@@ -194,6 +205,7 @@ export class AgentService {
     bookId: string,
     input: ResolvedGenerationInput,
     currentNamespace: ClaimArtifactNamespace,
+    providerTelemetry: GenerationProviderTelemetry,
   ): Promise<{
     characterProfile: CharacterProfile;
     characterSheetKey?: string;
@@ -211,36 +223,79 @@ export class AgentService {
     const modelName = this.characterProfileProvider.modelName ?? null;
     let characterProfile: CharacterProfile;
     let error: string | undefined = integrityError;
+    const profilePromptInput = {
+      bookId,
+      childName,
+      childAge,
+      theme,
+      language,
+      childPhoto: input.childPhoto
+        ? {
+            contentType: input.childPhoto.contentType,
+            sha256: input.childPhoto.sha256,
+          }
+        : null,
+    };
     try {
-      characterProfile = await this.characterProfileProvider.buildProfile({
-        bookId,
-        childName,
-        childAge,
-        theme,
-        language,
-        photo,
+      characterProfile = await providerTelemetry.record({
+        operation: 'character_profile',
+        provider: toGenerationProviderName(this.characterProfileProvider.providerName),
+        ...(this.characterProfileProvider.modelName && {
+          model: this.characterProfileProvider.modelName,
+        }),
+        promptVersion: promptVersion(this.characterProfileProvider, 'legacy-character-profile-v1'),
+        promptInput: profilePromptInput,
+        execute: () =>
+          this.characterProfileProvider.buildProfile({
+            bookId,
+            childName,
+            childAge,
+            theme,
+            language,
+            photo,
+          }),
       });
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       this.logger.warn(
         `Character profile provider failed for book ${bookId}: ${error}. Falling back to a generic profile.`,
       );
-      characterProfile = await this.fallbackCharacterProfileProvider.buildProfile({
-        bookId,
-        childName,
-        childAge,
-        theme,
-        language,
-        photo,
+      characterProfile = await providerTelemetry.record({
+        operation: 'character_profile',
+        provider: toGenerationProviderName(this.fallbackCharacterProfileProvider.providerName),
+        promptVersion: promptVersion(
+          this.fallbackCharacterProfileProvider,
+          'fallback-character-profile-v1',
+        ),
+        promptInput: profilePromptInput,
+        execute: () =>
+          this.fallbackCharacterProfileProvider.buildProfile({
+            bookId,
+            childName,
+            childAge,
+            theme,
+            language,
+            photo,
+          }),
       });
       providerName = 'mock';
     }
 
     let characterSheetKey: string | undefined;
     try {
-      const { buffer, contentType } = await this.imageGenerationProvider.generateCharacterSheet({
-        bookId,
-        characterProfile,
+      const { buffer, contentType } = await providerTelemetry.record({
+        operation: 'character_sheet',
+        provider: toGenerationProviderName(this.imageGenerationProvider.providerName),
+        ...(this.imageGenerationProvider.modelName && {
+          model: this.imageGenerationProvider.modelName,
+        }),
+        promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
+        promptInput: { bookId, characterProfile },
+        execute: () =>
+          this.imageGenerationProvider.generateCharacterSheet({
+            bookId,
+            characterProfile,
+          }),
       });
       const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
@@ -336,6 +391,7 @@ export class AgentService {
     images: GeneratedImageEntry[],
     characterReference: ImageReference | undefined,
     currentNamespace: ClaimArtifactNamespace,
+    providerTelemetry: GenerationProviderTelemetry,
   ): Promise<{
     generatedCount: number;
     failedCount: number;
@@ -363,13 +419,32 @@ export class AgentService {
     await Promise.all(
       imagesToGenerate.map(async (image) => {
         try {
-          const { buffer, contentType, usedReference } =
-            await this.imageGenerationProvider.generateImage({
+          const { buffer, contentType, usedReference } = await providerTelemetry.record({
+            operation: 'illustration',
+            assetLabel: imageAssetLabel(image),
+            provider: providerName,
+            ...(modelName && { model: modelName }),
+            promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
+            promptInput: {
               bookId,
-              entry: image,
+              entry: {
+                kind: image.kind,
+                pageNumber: image.pageNumber,
+                prompt: image.prompt,
+                negativePrompt: image.negativePrompt,
+                seed: image.seed,
+              },
               characterCard,
-              ...(characterReference && { characterReference }),
-            });
+              characterReferenceSupplied: characterReference !== undefined,
+            },
+            execute: () =>
+              this.imageGenerationProvider.generateImage({
+                bookId,
+                entry: image,
+                characterCard,
+                ...(characterReference && { characterReference }),
+              }),
+          });
           const key = claimImageAssetKey(bookId, currentNamespace, image.kind, image.pageNumber);
           await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
           generatedCount++;
@@ -505,6 +580,7 @@ export class AgentService {
     bookId: string,
     characterProfile: CharacterProfile,
     currentNamespace: ClaimArtifactNamespace,
+    providerTelemetry: GenerationProviderTelemetry,
   ): Promise<{
     characterProfile: CharacterProfile;
     characterSheetKey?: string;
@@ -513,9 +589,19 @@ export class AgentService {
   }> {
     const startedAt = Date.now();
     try {
-      const { buffer, contentType } = await this.imageGenerationProvider.generateCharacterSheet({
-        bookId,
-        characterProfile,
+      const { buffer, contentType } = await providerTelemetry.record({
+        operation: 'character_sheet',
+        provider: toGenerationProviderName(this.imageGenerationProvider.providerName),
+        ...(this.imageGenerationProvider.modelName && {
+          model: this.imageGenerationProvider.modelName,
+        }),
+        promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
+        promptInput: { bookId, characterProfile },
+        execute: () =>
+          this.imageGenerationProvider.generateCharacterSheet({
+            bookId,
+            characterProfile,
+          }),
       });
       const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
@@ -608,6 +694,16 @@ export class AgentService {
     const storyModelName = this.storyGenerationProvider.modelName ?? null;
     const imageProviderName = this.imageGenerationProvider.providerName ?? null;
     const imageModelName = this.imageGenerationProvider.modelName ?? null;
+    const targetPageCount = resolveTargetPageCount(pageCount);
+    const plannedPaidCalls = requiredPaidProviderCallsForBook(targetPageCount, {
+      storyProvider: this.storyGenerationProvider.providerName,
+      characterProfileProvider: this.characterProfileProvider.providerName,
+      imageProvider: this.imageGenerationProvider.providerName,
+    });
+    const providerTelemetry = new GenerationProviderTelemetry(
+      resolveMaxPaidProviderCallsPerRun(),
+      plannedPaidCalls,
+    );
     const aiModelVersions = {
       story: this.modelLabel(this.storyGenerationProvider),
       image: this.modelLabel(this.imageGenerationProvider),
@@ -702,6 +798,7 @@ export class AgentService {
           book.id,
           priorCharacterProfile!,
           currentNamespace,
+          providerTelemetry,
         );
         charBuildResult = {
           ...sheetResult,
@@ -714,6 +811,7 @@ export class AgentService {
         book.id,
         resolvedInput,
         currentNamespace,
+        providerTelemetry,
       );
     }
     const { characterProfile } = charBuildResult;
@@ -746,7 +844,7 @@ export class AgentService {
       );
     } else {
       try {
-        const result = await this.storyGenerationProvider.generateStory({
+        const storyPromptInput = {
           bookId: book.id,
           childName,
           childAge,
@@ -755,7 +853,18 @@ export class AgentService {
           pageCount,
           educationalMessage,
           characterProfile,
+        };
+        const result = await providerTelemetry.record({
+          operation: 'story',
+          provider: toGenerationProviderName(this.storyGenerationProvider.providerName),
+          ...(this.storyGenerationProvider.modelName && {
+            model: this.storyGenerationProvider.modelName,
+          }),
+          promptVersion: promptVersion(this.storyGenerationProvider, 'legacy-story-v1'),
+          promptInput: storyPromptInput,
+          execute: () => this.storyGenerationProvider.generateStory(storyPromptInput),
         });
+        validateStoryGenerationResult(result, targetPageCount);
         characterCard = result.characterCard;
         storyPlanFinal = result.storyPlan;
         bookPreview = result.bookPreview;
@@ -874,6 +983,7 @@ export class AgentService {
         imagesNeedingGeneration,
         characterReference,
         currentNamespace,
+        providerTelemetry,
       );
 
     const rateLimitDiagnostics = this.imageGenerationProvider.getRateLimitDiagnostics?.();
@@ -924,6 +1034,7 @@ export class AgentService {
       delete imageGenerationResult.characterReferenceLoadError;
     }
     imageGenerationResult.imageFailures = failures;
+    imageGenerationResult.providerUsage = providerTelemetry.snapshot();
 
     const imageDurationMs = Date.now() - imageStartedAt;
     const layoutStartedAt = Date.now();

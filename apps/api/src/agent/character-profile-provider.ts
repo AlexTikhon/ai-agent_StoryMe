@@ -29,6 +29,8 @@ export interface CharacterProfileProvider {
   readonly providerName?: string;
   /** Underlying model identifier, if applicable (mock providers have none). */
   readonly modelName?: string;
+  /** Version of the provider's prompt contract; bump whenever prompt semantics change. */
+  readonly promptVersion?: string;
   buildProfile(input: CharacterProfileInput): Promise<CharacterProfile>;
 }
 
@@ -62,6 +64,7 @@ export function buildConsistencyPrompt(
  */
 export class MockCharacterProfileProvider implements CharacterProfileProvider {
   readonly providerName = 'mock' as const;
+  readonly promptVersion = 'mock-character-profile-v1';
 
   async buildProfile(input: CharacterProfileInput): Promise<CharacterProfile> {
     const { childName, childAge } = input;
