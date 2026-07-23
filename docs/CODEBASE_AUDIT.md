@@ -72,8 +72,9 @@ Book cancelled, and refunds once. `partial` and many fine-grained Book statuses 
 - **Artifacts:** bytes are authoritative only through Book namespace pointers. Run ID without
   fencing version is insufficient. Legacy positional keys remain for old rows.
   `previewPdfUrl` is a marker/key, not authorization.
-- **GenerationJob:** best-effort legacy diagnostics mirror. Several update failures are swallowed;
-  it cannot drive correctness.
+- **GenerationJob:** best-effort legacy mirror still written/recovered pending removal. Several
+  update failures are swallowed; diagnostics now use `GenerationRun`, and this mirror cannot
+  drive correctness.
 - **Credits:** `User.credits` is current balance; `CreditTransaction` is audit/idempotency ledger.
 
 ## Large units to split
@@ -90,10 +91,11 @@ Large test files reflect those units; split coverage with implementation boundar
 
 ## Legacy, unused schema, and inconsistencies
 
-`GenerationJob` and its service/recovery are a runtime legacy mirror. Positional image/PDF keys
-support pre-namespace rows. `partial` is reserved/unreachable; several step/status values describe
-an older granular state machine. `AUTH_MODE=dev` is local-only. OAuth, alternate-provider,
-subscription, sharing, notification, profile, and plan fields are placeholders.
+`GenerationJob` writes and its service/recovery are a runtime legacy mirror; diagnostics no longer
+read it. Positional image/PDF keys support pre-namespace rows. `partial` is reserved/unreachable;
+several step/status values describe an older granular state machine. `AUTH_MODE=dev` is local-only.
+OAuth, alternate-provider, subscription, sharing, notification, profile, and plan fields are
+placeholders.
 
 No production Prisma delegate use was found for `ChildProfile`, `Upload`, `BookPage`,
 `CharacterCard`, `BookSeries`, `WizardDraft`, `ShareLink`, `Subscription`, `UserBookState`, or

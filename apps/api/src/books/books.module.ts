@@ -18,6 +18,7 @@ import { BooksController } from './books.controller';
 import { BooksService } from './books.service';
 import { BookCrudService } from './book-crud.service';
 import { BookAssetService } from './book-asset.service';
+import { BookDiagnosticsService } from './book-diagnostics.service';
 import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
 import { IMAGE_ASSET_STORAGE_TOKEN, createImageAssetStorage } from '../images/image-asset-storage';
 import { ChildPhotoProcessor } from '../images/child-photo-processor';
@@ -60,6 +61,7 @@ export class BooksModule {
       BooksService,
       BookCrudService,
       BookAssetService,
+      BookDiagnosticsService,
       AgentService,
       GenerationQueueService,
       GenerationJobService,

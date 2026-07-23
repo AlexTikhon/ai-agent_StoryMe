@@ -66,8 +66,7 @@ import {
   InvalidGenerationInputSnapshotError,
   type GenerationInputSnapshot,
 } from '../agent/generation-input-snapshot';
-import { publishedPreviewPdfExists, PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
-import { resolvePublishedPdfNamespace } from '../agent/generation-artifact-namespace';
+import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { RATE_LIMITER_TOKEN, type RateLimiter } from '../rate-limit/rate-limiter.interface';
 import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import { ChildPhotoProcessor } from '../images/child-photo-processor';
@@ -78,11 +77,11 @@ import {
   type ImageGenerationProvider,
 } from '../images/image-generation-provider';
 import { toBookDto } from './books.mapper';
-import { buildGenerationDiagnostics } from './generation-diagnostics';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
 import { BookCrudService } from './book-crud.service';
 import { BookAssetService } from './book-asset.service';
+import { BookDiagnosticsService } from './book-diagnostics.service';
 
 /** Fixed key for the global generation circuit breaker — one shared budget across every user/book, not scoped to any single identity. */
 const GLOBAL_GENERATION_CIRCUIT_KEY = 'global-generation-circuit';
@@ -144,6 +143,7 @@ export class BooksService {
   private readonly logger = new Logger(BooksService.name);
   private readonly crudService: BookCrudService;
   private readonly assetService: BookAssetService;
+  private readonly diagnosticsService: BookDiagnosticsService;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -167,6 +167,7 @@ export class BooksService {
     private readonly characterProfileProvider: CharacterProfileProvider,
     @Optional() crudService?: BookCrudService,
     @Optional() assetService?: BookAssetService,
+    @Optional() diagnosticsService?: BookDiagnosticsService,
   ) {
     this.crudService = crudService ?? new BookCrudService(prisma);
     this.assetService =
@@ -177,6 +178,15 @@ export class BooksService {
         pdfStorage,
         imageAssetStorage,
         childPhotoProcessor,
+      );
+    this.diagnosticsService =
+      diagnosticsService ??
+      new BookDiagnosticsService(
+        this.crudService,
+        prisma,
+        generationRunService,
+        generationQueueService,
+        pdfStorage,
       );
   }
 
@@ -858,39 +868,7 @@ export class BooksService {
     bookId: string,
     userId: string,
   ): Promise<GenerationDiagnosticsDto> {
-    const book = await this.findOwnedOrThrow(bookId, userId);
-    // Phase B, Slice B4: the same published-namespace resolution every other
-    // production PDF read goes through — keyPresent reflects whether a
-    // publication (claim or legacy) actually exists, not previewPdfUrl alone
-    // (previewPdfUrl is a storage marker, not the ownership authority).
-    const namespace = resolvePublishedPdfNamespace(book);
-    const keyPresent = namespace.kind !== 'not_ready';
-    const [logs, latestJob, previewAvailable, queue] = await Promise.all([
-      this.prisma.agentLog.findMany({
-        where: { bookId },
-        orderBy: { createdAt: 'desc' },
-        take: 20,
-      }),
-      this.generationJobService.findLatest(bookId),
-      // Only worth checking the storage backend if a publication actually
-      // exists — avoids a network/disk round-trip for every book that hasn't
-      // reached that step yet.
-      keyPresent
-        ? publishedPreviewPdfExists(this.pdfStorage, bookId, namespace)
-        : Promise.resolve(false),
-      this.generationQueueService.getQueueDiagnostics(),
-    ]);
-    return buildGenerationDiagnostics(
-      book,
-      logs,
-      latestJob,
-      {
-        driver: this.pdfStorage.driver,
-        keyPresent,
-        previewAvailable: keyPresent && previewAvailable,
-      },
-      queue,
-    );
+    return this.diagnosticsService.getGenerationDiagnostics(bookId, userId);
   }
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */

@@ -103,10 +103,11 @@ management, reader and image thumbnails/previews, single-page editing/regenerati
 repair, hard-delete/data-erasure workflow, Playwright E2E, and production/admin gating for
 diagnostics.
 
-Known limitations: `AgentService`, `BooksService`, and `book-detail-view.tsx` are oversized;
-`GenerationJob` is a best-effort legacy diagnostics mirror; Book soft-delete does not erase
-artifacts; local storage cannot serve separately deployed API/worker processes; console email
-does not deliver production mail.
+Known limitations: `AgentService` and the generation portion of `BooksService` remain oversized;
+`GenerationJob` is still written and recovered as a best-effort legacy mirror, although product
+diagnostics now read authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
+local storage cannot serve separately deployed API/worker processes; console email does not
+deliver production mail.
 
 ## Local run and validation
 

@@ -192,8 +192,9 @@ export type GenerationJobType = 'generate' | 'retry';
 export type GenerationJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 /**
- * Safe, non-secret summary of the latest GenerationJob for a book, surfaced
- * via GenerationDiagnosticsDto.latestJob. Excludes runnerId (internal-only).
+ * Safe, non-secret compatibility summary of the latest authoritative
+ * GenerationRun for a book, surfaced via GenerationDiagnosticsDto.latestJob.
+ * The legacy field/type names remain stable while GenerationJob is retired.
  */
 export interface GenerationJobSummary {
   id: string;
@@ -227,7 +228,7 @@ export interface QueueDiagnostics {
     failed: number;
     delayed: number;
   };
-  /** True when this book's latestJob is queued/running but workerCount is 0 — the exact "queued forever" signature. */
+  /** True when this book's latest authoritative run is queued/running but workerCount is 0. */
   stalledNoWorker: boolean;
 }
 

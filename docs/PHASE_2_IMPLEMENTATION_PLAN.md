@@ -47,14 +47,13 @@ charging, cancellation, or publication. Remaining consumers are:
 
 - best-effort mirror writes in `BooksService`;
 - a mirror-only startup recovery service;
-- `latestJob` diagnostics and its stalled-worker heuristic;
 - tests and historical documentation.
 
 Migration sequence:
 
-1. Change diagnostics to use the latest authoritative `GenerationRun`, retaining the existing
-   `latestJob` response field temporarily as a compatibility projection.
-2. Change stalled-worker detection to queued/running `GenerationRun`.
+1. Completed: diagnostics use the latest authoritative `GenerationRun`, retaining the existing
+   `latestJob` response field as a compatibility projection.
+2. Completed: stalled-worker detection uses queued/running `GenerationRun`.
 3. Remove all mirror writes/providers/recovery code and update tests to assert authoritative run
    behavior instead of best-effort mirroring.
 4. Add a migration that drops `generation_jobs`, then its two enums, after pre-migration checks
