@@ -7,10 +7,10 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash, randomUUID } from 'node:crypto';
 import {
   BookStatus,
   GenerationJobType,
@@ -22,7 +22,6 @@ import {
 } from '@prisma/client';
 import {
   DEFAULT_BOOK_PAGE_COUNT,
-  SupportedLanguage,
   type BookDto,
   type BooksPageDto,
   type CancelGenerationResponse,
@@ -67,19 +66,10 @@ import {
   InvalidGenerationInputSnapshotError,
   type GenerationInputSnapshot,
 } from '../agent/generation-input-snapshot';
-import {
-  getPublishedPreviewPdf,
-  publishedPreviewPdfExists,
-  PDF_STORAGE_TOKEN,
-  type PdfStorage,
-} from '../pdf/pdf-storage';
+import { publishedPreviewPdfExists, PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { resolvePublishedPdfNamespace } from '../agent/generation-artifact-namespace';
 import { RATE_LIMITER_TOKEN, type RateLimiter } from '../rate-limit/rate-limiter.interface';
-import {
-  childPhotoAssetKey,
-  IMAGE_ASSET_STORAGE_TOKEN,
-  type ImageAssetStorage,
-} from '../images/image-asset-storage';
+import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import { ChildPhotoProcessor } from '../images/child-photo-processor';
 import {
   assertCompleteBookImageBudget,
@@ -91,6 +81,8 @@ import { toBookDto } from './books.mapper';
 import { buildGenerationDiagnostics } from './generation-diagnostics';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
+import { BookCrudService } from './book-crud.service';
+import { BookAssetService } from './book-asset.service';
 
 /** Fixed key for the global generation circuit breaker — one shared budget across every user/book, not scoped to any single identity. */
 const GLOBAL_GENERATION_CIRCUIT_KEY = 'global-generation-circuit';
@@ -147,17 +139,11 @@ const GENERATION_STARTED_STATUS = BookStatus.char_build;
  * state (which is terminal in the sense that nothing is running, even though
  * it isn't a pipeline outcome).
  */
-const EDITABLE_BOOK_STATUSES = new Set<BookStatus>([
-  BookStatus.created,
-  BookStatus.complete,
-  BookStatus.failed,
-  BookStatus.partial,
-  BookStatus.cancelled,
-]);
-
 @Injectable()
 export class BooksService {
   private readonly logger = new Logger(BooksService.name);
+  private readonly crudService: BookCrudService;
+  private readonly assetService: BookAssetService;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -179,7 +165,20 @@ export class BooksService {
     private readonly storyGenerationProvider: StoryGenerationProvider,
     @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
     private readonly characterProfileProvider: CharacterProfileProvider,
-  ) {}
+    @Optional() crudService?: BookCrudService,
+    @Optional() assetService?: BookAssetService,
+  ) {
+    this.crudService = crudService ?? new BookCrudService(prisma);
+    this.assetService =
+      assetService ??
+      new BookAssetService(
+        this.crudService,
+        prisma,
+        pdfStorage,
+        imageAssetStorage,
+        childPhotoProcessor,
+      );
+  }
 
   /**
    * Refuses an incomplete paid run before the GenerationRun/credit/outbox
@@ -299,19 +298,7 @@ export class BooksService {
    * "raw request" input to reconcile.
    */
   async create(userId: string, dto: CreateBookDto): Promise<BookDto> {
-    const book = await this.prisma.book.create({
-      data: {
-        userId,
-        title: dto.title,
-        childName: dto.childName,
-        childAge: dto.childAge,
-        language: dto.language ?? SupportedLanguage.English,
-        theme: dto.theme,
-        educationalMessage: dto.educationalMessage ?? null,
-        pageCount: dto.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
-      },
-    });
-    return toBookDto(book);
+    return this.crudService.create(userId, dto);
   }
 
   /**
@@ -343,58 +330,15 @@ export class BooksService {
     bookId: string,
     file: Express.Multer.File | undefined,
   ): Promise<BookDto> {
-    const book = await this.findOwnedOrThrow(bookId, userId);
-    if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
-      throw new ConflictException('Child photo cannot be uploaded while generation is in progress');
-    }
-    if (!file) {
-      throw new BadRequestException(
-        'No photo file provided, or the file was rejected — use jpg/png/webp under 5MB',
-      );
-    }
-
-    const { buffer, contentType } = await this.childPhotoProcessor.process(file.buffer);
-    const sha256 = createHash('sha256').update(buffer).digest('hex');
-    const key = childPhotoAssetKey(bookId, randomUUID());
-    await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
-
-    const result = await this.prisma.book.updateMany({
-      where: { id: bookId, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
-      data: {
-        childPhotoAssetKey: key,
-        childPhotoContentType: contentType,
-        childPhotoSha256: sha256,
-        childPhotoSizeBytes: buffer.length,
-      },
-    });
-    if (result.count === 0) {
-      throw new ConflictException('Child photo cannot be uploaded while generation is in progress');
-    }
-    const updated = await this.findOwnedOrThrow(bookId, userId);
-    return toBookDto(updated);
+    return this.assetService.uploadChildPhoto(userId, bookId, file);
   }
 
   async findAllForUser(userId: string, page: number, limit: number): Promise<BooksPageDto> {
-    const safeLimit = Math.min(Math.max(1, limit), 50);
-    const safePage = Math.max(1, page);
-    const skip = (safePage - 1) * safeLimit;
-
-    const [total, books] = await Promise.all([
-      this.prisma.book.count({ where: { userId, deletedAt: null } }),
-      this.prisma.book.findMany({
-        where: { userId, deletedAt: null },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: safeLimit,
-      }),
-    ]);
-
-    return { items: books.map(toBookDto), page: safePage, limit: safeLimit, total };
+    return this.crudService.findAllForUser(userId, page, limit);
   }
 
   async findOneForUser(id: string, userId: string): Promise<BookDto> {
-    const book = await this.findOwnedOrThrow(id, userId);
-    return toBookDto(book);
+    return this.crudService.findOneForUser(id, userId);
   }
 
   /**
@@ -408,34 +352,12 @@ export class BooksService {
    * whose generation has already begun.
    */
   async update(id: string, userId: string, dto: UpdateBookDto): Promise<BookDto> {
-    const book = await this.findOwnedOrThrow(id, userId);
-    if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
-      throw new ConflictException('Book cannot be edited while generation is in progress');
-    }
-    const result = await this.prisma.book.updateMany({
-      where: { id, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
-      data: dto,
-    });
-    if (result.count === 0) {
-      throw new ConflictException('Book cannot be edited while generation is in progress');
-    }
-    const updated = await this.findOwnedOrThrow(id, userId);
-    return toBookDto(updated);
+    return this.crudService.update(id, userId, dto);
   }
 
   /** See update()'s doc comment — same CAS reasoning applies to soft-delete. */
   async remove(id: string, userId: string): Promise<void> {
-    const book = await this.findOwnedOrThrow(id, userId);
-    if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
-      throw new ConflictException('Book cannot be deleted while generation is in progress');
-    }
-    const result = await this.prisma.book.updateMany({
-      where: { id, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
-      data: { deletedAt: new Date() },
-    });
-    if (result.count === 0) {
-      throw new ConflictException('Book cannot be deleted while generation is in progress');
-    }
+    return this.crudService.remove(id, userId);
   }
 
   /**
@@ -928,20 +850,7 @@ export class BooksService {
     bookId: string,
     userId: string,
   ): Promise<{ buffer: Buffer; contentType: 'application/pdf'; filename: string }> {
-    const book = await this.findOwnedOrThrow(bookId, userId);
-    const namespace = resolvePublishedPdfNamespace(book);
-    if (namespace.kind === 'not_ready') {
-      throw new ConflictException('PDF not ready — book generation is not complete');
-    }
-    // Reads the exact published namespace only — a claim-scoped publication
-    // missing its object is reported as the existing not-found/storage
-    // inconsistency below, never silently served from the legacy key (Phase
-    // B, Slice B4).
-    const result = await getPublishedPreviewPdf(this.pdfStorage, bookId, namespace);
-    if (!result) {
-      throw new NotFoundException('PDF file not found in storage');
-    }
-    return result;
+    return this.assetService.getPreviewPdfBuffer(bookId, userId);
   }
 
   /** Safe, non-secret generation diagnostics for a book — see generation-diagnostics.ts. */
@@ -986,12 +895,6 @@ export class BooksService {
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */
   private async findOwnedOrThrow(id: string, userId: string): Promise<Book> {
-    const book = await this.prisma.book.findFirst({
-      where: { id, userId, deletedAt: null },
-    });
-    if (!book) {
-      throw new NotFoundException('Book not found');
-    }
-    return book;
+    return this.crudService.findOwnedOrThrow(id, userId);
   }
 }
