@@ -14,6 +14,7 @@ import {
   DEFAULT_OPENAI_MAX_RETRIES,
   fetchWithRetry,
   OpenAIRequestError,
+  safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
 import {
   OpenAIImageRateLimiter,
@@ -64,13 +65,14 @@ export class OpenAIImageRequestError extends ImageGenerationProviderError {
 }
 
 /**
- * Best-effort, safe extraction of `error.message`/`error.type`/`error.code`
- * from an OpenAI JSON error body (`{ "error": { "message", "type", "code" } }`).
+ * Best-effort, safe extraction of `error.type`/`error.code` from an OpenAI
+ * JSON error body (`{ "error": { "type", "code" } }`).
  * Never falls back to including the raw body text — an unparseable body could
- * in principle be a non-JSON dump, so a generic message is used instead.
+ * in principle be a non-JSON dump. Provider-controlled `error.message` is
+ * deliberately discarded because this error can be persisted and returned
+ * through generation diagnostics.
  */
 function parseOpenAIErrorBody(bodyText: string): {
-  message?: string;
   type?: string;
   code?: string;
 } {
@@ -81,7 +83,6 @@ function parseOpenAIErrorBody(bodyText: string): {
     const error = parsed?.error;
     if (!error || typeof error !== 'object') return {};
     return {
-      ...(typeof error.message === 'string' && { message: error.message.slice(0, 500) }),
       ...(typeof error.type === 'string' && { type: error.type }),
       ...(typeof error.code === 'string' && { code: error.code }),
     };
@@ -397,12 +398,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         });
       });
     } catch (err) {
-      const message =
-        err instanceof OpenAIRequestError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
+      const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `${logLabel} failed: provider=openai model=${this.model} reason=${message}`,
       );
@@ -431,7 +427,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         `${logLabel} failed: provider=openai model=${this.model} status=${response.status}${parsed.type ? ` type=${parsed.type}` : ''}${parsed.code ? ` code=${parsed.code}` : ''}`,
       );
       throw new OpenAIImageRequestError(
-        `OpenAI image request failed with status ${response.status}${parsed.message ? `: ${parsed.message}` : ''}`,
+        `OpenAI image request failed with status ${response.status}`,
         buildDetails({
           httpStatus: response.status,
           ...(parsed.type && { errorType: parsed.type }),

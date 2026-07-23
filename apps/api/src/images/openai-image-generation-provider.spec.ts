@@ -315,7 +315,9 @@ describe('OpenAIImageGenerationProvider', () => {
       maxRetries: 0,
     });
 
-    await expect(provider.generateImage(makeInput())).rejects.toThrow(/network down/);
+    await expect(provider.generateImage(makeInput())).rejects.toThrow(
+      /OpenAI request failed due to a network error/,
+    );
   });
 
   it('throws a clear error when the response is missing b64_json data', async () => {
@@ -561,7 +563,8 @@ describe('OpenAIImageGenerationProvider', () => {
       expect(err.details.httpStatus).toBe(400);
       expect(err.details.errorType).toBe('invalid_request_error');
       expect(err.details.errorCode).toBe('content_policy_violation');
-      expect(err.message).toContain('Your request was rejected by the safety system.');
+      expect(err.message).toContain('status 400');
+      expect(err.message).not.toContain('Your request was rejected by the safety system.');
     });
 
     it('never includes the raw response body verbatim when it is not valid JSON', async () => {
@@ -1072,9 +1075,7 @@ describe('OpenAIImageGenerationProvider', () => {
         });
 
         const promise = provider.generateImage(makeInput());
-        const assertion = expect(promise).rejects.toThrow(
-          new RegExp(`timed out after ${DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS}ms`),
-        );
+        const assertion = expect(promise).rejects.toThrow(/OpenAI request timed out/);
         await vi.advanceTimersByTimeAsync(DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS);
         await assertion;
       } finally {
@@ -1123,7 +1124,7 @@ describe('OpenAIImageGenerationProvider', () => {
         });
 
         const promise = provider.generateImage(makeInput());
-        const assertion = expect(promise).rejects.toThrow(/timed out after 5000ms/);
+        const assertion = expect(promise).rejects.toThrow(/OpenAI request timed out/);
         await vi.advanceTimersByTimeAsync(5000);
         await assertion;
       } finally {

@@ -891,13 +891,29 @@ function PdfSection({ book }: { book: BookDto }) {
   const handleOpen = async (e: MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
     if (opening) return;
+
+    // Open the tab while this handler still has the browser's user-gesture
+    // permission. Opening it only after the authenticated fetch resolves is
+    // treated as an unsolicited popup by Safari and stricter browser setups.
+    const pdfWindow = window.open('about:blank', '_blank');
+    if (!pdfWindow) {
+      setOpenError('Your browser blocked the PDF tab. Allow popups and try again.');
+      return;
+    }
+    pdfWindow.opener = null;
+
     setOpening(true);
     setOpenError(null);
     try {
       const blob = await booksApi.downloadPdf(book.id);
       const objectUrl = URL.createObjectURL(blob);
-      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      pdfWindow.location.replace(objectUrl);
+      // Keep the URL alive long enough for the browser's PDF viewer to take
+      // ownership, then release the backing Blob instead of leaking it for
+      // the lifetime of the dashboard tab.
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     } catch {
+      pdfWindow.close();
       setOpenError('Could not open PDF. Please try again.');
     } finally {
       setOpening(false);

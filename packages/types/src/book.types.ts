@@ -489,12 +489,11 @@ export interface GenerateBookResponse {
 }
 
 /**
- * Response from POST /books/:id/cancel (Phase G1) — backend cancellation
- * only; no frontend Cancel button yet (see Phase G2). `creditsRefunded` is
- * `0` for a legacy/unbilled run (created before generation credit charging
- * existed) or a run whose original charge is otherwise not found, and equal
- * to the run's original charge amount whenever a matching charge exists —
- * never a hardcoded constant.
+ * Response from POST /books/:id/cancel. `creditsRefunded` is `0` for a
+ * legacy/unbilled run (created before generation credit charging existed) or
+ * a run whose original charge is otherwise not found, and equal to the run's
+ * original charge amount whenever a matching charge exists — never a
+ * hardcoded constant.
  */
 export interface CancelGenerationResponse {
   book: BookDto;

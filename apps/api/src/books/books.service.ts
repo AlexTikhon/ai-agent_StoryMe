@@ -69,6 +69,12 @@ import {
   type ImageAssetStorage,
 } from '../images/image-asset-storage';
 import { ChildPhotoProcessor } from '../images/child-photo-processor';
+import {
+  assertCompleteBookImageBudget,
+  IMAGE_GENERATION_PROVIDER_TOKEN,
+  requiredGeneratedImagesForBook,
+  type ImageGenerationProvider,
+} from '../images/image-generation-provider';
 import { toBookDto } from './books.mapper';
 import { buildGenerationDiagnostics } from './generation-diagnostics';
 import type { CreateBookDto } from './dto/create-book.dto';
@@ -94,6 +100,7 @@ function isRecordNotFound(err: unknown): boolean {
 export const BOOK_ALREADY_CANCELLED_CODE = 'BOOK_ALREADY_CANCELLED';
 /** Phase G1: stable code for POST /books/:id/cancel on a book with no active (queued/running) run — created/complete/failed/partial all land here. */
 export const BOOK_NOT_IN_PROGRESS_CODE = 'BOOK_NOT_IN_PROGRESS';
+export const IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE = 'IMAGE_GENERATION_BUDGET_INSUFFICIENT';
 
 function alreadyCancelledException(): HttpException {
   return new HttpException(
@@ -153,7 +160,31 @@ export class BooksService {
     @Inject(RATE_LIMITER_TOKEN) private readonly rateLimiter: RateLimiter,
     private readonly childPhotoProcessor: ChildPhotoProcessor,
     private readonly creditsService: CreditsService,
+    @Inject(IMAGE_GENERATION_PROVIDER_TOKEN)
+    private readonly imageGenerationProvider: ImageGenerationProvider,
   ) {}
+
+  /**
+   * Refuses an incomplete paid run before the GenerationRun/credit/outbox
+   * transaction begins. A per-book credit represents a complete PDF, so
+   * spending provider budget on only the first N illustrations is never a
+   * valid degraded outcome.
+   */
+  private assertCompleteImageBudget(inputSnapshot: GenerationInputSnapshot): void {
+    if (this.imageGenerationProvider.providerName !== 'openai') return;
+
+    const requiredImages = requiredGeneratedImagesForBook(inputSnapshot.pageCount);
+    const configuredLimit = this.config.get('MAX_GENERATED_IMAGES_PER_BOOK', { infer: true });
+    try {
+      assertCompleteBookImageBudget(requiredImages, configuredLimit);
+    } catch {
+      throw new ServiceUnavailableException({
+        error: 'Image generation capacity is temporarily unavailable',
+        message: 'Image generation capacity is temporarily unavailable',
+        code: IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
+      });
+    }
+  }
 
   /**
    * Business-rule guards on starting a (paid) generation run — distinct from
@@ -607,6 +638,7 @@ export class BooksService {
     inputSnapshot: GenerationInputSnapshot;
     retryOfRunId?: string;
   }): Promise<Book> {
+    this.assertCompleteImageBudget(params.inputSnapshot);
     const inputHash = hashInputSnapshot(params.inputSnapshot);
 
     let created: { book: Book; run: GenerationRun };

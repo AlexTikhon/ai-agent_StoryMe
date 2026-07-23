@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  assertCompleteBookImageBudget,
+  ImageGenerationBudgetError,
   MockImageGenerationProvider,
+  requiredGeneratedImagesForBook,
   resolveMaxGeneratedImagesPerBook,
   type ImageGenerationInput,
   type ImageReference,
@@ -166,16 +169,16 @@ describe('MockImageGenerationProvider', () => {
 });
 
 describe('resolveMaxGeneratedImagesPerBook', () => {
-  it('defaults to 3 when unset', () => {
-    expect(resolveMaxGeneratedImagesPerBook({} as NodeJS.ProcessEnv)).toBe(3);
+  it('defaults to 14 when unset so a maximum-length book can complete', () => {
+    expect(resolveMaxGeneratedImagesPerBook({} as NodeJS.ProcessEnv)).toBe(14);
   });
 
-  it('defaults to 3 when empty', () => {
+  it('defaults to 14 when empty', () => {
     expect(
       resolveMaxGeneratedImagesPerBook({
         MAX_GENERATED_IMAGES_PER_BOOK: '',
       } as unknown as NodeJS.ProcessEnv),
-    ).toBe(3);
+    ).toBe(14);
   });
 
   it('parses a valid positive integer from env', () => {
@@ -199,16 +202,33 @@ describe('resolveMaxGeneratedImagesPerBook', () => {
       resolveMaxGeneratedImagesPerBook({
         MAX_GENERATED_IMAGES_PER_BOOK: '0',
       } as unknown as NodeJS.ProcessEnv),
-    ).toBe(3);
+    ).toBe(14);
     expect(
       resolveMaxGeneratedImagesPerBook({
         MAX_GENERATED_IMAGES_PER_BOOK: '-2',
       } as unknown as NodeJS.ProcessEnv),
-    ).toBe(3);
+    ).toBe(14);
     expect(
       resolveMaxGeneratedImagesPerBook({
         MAX_GENERATED_IMAGES_PER_BOOK: 'not-a-number',
       } as unknown as NodeJS.ProcessEnv),
-    ).toBe(3);
+    ).toBe(14);
+  });
+});
+
+describe('complete-book image budget', () => {
+  it('requires one image per story page plus cover and back cover', () => {
+    expect(requiredGeneratedImagesForBook(6)).toBe(8);
+    expect(requiredGeneratedImagesForBook(12)).toBe(14);
+  });
+
+  it('uses the product default page count when the snapshot has no explicit page count', () => {
+    expect(requiredGeneratedImagesForBook(null)).toBe(8);
+    expect(requiredGeneratedImagesForBook(undefined)).toBe(8);
+  });
+
+  it('rejects the whole budget instead of allowing partial paid generation', () => {
+    expect(() => assertCompleteBookImageBudget(8, 7)).toThrow(ImageGenerationBudgetError);
+    expect(() => assertCompleteBookImageBudget(8, 8)).not.toThrow();
   });
 });

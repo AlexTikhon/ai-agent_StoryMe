@@ -61,6 +61,7 @@ describe('Generation credit charging and refunds (Phase E2, real Postgres)', () 
     rateLimiter,
     {} as never, // ChildPhotoProcessor
     creditsService,
+    { providerName: 'mock' } as never, // ImageGenerationProvider — the paid-image budget does not apply in these scheduling/ledger tests
   );
 
   const userIds: string[] = [];

@@ -99,6 +99,21 @@ export class OpenAIRequestError extends Error {
   }
 }
 
+/**
+ * Stable message safe to persist in Book/AgentLog diagnostics. The original
+ * network error remains available through `cause` for in-process debugging,
+ * but its provider/runtime-defined text is never copied into user-visible
+ * state.
+ */
+export function safeOpenAIRequestFailureMessage(err: unknown): string {
+  if (err instanceof OpenAIRequestError) {
+    return err.reason === 'timeout'
+      ? 'OpenAI request timed out'
+      : 'OpenAI request failed due to a network error';
+  }
+  return 'OpenAI request failed unexpectedly';
+}
+
 export interface FetchWithRetryOptions {
   fetchImpl: typeof fetch;
   url: string;

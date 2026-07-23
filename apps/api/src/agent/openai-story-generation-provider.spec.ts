@@ -232,15 +232,17 @@ describe('OpenAIStoryGenerationProvider', () => {
   });
 
   it('throws a clear error when the HTTP response is not ok', async () => {
+    const text = vi.fn().mockResolvedValue('invalid api key');
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
       json: async () => ({}),
-      text: async () => 'invalid api key',
+      text,
     });
     const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-bad', fetchImpl });
 
     await expect(provider.generateStory(makeInput())).rejects.toThrow(/status 401/);
+    expect(text).not.toHaveBeenCalled();
   });
 
   it('throws a clear error when fetch itself rejects', async () => {
@@ -251,7 +253,9 @@ describe('OpenAIStoryGenerationProvider', () => {
       maxRetries: 0,
     });
 
-    await expect(provider.generateStory(makeInput())).rejects.toThrow(/network down/);
+    await expect(provider.generateStory(makeInput())).rejects.toThrow(
+      /OpenAI request failed due to a network error/,
+    );
   });
 
   it('throws a StoryGenerationProviderError when the request times out', async () => {

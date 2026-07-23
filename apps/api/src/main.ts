@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { envPresent, logStartup } from './common/startup-log';
+import { buildCorsOptions } from './config/cors.config';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -57,23 +58,7 @@ async function bootstrap(): Promise<void> {
   app.use(cookieParser());
 
   // ── CORS ──────────────────────────────────────────────────────────────────
-  const allowedOrigins = (process.env['ALLOWED_ORIGINS'] ?? 'http://localhost:3000')
-    .split(',')
-    .map((o) => o.trim());
-
-  app.enableCors({
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-Request-ID',
-      // Dev-only auth headers — remove once real auth replaces DevAuthGuard.
-      'x-user-email',
-      'x-user-name',
-    ],
-  });
+  app.enableCors(buildCorsOptions());
 
   // ── Global prefix ─────────────────────────────────────────────────────────
   app.setGlobalPrefix('api');
