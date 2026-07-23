@@ -1,14 +1,6 @@
-import {
-  HttpException,
-  HttpStatus,
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  Optional,
-} from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { BookStatus, GenerationRunStatus, type Book } from '@prisma/client';
+import type { Book } from '@prisma/client';
 import {
   type BookDto,
   type BooksPageDto,
@@ -23,14 +15,9 @@ import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationRunService } from '../agent/generation-run.service';
-import { StaleGenerationRunError } from '../agent/generation-execution.service';
-import {
-  GenerationRunCoordinator,
-  GenerationRunMirrorInvariantError,
-} from '../agent/generation-run-coordinator.service';
+import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
 import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
-import type { GenerationOutcome } from '../agent/generation-outcome';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
   type StoryGenerationProvider,
@@ -47,45 +34,22 @@ import {
   IMAGE_GENERATION_PROVIDER_TOKEN,
   type ImageGenerationProvider,
 } from '../images/image-generation-provider';
-import { toBookDto } from './books.mapper';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
 import { BookCrudService } from './book-crud.service';
 import { BookAssetService } from './book-asset.service';
 import { BookDiagnosticsService } from './book-diagnostics.service';
 import { BookGenerationService } from './book-generation.service';
+import { BookGenerationExecutionService } from './book-generation-execution.service';
 
 export {
   IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
   PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE,
 } from './book-generation.service';
-
-/** Phase G1: stable code for a repeated POST /books/:id/cancel — see API_SPEC.md. */
-export const BOOK_ALREADY_CANCELLED_CODE = 'BOOK_ALREADY_CANCELLED';
-/** Phase G1: stable code for POST /books/:id/cancel on a book with no active (queued/running) run — created/complete/failed/partial all land here. */
-export const BOOK_NOT_IN_PROGRESS_CODE = 'BOOK_NOT_IN_PROGRESS';
-
-function alreadyCancelledException(): HttpException {
-  return new HttpException(
-    {
-      error: 'Book generation already cancelled',
-      message: 'Book generation already cancelled',
-      code: BOOK_ALREADY_CANCELLED_CODE,
-    },
-    HttpStatus.CONFLICT,
-  );
-}
-
-function notInProgressException(): HttpException {
-  return new HttpException(
-    {
-      error: 'Book is not currently generating',
-      message: 'Book is not currently generating',
-      code: BOOK_NOT_IN_PROGRESS_CODE,
-    },
-    HttpStatus.CONFLICT,
-  );
-}
+export {
+  BOOK_ALREADY_CANCELLED_CODE,
+  BOOK_NOT_IN_PROGRESS_CODE,
+} from './book-generation-execution.service';
 
 /**
  * Statuses where the generation pipeline is not actively running — safe for
@@ -96,11 +60,11 @@ function notInProgressException(): HttpException {
  */
 @Injectable()
 export class BooksService {
-  private readonly logger = new Logger(BooksService.name);
   private readonly crudService: BookCrudService;
   private readonly assetService: BookAssetService;
   private readonly diagnosticsService: BookDiagnosticsService;
   private readonly generationService: BookGenerationService;
+  private readonly generationExecutionService: BookGenerationExecutionService;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -126,6 +90,7 @@ export class BooksService {
     @Optional() assetService?: BookAssetService,
     @Optional() diagnosticsService?: BookDiagnosticsService,
     @Optional() generationService?: BookGenerationService,
+    @Optional() generationExecutionService?: BookGenerationExecutionService,
   ) {
     this.crudService = crudService ?? new BookCrudService(prisma);
     this.assetService =
@@ -160,6 +125,15 @@ export class BooksService {
         imageGenerationProvider,
         storyGenerationProvider,
         characterProfileProvider,
+      );
+    this.generationExecutionService =
+      generationExecutionService ??
+      new BookGenerationExecutionService(
+        prisma,
+        agentService,
+        generationQueueService,
+        generationJobService,
+        generationRunCoordinator,
       );
   }
 
@@ -306,33 +280,7 @@ export class BooksService {
    *     mechanism).
    */
   async cancelGeneration(userId: string, bookId: string): Promise<CancelGenerationResponse> {
-    const result = await this.generationRunCoordinator.cancelGeneration({ bookId, userId });
-
-    switch (result.kind) {
-      case 'not_found':
-        throw new NotFoundException('Book not found');
-      case 'already_cancelled':
-        throw alreadyCancelledException();
-      case 'not_in_progress':
-        throw notInProgressException();
-      case 'book_mirror_mismatch':
-        throw new GenerationRunMirrorInvariantError(result.runId, result.bookId);
-      case 'applied':
-        break;
-    }
-
-    const legacyJob = await this.generationJobService.findActive(bookId).catch(() => null);
-    if (legacyJob) {
-      await this.markJob(
-        this.generationJobService.markCancelled(legacyJob.id),
-        legacyJob.id,
-        bookId,
-        'cancelled',
-      );
-    }
-    await this.generationQueueService.removeIfSafe(result.runId);
-
-    return { book: toBookDto(result.book), creditsRefunded: result.creditsRefunded };
+    return this.generationExecutionService.cancelGeneration(userId, bookId);
   }
 
   /**
@@ -370,73 +318,7 @@ export class BooksService {
    * completed, and the exhausted-retries backstop eventually reconciles it.
    */
   async runGenerationPipeline(ctx: GenerationExecutionContext): Promise<void> {
-    const { bookId, runId } = ctx;
-    this.logger.log(`Starting generation pipeline — bookId=${bookId} runId=${runId}`);
-
-    const legacyJob = await this.generationJobService.findActive(bookId).catch(() => null);
-    if (legacyJob) {
-      await this.markJob(
-        this.generationJobService.markRunning(legacyJob.id),
-        legacyJob.id,
-        bookId,
-        'running',
-      );
-    }
-
-    let outcome: GenerationOutcome;
-    try {
-      outcome = await this.agentService.startBookGeneration(ctx);
-      this.logger.log(`Book ${bookId} pipeline outcome -> ${outcome.status} (run ${runId})`);
-    } catch (err) {
-      if (err instanceof StaleGenerationRunError) {
-        this.logger.warn(
-          `Run ${runId} (book ${bookId}) was superseded mid-pipeline — abandoning this attempt without touching Book/GenerationRun further: ${err.message}`,
-        );
-        return;
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(
-        `Generation pipeline threw unexpectedly for run ${runId} (book ${bookId}): ${message}`,
-      );
-      if (legacyJob) {
-        await this.markJob(
-          this.generationJobService.markFailed(legacyJob.id, { errorMessage: message }),
-          legacyJob.id,
-          bookId,
-          'failed',
-        );
-      }
-      // Deliberately does not touch GenerationRun/Book status — see this
-      // method's doc comment. Rethrow so BullMQ retries.
-      throw err;
-    }
-
-    const published = await this.generationRunCoordinator.completeRun(ctx, outcome);
-    if (published === 'book_mirror_mismatch') {
-      throw new GenerationRunMirrorInvariantError(runId, bookId);
-    }
-    if (published !== 'applied') return;
-
-    if (legacyJob) {
-      if (outcome.status === BookStatus.failed) {
-        await this.markJob(
-          this.generationJobService.markFailed(legacyJob.id, {
-            errorMessage: outcome.errorMessage ?? 'Generation failed',
-            ...(outcome.failedStep !== undefined && { failedStep: outcome.failedStep }),
-          }),
-          legacyJob.id,
-          bookId,
-          'failed',
-        );
-      } else {
-        await this.markJob(
-          this.generationJobService.markCompleted(legacyJob.id),
-          legacyJob.id,
-          bookId,
-          'completed',
-        );
-      }
-    }
+    return this.generationExecutionService.runGenerationPipeline(ctx);
   }
 
   /**
@@ -455,53 +337,7 @@ export class BooksService {
    * while the process stays up.
    */
   async markRunPermanentlyFailedAfterExhaustedRetries(runId: string): Promise<void> {
-    const run = await this.prisma.generationRun.findUnique({ where: { id: runId } });
-    if (!run || run.status !== GenerationRunStatus.running) return;
-
-    const safeMessage = 'Generation failed after repeated errors — please retry.';
-    const result = await this.generationRunCoordinator.failAbandoned(
-      {
-        runId: run.id,
-        bookId: run.bookId,
-        fencingVersion: run.fencingVersion,
-        fromStatus: GenerationRunStatus.running,
-      },
-      { errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE', errorMessage: safeMessage },
-    );
-    if (result === 'book_mirror_mismatch') {
-      // Rethrown (caught and logged by GenerationQueueProcessor.onFailed's
-      // caller) rather than silently returned — a broken mirror invariant on
-      // an exhausted-retries run must never look like "nothing to do" here;
-      // GenerationRunRecoveryService's sweep is what eventually reconciles
-      // it, since BullMQ has nothing left to redeliver.
-      throw new GenerationRunMirrorInvariantError(run.id, run.bookId);
-    }
-    if (result !== 'applied') return;
-
-    const legacyJob = await this.generationJobService.findActive(run.bookId).catch(() => null);
-    if (legacyJob) {
-      await this.markJob(
-        this.generationJobService.markFailed(legacyJob.id, { errorMessage: safeMessage }),
-        legacyJob.id,
-        run.bookId,
-        'failed',
-      );
-    }
-  }
-
-  /** Swallows and logs a GenerationJob status-update failure — it must never affect the pipeline's own outcome. */
-  private async markJob(
-    update: Promise<unknown>,
-    jobId: string,
-    bookId: string,
-    action: string,
-  ): Promise<void> {
-    await update.catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(
-        `Failed to mark generation job ${jobId} ${action} for book ${bookId}: ${message}`,
-      );
-    });
+    return this.generationExecutionService.markRunPermanentlyFailedAfterExhaustedRetries(runId);
   }
 
   async getPreviewPdfBuffer(

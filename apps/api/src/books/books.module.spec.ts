@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { BooksModule } from './books.module';
 import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
 import { BookGenerationService } from './book-generation.service';
+import { BookGenerationExecutionService } from './book-generation-execution.service';
 
 /**
  * These assert on the DynamicModule metadata BooksModule.register produces,
@@ -18,6 +19,12 @@ describe('BooksModule.register', () => {
     );
     expect(BooksModule.register({ enableGenerationWorker: true }).providers).toContain(
       BookGenerationService,
+    );
+    expect(BooksModule.register({ enableGenerationWorker: false }).providers).toContain(
+      BookGenerationExecutionService,
+    );
+    expect(BooksModule.register({ enableGenerationWorker: true }).providers).toContain(
+      BookGenerationExecutionService,
     );
   });
 

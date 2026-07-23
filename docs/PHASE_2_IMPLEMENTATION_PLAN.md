@@ -67,8 +67,8 @@ the mirror was deliberately allowed to be missing or stale.
 
 1. Extract UI diagnostics (lowest risk).
 2. Extract Book CRUD/assets/diagnostics behind the facade.
-3. In progress: generation admission and atomic scheduling are extracted without changing the
-   transaction block; worker execution and cancellation remain.
+3. Complete: generation admission/atomic scheduling and worker execution/cancellation are
+   extracted without changing the authoritative coordinator transaction boundaries.
 4. Extract typed Agent stages one at a time with focused tests.
 5. Replace/remove GenerationJob and apply the schema migration.
 6. Run format, lint, typecheck, unit tests, build, then integration tests when local

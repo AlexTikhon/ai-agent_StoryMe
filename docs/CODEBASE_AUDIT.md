@@ -81,8 +81,9 @@ Book cancelled, and refunds once. `partial` and many fine-grained Book statuses 
 
 - `agent.service.ts` (~1,268 lines): references, character/story/image orchestration, layout/PDF,
   telemetry, resume diagnostics, and logs.
-- `books.service.ts`: now a compatibility facade for extracted CRUD, assets, diagnostics, and
-  generation scheduling, but worker execution/cancellation and legacy mirror updates remain.
+- `books.service.ts`: now a compatibility facade for extracted CRUD, assets, diagnostics,
+  generation scheduling, and worker execution/cancellation services. The generation services
+  still maintain the best-effort legacy mirror pending its reviewed removal.
 - `book-detail-view.tsx` (~1,038): product controls, polling, diagnostics, asset keys, PDF, errors.
 - Later candidates: `story-generation-provider.ts` (~773) and
   `claim-artifact-cleanup.service.ts` (~617).
