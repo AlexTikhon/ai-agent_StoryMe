@@ -66,7 +66,7 @@ buffer, contentType)`. **This helper never throws.** Both a `generateImage`
   failure (e.g. a real provider's API outage) and a `saveImageAsset` failure
   for one entry are caught per-entry, logged (`Image generation/save failed
 for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
-  Unlike earlier phases, this no longer degrades quietly: `assertAllImagesResolved`
+  Unlike earlier phases, this no longer degrades quietly: `PdfPublicationStage`
   (Phase 2 below) requires every planned illustration to have real bytes, so
   any entry left without saved bytes now fails the whole book at `pdf_render`
   with a clear error naming the page, instead of rendering a placeholder for
@@ -77,24 +77,25 @@ for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
   `AgentLog` row's `error` field (status stays `success`, since the failure is
   only realized later at `pdf_render`) rather than ever setting
   `failedStep: 'image_gen'`.
-- (c) `buildBookLayout` (private function in `agent.service.ts`) — builds the
-  print-ready `BookLayout` (2400×2400px canvas, `square_8x8` trim),
-  referencing the same mock `imageUrl`s. Every story page uses the single
-  stable `image_top_text_bottom` template (image on top, text below) — this
-  step stays in `AgentService` rather than the story provider — it's
-  print-layout logic over already-built story/image data, not story content
-  itself.
+- (c) `BookLayoutStage` (`book-layout.stage.ts`) — builds the print-ready
+  `BookLayout` (2400×2400px canvas, `square_8x8` trim), referencing the same
+  mock `imageUrl`s. Every story page uses the single stable
+  `image_top_text_bottom` template (image on top, text below). It implements
+  the small typed `GenerationStage<Input, Output>` contract and remains
+  independent of the story provider because it is deterministic print-layout
+  logic over already-built story/image data, not story content itself.
 
 Then, in three phases against the database:
 
 - **Phase 1** — one `prisma.book.update`: status → `layout`, persists
   `characterCard`, `storyPlan`, `bookPreview`, `imageGenerationResult`,
   `bookLayout`.
-- **Phase 2** — PDF render, wrapped in try/catch:
+- **Phase 2** — `PdfPublicationStage` (`pdf-publication.stage.ts`), wrapped
+  in `AgentService`'s existing try/catch:
   1. `buildImageBufferResolver(imageAssetStorage, bookId, layout.entries)`
      pre-resolves every layout entry's saved bytes (if any) from
      `ImageAssetStorage` into a synchronous lookup closure.
-  2. `assertAllImagesResolved(logger, bookId, bookLayout, resolveImageBuffer)`
+  2. The stage's missing-image guard
      checks every layout entry that was planned to have an image actually
      has resolvable bytes, logging each page's outcome; if any are missing it
      throws one clear error naming every affected page (see
@@ -103,9 +104,9 @@ Then, in three phases against the database:
   3. `renderStorybookPdf(bookLayout, { resolveImageBuffer })` renders one PDF
      page per layout entry, embedding real bytes for every entry (the
      validation above guarantees they're all present on this path).
-  4. `pdfStorage.savePreviewPdf(bookId, buffer)` persists the PDF (default
-     `LocalPdfStorage`: `tmp/books/<bookId>/storybook.pdf`) and returns a
-     `url`.
+  4. `pdfStorage.saveClaimPreviewPdf(bookId, namespace, buffer)` persists the
+     claim-scoped PDF and returns its unpublished `url`; publication remains
+     owned by `GenerationRunCoordinator` after the fencing check.
   - Any error in this phase (render or storage) is caught, logged, and
     recorded — the book is **not** marked complete.
 - **Phase 3** — second `prisma.book.update`:
@@ -199,7 +200,7 @@ interface ResumeDiagnostics {
 `missingAssetsAfterRetry` is only populated for `character_sheet` (its own
 independent best-effort check) and, when `pdf_render` fails, a fresh
 `classifyImageAssets` pass — a successful `pdf_render` implies every planned
-illustration resolved (see `assertAllImagesResolved` above), so no extra
+illustration resolved (see `PdfPublicationStage` above), so no extra
 storage reads happen on the happy path.
 
 ## Story generation provider boundary
@@ -250,10 +251,11 @@ interface StoryGenerationProvider {
   after the provider returns. This split is deliberate: a future real-LLM
   story provider and a future real-image provider are independent phases and
   shouldn't be coupled.
-- `buildBookLayout` (print-layout geometry over already-built story/image
-  data) intentionally stayed a private function in `agent.service.ts` rather
-  than moving into the provider — it isn't story content, and moving it would
-  have widened this phase's scope beyond the story-generation boundary.
+- `BookLayoutStage` owns print-layout geometry over already-built story/image
+  data. `PdfPublicationStage` owns image resolution, missing-artifact
+  validation, rendering and claim-scoped storage. `AgentService` only orders
+  these stages and retains fencing checkpoints/outcome assembly; neither
+  stage changes retry, cancellation, credit or publication semantics.
 - **Failure behavior**: if `generateStory` throws, `AgentService` catches it
   before Phase 1 runs, marks the book `failed` (`failedStep: 'story_plan'`,
   `errorMessage` from the caught error's message), writes one `story_plan`
@@ -380,7 +382,7 @@ interface ImageGenerationProvider {
   transient real-API error) and a `saveImageAsset` failure for one entry are
   handled identically by `AgentService.generateAndSaveImageAssets`: caught,
   logged, and counted per-entry, never thrown from that helper. That entry
-  has no saved bytes, so `assertAllImagesResolved` fails the whole book at
+  has no saved bytes, so `PdfPublicationStage` fails the whole book at
   the `pdf_render` step (see "Local mock/real image producer" above and
   `apps/api/docs/pdf-rendering.md`) instead of degrading to a placeholder —
   this holds even if _every_ entry fails (e.g. a full API outage). The counts
@@ -493,7 +495,7 @@ applies to the real provider — `MockImageGenerationProvider` is unchanged.
 other `generateImage` failure (see "Failure behavior" above) so the rest of
 the batch can keep going; this guardrail's actual effect is just to skip the
 network call for pages beyond the limit. **That page still has no saved
-bytes, so `assertAllImagesResolved` (see below and
+bytes, so `PdfPublicationStage` (see below and
 `apps/api/docs/pdf-rendering.md`) now fails the whole book at the
 `pdf_render` step instead of letting it complete with a placeholder** — raise
 `REAL_GENERATION_MAX_PAGES` if you need real illustrations past page 12.
@@ -2919,22 +2921,22 @@ re-verified here — see "Test coverage" below.
 
 ## Failure states summary
 
-| State                                            | Trigger                                                                                                                                                                                                         | HTTP surface                                                                                                                                                                                                                            |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BadRequestException` (400)                      | `generate` called with missing draft fields                                                                                                                                                                     | `POST /:id/generate`                                                                                                                                                                                                                    |
-| `ConflictException` (409)                        | `update`/`remove` after `status !== created`                                                                                                                                                                    | `PATCH /:id`, `DELETE /:id`                                                                                                                                                                                                             |
-| `ConflictException` (409)                        | `generate` called when `status !== created`                                                                                                                                                                     | `POST /:id/generate`                                                                                                                                                                                                                    |
-| `ConflictException` (409)                        | `retry-generation` called when `status !== failed`                                                                                                                                                              | `POST /:id/retry-generation`                                                                                                                                                                                                            |
-| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I)                                                                                        | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
-| `ServiceUnavailableException` (503)              | real-image budget cannot cover cover + every page + back cover (`IMAGE_GENERATION_BUDGET_INSUFFICIENT`) — rejected before run creation or credit charge                                                         | `POST /:id/generate`, `POST /:id/retry-generation`, `POST /:id/regenerate`                                                                                                                                                              |
-| `InternalServerErrorException` (500)             | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K)                                                                                                                  | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
-| `ConflictException` (409)                        | preview requested before `previewPdfUrl` is set                                                                                                                                                                 | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
-| `NotFoundException` (404)                        | book missing / not owned / soft-deleted                                                                                                                                                                         | any `:id` route                                                                                                                                                                                                                         |
-| `NotFoundException` (404)                        | `previewPdfUrl` set but file missing from storage                                                                                                                                                               | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
-| `BookStatus.failed`                              | PDF render or `pdfStorage.savePreviewPdf` throws                                                                                                                                                                | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H                                                                                                                  |
-| `BookStatus.failed`                              | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`)                                                                                                                                     | observed via polling — see above                                                                                                                                                                                                        |
-| `BookStatus.failed`                              | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`)                                                                                                                       | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H)                                                                                                                                            |
-| `BookStatus.failed` (`failedStep: 'pdf_render'`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them) — `assertAllImagesResolved` then fails the book before rendering | observed via polling `GET /:id` or `GET /:id/generation-diagnostics`; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError`, and the `pdf_render` `AgentLog` row's `error` for which page(s) were missing |
+| State                                            | Trigger                                                                                                                                                                                                     | HTTP surface                                                                                                                                                                                                                            |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BadRequestException` (400)                      | `generate` called with missing draft fields                                                                                                                                                                 | `POST /:id/generate`                                                                                                                                                                                                                    |
+| `ConflictException` (409)                        | `update`/`remove` after `status !== created`                                                                                                                                                                | `PATCH /:id`, `DELETE /:id`                                                                                                                                                                                                             |
+| `ConflictException` (409)                        | `generate` called when `status !== created`                                                                                                                                                                 | `POST /:id/generate`                                                                                                                                                                                                                    |
+| `ConflictException` (409)                        | `retry-generation` called when `status !== failed`                                                                                                                                                          | `POST /:id/retry-generation`                                                                                                                                                                                                            |
+| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I)                                                                                    | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `ServiceUnavailableException` (503)              | real-image budget cannot cover cover + every page + back cover (`IMAGE_GENERATION_BUDGET_INSUFFICIENT`) — rejected before run creation or credit charge                                                     | `POST /:id/generate`, `POST /:id/retry-generation`, `POST /:id/regenerate`                                                                                                                                                              |
+| `InternalServerErrorException` (500)             | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K)                                                                                                              | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `ConflictException` (409)                        | preview requested before `previewPdfUrl` is set                                                                                                                                                             | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
+| `NotFoundException` (404)                        | book missing / not owned / soft-deleted                                                                                                                                                                     | any `:id` route                                                                                                                                                                                                                         |
+| `NotFoundException` (404)                        | `previewPdfUrl` set but file missing from storage                                                                                                                                                           | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
+| `BookStatus.failed`                              | PDF render or `pdfStorage.savePreviewPdf` throws                                                                                                                                                            | observed via polling `GET /:id` or `GET /:id/generation-diagnostics` — not the `generate` response body since Phase 3H                                                                                                                  |
+| `BookStatus.failed`                              | `storyGenerationProvider.generateStory` throws (`failedStep: 'story_plan'`)                                                                                                                                 | observed via polling — see above                                                                                                                                                                                                        |
+| `BookStatus.failed`                              | an unexpected error escapes `AgentService.startBookGeneration` entirely (no `failedStep`)                                                                                                                   | observed via polling — caught defensively by `BooksService.runGenerationPipeline` (Phase 3H)                                                                                                                                            |
+| `BookStatus.failed` (`failedStep: 'pdf_render'`) | `imageGenerationProvider.generateImage` or `ImageAssetStorage.saveImageAsset` throws for one or more entries (up to and including all of them) — `PdfPublicationStage` then fails the book before rendering | observed via polling `GET /:id` or `GET /:id/generation-diagnostics`; see `imageGenerationResult.generatedImageCount`/`failedImageCount`/`lastImageError`, and the `pdf_render` `AgentLog` row's `error` for which page(s) were missing |
 
 ## Test coverage
 
@@ -2953,7 +2955,7 @@ re-verified here — see "Test coverage" below.
   expected input) and the `ImageGenerationProvider` boundary (a provider
   that fails for some or all entries records `generatedImageCount`/
   `failedImageCount`/`lastImageError` accordingly, but — since
-  `assertAllImagesResolved` requires every planned illustration to have
+  `PdfPublicationStage` requires every planned illustration to have
   bytes — the book is then marked `failed` at `pdf_render` rather than
   completing with placeholders for the failed entries; the `image_gen`
   `AgentLog` row itself still stays `success` with a summary error, since the
@@ -3203,7 +3205,7 @@ here touches Railway or any cloud storage; `PDF_STORAGE_DRIVER`/
    # OPENAI_STORY_MODEL="gpt-4o-mini"    # optional, this is the default
    # OPENAI_IMAGE_MODEL="gpt-image-1"    # optional, this is the default
    # Must cover every illustration the book plans (cover + pages + back cover),
-   # or PDF rendering fails at the pdf_render step — see assertAllImagesResolved
+   # or PDF rendering fails at the pdf_render step — see PdfPublicationStage
    # in agent.service.ts. For the default 6-page book that's 8 (1 cover + 6
    # pages + 1 back cover); raise this if you pick a longer pageCount.
    MAX_GENERATED_IMAGES_PER_BOOK="9"

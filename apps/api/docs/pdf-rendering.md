@@ -93,10 +93,11 @@ file is ever written to that path and nothing serves it; `imageUrl` is used
 only for display/metadata. Real embedded bytes come from a separate path,
 below.
 
-`AgentService.startBookGeneration` calls `renderStorybookPdf` with a
-`resolveImageBuffer` option (via `buildImageBufferResolver`, see below), and
-now _does_ save real image bytes for every generated image entry before
-rendering — see "Local mock image producer" below — so images embed for
+`AgentService.startBookGeneration` delegates rendering and claim-scoped
+storage to `PdfPublicationStage`, which calls `renderStorybookPdf` with a
+`resolveImageBuffer` option (via `buildImageBufferResolver`, see below).
+The pipeline saves real image bytes for every generated image entry before
+that stage runs — see "Local mock image producer" below — so images embed for
 real, end-to-end, during book generation. Only the standalone
 `scripts/render-pdf.ts` sample script (used by `pnpm render:pdf`) still
 renders placeholder-only, since it calls `renderStorybookPdf` directly with a
@@ -218,11 +219,10 @@ caught by the existing per-entry try/catch that renders a red error page.
 This renderer-level placeholder fallback is still exercised directly by
 `pdf-renderer.spec.ts` and by the standalone `pnpm render:pdf` sample script
 (neither goes through `AgentService`). **The real book-generation path no
-longer reaches it**: `AgentService.startBookGeneration` calls
-`assertAllImagesResolved` (in `agent.service.ts`) right before
-`renderStorybookPdf`, which resolves every layout entry's image bytes via the
-same `resolveImageBuffer` the renderer would use and throws a single clear
-error naming every page still missing bytes because the real provider or the
-save to `ImageAssetStorage` failed. The book is then marked `failed` at
+longer reaches it**: `PdfPublicationStage` resolves every layout entry's
+image bytes via the same `resolveImageBuffer` the renderer would use and
+throws a single clear error before `renderStorybookPdf`, naming every page
+still missing bytes because the real provider or the save to
+`ImageAssetStorage` failed. The book is then marked `failed` at
 the `pdf_render` step instead of silently completing with a placeholder
 rectangle labelled with the page's `altText` (e.g. "Page 2 illustration").
