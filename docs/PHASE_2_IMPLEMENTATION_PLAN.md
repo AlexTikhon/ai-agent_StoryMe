@@ -49,6 +49,10 @@ charging, cancellation, or publication. Remaining consumers are:
 - a mirror-only startup recovery service;
 - tests and historical documentation.
 
+The reviewed read/write/schema/test/operations inventory is maintained in
+`docs/GENERATION_JOB_DEPENDENCY_INVENTORY.md`. It is the checklist for the removal and migration
+slices below.
+
 Migration sequence:
 
 1. Completed: diagnostics use the latest authoritative `GenerationRun`, retaining the existing
