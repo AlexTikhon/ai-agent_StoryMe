@@ -142,9 +142,9 @@ regenerating from scratch:
   `CharacterProfileProvider.buildProfile` is never called.
 - **Character sheet** — skipped when the profile's `hasCharacterSheet` is
   true and `Book.characterSheetAssetKey`'s bytes are still readable and
-  non-empty (`classifyCharacterSheetAsset`). If the profile is being reused
+  non-empty (`resolveCharacterSheetForClaim`). If the profile is being reused
   but the sheet specifically is missing/invalid, only the sheet is
-  regenerated (`regenerateCharacterSheet`) — the profile provider is still
+  regenerated (`CharacterReferenceStage.regenerateSheet`) — the profile provider is still
   never re-called.
 - **Illustrations** — `classifyImageAssets` checks every planned cover/page/
   back-cover entry's saved bytes via `ImageAssetStorage.getImageAsset`: no
@@ -736,10 +736,10 @@ applies when a character sheet exists and its bytes can be read back.
   purely a matter of repeating the same _words_ on every prompt — the model
   never sees the character's actual pixels.
 - **Visual-reference consistency** (real `IMAGE_GENERATION_PROVIDER=openai`
-  only): `AgentService` generates one standalone character-sheet reference
+  only): `CharacterReferenceStage` generates one standalone character-sheet reference
   image via `ImageGenerationProvider.generateCharacterSheet` and saves it to
-  `ImageAssetStorage` (`buildCharacterProfileAndSheet`). Once per book
-  generation run — not once per page — `AgentService.loadCharacterReference`
+  `ImageAssetStorage` (`CharacterReferenceStage.execute`). Once per book
+  generation run — not once per page — `CharacterReferenceStage.loadReference`
   reads those bytes back from storage and holds them in memory as one shared
   `ImageReference`. Every subsequent cover/page/back-cover
   `ImageGenerationProvider.generateImage` call for that run receives the same
@@ -775,7 +775,7 @@ applies when a character sheet exists and its bytes can be read back.
   used; see "Fallback behavior" below for exactly when these diverge.
 - **Fallback behavior** (verified in `agent.service.spec.ts` and
   `openai-image-generation-provider.spec.ts`): if the `CharacterProfileProvider`
-  throws (e.g. a vision-API error), `AgentService` catches it, logs a
+  throws (e.g. a vision-API error), `CharacterReferenceStage` catches it, logs a
   warning, and falls back to `MockCharacterProfileProvider` — generation is
   never blocked by a profile failure, and the `char_build` `AgentLog` row is
   written with `status: 'error'` and `provider: 'mock'` so the fallback is
@@ -787,7 +787,7 @@ applies when a character sheet exists and its bytes can be read back.
   `status: 'success'` since the profile step (not the best-effort sheet) is
   what that status reflects. If the sheet _was_ generated and saved but its
   bytes can't be read back later (e.g. a storage hiccup),
-  `loadCharacterReference` logs a safe warning (never bytes/base64) and
+  `CharacterReferenceStage.loadReference` logs a safe error (never bytes/base64) and
   every page falls back to the ordinary text-to-image path for that run —
   `characterSheetGenerated: true` but `characterReferenceAvailable: false`.
   `MockImageGenerationProvider` accepts (and ignores) `characterReference` on

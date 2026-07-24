@@ -367,7 +367,7 @@ export interface ImageGenerationResult {
    * Safe, explicit error when this run's character-sheet asset was recorded
    * as existing (CharacterProfile.hasCharacterSheet + a characterSheetAssetKey)
    * but its bytes could not be read back from storage — distinct from simply
-   * never having created a sheet. See AgentService.loadCharacterReference.
+   * never having created a sheet. See CharacterReferenceStage.loadReference.
    */
   characterReferenceLoadError?: string;
   /** Idempotent-resume diagnostics for this run (see ResumeDiagnostics). Undefined for books generated before this feature existed, or for a run that never reached the point of computing it. */

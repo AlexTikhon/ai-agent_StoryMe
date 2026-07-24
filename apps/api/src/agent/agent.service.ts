@@ -2,7 +2,6 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
 import { PDF_STORAGE_TOKEN, publishedPreviewPdfExists, type PdfStorage } from '../pdf/pdf-storage';
 import {
-  claimCharacterSheetAssetKey,
   claimImageAssetKey,
   IMAGE_ASSET_STORAGE_TOKEN,
   type ImageAssetStorage,
@@ -15,9 +14,8 @@ import {
   type ImageGenerationProvider,
   type ImageReference,
 } from '../images/image-generation-provider';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
-import { CHILD_PHOTO_INTEGRITY_MISMATCH } from '../books/child-photo.constants';
 import {
   type BookPreview,
   type CharacterCard,
@@ -36,7 +34,6 @@ import {
 } from './story-generation-provider';
 import {
   CHARACTER_PROFILE_PROVIDER_TOKEN,
-  MockCharacterProfileProvider,
   type CharacterProfileProvider,
 } from './character-profile-provider';
 import {
@@ -61,6 +58,10 @@ import {
   resolveMaxPaidProviderCallsPerRun,
 } from './generation-provider-telemetry';
 import { StoryContentStage } from './story-content.stage';
+import {
+  CharacterReferenceStage,
+  type CharacterBuildStageOutput,
+} from './character-reference.stage';
 
 /** Stable diagnostics label for one planned image entry: 'cover' | 'page_<n>' | 'back_cover'. */
 function imageAssetLabel(entry: GeneratedImageEntry): string {
@@ -127,6 +128,7 @@ function isResumableBook(book: Book, inputHash: string): boolean {
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private readonly storyContentStage: StoryContentStage;
+  private readonly characterReferenceStage: CharacterReferenceStage;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -141,184 +143,11 @@ export class AgentService {
     private readonly generationExecutionService: GenerationExecutionService,
   ) {
     this.storyContentStage = new StoryContentStage(storyGenerationProvider);
-  }
-
-  /** Safe fallback profile provider used when the injected (possibly real) CharacterProfileProvider throws — never blocks the pipeline on a flaky vision call. */
-  private readonly fallbackCharacterProfileProvider = new MockCharacterProfileProvider();
-
-  /**
-   * Loads the uploaded child reference photo's bytes and verifies them
-   * against the sha256/sizeBytes recorded in the GenerationInputSnapshot at
-   * run-creation time before ever handing them to a vision provider. A
-   * mismatch — truncated bytes, a different file at the same key, or any
-   * other corruption/replacement — is never silently used: this is the one
-   * piece of a run's snapshot that is itself a *reference* into mutable
-   * storage rather than an inline value, so verifying it is what actually
-   * makes the "immutable input" guarantee (see GenerationInputSnapshot's own
-   * doc comment) hold for a photo, not just for the plain fields. Returns
-   * `{}` (no photo, no error) when nothing was ever uploaded; `{ photo }` on
-   * a verified match; `{ integrityError }` (photo omitted) when bytes were
-   * found but failed verification, logged at `error` with the stable
-   * CHILD_PHOTO_INTEGRITY_MISMATCH code — distinguishable from the ordinary
-   * "no bytes found at all" case, which only ever gets a `warn`. Either way,
-   * this never throws: like every other char_build sub-failure, a bad photo
-   * degrades to text-only character-profile generation rather than failing
-   * the whole book.
-   */
-  private async loadAndVerifyChildPhoto(
-    bookId: string,
-    childPhoto: ResolvedGenerationInput['childPhoto'],
-  ): Promise<{ photo?: { base64: string; contentType: string }; integrityError?: string }> {
-    if (!childPhoto) return {};
-
-    const bytes = await this.imageAssetStorage.getImageAsset(childPhoto.assetKey);
-    if (!bytes) {
-      this.logger.warn(
-        `Book ${bookId} has childPhoto asset "${childPhoto.assetKey}" but no bytes were found in image storage; building character profile without a photo.`,
-      );
-      return {};
-    }
-
-    if (bytes.length !== childPhoto.sizeBytes) {
-      const integrityError = `${CHILD_PHOTO_INTEGRITY_MISMATCH}: childPhoto asset "${childPhoto.assetKey}" for book ${bookId} is ${bytes.length} bytes, expected ${childPhoto.sizeBytes} — refusing to use it.`;
-      this.logger.error(integrityError);
-      return { integrityError };
-    }
-    const actualSha256 = createHash('sha256').update(bytes).digest('hex');
-    if (actualSha256 !== childPhoto.sha256) {
-      const integrityError = `${CHILD_PHOTO_INTEGRITY_MISMATCH}: childPhoto asset "${childPhoto.assetKey}" for book ${bookId} has sha256 ${actualSha256}, expected ${childPhoto.sha256} — refusing to use it.`;
-      this.logger.error(integrityError);
-      return { integrityError };
-    }
-
-    return { photo: { base64: bytes.toString('base64'), contentType: childPhoto.contentType } };
-  }
-
-  /**
-   * Builds the book's CharacterProfile (from name/age/theme and, if
-   * uploaded, the child's reference photo) and a character-sheet reference
-   * image — the actual work behind the AgentStep.char_build step. Never
-   * throws: a profile-provider failure falls back to a locally-built mock
-   * profile, and a character-sheet failure just leaves
-   * characterProfile.hasCharacterSheet = false, so neither can fail the
-   * whole book (matching the per-image failure tolerance elsewhere in this
-   * pipeline).
-   */
-  private async buildCharacterProfileAndSheet(
-    bookId: string,
-    input: ResolvedGenerationInput,
-    currentNamespace: ClaimArtifactNamespace,
-    providerTelemetry: GenerationProviderTelemetry,
-  ): Promise<{
-    characterProfile: CharacterProfile;
-    characterSheetKey?: string;
-    providerName: string | null;
-    modelName: string | null;
-    durationMs: number;
-    error?: string;
-  }> {
-    const startedAt = Date.now();
-    const { childName, childAge, theme, language } = input;
-
-    const { photo, integrityError } = await this.loadAndVerifyChildPhoto(bookId, input.childPhoto);
-
-    let providerName = this.characterProfileProvider.providerName ?? null;
-    const modelName = this.characterProfileProvider.modelName ?? null;
-    let characterProfile: CharacterProfile;
-    let error: string | undefined = integrityError;
-    const profilePromptInput = {
-      bookId,
-      childName,
-      childAge,
-      theme,
-      language,
-      childPhoto: input.childPhoto
-        ? {
-            contentType: input.childPhoto.contentType,
-            sha256: input.childPhoto.sha256,
-          }
-        : null,
-    };
-    try {
-      characterProfile = await providerTelemetry.record({
-        operation: 'character_profile',
-        provider: toGenerationProviderName(this.characterProfileProvider.providerName),
-        ...(this.characterProfileProvider.modelName && {
-          model: this.characterProfileProvider.modelName,
-        }),
-        promptVersion: promptVersion(this.characterProfileProvider, 'legacy-character-profile-v1'),
-        promptInput: profilePromptInput,
-        execute: () =>
-          this.characterProfileProvider.buildProfile({
-            bookId,
-            childName,
-            childAge,
-            theme,
-            language,
-            photo,
-          }),
-      });
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `Character profile provider failed for book ${bookId}: ${error}. Falling back to a generic profile.`,
-      );
-      characterProfile = await providerTelemetry.record({
-        operation: 'character_profile',
-        provider: toGenerationProviderName(this.fallbackCharacterProfileProvider.providerName),
-        promptVersion: promptVersion(
-          this.fallbackCharacterProfileProvider,
-          'fallback-character-profile-v1',
-        ),
-        promptInput: profilePromptInput,
-        execute: () =>
-          this.fallbackCharacterProfileProvider.buildProfile({
-            bookId,
-            childName,
-            childAge,
-            theme,
-            language,
-            photo,
-          }),
-      });
-      providerName = 'mock';
-    }
-
-    let characterSheetKey: string | undefined;
-    try {
-      const { buffer, contentType } = await providerTelemetry.record({
-        operation: 'character_sheet',
-        provider: toGenerationProviderName(this.imageGenerationProvider.providerName),
-        ...(this.imageGenerationProvider.modelName && {
-          model: this.imageGenerationProvider.modelName,
-        }),
-        promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
-        promptInput: { bookId, characterProfile },
-        execute: () =>
-          this.imageGenerationProvider.generateCharacterSheet({
-            bookId,
-            characterProfile,
-          }),
-      });
-      const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
-      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
-      characterSheetKey = key;
-      characterProfile = { ...characterProfile, hasCharacterSheet: true };
-    } catch (err) {
-      const sheetError = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `Character sheet generation/save failed for book ${bookId}: ${sheetError}. Continuing without a character sheet reference image.`,
-      );
-    }
-
-    return {
-      characterProfile,
-      ...(characterSheetKey !== undefined && { characterSheetKey }),
-      providerName,
-      modelName,
-      durationMs: Date.now() - startedAt,
-      ...(error !== undefined && { error }),
-    };
+    this.characterReferenceStage = new CharacterReferenceStage(
+      imageAssetStorage,
+      characterProfileProvider,
+      imageGenerationProvider,
+    );
   }
 
   /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
@@ -327,44 +156,6 @@ export class AgentService {
     readonly modelName?: string;
   }): string {
     return provider.modelName ?? provider.providerName ?? 'unknown';
-  }
-
-  /**
-   * Loads the book's generated character-sheet reference image bytes once
-   * (never the original uploaded child photo — that only ever reaches the
-   * CharacterProfileProvider's vision step, see buildCharacterProfileAndSheet)
-   * so every generateImage call this run can share the same in-memory
-   * ImageReference instead of re-reading storage per page.
-   *
-   * Returns `{}` (no `reference`, no `loadError`) when no character sheet was
-   * ever created this run — the ordinary, unremarkable case. Returns
-   * `{ loadError }` — logged at `error`, not `warn` — when a character sheet
-   * was recorded as existing (a characterSheetKey is set) but its bytes could
-   * not be read back from storage; this is distinct from "never had a sheet"
-   * and must not be silently indistinguishable from it (see
-   * ImageGenerationResult.characterReferenceLoadError). Either way the caller
-   * still falls back to text-only generation for this run instead of failing
-   * the whole book over a missing consistency aid.
-   */
-  private async loadCharacterReference(
-    bookId: string,
-    characterSheetKey: string | undefined,
-  ): Promise<{ reference?: ImageReference; loadError?: string }> {
-    if (!characterSheetKey) return {};
-
-    const buffer = await this.imageAssetStorage.getImageAsset(characterSheetKey);
-    if (!buffer) {
-      const loadError = `Character sheet asset "${characterSheetKey}" for book ${bookId} is recorded as existing but its bytes could not be loaded from image storage; continuing with text-only image generation for this run.`;
-      this.logger.error(loadError);
-      return { loadError };
-    }
-
-    // Character sheets are always saved as 'image/png' by both
-    // MockImageGenerationProvider.generateCharacterSheet and
-    // OpenAIImageGenerationProvider.generateCharacterSheet — ImageAssetStorage
-    // itself doesn't track content type on read, so this is a safe, stable
-    // assumption rather than a guess.
-    return { reference: { buffer, contentType: 'image/png' } };
   }
 
   /**
@@ -572,61 +363,6 @@ export class AgentService {
   }
 
   /**
-   * Regenerates only the character-sheet reference image for a book whose
-   * CharacterProfile is being reused as-is (resume path) but whose
-   * previously saved sheet bytes are missing or invalid. Mirrors the sheet
-   * half of buildCharacterProfileAndSheet above — kept separate so reusing a
-   * valid profile never re-runs the (possibly real, billed)
-   * CharacterProfileProvider just to regenerate a sheet.
-   */
-  private async regenerateCharacterSheet(
-    bookId: string,
-    characterProfile: CharacterProfile,
-    currentNamespace: ClaimArtifactNamespace,
-    providerTelemetry: GenerationProviderTelemetry,
-  ): Promise<{
-    characterProfile: CharacterProfile;
-    characterSheetKey?: string;
-    durationMs: number;
-    error?: string;
-  }> {
-    const startedAt = Date.now();
-    try {
-      const { buffer, contentType } = await providerTelemetry.record({
-        operation: 'character_sheet',
-        provider: toGenerationProviderName(this.imageGenerationProvider.providerName),
-        ...(this.imageGenerationProvider.modelName && {
-          model: this.imageGenerationProvider.modelName,
-        }),
-        promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
-        promptInput: { bookId, characterProfile },
-        execute: () =>
-          this.imageGenerationProvider.generateCharacterSheet({
-            bookId,
-            characterProfile,
-          }),
-      });
-      const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
-      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
-      return {
-        characterProfile: { ...characterProfile, hasCharacterSheet: true },
-        characterSheetKey: key,
-        durationMs: Date.now() - startedAt,
-      };
-    } catch (err) {
-      const sheetError = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `Character sheet regeneration/save failed for book ${bookId} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
-      );
-      return {
-        characterProfile: { ...characterProfile, hasCharacterSheet: false },
-        durationMs: Date.now() - startedAt,
-        error: sheetError,
-      };
-    }
-  }
-
-  /**
    * Throws StaleGenerationRunError if the periodic heartbeat
    * (GenerationQueueProcessor) has already discovered a newer claim owns this
    * run and signaled cancellation via ctx.signal — checked at natural
@@ -764,14 +500,7 @@ export class AgentService {
     // built below can be seeded with it. Persisted below alongside whichever
     // update comes next (the failure-path update or Phase 1's layout
     // update), rather than as its own extra write.
-    let charBuildResult: {
-      characterProfile: CharacterProfile;
-      characterSheetKey?: string;
-      providerName: string | null;
-      modelName: string | null;
-      durationMs: number;
-      error?: string;
-    };
+    let charBuildResult: CharacterBuildStageOutput;
     let skippedCharacterProfileGeneration = false;
     let skippedCharacterSheetGeneration = false;
 
@@ -797,12 +526,12 @@ export class AgentService {
         this.logger.warn(
           `Book ${book.id} has a character profile but its saved character-sheet bytes are ${priorSheetStatus} — regenerating only the character sheet, reusing the profile as-is.`,
         );
-        const sheetResult = await this.regenerateCharacterSheet(
-          book.id,
-          priorCharacterProfile!,
-          currentNamespace,
-          providerTelemetry,
-        );
+        const sheetResult = await this.characterReferenceStage.regenerateSheet({
+          bookId: book.id,
+          characterProfile: priorCharacterProfile!,
+          namespace: currentNamespace,
+          telemetry: providerTelemetry,
+        });
         charBuildResult = {
           ...sheetResult,
           providerName: profileProviderName,
@@ -810,12 +539,12 @@ export class AgentService {
         };
       }
     } else {
-      charBuildResult = await this.buildCharacterProfileAndSheet(
-        book.id,
-        resolvedInput,
-        currentNamespace,
-        providerTelemetry,
-      );
+      charBuildResult = await this.characterReferenceStage.execute({
+        bookId: book.id,
+        input: resolvedInput,
+        namespace: currentNamespace,
+        telemetry: providerTelemetry,
+      });
     }
     const { characterProfile } = charBuildResult;
     const characterProfileUpdateData: Prisma.BookUpdateInput = {
@@ -934,7 +663,7 @@ export class AgentService {
     const imageStartedAt = Date.now();
 
     const { reference: characterReference, loadError: characterReferenceLoadError } =
-      await this.loadCharacterReference(book.id, charBuildResult.characterSheetKey);
+      await this.characterReferenceStage.loadReference(book.id, charBuildResult.characterSheetKey);
     const characterReferenceAvailable = characterReference !== undefined;
 
     // Idempotent resume: only call the image provider for entries whose
@@ -1106,7 +835,7 @@ export class AgentService {
     // same pattern Phase 3E used for generatedImageCount/failedImageCount)
     // and surfaced via GET /:id/generation-diagnostics.
     // Reuses the single characterReference already loaded above (via
-    // loadCharacterReference) instead of reading ImageAssetStorage again for
+    // CharacterReferenceStage.loadReference) instead of reading ImageAssetStorage again for
     // the same key — some tests assert the character-sheet key is only ever
     // read once per run (see "loads the character-sheet bytes only once" in
     // agent.service.spec.ts).
