@@ -1003,7 +1003,7 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       expect(retryRunInputHash).toBe(normalized.inputHash);
 
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
-      // The exact condition AgentService.isResumableBook checks — without
+      // The exact condition GenerationResumeService.plan checks — without
       // the Book-mirror migration this stays the stale legacy hash forever,
       // never equal to any future retry's freshly-computed hash.
       expect(reloadedBook.lastGenerationInputHash).toBe(retryRunInputHash);

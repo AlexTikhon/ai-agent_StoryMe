@@ -214,7 +214,7 @@ export class BooksService {
    * never the book's current fields, even if they were edited since the
    * failure (use regenerateBook for that). Copies inputSnapshot verbatim from
    * the book's most recent GenerationRun and links retryOfRunId to it, so
-   * AgentService.isResumableBook can trust that any story/images already on
+   * GenerationResumeService can trust that any story/images already on
    * the row came from this same input and safely resume past whatever step
    * already succeeded. Falls back to building a fresh snapshot only for a
    * book with no GenerationRun history at all (predates Phase 2A/2B).
@@ -231,7 +231,7 @@ export class BooksService {
    * guarantee. Available for a failed book too (not just complete) so a user
    * who edited a failed book's fields, rather than just retrying, gets a run
    * that actually reflects those edits. Always builds a brand-new
-   * inputSnapshot/inputHash, so AgentService.isResumableBook only resumes
+   * inputSnapshot/inputHash, so GenerationResumeService only resumes
    * this run's own prior output if the input truly didn't change — an edit
    * changes the hash and forces a full regeneration instead of silently
    * reusing stale content (the bug this phase's retry/regenerate split

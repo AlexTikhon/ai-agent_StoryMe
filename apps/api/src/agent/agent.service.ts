@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
+import { AgentLogStatus, AgentStep, BookStatus, Prisma } from '@prisma/client';
 import { PDF_STORAGE_TOKEN, publishedPreviewPdfExists, type PdfStorage } from '../pdf/pdf-storage';
 import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import {
@@ -8,13 +8,7 @@ import {
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
-import {
-  type BookPreview,
-  type CharacterProfile,
-  type GeneratedImageEntry,
-  type ImageGenerationResult,
-  type ResumeDiagnostics,
-} from '@book/types';
+import { type BookPreview, type ImageGenerationResult, type ResumeDiagnostics } from '@book/types';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
   resolveTargetPageCount,
@@ -31,14 +25,7 @@ import {
 } from './generation-execution.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationOutcome } from './generation-outcome';
-import {
-  claimNamespace,
-  resolveLastGenerationNamespace,
-  resolvePublishedPdfNamespace,
-  type ClaimArtifactNamespace,
-  type GenerationArtifactNamespace,
-} from './generation-artifact-namespace';
-import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generation-claim-artifacts';
+import { resolvePublishedPdfNamespace } from './generation-artifact-namespace';
 import { bookLayoutStage } from './book-layout.stage';
 import { pdfPublicationStage } from './pdf-publication.stage';
 import {
@@ -52,28 +39,8 @@ import {
   type CharacterBuildStageOutput,
 } from './character-reference.stage';
 import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage';
+import { GenerationResumeService } from './generation-resume.service';
 
-/**
- * True when `book` already carries a full prior generation result (story
- * plan, character card, book preview, and planned image list) produced by
- * the *exact same input* this run is executing — the signature of a retry
- * resuming a book that previously made it past Phase 1 of a run with an
- * unchanged input, as opposed to a brand-new book, or a book whose
- * childName/theme/etc. were edited since that prior result was produced.
- *
- * `book.lastGenerationInputHash` (Phase 2D) records the GenerationRun.
- * inputHash that produced whatever JSON currently sits on the row — compared
- * against `inputHash`, the hash of the run currently executing. A `retry`
- * run's inputHash is copied verbatim from the run it retries, so this is
- * always true for an unmodified retry-after-failure; a `regenerate` (or
- * `initial`) run's inputHash is built fresh from the book's *current* fields
- * at run-creation time, so an edit made before regenerating changes the hash
- * and correctly forces a full regeneration instead of silently reusing stale
- * story/images (see BooksService.createRunAndSchedule and
- * generation-input-snapshot.ts). Gating idempotent resume on this means an
- * ordinary first-time `generate` is byte-identical to before this feature
- * existed.
- */
 /**
  * Generation-relevant input resolved once at the top of startBookGeneration
  * from the run's immutable GenerationExecutionContext.inputSnapshot — never
@@ -90,22 +57,13 @@ interface ResolvedGenerationInput {
   childPhoto?: { assetKey: string; contentType: string; sha256: string; sizeBytes: number };
 }
 
-function isResumableBook(book: Book, inputHash: string): boolean {
-  return (
-    book.lastGenerationInputHash === inputHash &&
-    book.storyPlan != null &&
-    book.characterCard != null &&
-    book.bookPreview != null &&
-    book.imageGenerationResult != null
-  );
-}
-
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private readonly storyContentStage: StoryContentStage;
   private readonly characterReferenceStage: CharacterReferenceStage;
   private readonly imageGenerationStage: ImageGenerationStage;
+  private readonly generationResumeService: GenerationResumeService;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -129,6 +87,7 @@ export class AgentService {
       imageAssetStorage,
       imageGenerationProvider,
     );
+    this.generationResumeService = new GenerationResumeService(imageAssetStorage);
   }
 
   /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
@@ -137,86 +96,6 @@ export class AgentService {
     readonly modelName?: string;
   }): string {
     return provider.modelName ?? provider.providerName ?? 'unknown';
-  }
-
-  /**
-   * Classifies whether a book's character-sheet reference image is usable,
-   * copying it forward from `sourceNamespace` into `currentNamespace` first
-   * when the current claim doesn't already have a valid one (Phase B, Slice
-   * B3 — see generation-claim-artifacts.ts). `sourceNamespace` must be
-   * `null` whenever copy-forward must not be attempted (the run's input
-   * changed since the source JSON was produced — see `resumable` at this
-   * method's call site): 'missing'/'invalid' if none was ever
-   * intended/keyed or is unreadable/empty even after that attempt, 'valid'
-   * (with the current-claim key) otherwise.
-   */
-  private async resolveCharacterSheetForClaim(
-    bookId: string,
-    profile: CharacterProfile,
-    currentNamespace: ClaimArtifactNamespace,
-    sourceNamespace: GenerationArtifactNamespace | null,
-  ): Promise<{ status: 'valid' | 'missing' | 'invalid'; key?: string }> {
-    if (!profile.hasCharacterSheet) return { status: 'missing' };
-    const resolution = await resolveCharacterSheetArtifact({
-      storage: this.imageAssetStorage,
-      bookId,
-      currentNamespace,
-      sourceNamespace,
-    });
-    if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
-      return { status: 'valid', key: resolution.key };
-    }
-    return { status: resolution.sourceStatus === 'invalid' ? 'invalid' : 'missing' };
-  }
-
-  /**
-   * Splits a book's planned image entries (cover/pages/back_cover) into
-   * those with already-valid current-claim bytes or a successfully
-   * copied-forward source (reusable as-is, no provider call needed) and
-   * those that need a fresh generateImage call — either because no source
-   * was ever saved for that entry, a prior save left zero bytes, or no
-   * source applies at all (Phase B, Slice B3 — see
-   * generation-claim-artifacts.ts). On a brand-new book/claim nothing is
-   * saved yet and `sourceNamespace` is `null`, so every entry naturally
-   * lands in `toGenerate` — this is also the ordinary fresh-generation path,
-   * not just resume.
-   */
-  private async classifyImageAssets(
-    bookId: string,
-    images: GeneratedImageEntry[],
-    currentNamespace: ClaimArtifactNamespace,
-    sourceNamespace: GenerationArtifactNamespace | null,
-  ): Promise<{
-    reusable: GeneratedImageEntry[];
-    toGenerate: GeneratedImageEntry[];
-    missing: GeneratedImageEntry[];
-    invalid: GeneratedImageEntry[];
-  }> {
-    const reusable: GeneratedImageEntry[] = [];
-    const toGenerate: GeneratedImageEntry[] = [];
-    const missing: GeneratedImageEntry[] = [];
-    const invalid: GeneratedImageEntry[] = [];
-
-    await Promise.all(
-      images.map(async (image) => {
-        const resolution = await resolveImageArtifact({
-          storage: this.imageAssetStorage,
-          bookId,
-          currentNamespace,
-          sourceNamespace,
-          kind: image.kind,
-          pageNumber: image.pageNumber,
-        });
-        if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
-          reusable.push(image);
-        } else {
-          toGenerate.push(image);
-          (resolution.sourceStatus === 'invalid' ? invalid : missing).push(image);
-        }
-      }),
-    );
-
-    return { reusable, toGenerate, missing, invalid };
   }
 
   /**
@@ -309,48 +188,18 @@ export class AgentService {
     // character sheet/image this run writes lands here, never derived from
     // Book.activeRunId, a fresh DB read, or any other source (see
     // generation-artifact-namespace.ts's ClaimArtifactNamespace doc
-    // comment). Resolved unconditionally, alongside `sourceNamespace`
-    // (below), before the resumability check — a malformed partial pointer
-    // on `book` must fail loudly regardless of whether this run ends up
-    // reusing anything.
-    const currentNamespace = claimNamespace(ctx.runId, ctx.fencingVersion);
-    // The namespace backing whatever resumable JSON currently sits on
-    // `book` — a prior claim of this same run (redelivery), a claim from
-    // the run being retried, or `{ kind: 'legacy' }` for a pre-Phase-B row.
-    // Only ever consulted as a copy-forward *source* below, gated on
-    // `resumable` (see copyForwardSourceNamespace) — never trusted as this
-    // run's own ownership.
-    const sourceNamespace = resolveLastGenerationNamespace(book);
-
-    // Idempotent resume (see "Idempotent resume" in
-    // apps/api/docs/local-generation-pipeline.md): a retry against a book
-    // that previously made it past Phase 1 of a run already carries a full
-    // story/character/image plan on the row — reuse it instead of paying for
-    // story/character-profile generation again. A brand-new book has none of
-    // this yet, so `resumable` is false and every branch below falls through
-    // to the original from-scratch behavior.
-    const resumable = isResumableBook(book, inputHash);
-    // Copy-forward must never run when the input changed since the source
-    // JSON was produced — bytes at `sourceNamespace` were planned for the
-    // *old* story/theme (see resolveImageArtifact's doc comment) — so every
-    // entry falls straight through to fresh generation into
-    // `currentNamespace` instead of copying anything old forward. A valid
-    // *current-claim* artifact is still reused either way (see
-    // resolveCharacterSheetForClaim/classifyImageAssets below) — that's
-    // same-claim re-entry idempotency, not copy-forward, and is never gated
-    // on `resumable`.
-    const copyForwardSourceNamespace = resumable ? sourceNamespace : null;
-    const priorCharacterProfile = book.characterProfile as unknown as CharacterProfile | null;
-    const priorSheet = priorCharacterProfile
-      ? await this.resolveCharacterSheetForClaim(
-          book.id,
-          priorCharacterProfile,
-          currentNamespace,
-          copyForwardSourceNamespace,
-        )
-      : ({ status: 'missing' } as const);
+    // comment). GenerationResumeService also resolves the source pointer
+    // unconditionally before its resumability check, so a malformed partial
+    // pointer fails loudly even when this run will not reuse anything.
+    const {
+      resumable,
+      currentNamespace,
+      copyForwardSourceNamespace,
+      priorCharacterProfile,
+      priorSheet,
+      canReuseCharacterProfile,
+    } = await this.generationResumeService.plan(book, inputHash, ctx.runId, ctx.fencingVersion);
     const priorSheetStatus = priorSheet.status;
-    const canReuseCharacterProfile = resumable && priorCharacterProfile != null;
 
     // char_build: build the CharacterProfile (+ character-sheet reference
     // image) before the story itself, so every page/cover/back-cover prompt
@@ -527,7 +376,7 @@ export class AgentService {
     // current-claim bytes are missing or invalid and no source copy-forward
     // resolves them either; entries with a valid current-claim asset (or a
     // valid, successfully copy-forwarded source one — see
-    // classifyImageAssets/generation-claim-artifacts.ts) are reused
+    // GenerationResumeService.classifyImages/generation-claim-artifacts.ts) are reused
     // untouched. On a fresh book/claim nothing is saved yet and
     // `copyForwardSourceNamespace` is `null` unless resumable, so every
     // entry naturally lands in `imagesNeedingGeneration` on a from-scratch
@@ -538,7 +387,7 @@ export class AgentService {
       toGenerate: imagesNeedingGeneration,
       missing: missingImagesBefore,
       invalid: invalidImagesBefore,
-    } = await this.classifyImageAssets(
+    } = await this.generationResumeService.classifyImages(
       book.id,
       imageGenerationResult.images,
       currentNamespace,
@@ -639,10 +488,10 @@ export class AgentService {
         bookPreview: bookPreview as unknown as Prisma.InputJsonValue,
         imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
         bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
-        // Records which input produced this JSON — see isResumableBook's doc
+        // Records which input produced this JSON — see GenerationResumeService's
         // comment. Written here (not on the earlier failure path, where
         // these fields are never set) since this is the only point at which
-        // isResumableBook could ever become true for this hash.
+        // a later run can become resumable for this hash.
         lastGenerationInputHash: inputHash,
         // Phase B, Slice B3: the exact claim namespace backing the JSON
         // above, persisted in the same fenced transaction as that JSON — see
@@ -706,9 +555,9 @@ export class AgentService {
     if (pdfRenderError) {
       missingAssetsAfterRetry.push('pdf');
       // Re-checks current-claim state only — no further copy-forward attempt
-      // (`sourceNamespace: null`), since the first classifyImageAssets pass
+      // (`sourceNamespace: null`), since the first classifyImages pass
       // above already resolved every reusable/copied entry for this claim.
-      const afterImages = await this.classifyImageAssets(
+      const afterImages = await this.generationResumeService.classifyImages(
         book.id,
         imageGenerationResult.images,
         currentNamespace,

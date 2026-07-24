@@ -107,8 +107,8 @@ export function claimArtifactBasePath(bookId: string, namespace: ClaimArtifactNa
 
 /**
  * Resolves the namespace backing whatever resumable story/character/image
- * JSON currently sits on `book` (see AgentService.isResumableBook) — this is
- * *not* necessarily the published namespace (resolvePublishedNamespace):a
+ * JSON currently sits on `book` (see GenerationResumeService.plan) — this is
+ * *not* necessarily the published namespace (resolvePublishedNamespace): a
  * failed regenerate attempt moves this pointer to its own claim without ever
  * touching what's published. Both fields null means the row predates Phase B
  * (or no run has ever reached Phase 1 for this book) — legacy positional

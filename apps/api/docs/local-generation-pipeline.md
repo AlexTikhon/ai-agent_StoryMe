@@ -130,7 +130,7 @@ below) never clears
 `errorMessage`/`retryCount`. So a retry against a book that previously made
 it past Phase 1 of a run (e.g. one that failed at `pdf_render`) hands
 `AgentService.startBookGeneration` a `Book` row that already carries a full
-prior generation result. `isResumableBook` (`agent.service.ts`) detects this
+prior generation result. `GenerationResumeService.plan` detects this
 (`storyPlan`/`characterCard`/`bookPreview`/`imageGenerationResult` all
 non-null) and the pipeline reuses as much of it as is still valid instead of
 regenerating from scratch:
@@ -142,11 +142,11 @@ regenerating from scratch:
   `CharacterProfileProvider.buildProfile` is never called.
 - **Character sheet** — skipped when the profile's `hasCharacterSheet` is
   true and `Book.characterSheetAssetKey`'s bytes are still readable and
-  non-empty (`resolveCharacterSheetForClaim`). If the profile is being reused
+  non-empty (`GenerationResumeService.plan`). If the profile is being reused
   but the sheet specifically is missing/invalid, only the sheet is
   regenerated (`CharacterReferenceStage.regenerateSheet`) — the profile provider is still
   never re-called.
-- **Illustrations** — `classifyImageAssets` checks every planned cover/page/
+- **Illustrations** — `GenerationResumeService.classifyImages` checks every planned cover/page/
   back-cover entry's saved bytes via `ImageAssetStorage.getImageAsset`: no
   bytes at all → missing, a zero-length buffer → invalid, otherwise → valid
   and reusable as-is. Only missing/invalid entries are sent to
@@ -199,7 +199,7 @@ interface ResumeDiagnostics {
 
 `missingAssetsAfterRetry` is only populated for `character_sheet` (its own
 independent best-effort check) and, when `pdf_render` fails, a fresh
-`classifyImageAssets` pass — a successful `pdf_render` implies every planned
+`GenerationResumeService.classifyImages` pass — a successful `pdf_render` implies every planned
 illustration resolved (see `PdfPublicationStage` above), so no extra
 storage reads happen on the happy path.
 
@@ -1537,7 +1537,7 @@ pre-migration; since a retry always builds its _new_ run's hash fresh from its
 own (already-current) copy of the snapshot (`BooksService.createRunAndSchedule`),
 that stale value could never equal `Book.lastGenerationInputHash` (stamped
 from the hash the migrated run actually executed under), so
-`AgentService.isResumableBook` silently forced a full, unnecessary
+the resumability check silently forced a full, unnecessary
 regeneration on every retry of a migrated run instead of resuming — no data
 was lost or corrupted, just wasted work. `GenerationQueueProcessor` builds its
 `GenerationExecutionContext.inputHash` from `normalize`'s return value, not
@@ -2198,7 +2198,7 @@ caller is unchanged.
   eventual pipeline cutover writes claim metadata for it. No migration
   backfill is possible or attempted — there is no historical per-write claim
   record to reconstruct.
-- **No production storage path has changed.** `classifyImageAssets`,
+- **No production storage path has changed.** `GenerationResumeService.classifyImages`,
   `buildImageBufferResolver`, `pdfStorage.savePreviewPdf`/`getPreviewPdf`,
   and every other real read/write in the pipeline still use the positional
   keys they always have.
@@ -2275,7 +2275,7 @@ over yet — that remains B4.
   algorithm behind every character sheet and generated image:
   1. A valid current-claim artifact is always reused directly — same-claim
      re-entry is idempotent, with no copy or provider call.
-  2. Otherwise, if the Book is resumable (`isResumableBook` — the run's
+  2. Otherwise, if the Book is resumable (`GenerationResumeService.plan` — the run's
      `inputHash` still matches `Book.lastGenerationInputHash`) and the
      resolved source namespace differs from the current claim, the exact
      source key is inspected and copied forward with B2's

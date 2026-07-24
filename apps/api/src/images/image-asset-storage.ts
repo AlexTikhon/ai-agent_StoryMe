@@ -59,9 +59,9 @@ export interface ImageAssetStorage {
   /**
    * Server-/filesystem-native copy of an already-saved asset to a new key,
    * without the API process ever holding the full bytes in memory purely to
-   * relay them. Added in Phase B, Slice B2 for the future copy-forward retry
-   * algorithm (not wired to any caller yet — see claimImageAssetKey's doc
-   * comment); every driver must resolve `undefined` only for a genuinely
+   * relay them. Added in Phase B, Slice B2 and used by the copy-forward retry
+   * algorithm in generation-claim-artifacts.ts; every driver must resolve
+   * `undefined` only for a genuinely
    * missing source and let every other failure (validation, permission,
    * network, malformed metadata) propagate.
    */
@@ -435,13 +435,12 @@ const VALID_IMAGE_ASSET_KIND_SLUGS: Record<'cover' | 'page' | 'back_cover', stri
 
 /**
  * Claim-scoped counterpart to imageAssetKey (Phase B, Slice B1 — see
- * generation-artifact-namespace.ts). Not yet used by any production write or
- * read path: AgentService/classifyImageAssets still call the positional
- * imageAssetKey above, and this slice does not change that. Embeds the
- * claiming run's exact (runId, fencingVersion), not just runId, so two
- * different deliveries of the same GenerationRun (e.g. a stalled-job
- * redelivery — see GenerationRunService.claim) can never compute the same
- * key.
+ * generation-artifact-namespace.ts). GenerationResumeService,
+ * ImageGenerationStage, and PdfPublicationStage use it for the active
+ * claim. Embeds the claiming run's exact (runId, fencingVersion), not just
+ * runId, so two different deliveries of the same GenerationRun (e.g. a
+ * stalled-job redelivery — see GenerationRunService.claim) can never compute
+ * the same key.
  */
 export function claimImageAssetKey(
   bookId: string,
@@ -464,7 +463,7 @@ export function claimImageAssetKey(
   return `${claimArtifactBasePath(bookId, namespace)}/${slug}`;
 }
 
-/** Claim-scoped counterpart to characterSheetAssetKey (Phase B, Slice B1). Not yet used by any production write or read path — see claimImageAssetKey's doc comment. */
+/** Claim-scoped counterpart to characterSheetAssetKey (Phase B, Slice B1). */
 export function claimCharacterSheetAssetKey(
   bookId: string,
   namespace: ClaimArtifactNamespace,
@@ -479,8 +478,8 @@ export function claimCharacterSheetAssetKey(
  * algorithm uses this to compute a *source* key (which may legitimately be
  * legacy, a prior claim of the same run, or a different run entirely) — the
  * *current* key a claim is writing to is always built directly via
- * claimImageAssetKey, since AgentService always executes as a claim, never
- * as 'legacy'.
+ * claimImageAssetKey, since generation always executes as a claim, never as
+ * 'legacy'.
  */
 export function imageKeyForNamespace(
   bookId: string,

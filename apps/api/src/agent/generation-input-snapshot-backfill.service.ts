@@ -195,7 +195,7 @@ export class GenerationInputSnapshotBackfillService {
   /**
    * Book.lastGenerationInputHash records whichever GenerationRun.inputHash
    * produced the story/character/preview JSON currently resident on the Book
-   * row (see AgentService.isResumableBook). Whenever this class rewrites a
+   * row (see GenerationResumeService.plan). Whenever this class rewrites a
    * run's own inputHash out from under it — legacy migration, or repairing a
    * drifted hash above — that Book mirror must move to the same new hash in
    * the same transaction, but only if it still holds the exact pre-rewrite
@@ -204,7 +204,7 @@ export class GenerationInputSnapshotBackfillService {
    * later retryGeneration always recomputes its new run's hash fresh from
    * the migrated (current-shaped) snapshot — so without this, that fresh
    * hash could never equal the still-legacy Book value and
-   * AgentService.isResumableBook would stay permanently false, silently
+   * GenerationResumeService's resumability check would stay permanently false, silently
    * forcing a full regeneration on every retry. CAS-guarded on `fromHash` so
    * a Book whose mirror reflects a different run (never stamped by this one,
    * or already advanced by someone else) is left untouched.
