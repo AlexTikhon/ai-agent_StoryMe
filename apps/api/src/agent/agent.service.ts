@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { AgentLogStatus, AgentStep, BookStatus, Prisma } from '@prisma/client';
+import { AgentStep, BookStatus, Prisma } from '@prisma/client';
 import { PDF_STORAGE_TOKEN, publishedPreviewPdfExists, type PdfStorage } from '../pdf/pdf-storage';
 import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import {
@@ -8,7 +8,7 @@ import {
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
-import { type BookPreview, type ImageGenerationResult, type ResumeDiagnostics } from '@book/types';
+import { type BookPreview, type ImageGenerationResult } from '@book/types';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
   resolveTargetPageCount,
@@ -40,6 +40,7 @@ import {
 } from './character-reference.stage';
 import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage';
 import { GenerationResumeService } from './generation-resume.service';
+import { GenerationResultCollector } from './generation-result.collector';
 
 /**
  * Generation-relevant input resolved once at the top of startBookGeneration
@@ -64,6 +65,7 @@ export class AgentService {
   private readonly characterReferenceStage: CharacterReferenceStage;
   private readonly imageGenerationStage: ImageGenerationStage;
   private readonly generationResumeService: GenerationResumeService;
+  private readonly generationResultCollector = new GenerationResultCollector();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -304,51 +306,17 @@ export class AgentService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
-        // Not persisted here — see GenerationOutcome's doc comment. Both the
-        // AgentLog rows below and status/errorMessage/failedStep are applied
-        // by the caller (GenerationRunCoordinator.completeRun) atomically
-        // alongside the GenerationRun terminal transition, so a stale/
-        // superseded claim that reaches this catch block still writes zero
-        // AgentLog rows; generationTimeMs/aiModelVersions/the char_build
-        // progress ride along in the same write.
-        return {
-          status: BookStatus.failed,
-          completedStep: AgentStep.story_plan,
-          errorCode: 'GENERATION_FAILED',
+        return this.generationResultCollector.collectStoryFailureOutcome({
+          bookId: book.id,
+          traceId,
+          generationTimeMs: Date.now() - startedAt,
+          aiModelVersions,
+          characterProfileUpdateData,
+          charBuildResult,
+          storyProviderName,
+          storyModelName,
           errorMessage: message,
-          failedStep: AgentStep.story_plan,
-          bookUpdate: {
-            generationTimeMs: Date.now() - startedAt,
-            aiModelVersions,
-            ...characterProfileUpdateData,
-          },
-          agentLogs: [
-            {
-              bookId: book.id,
-              agent: 'LocalPipelineAgent',
-              step: AgentStep.char_build,
-              status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
-              attempt: 1,
-              traceId,
-              provider: charBuildResult.providerName,
-              model: charBuildResult.modelName,
-              durationMs: charBuildResult.durationMs,
-              ...(charBuildResult.error && { error: charBuildResult.error }),
-            },
-            {
-              bookId: book.id,
-              agent: 'LocalPipelineAgent',
-              step: AgentStep.story_plan,
-              status: AgentLogStatus.error,
-              attempt: 1,
-              traceId,
-              error: message,
-              provider: storyProviderName,
-              model: storyModelName,
-              durationMs: Date.now() - startedAt,
-            },
-          ],
-        };
+        });
       }
       storyDurationMs = Date.now() - startedAt;
     }
@@ -402,21 +370,15 @@ export class AgentService {
       );
     }
 
-    const priorCharacterReferenceUsedForImages =
-      imageGenerationResult.characterReferenceUsedForImages === true;
-    const priorImageGenerationMode = imageGenerationResult.imageGenerationMode;
-    const priorCharacterReferenceAvailable =
-      imageGenerationResult.characterReferenceAvailable === true;
-
-    const { generatedCount, failedCount, lastError, usedCharacterReference, failures } =
-      await this.imageGenerationStage.execute({
-        bookId: book.id,
-        characterCard,
-        images: imagesNeedingGeneration,
-        ...(characterReference && { characterReference }),
-        namespace: currentNamespace,
-        telemetry: providerTelemetry,
-      });
+    const imageGeneration = await this.imageGenerationStage.execute({
+      bookId: book.id,
+      characterCard,
+      images: imagesNeedingGeneration,
+      ...(characterReference && { characterReference }),
+      namespace: currentNamespace,
+      telemetry: providerTelemetry,
+    });
+    const { generatedCount, failedCount, usedCharacterReference } = imageGeneration;
 
     const rateLimitDiagnostics = this.imageGenerationProvider.getRateLimitDiagnostics?.();
     const rateLimitSummary = rateLimitDiagnostics
@@ -426,47 +388,17 @@ export class AgentService {
       `Image generation for book ${book.id}: ${generatedCount} generated, ${reusableImages.length} reused, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.${rateLimitSummary}`,
     );
 
-    // Whether a character-sheet reference was actually supplied to this
-    // run's attempted images — used for imageGenerationMode below only when
-    // nothing succeeded this run. When at least one image did succeed,
-    // `usedCharacterReference` (the provider-confirmed signal) still governs
-    // mode, exactly as before — e.g. MockImageGenerationProvider never
-    // reports usedReference even when a reference was supplied, and that
-    // 'text-to-image' reporting for a provider that doesn't meaningfully
-    // support reference-edits must stay unchanged. But when every attempted
-    // image failed, there is no provider confirmation to rely on at all — in
-    // that case the request that was actually *sent* (edits endpoint with a
-    // reference attached) must still be reported truthfully instead of
-    // silently falling back to 'text-to-image' just because it failed (see
-    // "Diagnose and Fix Failed Resumed Back-Cover Generation").
-    const attemptedWithCharacterReference =
-      imagesNeedingGeneration.length > 0 &&
-      generatedCount === 0 &&
-      characterReference !== undefined;
-
-    imageGenerationResult.imageByteProvider = imageProviderName;
-    imageGenerationResult.generatedImageCount = reusableImages.length + generatedCount;
-    imageGenerationResult.failedImageCount = failedCount;
-    imageGenerationResult.characterReferenceAvailable =
-      characterReferenceAvailable || priorCharacterReferenceAvailable;
-    imageGenerationResult.characterReferenceUsedForImages =
-      usedCharacterReference || priorCharacterReferenceUsedForImages;
-    imageGenerationResult.imageGenerationMode =
-      imagesNeedingGeneration.length > 0
-        ? usedCharacterReference || attemptedWithCharacterReference
-          ? 'character-reference-edit'
-          : 'text-to-image'
-        : (priorImageGenerationMode ?? 'text-to-image');
-    if (lastError !== undefined) {
-      imageGenerationResult.lastImageError = lastError;
-    }
-    if (characterReferenceLoadError !== undefined) {
-      imageGenerationResult.characterReferenceLoadError = characterReferenceLoadError;
-    } else {
-      delete imageGenerationResult.characterReferenceLoadError;
-    }
-    imageGenerationResult.imageFailures = failures;
-    imageGenerationResult.providerUsage = providerTelemetry.snapshot();
+    imageGenerationResult = this.generationResultCollector.collectImageResult({
+      result: imageGenerationResult,
+      imageProviderName,
+      reusableImageCount: reusableImages.length,
+      attemptedImageCount: imagesNeedingGeneration.length,
+      generation: imageGeneration,
+      characterReferenceAvailable,
+      characterReferenceSupplied: characterReference !== undefined,
+      ...(characterReferenceLoadError !== undefined && { characterReferenceLoadError }),
+      providerUsage: providerTelemetry.snapshot(),
+    });
 
     const imageDurationMs = Date.now() - imageStartedAt;
     const layoutStartedAt = Date.now();
@@ -511,7 +443,6 @@ export class AgentService {
     this.assertNotSuperseded(ctx, pdfPublicationStage.step);
 
     let previewPdfUrl: string | null = null;
-    let pdfRenderLogStatus: AgentLogStatus = AgentLogStatus.success;
     let pdfRenderError: string | undefined;
     const pdfStartedAt = Date.now();
 
@@ -526,7 +457,6 @@ export class AgentService {
       });
       previewPdfUrl = published.previewPdfUrl;
     } catch (err) {
-      pdfRenderLogStatus = AgentLogStatus.error;
       pdfRenderError = err instanceof Error ? err.message : String(err);
       this.logger.error(`PDF render failed for book ${book.id}: ${pdfRenderError}`);
     }
@@ -569,11 +499,6 @@ export class AgentService {
       );
     }
 
-    const requiredAssets = [
-      'character_sheet',
-      ...imageGenerationResult.images.map(imageAssetLabel),
-      'pdf',
-    ];
     // Phase B, Slice B4: what was actually *published* for this book before
     // this attempt started — resolved through the same namespace pointer
     // every other production PDF read goes through (see
@@ -587,177 +512,53 @@ export class AgentService {
         : (await publishedPreviewPdfExists(this.pdfStorage, book.id, publishedNamespaceBefore))
           ? 'valid'
           : 'invalid';
-    const validExistingAssets = [
-      ...(priorSheetStatus === 'valid' ? ['character_sheet'] : []),
-      ...reusableImages.map(imageAssetLabel),
-      ...(pdfStatusBefore === 'valid' ? ['pdf'] : []),
-    ];
-    const missingAssetsBeforeRetry = [
-      ...(priorSheetStatus === 'missing' ? ['character_sheet'] : []),
-      ...missingImagesBefore.map(imageAssetLabel),
-      ...(pdfStatusBefore === 'missing' ? ['pdf'] : []),
-    ];
-    const invalidAssetsBeforeRetry = [
-      ...(priorSheetStatus === 'invalid' ? ['character_sheet'] : []),
-      ...invalidImagesBefore.map(imageAssetLabel),
-      ...(pdfStatusBefore === 'invalid' ? ['pdf'] : []),
-    ];
-
-    const resumeDiagnostics: ResumeDiagnostics = {
-      resumeMode: resumable,
-      requiredAssets,
-      validExistingAssets,
-      missingAssetsBeforeRetry,
-      invalidAssetsBeforeRetry,
-      reusedImageCount: reusableImages.length,
-      regeneratedImageCount: generatedCount,
+    imageGenerationResult.resume = this.generationResultCollector.collectResumeDiagnostics({
+      resumable,
+      images: imageGenerationResult.images,
+      priorSheetStatus,
+      pdfStatusBefore,
+      reusableImages,
+      missingImagesBefore,
+      invalidImagesBefore,
+      generatedImageCount: generatedCount,
       skippedStoryGeneration,
       skippedCharacterProfileGeneration,
       skippedCharacterSheetGeneration,
-      skippedExistingImageGeneration: reusableImages.length > 0,
       missingAssetsAfterRetry,
-      pdfRenderAttempted: true,
       pdfRenderSucceeded: !pdfRenderError,
-      finalBookStatus: finalStatus as unknown as ResumeDiagnostics['finalBookStatus'],
-    };
-    imageGenerationResult.resume = resumeDiagnostics;
+      finalBookStatus: finalStatus,
+    });
 
     // Not written here — see GenerationOutcome's doc comment. status/
     // errorMessage/failedStep are applied by the caller
     // (GenerationRunCoordinator.completeRun) atomically alongside the
     // GenerationRun terminal transition; everything else below rides along in
     // that same write.
-    const finalBookUpdate: Prisma.BookUpdateInput = {
+    // GenerationResultCollector keeps terminal result/log assembly
+    // deterministic. The caller still persists this outcome atomically (see
+    // GenerationOutcome's doc comment), so a stale claim writes nothing.
+    return this.generationResultCollector.collectOutcome({
+      bookId: book.id,
+      traceId,
       generationTimeMs: Date.now() - startedAt,
       aiModelVersions,
-      imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
-    };
-    if (previewPdfUrl !== null) {
-      finalBookUpdate.previewPdfUrl = previewPdfUrl;
-    }
-
-    // Not persisted here — see GenerationOutcome's doc comment. The caller
-    // (GenerationRunCoordinator.completeRun) writes these rows atomically
-    // inside the same fenced transaction as the terminal Book/GenerationRun
-    // write, so a stale/superseded claim that made it all the way through
-    // the pipeline still writes zero AgentLog rows if its fencing check then
-    // fails.
-    const agentLogs: Prisma.AgentLogCreateManyInput[] = [
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.char_build,
-        status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: charBuildResult.providerName,
-        model: charBuildResult.modelName,
-        durationMs: charBuildResult.durationMs,
-        ...(charBuildResult.error && { error: charBuildResult.error }),
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.story_plan,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-        durationMs: storyDurationMs,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.page_plan,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.story_draft,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.illust_plan,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.preview_ready,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.image_gen,
-        // Truthful, not optimistic: a run whose only attempted image(s)
-        // failed must not be recorded as 'success' just because the step
-        // itself didn't throw (see "Diagnose and Fix Failed Resumed
-        // Back-Cover Generation"). AgentLogStatus has no dedicated
-        // 'partial' value, so any failedCount > 0 — whether every attempt
-        // failed or only some — is recorded as 'error', with the safe
-        // summary message below explaining exactly how many succeeded.
-        status: failedCount > 0 ? AgentLogStatus.error : AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: imageProviderName,
-        model: imageModelName,
-        durationMs: imageDurationMs,
-        ...(failedCount > 0 && {
-          error: `${failedCount} of ${imagesNeedingGeneration.length} attempted image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
-        }),
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: bookLayoutStage.step,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        durationMs: layoutDurationMs,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: pdfPublicationStage.step,
-        status: pdfRenderLogStatus,
-        attempt: 1,
-        traceId,
-        durationMs: pdfDurationMs,
-        ...(pdfRenderError && { error: pdfRenderError }),
-      },
-    ];
-
-    return {
-      status: finalStatus,
-      completedStep: pdfPublicationStage.step,
-      bookUpdate: finalBookUpdate,
-      ...(pdfRenderError && {
-        errorCode: 'GENERATION_FAILED',
-        errorMessage: pdfRenderError,
-        failedStep: pdfPublicationStage.step,
-      }),
-      agentLogs,
-    };
+      imageGenerationResult,
+      previewPdfUrl,
+      finalStatus,
+      ...(pdfRenderError && { pdfRenderError }),
+      charBuildResult,
+      storyProviderName,
+      storyModelName,
+      imageProviderName,
+      imageModelName,
+      storyDurationMs,
+      imageDurationMs,
+      layoutDurationMs,
+      pdfDurationMs,
+      failedImageCount: failedCount,
+      attemptedImageCount: imagesNeedingGeneration.length,
+      layoutStep: bookLayoutStage.step,
+      pdfStep: pdfPublicationStage.step,
+    });
   }
 }

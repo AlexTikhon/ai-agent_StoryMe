@@ -71,11 +71,11 @@ for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
   any entry left without saved bytes now fails the whole book at `pdf_render`
   with a clear error naming the page, instead of rendering a placeholder for
   it. The stage returns `{ generatedCount, failedCount, lastError }`,
-  which `AgentService` writes onto `imageGenerationResult.generatedImageCount`/
-  `failedImageCount`/`lastImageError` for diagnostics (see "Generation
-  diagnostics" below), and folds `failedCount` into the final `image_gen`
-  `AgentLog` row's `error` field (status stays `success`, since the failure is
-  only realized later at `pdf_render`) rather than ever setting
+  which `GenerationResultCollector` writes onto
+  `imageGenerationResult.generatedImageCount`/`failedImageCount`/
+  `lastImageError` for diagnostics (see "Generation diagnostics" below), and
+  folds `failedCount` into the final `image_gen` `AgentLog` row's `error`
+  field with `status: 'error'`, rather than setting
   `failedStep: 'image_gen'`.
 - (c) `BookLayoutStage` (`book-layout.stage.ts`) — builds the print-ready
   `BookLayout` (2400×2400px canvas, `square_8x8` trim), referencing the same
@@ -175,7 +175,8 @@ migration, the same pattern Phase 3E used for `generatedImageCount`/
 `failedImageCount`), surfaced as `resume` on
 `GET /:id/generation-diagnostics`'s response
 (`GenerationDiagnosticsDto.resume`, `null` for books generated before this
-existed):
+existed). `GenerationResultCollector.collectResumeDiagnostics` owns the
+deterministic DTO assembly:
 
 ```ts
 interface ResumeDiagnostics {
@@ -251,16 +252,22 @@ interface StoryGenerationProvider {
   after the provider returns. This split is deliberate: a future real-LLM
   story provider and a future real-image provider are independent phases and
   shouldn't be coupled.
-- `BookLayoutStage` owns print-layout geometry over already-built story/image
-  data. `PdfPublicationStage` owns image resolution, missing-artifact
-  validation, rendering and claim-scoped storage. `AgentService` only orders
-  these stages and retains fencing checkpoints/outcome assembly; neither
-  stage changes retry, cancellation, credit or publication semantics.
+- `CharacterReferenceStage` owns character-profile/reference preparation;
+  `ImageGenerationStage` owns bounded illustration generation and storage;
+  `GenerationResumeService` owns resume/copy-forward decisions;
+  `BookLayoutStage` owns print-layout geometry; and `PdfPublicationStage`
+  owns image resolution, validation, rendering and claim-scoped storage.
+  `GenerationResultCollector` deterministically assembles persisted image
+  telemetry, resume diagnostics, the terminal outcome, and its `AgentLog`
+  batch. `AgentService` orders these boundaries and retains fencing
+  checkpoints; none changes retry, cancellation, credit or publication
+  semantics.
 - **Failure behavior**: if `generateStory` throws, `AgentService` catches it
-  before Phase 1 runs, marks the book `failed` (`failedStep: 'story_plan'`,
-  `errorMessage` from the caught error's message), writes one `story_plan`
-  `AgentLog` row with `status: 'error'`, and returns — no image assets are
-  saved, no layout is built, no PDF is rendered or stored.
+  before Phase 1 runs. `GenerationResultCollector` returns a failed outcome
+  (`failedStep: 'story_plan'`, `errorMessage` from the caught error) with the
+  completed `char_build` log and an error `story_plan` log; the coordinator
+  persists them atomically. No illustration assets are saved, no layout is
+  built, and no PDF is rendered or stored.
 
 ### Real LLM provider (`OpenAIStoryGenerationProvider`)
 
@@ -529,12 +536,13 @@ capacity returns `503` with `PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT`.
 `AgentService` repeats the check for direct/internal callers, and the telemetry
 collector prevents the runtime count from crossing the configured maximum.
 
-Each logical provider invocation records safe metadata in
-`imageGenerationResult.providerUsage` and exposes it from generation
-diagnostics: provider/model, operation and optional asset label, prompt
-contract version, SHA-256 prompt fingerprint, logical attempt number,
-duration, success/error status, and optional estimated cost. Raw prompts,
-photo/image bytes, API keys, and provider response bodies are never persisted.
+Each logical provider invocation is recorded by
+`GenerationProviderTelemetry`; `GenerationResultCollector` folds its snapshot
+into `imageGenerationResult.providerUsage`, which generation diagnostics
+exposes: provider/model, operation and optional asset label, prompt contract
+version, SHA-256 prompt fingerprint, logical attempt number, duration,
+success/error status, and optional estimated cost. Raw prompts, photo/image
+bytes, API keys, and provider response bodies are never persisted.
 
 Provider prices are deliberately not hardcoded. Operators may configure
 `OPENAI_STORY_ESTIMATED_COST_USD`,
@@ -1811,10 +1819,11 @@ all." Two gaps remain, deliberately out of scope for this pass:
   still no `GenerationArtifact` model or cleanup for those orphan objects
   (explicitly out of scope for B4 — see its own "Known limitations" below).
 - **`AgentLog` ownership.** _Closed by Phase D — see its own section below._
-  `AgentService` no longer writes `AgentLog` rows itself; it returns them on
-  `GenerationOutcome.agentLogs`, and `GenerationRunCoordinator.completeRun`
-  persists them inside the same fenced transaction as the terminal Book/
-  GenerationRun write, so a stale/superseded claim writes zero AgentLog rows.
+  `GenerationResultCollector` assembles the rows on
+  `GenerationOutcome.agentLogs`; `AgentService` does not write them, and
+  `GenerationRunCoordinator.completeRun` persists them inside the same fenced
+  transaction as the terminal Book/GenerationRun write, so a stale/superseded
+  claim writes zero AgentLog rows.
 
 Do not describe this phase as having made the pipeline fully safe against a
 stale/zombie worker in general — only its _database writes_ (which, as of
