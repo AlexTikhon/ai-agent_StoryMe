@@ -44,8 +44,9 @@ These boundaries must not move or be split:
 
 Runtime mirror reads/writes, DI providers, and mirror-only startup recovery are removed.
 `GenerationJob` is not used for dispatch, concurrency, fencing, recovery, charging,
-cancellation, publication, or diagnostics. Remaining dependencies are the Prisma schema/client,
-the historical migration, compatibility vocabulary, and historical documentation.
+cancellation, publication, or diagnostics. Its Prisma model/table/enums are removed by the
+forward migration; only the immutable historical creation migration, compatibility vocabulary,
+and historical documentation remain.
 
 The reviewed read/write/schema/test/operations inventory is maintained in
 `docs/GENERATION_JOB_DEPENDENCY_INVENTORY.md`. It is the checklist for the removal and migration
@@ -58,9 +59,10 @@ Migration sequence:
 2. Completed: stalled-worker detection uses queued/running `GenerationRun`.
 3. Completed: removed all mirror writes/providers/recovery code and updated tests to assert
    authoritative run behavior instead of best-effort mirroring.
-4. Add a migration that drops `generation_jobs`, then its two enums, after pre-migration checks
-   confirm no foreign keys or application reads remain.
-5. Keep historical documents intact, add a supersession note, and update current documents.
+4. Completed: after pre-migration data/dependency checks, added and applied a forward migration
+   that drops `generation_jobs`, then its two enums.
+5. Completed: kept historical documents intact, added a supersession note, and updated current
+   documents.
 
 No legacy rows need backfill: every authoritative run already exists in `generation_runs`, and
 the mirror was deliberately allowed to be missing or stale.
@@ -72,8 +74,8 @@ the mirror was deliberately allowed to be missing or stale.
 3. Complete: generation admission/atomic scheduling and worker execution/cancellation are
    extracted without changing the authoritative coordinator transaction boundaries.
 4. Extract typed Agent stages one at a time with focused tests.
-5. Replace/remove GenerationJob and apply the schema migration.
-6. Run format, lint, typecheck, unit tests, build, then integration tests when local
-   PostgreSQL/Redis are available.
+5. Completed: replaced/removed GenerationJob and applied the schema migration.
+6. Run format, lint, typecheck, unit tests, build, and integration tests for each remaining
+   AgentService extraction slice.
 
 Each slice must compile and keep relevant tests green before the next slice.

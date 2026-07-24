@@ -1917,7 +1917,7 @@ services:
   redis:
     image: redis:7-alpine
     ports: ['6379:6379']
-    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 512mb --maxmemory-policy noeviction
 
   api:
     build: ./apps/api

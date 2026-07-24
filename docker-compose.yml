@@ -25,7 +25,7 @@ services:
     command: >
       redis-server
       --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
       --appendonly yes
     volumes:
       - redis_data:/data

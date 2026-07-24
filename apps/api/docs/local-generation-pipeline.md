@@ -1175,8 +1175,9 @@ error for book <id>: <message>`), and swallowed — a background failure
 ## Generation jobs (Phase 3I)
 
 > Historical section. Runtime `GenerationJob` reads/writes and mirror-only
-> recovery were removed in Phase 2; the model remains schema-only until its
-> reviewed migration and real PostgreSQL + Redis verification are complete.
+> recovery were removed in Phase 2. After real PostgreSQL + Redis verification,
+> migration `20260724110000_remove_generation_jobs` removed its table and enums.
+> The description below is retained only as implementation history.
 
 Alongside `Book.status` (still the source of truth for user-facing status),
 every `generate`/`retry-generation` call now also creates a `GenerationJob`

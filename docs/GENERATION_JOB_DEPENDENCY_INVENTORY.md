@@ -1,11 +1,10 @@
 # GenerationJob dependency inventory
 
-Status: runtime removal completed 2026-07-24; Prisma model/migration removal remains gated.
+Status: removal completed and verified on real local PostgreSQL + Redis, 2026-07-24.
 
-This is the reviewed removal record and remaining schema checklist for the
-legacy `GenerationJob` mirror. The authoritative lifecycle is
-`GenerationRun`; the remaining table is no longer read or written at runtime
-and may be absent without changing dispatch, fencing, charging, cancellation,
+This is the reviewed removal record for the legacy `GenerationJob` mirror.
+The authoritative lifecycle is `GenerationRun`; the table and its Prisma
+model are removed without changing dispatch, fencing, charging, cancellation,
 publication, API diagnostics, or recovery.
 
 ## Runtime reads and writes
@@ -64,7 +63,7 @@ source now uses `prisma.generationJob`.
 
 ## Prisma and data dependencies
 
-The destructive schema slice must remove exactly:
+The destructive schema slice removed exactly:
 
 - `GenerationJob` from `apps/api/prisma/schema.prisma`;
 - `Book.generationJobs`;
@@ -74,10 +73,10 @@ The destructive schema slice must remove exactly:
 
 The historical creation migration
 `20260702000000_phase3i_generation_jobs/migration.sql` remains immutable.
-Removal requires a new forward migration; the old migration must not be
-deleted or edited.
+Forward migration `20260724110000_remove_generation_jobs/migration.sql`
+performs removal; the old migration was not deleted or edited.
 
-Before reviewing that migration against a real database, capture:
+The following queries were captured before applying the migration:
 
 ```sql
 SELECT status, count(*) FROM generation_jobs GROUP BY status ORDER BY status;
@@ -96,8 +95,25 @@ WHERE definition ILIKE '%generation_jobs%';
 
 Rows need no backfill: they are a deliberately fallible mirror, diagnostics
 already use `GenerationRun`, and no authoritative field is sourced from this
-table. The reviewed forward migration should drop the table first and only
-then drop `"GenerationJobType"` and `"GenerationJobStatus"`.
+table.
+
+Local PostgreSQL snapshot on 2026-07-24:
+
+- 9 total rows: 5 `completed`, 4 `failed`, created from 2026-07-09 through
+  2026-07-13;
+- only the expected primary key and `books(id)` cascading foreign key;
+- only the primary-key index plus the expected `book_id` and
+  `(book_id, status)` indexes;
+- no views referenced `generation_jobs`;
+- the two enums were used only by columns/indexes belonging to
+  `generation_jobs`.
+
+Prisma's generated schema diff matched the reviewed migration: drop the
+foreign key, table, `GenerationJobStatus`, then `GenerationJobType`. Applying
+the migration removed the table and both types, and `prisma migrate status`
+reported the 22-migration schema up to date. The complete migration chain also
+applied successfully to a fresh temporary PostgreSQL database; a second deploy
+reported no pending migrations.
 
 ## Tests that assume the mirror
 
@@ -147,11 +163,14 @@ as if the table never existed.
 2. Completed: prove with repository search that only schema/client test
    scaffolding, migration/history, and public compatibility names remain.
 3. Completed: run unit tests, lint, typecheck, and production build.
-4. Run PostgreSQL + Redis integration suites and exercise generate, retry,
-   cancel, recovery, diagnostics, and exhausted BullMQ retry flows.
-5. Run the data/constraint/view queries above on the target database and
-   review the generated SQL migration.
-6. Only then apply the new migration and regenerate Prisma artifacts.
+4. Completed: ran the PostgreSQL + Redis integration suite before removal
+   (9 files, 85 tests) and exercised scheduling/retry, cancellation, recovery,
+   fencing, publication, credits, and real BullMQ stalled redelivery.
+5. Completed: ran the data/constraint/index/view/enum queries and reviewed the
+   generated SQL diff.
+6. Completed: applied the forward migration locally, regenerated Prisma
+   artifacts, verified the table/types are absent, and repeated the
+   PostgreSQL + Redis suite.
 
 Inventory commands used:
 

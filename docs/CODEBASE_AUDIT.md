@@ -72,9 +72,9 @@ Book cancelled, and refunds once. `partial` and many fine-grained Book statuses 
 - **Artifacts:** bytes are authoritative only through Book namespace pointers. Run ID without
   fencing version is insufficient. Legacy positional keys remain for old rows.
   `previewPdfUrl` is a marker/key, not authorization.
-- **GenerationJob:** runtime mirror reads/writes and mirror-only recovery have been removed.
-  The table remains in Prisma only until data analysis, migration review, and real
-  PostgreSQL + Redis verification are complete. Diagnostics use `GenerationRun`.
+- **GenerationJob:** runtime mirror reads/writes, mirror-only recovery, Prisma model, table, and
+  database enums have been removed. Diagnostics and lifecycle ownership use `GenerationRun`;
+  legacy API field/type names remain compatibility vocabulary only.
 - **Credits:** `User.credits` is current balance; `CreditTransaction` is audit/idempotency ledger.
 
 ## Large units to split
@@ -93,9 +93,9 @@ Large test files reflect those units; split coverage with implementation boundar
 
 ## Legacy, unused schema, and inconsistencies
 
-`GenerationJob` runtime service/recovery and mirror writes have been removed; diagnostics use
-`GenerationRun`. The table remains schema-only pending its destructive migration gate. Positional
-image/PDF keys support pre-namespace rows. `partial` is reserved/unreachable;
+`GenerationJob` runtime service/recovery, mirror writes, and schema have been removed; diagnostics
+use `GenerationRun`. Positional image/PDF keys support pre-namespace rows. `partial` is
+reserved/unreachable;
 several step/status values describe an older granular state machine. `AUTH_MODE=dev` is local-only.
 OAuth, alternate-provider, subscription, sharing, notification, profile, and plan fields are
 placeholders.
