@@ -33,9 +33,9 @@ import { BooksService } from '../../src/books/books.service';
  * GenerationRunService, GenerationRunCoordinator, GenerationInputSnapshot-
  * BackfillService, RateLimiterService) and inert stand-ins for the rest
  * (AgentService, PdfStorage, ImageAssetStorage, GenerationQueueService,
- * GenerationJobService, ChildPhotoProcessor) — none of these tests ever run
- * the generation pipeline itself, only scheduling and terminal-transition
- * bookkeeping, so the stand-ins are never invoked.
+ * ChildPhotoProcessor) — none of these tests ever run the generation pipeline
+ * itself, only scheduling and terminal-transition bookkeeping, so the
+ * stand-ins are never invoked.
  */
 describe('Generation credit charging and refunds (Phase E2, real Postgres)', () => {
   const prisma = new PrismaService();
@@ -53,7 +53,6 @@ describe('Generation credit charging and refunds (Phase E2, real Postgres)', () 
     {} as never, // PdfStorage
     {} as never, // ImageAssetStorage
     {} as never, // GenerationQueueService
-    { createQueued: async () => undefined } as never, // GenerationJobService — best-effort legacy mirror, safe to no-op
     generationRunService,
     generationRunCoordinator,
     snapshotBackfill,

@@ -42,12 +42,10 @@ These boundaries must not move or be split:
 
 ## Legacy GenerationJob migration
 
-Runtime tracing proves `GenerationJob` is not used for dispatch, concurrency, fencing, recovery,
-charging, cancellation, or publication. Remaining consumers are:
-
-- best-effort mirror writes in `BooksService`;
-- a mirror-only startup recovery service;
-- tests and historical documentation.
+Runtime mirror reads/writes, DI providers, and mirror-only startup recovery are removed.
+`GenerationJob` is not used for dispatch, concurrency, fencing, recovery, charging,
+cancellation, publication, or diagnostics. Remaining dependencies are the Prisma schema/client,
+the historical migration, compatibility vocabulary, and historical documentation.
 
 The reviewed read/write/schema/test/operations inventory is maintained in
 `docs/GENERATION_JOB_DEPENDENCY_INVENTORY.md`. It is the checklist for the removal and migration
@@ -58,8 +56,8 @@ Migration sequence:
 1. Completed: diagnostics use the latest authoritative `GenerationRun`, retaining the existing
    `latestJob` response field as a compatibility projection.
 2. Completed: stalled-worker detection uses queued/running `GenerationRun`.
-3. Remove all mirror writes/providers/recovery code and update tests to assert authoritative run
-   behavior instead of best-effort mirroring.
+3. Completed: removed all mirror writes/providers/recovery code and updated tests to assert
+   authoritative run behavior instead of best-effort mirroring.
 4. Add a migration that drops `generation_jobs`, then its two enums, after pre-migration checks
    confirm no foreign keys or application reads remain.
 5. Keep historical documents intact, add a supersession note, and update current documents.

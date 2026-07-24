@@ -1,18 +1,19 @@
 # GenerationJob dependency inventory
 
-Status: reviewed source inventory, 2026-07-24. No schema or runtime dependency
-has been removed by this document.
+Status: runtime removal completed 2026-07-24; Prisma model/migration removal remains gated.
 
-This is the removal checklist for the legacy `GenerationJob` mirror. The
-authoritative lifecycle is already `GenerationRun`; the remaining table is
-best-effort and may be absent or stale without changing dispatch, fencing,
-charging, cancellation, publication, API diagnostics, or recovery.
+This is the reviewed removal record and remaining schema checklist for the
+legacy `GenerationJob` mirror. The authoritative lifecycle is
+`GenerationRun`; the remaining table is no longer read or written at runtime
+and may be absent without changing dispatch, fencing, charging, cancellation,
+publication, API diagnostics, or recovery.
 
 ## Runtime reads and writes
 
-All direct Prisma access is centralized in
-`apps/api/src/agent/generation-job.service.ts`. No other production source
-uses `prisma.generationJob`.
+Before runtime removal, all direct Prisma access was centralized in the now
+deleted `apps/api/src/agent/generation-job.service.ts`. The table below records
+each removed use and the authoritative behavior that replaced it. No production
+source now uses `prisma.generationJob`.
 
 | Operation                                 | Direct runtime consumer                                                        | Purpose today                                                                  | Replacement or proof of non-necessity                                                                                                                                                                                              |
 | ----------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -29,11 +30,9 @@ uses `prisma.generationJob`.
 | `markFailed`                              | `BookGenerationExecutionService`, `GenerationJobRecoveryService`               | Copies expected/unexpected/recovery failures into the mirror.                  | Remove; expected and exhausted-retry failures are already applied through the coordinator. Mirror-only startup failure has no product effect and is redundant.                                                                     |
 | `markCancelled`                           | `BookGenerationExecutionService`                                               | Copies cancellation into the mirror.                                           | Remove; authoritative cancellation commits first and is sufficient.                                                                                                                                                                |
 
-`BooksService` only receives and forwards `GenerationJobService` to the
-extracted scheduling/execution services. It has no independent read or write.
-`BooksModule` registers `GenerationJobService` and
-`GenerationJobRecoveryService`; both provider registrations become removable
-after the consumers above are deleted.
+`BooksService` no longer receives or forwards `GenerationJobService`.
+`BooksModule` no longer registers `GenerationJobService` or
+`GenerationJobRecoveryService`.
 
 ## Recovery compatibility
 
@@ -102,7 +101,8 @@ then drop `"GenerationJobType"` and `"GenerationJobStatus"`.
 
 ## Tests that assume the mirror
 
-These tests must be replaced or removed with their owning runtime code:
+The runtime-removal slice replaced or removed these tests with their owning
+runtime code:
 
 - `generation-job.service.spec.ts`: direct CRUD/query tests; delete with the
   service.
@@ -125,7 +125,7 @@ compatibility tests and must remain.
 
 ## Operational and historical documents
 
-Current operational references requiring update in the removal slice:
+Current operational references updated in the runtime-removal slice:
 
 - `.env.example`;
 - `docs/CURRENT_PRODUCT.md`;
@@ -142,11 +142,11 @@ as if the table never existed.
 
 ## Removal gates
 
-1. Remove runtime mirror creation, reads, status updates, recovery providers,
-   env parsing, and their tests.
-2. Prove with repository search that only schema/migration/history and public
-   compatibility names remain.
-3. Run unit tests, lint, typecheck, and production build.
+1. Completed: remove runtime mirror creation, reads, status updates, recovery
+   providers, env parsing, and their tests.
+2. Completed: prove with repository search that only schema/client test
+   scaffolding, migration/history, and public compatibility names remain.
+3. Completed: run unit tests, lint, typecheck, and production build.
 4. Run PostgreSQL + Redis integration suites and exercise generate, retry,
    cancel, recovery, diagnostics, and exhausted BullMQ retry flows.
 5. Run the data/constraint/view queries above on the target database and

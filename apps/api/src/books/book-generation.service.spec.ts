@@ -3,7 +3,6 @@ import { Prisma, type Book, type GenerationRun } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { CreditsService } from '../credits/credits.service';
-import type { GenerationJobService } from '../agent/generation-job.service';
 import type { GenerationRunService } from '../agent/generation-run.service';
 import type { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import type { ImageGenerationProvider } from '../images/image-generation-provider';
@@ -77,9 +76,6 @@ function makeRun(overrides: Partial<GenerationRun> = {}): GenerationRun {
 describe('BookGenerationService scheduling boundary', () => {
   const prisma = createMockPrisma();
   const crud = { findOwnedOrThrow: vi.fn() } as unknown as jest.Mocked<BookCrudService>;
-  const jobs = {
-    createQueued: vi.fn(),
-  } as unknown as jest.Mocked<GenerationJobService>;
   const runs = {
     findActiveForBook: vi.fn(),
     findLatestForBook: vi.fn(),
@@ -122,7 +118,6 @@ describe('BookGenerationService scheduling boundary', () => {
     runs.findLatestForBook.mockResolvedValue(null);
     runs.countActiveForUser.mockResolvedValue(0);
     runs.countCreatedForUserSince.mockResolvedValue(0);
-    jobs.createQueued.mockResolvedValue({} as never);
     rateLimiter.consume.mockResolvedValue({ allowed: true, remaining: 99, retryAfterMs: 0 });
     prisma.generationRun.create.mockResolvedValue(makeRun());
     prisma.book.update.mockResolvedValue(makeBook({ status: 'char_build', activeRunId: 'run-1' }));
@@ -134,7 +129,6 @@ describe('BookGenerationService scheduling boundary', () => {
     service = new BookGenerationService(
       crud,
       prisma as never,
-      jobs,
       runs,
       snapshots,
       config as never,
@@ -206,7 +200,6 @@ describe('BookGenerationService scheduling boundary', () => {
 
     await expect(service.startGeneration('user-1', 'book-1')).rejects.toThrow(ConflictException);
     expect(prisma.book.update).not.toHaveBeenCalled();
-    expect(jobs.createQueued).not.toHaveBeenCalled();
   });
 
   it('normalizes and links the prior immutable snapshot for a retry', async () => {

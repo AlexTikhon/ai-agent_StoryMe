@@ -4,8 +4,6 @@ import { CreditsModule } from '../credits/credits.module';
 import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
-import { GenerationJobService } from '../agent/generation-job.service';
-import { GenerationJobRecoveryService } from '../agent/generation-job-recovery.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import { GenerationRunRecoveryService } from '../agent/generation-run-recovery.service';
 import { ClaimArtifactCleanupService } from '../agent/claim-artifact-cleanup.service';
@@ -68,8 +66,6 @@ export class BooksModule {
       BookGenerationExecutionService,
       AgentService,
       GenerationQueueService,
-      GenerationJobService,
-      GenerationJobRecoveryService,
       GenerationRunService,
       GenerationExecutionService,
       GenerationRunCoordinator,

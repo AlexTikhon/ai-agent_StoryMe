@@ -72,18 +72,19 @@ Book cancelled, and refunds once. `partial` and many fine-grained Book statuses 
 - **Artifacts:** bytes are authoritative only through Book namespace pointers. Run ID without
   fencing version is insufficient. Legacy positional keys remain for old rows.
   `previewPdfUrl` is a marker/key, not authorization.
-- **GenerationJob:** best-effort legacy mirror still written/recovered pending removal. Several
-  update failures are swallowed; diagnostics now use `GenerationRun`, and this mirror cannot
-  drive correctness.
+- **GenerationJob:** runtime mirror reads/writes and mirror-only recovery have been removed.
+  The table remains in Prisma only until data analysis, migration review, and real
+  PostgreSQL + Redis verification are complete. Diagnostics use `GenerationRun`.
 - **Credits:** `User.credits` is current balance; `CreditTransaction` is audit/idempotency ledger.
 
 ## Large units to split
 
-- `agent.service.ts` (~1,268 lines): references, character/story/image orchestration, layout/PDF,
-  telemetry, resume diagnostics, and logs.
+- `agent.service.ts`: now delegates character/reference, story, image, resume/reuse, layout/PDF,
+  telemetry/result collection, scheduling, and execution boundaries; it remains the main
+  deterministic pipeline orchestrator.
 - `books.service.ts`: now a compatibility facade for extracted CRUD, assets, diagnostics,
   generation scheduling, and worker execution/cancellation services. The generation services
-  still maintain the best-effort legacy mirror pending its reviewed removal.
+  no longer maintain the legacy `GenerationJob` mirror.
 - `book-detail-view.tsx` (~1,038): product controls, polling, diagnostics, asset keys, PDF, errors.
 - Later candidates: `story-generation-provider.ts` (~773) and
   `claim-artifact-cleanup.service.ts` (~617).
@@ -92,8 +93,9 @@ Large test files reflect those units; split coverage with implementation boundar
 
 ## Legacy, unused schema, and inconsistencies
 
-`GenerationJob` writes and its service/recovery are a runtime legacy mirror; diagnostics no longer
-read it. Positional image/PDF keys support pre-namespace rows. `partial` is reserved/unreachable;
+`GenerationJob` runtime service/recovery and mirror writes have been removed; diagnostics use
+`GenerationRun`. The table remains schema-only pending its destructive migration gate. Positional
+image/PDF keys support pre-namespace rows. `partial` is reserved/unreachable;
 several step/status values describe an older granular state machine. `AUTH_MODE=dev` is local-only.
 OAuth, alternate-provider, subscription, sharing, notification, profile, and plan fields are
 placeholders.
@@ -101,7 +103,7 @@ placeholders.
 No production Prisma delegate use was found for `ChildProfile`, `Upload`, `BookPage`,
 `CharacterCard`, `BookSeries`, `WizardDraft`, `ShareLink`, `Subscription`, `UserBookState`, or
 `Notification`. They remain in relations/migrations and require a data decision before removal.
-`GenerationJob` is used, but only as the mirror. Active models include `User`, `RefreshToken`,
+`GenerationJob` has no production Prisma consumer. Active models include `User`, `RefreshToken`,
 `Book`, `CreditTransaction`, `AgentLog`, `GenerationRun`, `OutboxEvent`, and `RecoveryLease`.
 
 Documentation inconsistencies:

@@ -914,8 +914,8 @@ prisma:migrate:deploy`) before the new container starts serving traffic.
    (`apps/api/src/worker.ts`, `ENABLE_GENERATION_WORKER=true`) separate from
    the HTTP server — see "Worker process separation" in
    `apps/api/docs/local-generation-pipeline.md`.
-   `GenerationJobRecoveryService` remains as a second-layer fail-safe for
-   whatever BullMQ's own stalled-job detection doesn't catch.
+   `GenerationRunRecoveryService` remains as the authoritative recovery layer
+   for abandoned runs that BullMQ still no longer considers pending.
 6. ~~`ru`/`pl` PDF output is not production-ready.~~ **Resolved** —
    `apps/api/src/pdf/pdf-renderer.ts` embeds Noto Sans (OFL-licensed,
    Latin/Cyrillic/Greek coverage), so `ru`/`pl` books render correctly. See
@@ -1200,10 +1200,8 @@ build` / `next start`. Confirmed in Phase 5D: build/env assumptions already
   Dockerfile needed. Consumes `book-generation` BullMQ jobs; exposes no HTTP
   port at all (do **not** point a load balancer or healthcheck path at it —
   see [Build/run commands](#build-run-commands) below for a process-level
-  health check instead). `GenerationJobRecoveryService` runs its own
-  independent sweep on every boot of **both** the API and the worker (safe —
-  each write is a plain last-write-wins `update` — but redundant, not a
-  shared distributed lock).
+  health check instead). `GenerationRunRecoveryService` runs in both
+  processes but elects one recovery leader through its database lease.
 - **Database**: managed Postgres (Neon, Supabase, RDS, etc.) — schema and
   migrations are already Postgres-specific and ready. Shared by the API and
   worker services (both need `DATABASE_URL`).
@@ -1392,8 +1390,8 @@ stuck at a non-terminal value (e.g. `char_build`), `latestJob.status` stuck at
 `generationMetadata.storyProvider`/`imageProvider` both `unknown` (they're
 only ever populated once an `AgentLog` row exists for that book — i.e. once
 the worker actually starts running the pipeline). This means the API
-successfully enqueued the job (`GenerationQueueService.enqueue` resolved,
-`GenerationJob` row created) but **no worker process ever picked it up**.
+successfully created an authoritative queued `GenerationRun`, but **no worker
+process ever picked it up**.
 
 Check, in order:
 
@@ -1427,16 +1425,15 @@ Check, in order:
    (`restartPolicyMaxRetries` in `railway.json` only covers the api service;
    a worker service needs its own restart policy configured). BullMQ job
    pickup is logged per-job (`GenerationQueueProcessor`): `Picked up job —
-bullmqJobId=... bookId=... generationJobId=...` on pickup, `Job completed
+bullmqJobId=... bookId=... generationRunId=...` on pickup, `Job completed
 — ...` or `Job failed — ... error=...` on the two terminal outcomes — a
    worker that boots but never logs any of these for a genuinely queued job
    has either crashed, lost its Redis connection, or (per point 1) isn't
    really running worker mode.
-4. **Was the job enqueued at all?** If `latestJob` is `null` (not `queued`),
-   the enqueue call itself never happened or never persisted a
-   `GenerationJob` row — that's an api-side issue (`BooksService.startGeneration`/
-   `retryGeneration`), not a worker problem; check the api service's own logs
-   for `Failed to enqueue generation job ...` (`BooksService.enqueueOrThrow`).
+4. **Was the run scheduled at all?** If `latestJob` is `null` (not `queued`),
+   no authoritative `GenerationRun` was persisted — that's an API-side
+   scheduling issue, not a worker problem. Inspect the scheduling transaction
+   and outbox-dispatch logs for the run ID.
 
 ## Troubleshooting: PDF ready but preview/download 404s {#troubleshooting-pdf-404}
 

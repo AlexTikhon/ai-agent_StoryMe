@@ -103,12 +103,12 @@ management, reader and image thumbnails/previews, single-page editing/regenerati
 repair, hard-delete/data-erasure workflow, Playwright E2E, and production/admin gating for
 diagnostics.
 
-Known limitations: `AgentService` remains oversized; `BooksService` is now a compatibility facade
-over CRUD, asset, diagnostics, generation scheduling, and generation execution services;
-`GenerationJob` is still written and recovered as a best-effort legacy mirror, although product
-diagnostics now read authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
-local storage cannot serve separately deployed API/worker processes; console email does not
-deliver production mail.
+Known limitations: `AgentService` remains larger than the individual stages it orchestrates;
+`BooksService` is now a compatibility facade over CRUD, asset, diagnostics, generation scheduling,
+and generation execution services; the legacy `GenerationJob` table remains in Prisma pending the
+reviewed data/migration and real PostgreSQL + Redis verification, but runtime code no longer reads
+or writes it; Book soft-delete does not erase artifacts; local storage cannot serve separately
+deployed API/worker processes; console email does not deliver production mail.
 
 ## Local run and validation
 

@@ -11,7 +11,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import {
   BookStatus,
-  GenerationJobType,
   Prisma,
   type Book,
   type GenerationRun,
@@ -25,7 +24,6 @@ import {
   GENERATION_CREDIT_COST,
   generationChargeIdempotencyKey,
 } from '../credits/credits.service';
-import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
 import {
@@ -88,7 +86,6 @@ export class BookGenerationService {
   constructor(
     private readonly crud: BookCrudService,
     private readonly prisma: PrismaService,
-    private readonly generationJobService: GenerationJobService,
     private readonly generationRunService: GenerationRunService,
     private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
     private readonly config: ConfigService<Env, true>,
@@ -350,19 +347,6 @@ export class BookGenerationService {
     this.logger.log(
       `Book ${params.book.id} status ${params.fromStatus} -> ${created.book.status}; run ${created.run.id} (${params.kind}) queued`,
     );
-    await this.generationJobService
-      .createQueued({
-        bookId: params.book.id,
-        userId: params.book.userId,
-        type: params.isRetry ? GenerationJobType.retry : GenerationJobType.generate,
-        attempt: created.book.retryCount + 1,
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(
-          `Failed to create legacy diagnostics GenerationJob for book ${params.book.id}: ${message}`,
-        );
-      });
     return created.book;
   }
 }

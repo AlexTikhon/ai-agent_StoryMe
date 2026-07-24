@@ -1,10 +1,9 @@
 import { HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { BookStatus, GenerationRunStatus } from '@prisma/client';
+import { GenerationRunStatus } from '@prisma/client';
 import type { CancelGenerationResponse } from '@book/types';
 import { AgentService } from '../agent/agent.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
 import { StaleGenerationRunError } from '../agent/generation-execution.service';
-import { GenerationJobService } from '../agent/generation-job.service';
 import type { GenerationOutcome } from '../agent/generation-outcome';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import {
@@ -43,7 +42,7 @@ function notInProgressException(): HttpException {
  * Owns the worker-side generation lifecycle after a run has been scheduled:
  * fenced execution/publication, cancellation follow-ups, and the exhausted
  * BullMQ retry backstop. GenerationRunCoordinator remains the owner of every
- * authoritative transaction; GenerationJob writes remain best-effort only.
+ * authoritative transaction.
  */
 @Injectable()
 export class BookGenerationExecutionService {
@@ -53,7 +52,6 @@ export class BookGenerationExecutionService {
     private readonly prisma: PrismaService,
     private readonly agentService: AgentService,
     private readonly generationQueueService: GenerationQueueService,
-    private readonly generationJobService: GenerationJobService,
     private readonly generationRunCoordinator: GenerationRunCoordinator,
   ) {}
 
@@ -73,15 +71,6 @@ export class BookGenerationExecutionService {
         break;
     }
 
-    const legacyJob = await this.generationJobService.findActive(bookId).catch(() => null);
-    if (legacyJob) {
-      await this.markJob(
-        this.generationJobService.markCancelled(legacyJob.id),
-        legacyJob.id,
-        bookId,
-        'cancelled',
-      );
-    }
     await this.generationQueueService.removeIfSafe(result.runId);
 
     return { book: toBookDto(result.book), creditsRefunded: result.creditsRefunded };
@@ -90,16 +79,6 @@ export class BookGenerationExecutionService {
   async runGenerationPipeline(ctx: GenerationExecutionContext): Promise<void> {
     const { bookId, runId } = ctx;
     this.logger.log(`Starting generation pipeline — bookId=${bookId} runId=${runId}`);
-
-    const legacyJob = await this.generationJobService.findActive(bookId).catch(() => null);
-    if (legacyJob) {
-      await this.markJob(
-        this.generationJobService.markRunning(legacyJob.id),
-        legacyJob.id,
-        bookId,
-        'running',
-      );
-    }
 
     let outcome: GenerationOutcome;
     try {
@@ -116,14 +95,6 @@ export class BookGenerationExecutionService {
       this.logger.error(
         `Generation pipeline threw unexpectedly for run ${runId} (book ${bookId}): ${message}`,
       );
-      if (legacyJob) {
-        await this.markJob(
-          this.generationJobService.markFailed(legacyJob.id, { errorMessage: message }),
-          legacyJob.id,
-          bookId,
-          'failed',
-        );
-      }
       throw err;
     }
 
@@ -132,27 +103,6 @@ export class BookGenerationExecutionService {
       throw new GenerationRunMirrorInvariantError(runId, bookId);
     }
     if (published !== 'applied') return;
-
-    if (legacyJob) {
-      if (outcome.status === BookStatus.failed) {
-        await this.markJob(
-          this.generationJobService.markFailed(legacyJob.id, {
-            errorMessage: outcome.errorMessage ?? 'Generation failed',
-            ...(outcome.failedStep !== undefined && { failedStep: outcome.failedStep }),
-          }),
-          legacyJob.id,
-          bookId,
-          'failed',
-        );
-      } else {
-        await this.markJob(
-          this.generationJobService.markCompleted(legacyJob.id),
-          legacyJob.id,
-          bookId,
-          'completed',
-        );
-      }
-    }
   }
 
   async markRunPermanentlyFailedAfterExhaustedRetries(runId: string): Promise<void> {
@@ -173,29 +123,5 @@ export class BookGenerationExecutionService {
       throw new GenerationRunMirrorInvariantError(run.id, run.bookId);
     }
     if (result !== 'applied') return;
-
-    const legacyJob = await this.generationJobService.findActive(run.bookId).catch(() => null);
-    if (legacyJob) {
-      await this.markJob(
-        this.generationJobService.markFailed(legacyJob.id, { errorMessage: safeMessage }),
-        legacyJob.id,
-        run.bookId,
-        'failed',
-      );
-    }
-  }
-
-  private async markJob(
-    update: Promise<unknown>,
-    jobId: string,
-    bookId: string,
-    action: string,
-  ): Promise<void> {
-    await update.catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(
-        `Failed to mark generation job ${jobId} ${action} for book ${bookId}: ${message}`,
-      );
-    });
   }
 }

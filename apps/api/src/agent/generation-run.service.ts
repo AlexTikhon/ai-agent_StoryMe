@@ -26,7 +26,7 @@ export function readGenerationRunLeaseMs(env: NodeJS.ProcessEnv = process.env): 
 export class GenerationRunService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** The book's currently active (queued/running) run, if any — mirrors GenerationJobService.findActive's role for the new aggregate. */
+  /** The book's authoritative currently active (queued/running) run, if any. */
   findActiveForBook(bookId: string): Promise<GenerationRun | null> {
     return this.prisma.generationRun.findFirst({
       where: { bookId, status: { in: [GenerationRunStatus.queued, GenerationRunStatus.running] } },

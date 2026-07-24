@@ -13,7 +13,6 @@ import { PrismaService } from '../database/prisma.service';
 import { CreditsService } from '../credits/credits.service';
 import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
-import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
 import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
@@ -53,10 +52,9 @@ export {
 
 /**
  * Statuses where the generation pipeline is not actively running — safe for
- * update()/remove() to mutate. Mirrors TERMINAL_BOOK_STATUSES in
- * generation-job-recovery.service.ts, plus the pre-generation `created` draft
- * state (which is terminal in the sense that nothing is running, even though
- * it isn't a pipeline outcome).
+ * update()/remove() to mutate, plus the pre-generation `created` draft state
+ * (which is terminal in the sense that nothing is running, even though it
+ * isn't a pipeline outcome).
  */
 @Injectable()
 export class BooksService {
@@ -72,7 +70,6 @@ export class BooksService {
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
     @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageAssetStorage: ImageAssetStorage,
     private readonly generationQueueService: GenerationQueueService,
-    private readonly generationJobService: GenerationJobService,
     private readonly generationRunService: GenerationRunService,
     private readonly generationRunCoordinator: GenerationRunCoordinator,
     private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
@@ -116,7 +113,6 @@ export class BooksService {
       new BookGenerationService(
         this.crudService,
         prisma,
-        generationJobService,
         generationRunService,
         snapshotBackfill,
         config,
@@ -132,7 +128,6 @@ export class BooksService {
         prisma,
         agentService,
         generationQueueService,
-        generationJobService,
         generationRunCoordinator,
       );
   }
@@ -267,17 +262,11 @@ export class BooksService {
    * fenced run transition, Book mirror update, outbox suppression, and
    * conditional refund, all inside one transaction) and maps its typed
    * CancelGenerationOutcome onto this endpoint's stable HTTP contract. Two
-   * follow-ups run only after that transaction has already committed, are
-   * both best-effort, and can never roll back or fail an already-applied
-   * cancellation:
-   *   - the legacy GenerationJob diagnostics mirror is marked cancelled only
-   *     now, never before (GenerationJob is not authoritative — see
-   *     markJob's own doc comment, reused here);
-   *   - GenerationQueueService.removeIfSafe best-effort removes a
-   *     still-waiting/delayed BullMQ job; an active one is deliberately left
-   *     alone (see that method's own doc comment for why the committed DB
-   *     fencing above, not queue removal, is the actual correctness
-   *     mechanism).
+   * After that transaction commits,
+   * GenerationQueueService.removeIfSafe best-effort removes a still-waiting/
+   * delayed BullMQ job; an active one is deliberately left alone (see that
+   * method's own doc comment for why the committed DB fencing above, not
+   * queue removal, is the actual correctness mechanism).
    */
   async cancelGeneration(userId: string, bookId: string): Promise<CancelGenerationResponse> {
     return this.generationExecutionService.cancelGeneration(userId, bookId);
@@ -308,10 +297,9 @@ export class BooksService {
    * GenerationQueueProcessor.onFailed for what happens once BullMQ's own
    * attempts are exhausted.
    *
-   * completeRun's result gates the legacy GenerationJob update below: a
-   * 'stale_fence' means a different, still-live attempt for the same book
-   * owns that diagnostics row now, so this attempt quietly returns.
-   * 'book_mirror_mismatch' is not a race — it means the run/Book mirror
+   * A `stale_fence` result from completeRun means another claim already owns
+   * the authoritative run, so this attempt quietly returns.
+   * `book_mirror_mismatch` is not a race — it means the run/Book mirror
    * invariant itself is broken — so it is rethrown as
    * GenerationRunMirrorInvariantError instead, the same way an unexpected
    * pipeline error above is: so BullMQ never treats this delivery as

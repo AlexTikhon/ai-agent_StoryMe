@@ -19,7 +19,7 @@ calls, no external AI providers, no cloud dependency.
      every missing field.
    - Requires `status === created` — otherwise `ConflictException` (409)
      ("Generation already started or completed for this book").
-   - Requires no active (`queued`/`running`) `GenerationJob` already exists
+   - Requires no active (`queued`/`running`) `GenerationRun` already exists
      for the book — otherwise `ConflictException` (409, "Generation is
      already in progress for this book").
    - Charges 1 credit the moment the run is durably scheduled, inside the
@@ -162,10 +162,9 @@ regenerating from scratch:
 
 Concurrency (repeated Retry clicks, or two concurrent retries) is guarded the
 same way `startGeneration`/`retryGeneration` already guard against duplicate
-generation: `GenerationJobService.findActive` plus `claimStatusTransition`'s
-conditional UPDATE (see "Retrying failed generation (Phase 3G)" below) —
-idempotent resume adds no
-new concurrency surface.
+generation: the one-active-`GenerationRun` database invariant plus the
+transactional Book status CAS. Idempotent resume adds no new concurrency
+surface.
 
 ### Resume diagnostics
 
@@ -1175,6 +1174,10 @@ error for book <id>: <message>`), and swallowed — a background failure
 
 ## Generation jobs (Phase 3I)
 
+> Historical section. Runtime `GenerationJob` reads/writes and mirror-only
+> recovery were removed in Phase 2; the model remains schema-only until its
+> reviewed migration and real PostgreSQL + Redis verification are complete.
+
 Alongside `Book.status` (still the source of truth for user-facing status),
 every `generate`/`retry-generation` call now also creates a `GenerationJob`
 row — a typed, persisted record of that one generation _attempt_. This is
@@ -1454,8 +1457,7 @@ bookId, jobId })` adds one job (`queue.add('run-generation', data, { jobId
 
 `GenerationRun` (`apps/api/prisma/schema.prisma`) is the sole source of truth
 for "is a generation attempt in flight for this book, and who owns it" —
-`GenerationJob` is kept only as a best-effort diagnostics mirror and must never
-be read for ownership, retry, or recovery decisions.
+The legacy `GenerationJob` table is no longer read or written at runtime.
 
 ### Creating a run — one transaction, outbox-dispatched
 
@@ -2795,8 +2797,6 @@ changed — only which process registers the BullMQ worker.
     `docker-compose.yml`'s Postgres/Redis and confirm a real
     `generate`/`retry-generation` call is picked up by the worker process's
     logs, not the API process's.
-  - `GenerationJobRecoveryService` still runs redundantly in both processes
-    on every cold start (see above) — harmless, but not eliminated.
   - No independent horizontal scaling guidance beyond "run more worker
     replicas" — BullMQ already distributes jobs across however many worker
     processes are running (Phase 3K), so this phase doesn't need to add
@@ -2968,7 +2968,7 @@ re-verified here — see "Test coverage" below.
 | `ConflictException` (409)                        | `update`/`remove` after `status !== created`                                                                                                                                                                | `PATCH /:id`, `DELETE /:id`                                                                                                                                                                                                             |
 | `ConflictException` (409)                        | `generate` called when `status !== created`                                                                                                                                                                 | `POST /:id/generate`                                                                                                                                                                                                                    |
 | `ConflictException` (409)                        | `retry-generation` called when `status !== failed`                                                                                                                                                          | `POST /:id/retry-generation`                                                                                                                                                                                                            |
-| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I)                                                                                    | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationRun` exists for the book                                                                                               | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
 | `ServiceUnavailableException` (503)              | real-image budget cannot cover cover + every page + back cover (`IMAGE_GENERATION_BUDGET_INSUFFICIENT`) — rejected before run creation or credit charge                                                     | `POST /:id/generate`, `POST /:id/retry-generation`, `POST /:id/regenerate`                                                                                                                                                              |
 | `InternalServerErrorException` (500)             | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K)                                                                                                              | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
 | `ConflictException` (409)                        | preview requested before `previewPdfUrl` is set                                                                                                                                                             | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
@@ -3144,31 +3144,14 @@ jobId)` directly (as `GenerationQueueProcessor` would) calls
   `GenerationQueueProcessor` in isolation: `process(job)` delegates to
   `BooksService.runGenerationPipeline` with the job's `bookId`/`jobId`.
 
-- `apps/api/src/agent/generation-job.service.spec.ts` (Phase 3I) —
-  `GenerationJobService` in isolation: `findActive` queries `queued`/`running`
-  jobs newest-first, `findLatest` queries any status newest-first,
-  `createQueued` writes `status: 'queued'` with the given type/attempt,
-  `markRunning`/`markCompleted`/`markFailed` set the right status plus their
-  respective timestamp, and `markFailed` defaults `failedStep` to `null` when
-  omitted.
-- `apps/api/src/books/books.service.spec.ts` (Phase 3I) — `startGeneration`/
-  `retryGeneration` create a queued `GenerationJob` (`generate`/`attempt: 1`,
-  or `retry`/`attempt: clearedBook.retryCount + 1`); the scheduled task marks
-  the job `running` then `completed` on a successful pipeline run, `failed`
-  (with `failedStep`/`errorMessage`) when `AgentService.startBookGeneration`
-  returns a `failed` book, and `failed` when the pipeline throws
-  unexpectedly; both `startGeneration` and `retryGeneration` throw
-  `ConflictException` (without touching `prisma.book.update` or scheduling
-  anything) when `generationJobService.findActive` reports an active job; a
-  retry is still allowed when the book is `failed` and no active job exists,
-  regardless of any prior `completed`/`failed` job on record;
-  `getGenerationDiagnostics` includes `latestJob` from
-  `generationJobService.findLatest` (or `null` when none exists).
-- `apps/api/src/books/generation-diagnostics.spec.ts` (Phase 3I) —
-  `buildGenerationDiagnostics` maps a `GenerationJob` row into the safe
-  `latestJob` summary (id/type/status/attempt/timestamps/failedStep/
-  errorMessage), returns `latestJob: null` when no job is passed, and never
-  leaks `runnerId` through the serialized diagnostics.
+- `apps/api/src/books/books.service.spec.ts` and the extracted scheduling/
+  execution specs assert authoritative `GenerationRun` admission, terminal
+  coordination, cancellation, stale-fence behavior, and exhausted-retry
+  recovery without a `GenerationJobService` mock.
+- `apps/api/src/books/generation-diagnostics.spec.ts` asserts that
+  `buildGenerationDiagnostics` maps the latest authoritative `GenerationRun`
+  into the stable `latestJob` compatibility summary and returns
+  `latestJob: null` when no run exists.
 
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see
