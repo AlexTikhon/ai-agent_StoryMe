@@ -161,7 +161,7 @@ export class ImageGenerationBudgetError extends Error {
  * Cost guardrail for real (paid) image generation. It is an atomic per-book
  * budget, not a partial-generation cap: scheduling must reject a book before
  * charging when the configured limit cannot cover every required
- * illustration. AgentService repeats the assertion before image API calls as
+ * illustration. ImageGenerationStage repeats the assertion before image API calls as
  * defense in depth. MockImageGenerationProvider is free and bypasses it.
  */
 export function resolveMaxGeneratedImagesPerBook(env: NodeJS.ProcessEnv = process.env): number {

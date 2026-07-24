@@ -56,13 +56,13 @@ bookPreview, imageGenerationResult }`. If this call throws, `AgentService`
   `errorMessage` from the caught error), writes a single `story_plan`
   `AgentLog` row with `status: 'error'`, and returns immediately — none of
   the steps below run.
-- (b) `generateAndSaveImageAssets` (private helper) — for every
+- (b) `ImageGenerationStage.execute` — for every
   `GeneratedImageEntry` in the provider's `imageGenerationResult`, calls the
   injected `ImageGenerationProvider.generateImage({ bookId, entry,
 characterCard })` (see "Image generation provider boundary" below) to get
   real image bytes, then saves them through
   `ImageAssetStorage.saveImageAsset(imageAssetKey(bookId, kind, pageNumber),
-buffer, contentType)`. **This helper never throws.** Both a `generateImage`
+buffer, contentType)`. **Per-entry failures do not abort the batch.** Both a `generateImage`
   failure (e.g. a real provider's API outage) and a `saveImageAsset` failure
   for one entry are caught per-entry, logged (`Image generation/save failed
 for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
@@ -70,7 +70,7 @@ for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
   (Phase 2 below) requires every planned illustration to have real bytes, so
   any entry left without saved bytes now fails the whole book at `pdf_render`
   with a clear error naming the page, instead of rendering a placeholder for
-  it. The helper returns `{ generatedCount, failedCount, lastError }`,
+  it. The stage returns `{ generatedCount, failedCount, lastError }`,
   which `AgentService` writes onto `imageGenerationResult.generatedImageCount`/
   `failedImageCount`/`lastImageError` for diagnostics (see "Generation
   diagnostics" below), and folds `failedCount` into the final `image_gen`
@@ -380,8 +380,8 @@ interface ImageGenerationProvider {
   - Any other value throws a clear `Error` naming the invalid value.
 - **Failure behavior** — a `generateImage` failure for one entry (e.g. a
   transient real-API error) and a `saveImageAsset` failure for one entry are
-  handled identically by `AgentService.generateAndSaveImageAssets`: caught,
-  logged, and counted per-entry, never thrown from that helper. That entry
+  handled identically by `ImageGenerationStage.execute`: caught,
+  logged, and counted per-entry without aborting the batch. That entry
   has no saved bytes, so `PdfPublicationStage` fails the whole book at
   the `pdf_render` step (see "Local mock/real image producer" above and
   `apps/api/docs/pdf-rendering.md`) instead of degrading to a placeholder —
@@ -435,10 +435,10 @@ directly:
 ### Image rate limiter — `OpenAIImageRateLimiter`
 
 `gpt-image-1` organizations on the free/Tier-1-style quota can hit a very low
-images-per-minute limit (observed: 5/min). Since `AgentService.generateAndSaveImageAssets`
+images-per-minute limit (observed: 5/min). Since `ImageGenerationStage.execute`
 fires every page's `generateImage` call concurrently via `Promise.all`
 (cover, pages, and back cover all dispatch at once — see that method in
-`apps/api/src/agent/agent.service.ts`), and the character sheet is one more
+`apps/api/src/agent/image-generation.stage.ts`), and the character sheet is one more
 request before that, a six-page book can easily submit 7-8 requests in the
 same minute. `apps/api/src/images/openai-image-rate-limiter.ts`
 adds one `OpenAIImageRateLimiter` instance, shared by every call this process
@@ -491,7 +491,7 @@ whose `pageNumber` exceeds `REAL_GENERATION_MAX_PAGES` (default `12` if
 unset/malformed) with a clear `ImageGenerationProviderError`, before making
 any network call. `cover`/`back_cover` entries are never capped. This only
 applies to the real provider — `MockImageGenerationProvider` is unchanged.
-`AgentService.generateAndSaveImageAssets` catches this per entry like any
+`ImageGenerationStage.execute` catches this per entry like any
 other `generateImage` failure (see "Failure behavior" above) so the rest of
 the batch can keep going; this guardrail's actual effect is just to skip the
 network call for pages beyond the limit. **That page still has no saved
@@ -866,7 +866,7 @@ interface GenerationDiagnosticsDto {
   below).
 - `generatedImageCount`/`failedImageCount` come from
   `Book.imageGenerationResult.generatedImageCount`/`failedImageCount` (set by
-  `AgentService.generateAndSaveImageAssets` — see "Image generation provider
+  `ImageGenerationStage.execute` — see "Image generation provider
   boundary" above); both are absent for books generated before this field
   existed. `failedImageCount > 0` now means the book is `failed` (at
   `pdf_render`), not `complete` — a page missing its illustration is never

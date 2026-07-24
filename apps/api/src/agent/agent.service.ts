@@ -1,28 +1,17 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
 import { PDF_STORAGE_TOKEN, publishedPreviewPdfExists, type PdfStorage } from '../pdf/pdf-storage';
+import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import {
-  claimImageAssetKey,
-  IMAGE_ASSET_STORAGE_TOKEN,
-  type ImageAssetStorage,
-} from '../images/image-asset-storage';
-import {
-  assertCompleteBookImageBudget,
-  hasImageGenerationFailureDetails,
   IMAGE_GENERATION_PROVIDER_TOKEN,
-  resolveMaxGeneratedImagesPerBook,
   type ImageGenerationProvider,
-  type ImageReference,
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import {
   type BookPreview,
-  type CharacterCard,
   type CharacterProfile,
   type GeneratedImageEntry,
-  type GenerationProviderName,
-  type ImageGenerationFailureDetail,
   type ImageGenerationResult,
   type ResumeDiagnostics,
 } from '@book/types';
@@ -62,20 +51,7 @@ import {
   CharacterReferenceStage,
   type CharacterBuildStageOutput,
 } from './character-reference.stage';
-
-/** Stable diagnostics label for one planned image entry: 'cover' | 'page_<n>' | 'back_cover'. */
-function imageAssetLabel(entry: GeneratedImageEntry): string {
-  return entry.kind === 'page' ? `page_${entry.pageNumber}` : entry.kind;
-}
-
-/** Safe provider label for ImageGenerationFailureDetail — never a secret, never a raw response. */
-function toGenerationProviderName(raw: string | undefined): GenerationProviderName {
-  return raw === 'mock' || raw === 'openai' ? raw : 'unknown';
-}
-
-function promptVersion(provider: { readonly promptVersion?: string }, fallback: string): string {
-  return provider.promptVersion ?? fallback;
-}
+import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage';
 
 /**
  * True when `book` already carries a full prior generation result (story
@@ -129,6 +105,7 @@ export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private readonly storyContentStage: StoryContentStage;
   private readonly characterReferenceStage: CharacterReferenceStage;
+  private readonly imageGenerationStage: ImageGenerationStage;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -148,6 +125,10 @@ export class AgentService {
       characterProfileProvider,
       imageGenerationProvider,
     );
+    this.imageGenerationStage = new ImageGenerationStage(
+      imageAssetStorage,
+      imageGenerationProvider,
+    );
   }
 
   /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
@@ -156,130 +137,6 @@ export class AgentService {
     readonly modelName?: string;
   }): string {
     return provider.modelName ?? provider.providerName ?? 'unknown';
-  }
-
-  /**
-   * Generates real image bytes for every generated image entry via the
-   * injected ImageGenerationProvider, then saves them via ImageAssetStorage,
-   * keyed to match buildImageBufferResolver's lookup (imageAssetKey).
-   *
-   * Does not throw here: both a provider.generateImage failure (e.g. a real
-   * API outage) and an ImageAssetStorage.saveImageAsset failure for one entry
-   * are caught, logged, and counted individually so the rest of the batch can
-   * keep going. The caller surfaces generatedCount/failedCount/lastError via
-   * ImageGenerationResult.generatedImageCount/failedImageCount/lastImageError
-   * for diagnostics — but any entry left without saved bytes here causes
-   * PdfPublicationStage to reject before rendering (see
-   * startBookGeneration's Phase 2), failing the book with a clear error
-   * instead of silently rendering a placeholder for it.
-   *
-   * Before any paid call, the real provider also verifies defensively that
-   * MAX_GENERATED_IMAGES_PER_BOOK can cover the complete planned image set.
-   * BooksService performs the primary check before scheduling or charging;
-   * this duplicate boundary protects direct/internal callers from partial
-   * paid generation. The free mock provider is not budget-limited.
-   */
-  private async generateAndSaveImageAssets(
-    bookId: string,
-    characterCard: CharacterCard,
-    images: GeneratedImageEntry[],
-    characterReference: ImageReference | undefined,
-    currentNamespace: ClaimArtifactNamespace,
-    providerTelemetry: GenerationProviderTelemetry,
-  ): Promise<{
-    generatedCount: number;
-    failedCount: number;
-    lastError?: string;
-    usedCharacterReference: boolean;
-    failures: ImageGenerationFailureDetail[];
-  }> {
-    const isRealProvider = this.imageGenerationProvider.providerName === 'openai';
-    const limit = isRealProvider ? resolveMaxGeneratedImagesPerBook() : images.length;
-    if (isRealProvider) assertCompleteBookImageBudget(images.length, limit);
-    const imagesToGenerate = images;
-
-    const providerName = toGenerationProviderName(this.imageGenerationProvider.providerName);
-    const modelName = this.imageGenerationProvider.modelName;
-    const attemptedRequestMode: ImageGenerationFailureDetail['requestMode'] = characterReference
-      ? 'character-reference-edit'
-      : 'text-to-image';
-
-    let generatedCount = 0;
-    let failedCount = 0;
-    let lastError: string | undefined;
-    let usedCharacterReference = false;
-    const failures: ImageGenerationFailureDetail[] = [];
-
-    await Promise.all(
-      imagesToGenerate.map(async (image) => {
-        try {
-          const { buffer, contentType, usedReference } = await providerTelemetry.record({
-            operation: 'illustration',
-            assetLabel: imageAssetLabel(image),
-            provider: providerName,
-            ...(modelName && { model: modelName }),
-            promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
-            promptInput: {
-              bookId,
-              entry: {
-                kind: image.kind,
-                pageNumber: image.pageNumber,
-                prompt: image.prompt,
-                negativePrompt: image.negativePrompt,
-                seed: image.seed,
-              },
-              characterCard,
-              characterReferenceSupplied: characterReference !== undefined,
-            },
-            execute: () =>
-              this.imageGenerationProvider.generateImage({
-                bookId,
-                entry: image,
-                characterCard,
-                ...(characterReference && { characterReference }),
-              }),
-          });
-          const key = claimImageAssetKey(bookId, currentNamespace, image.kind, image.pageNumber);
-          await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
-          generatedCount++;
-          if (usedReference) usedCharacterReference = true;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(
-            `Image generation/save failed for entry "${image.id}" (book ${bookId}): ${message}. Falling back to a placeholder for this entry.`,
-          );
-          failedCount++;
-          lastError = message;
-          const details = hasImageGenerationFailureDetails(err) ? err.details : {};
-          failures.push({
-            assetLabel: imageAssetLabel(image),
-            provider: providerName,
-            ...(modelName && { model: modelName }),
-            ...(details.httpStatus !== undefined && { httpStatus: details.httpStatus }),
-            ...(details.errorType !== undefined && { errorType: details.errorType }),
-            ...(details.errorCode !== undefined && { errorCode: details.errorCode }),
-            message,
-            attempts: details.attempts ?? 1,
-            limiterRetries: details.limiterRetries ?? 0,
-            limiterWaitMs: details.limiterWaitMs ?? 0,
-            characterReferenceSupplied:
-              details.characterReferenceSupplied ?? characterReference !== undefined,
-            requestMode: details.requestMode ?? attemptedRequestMode,
-            ...(details.timeoutMs !== undefined && { timeoutMs: details.timeoutMs }),
-            ...(details.elapsedMs !== undefined && { elapsedMs: details.elapsedMs }),
-            ...(details.retryDecision !== undefined && { retryDecision: details.retryDecision }),
-          });
-        }
-      }),
-    );
-
-    return {
-      generatedCount,
-      failedCount,
-      usedCharacterReference,
-      failures,
-      ...(lastError !== undefined && { lastError }),
-    };
   }
 
   /**
@@ -703,14 +560,14 @@ export class AgentService {
       imageGenerationResult.characterReferenceAvailable === true;
 
     const { generatedCount, failedCount, lastError, usedCharacterReference, failures } =
-      await this.generateAndSaveImageAssets(
-        book.id,
+      await this.imageGenerationStage.execute({
+        bookId: book.id,
         characterCard,
-        imagesNeedingGeneration,
-        characterReference,
-        currentNamespace,
-        providerTelemetry,
-      );
+        images: imagesNeedingGeneration,
+        ...(characterReference && { characterReference }),
+        namespace: currentNamespace,
+        telemetry: providerTelemetry,
+      });
 
     const rateLimitDiagnostics = this.imageGenerationProvider.getRateLimitDiagnostics?.();
     const rateLimitSummary = rateLimitDiagnostics
