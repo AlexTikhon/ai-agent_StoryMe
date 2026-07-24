@@ -2228,29 +2228,29 @@ describe('BooksService', () => {
       expect(prisma.agentLog.findMany).not.toHaveBeenCalled();
     });
 
-    it('includes the latest GenerationJob summary via generationJobService.findLatest', async () => {
+    it('includes the latest authoritative GenerationRun in the compatible latestJob field', async () => {
       const book = makeBook({ status: 'complete' as Book['status'] });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationJobService.findLatest.mockResolvedValue(
-        makeGenerationJob({
-          id: 'job-9',
-          status: 'completed' as GenerationJob['status'],
+      generationRunService.findLatestForBook.mockResolvedValue(
+        makeGenerationRun({
+          id: 'run-9',
+          status: 'completed' as GenerationRun['status'],
           attempt: 2,
         }),
       );
 
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');
 
-      expect(generationJobService.findLatest).toHaveBeenCalledWith('b-1');
-      expect(result.latestJob).toMatchObject({ id: 'job-9', status: 'completed', attempt: 2 });
+      expect(generationRunService.findLatestForBook).toHaveBeenCalledWith('b-1');
+      expect(result.latestJob).toMatchObject({ id: 'run-9', status: 'completed', attempt: 2 });
     });
 
-    it('returns latestJob: null when no GenerationJob exists yet for the book', async () => {
+    it('returns latestJob: null when no GenerationRun exists yet for the book', async () => {
       const book = makeBook({ status: STATUS_CREATED });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationJobService.findLatest.mockResolvedValue(null);
+      generationRunService.findLatestForBook.mockResolvedValue(null);
 
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');
 
@@ -2370,8 +2370,8 @@ describe('BooksService', () => {
       const book = makeBook({ status: STATUS_CHAR_BUILD });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationJobService.findLatest.mockResolvedValue(
-        makeGenerationJob({ status: 'queued' as GenerationJob['status'] }),
+      generationRunService.findLatestForBook.mockResolvedValue(
+        makeGenerationRun({ status: 'queued' as GenerationRun['status'] }),
       );
       generationQueueService.getQueueDiagnostics.mockResolvedValue({
         queueName: 'book-generation',
@@ -2388,8 +2388,8 @@ describe('BooksService', () => {
       const book = makeBook({ status: STATUS_CHAR_BUILD });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationJobService.findLatest.mockResolvedValue(
-        makeGenerationJob({ status: 'queued' as GenerationJob['status'] }),
+      generationRunService.findLatestForBook.mockResolvedValue(
+        makeGenerationRun({ status: 'queued' as GenerationRun['status'] }),
       );
       generationQueueService.getQueueDiagnostics.mockResolvedValue({
         queueName: 'book-generation',

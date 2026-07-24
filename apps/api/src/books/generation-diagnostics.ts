@@ -1,4 +1,4 @@
-import type { AgentLog, Book, GenerationJob } from '@prisma/client';
+import type { AgentLog, Book, GenerationRun } from '@prisma/client';
 import type {
   AgentLogSummary,
   AgentStep,
@@ -196,38 +196,42 @@ function toAgentLogSummary(log: AgentLog): AgentLogSummary {
   };
 }
 
-/** Maps a GenerationJob row (Phase 3I) to its safe diagnostics summary — never exposes runnerId. */
-function toGenerationJobSummary(job: GenerationJob): GenerationJobSummary {
+/**
+ * Projects the authoritative GenerationRun into the legacy `latestJob` API
+ * shape. The field name and summary type stay stable for clients while the
+ * runtime dependency on the best-effort GenerationJob mirror is removed.
+ */
+function toGenerationJobSummary(run: GenerationRun): GenerationJobSummary {
   return {
-    id: job.id,
-    type: job.type as unknown as GenerationJobSummary['type'],
-    status: job.status as unknown as GenerationJobSummary['status'],
-    attempt: job.attempt,
-    createdAt: job.createdAt.toISOString(),
-    updatedAt: job.updatedAt.toISOString(),
-    ...(job.startedAt && { startedAt: job.startedAt.toISOString() }),
-    ...(job.completedAt && { completedAt: job.completedAt.toISOString() }),
-    ...(job.failedAt && { failedAt: job.failedAt.toISOString() }),
-    ...(job.failedStep && { failedStep: job.failedStep as unknown as AgentStep }),
-    ...(job.errorMessage && { errorMessage: job.errorMessage }),
+    id: run.id,
+    type: run.kind === 'retry' ? 'retry' : 'generate',
+    status: run.status as unknown as GenerationJobSummary['status'],
+    attempt: run.attempt,
+    createdAt: run.createdAt.toISOString(),
+    updatedAt: run.updatedAt.toISOString(),
+    ...(run.startedAt && { startedAt: run.startedAt.toISOString() }),
+    ...(run.completedAt && { completedAt: run.completedAt.toISOString() }),
+    ...(run.failedAt && { failedAt: run.failedAt.toISOString() }),
+    ...(run.status === 'failed' &&
+      run.currentStep && { failedStep: run.currentStep as unknown as AgentStep }),
+    ...(run.errorMessage && { errorMessage: run.errorMessage }),
   };
 }
 
 /**
  * Composes the full GET /books/:id/generation-diagnostics response from a
- * Book row, its AgentLog rows, and (Phase 3I) its latest GenerationJob row.
- * `latestJob` is optional/nullable since a book may predate job tracking or
- * never have started generation. `pdfStorage` is optional purely so this
- * pure function stays easy to unit test without a real PdfStorage — the real
- * caller (BooksService.getGenerationDiagnostics) always computes and passes
- * it (see pdf-storage.ts's `previewPdfExists`).
+ * Book row, its AgentLog rows, and its latest authoritative GenerationRun.
+ * `latestJob` remains an API-compatibility projection and is nullable since a
+ * book may predate run tracking or never have started generation.
+ * `pdfStorage` is optional purely so this pure function stays easy to unit
+ * test without a real PdfStorage.
  */
-const ACTIVE_JOB_STATUSES = new Set(['queued', 'running']);
+const ACTIVE_RUN_STATUSES = new Set(['queued', 'running']);
 
 export function buildGenerationDiagnostics(
   book: Book,
   logs: AgentLog[],
-  latestJob?: GenerationJob | null,
+  latestRun?: GenerationRun | null,
   pdfStorage?: PdfStorageDiagnostics,
   queue?: Omit<QueueDiagnostics, 'stalledNoWorker'>,
 ): GenerationDiagnosticsDto {
@@ -244,7 +248,7 @@ export function buildGenerationDiagnostics(
     generationMetadata: buildGenerationMetadata(book, logs),
     recentLogs: logs.map(toAgentLogSummary),
     previewPdfUrl: book.previewPdfUrl,
-    latestJob: latestJob ? toGenerationJobSummary(latestJob) : null,
+    latestJob: latestRun ? toGenerationJobSummary(latestRun) : null,
     pdfStorage: pdfStorage ?? {
       driver: 'local',
       keyPresent: book.previewPdfUrl != null,
@@ -253,7 +257,7 @@ export function buildGenerationDiagnostics(
     queue: {
       ...resolvedQueue,
       stalledNoWorker:
-        !!latestJob && ACTIVE_JOB_STATUSES.has(latestJob.status) && resolvedQueue.workerCount === 0,
+        !!latestRun && ACTIVE_RUN_STATUSES.has(latestRun.status) && resolvedQueue.workerCount === 0,
     },
     characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
     resume: buildResumeDiagnostics(book.imageGenerationResult),

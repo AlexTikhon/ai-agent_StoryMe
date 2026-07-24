@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { AgentLog, Book, GenerationJob } from '@prisma/client';
+import type { AgentLog, Book, GenerationRun } from '@prisma/client';
 import {
   buildCharacterPersonalizationDiagnostics,
   buildGenerationDiagnostics,
@@ -7,18 +7,24 @@ import {
 } from './generation-diagnostics';
 import { PRESERVE_APPEARANCE_INSTRUCTION } from '../agent/story-generation-provider';
 
-function makeGenerationJob(overrides: Partial<GenerationJob> = {}): GenerationJob {
+function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRun {
   return {
-    id: 'job-1',
+    id: 'run-1',
     bookId: 'b-1',
     userId: 'u-1',
-    type: 'generate' as GenerationJob['type'],
-    status: 'queued' as GenerationJob['status'],
+    kind: 'initial' as GenerationRun['kind'],
+    status: 'queued' as GenerationRun['status'],
+    inputSnapshot: {},
+    inputHash: 'input-hash',
+    retryOfRunId: null,
+    currentStep: null,
     attempt: 1,
-    maxAttempts: null,
-    failedStep: null,
+    leaseOwner: 'worker-secret-id',
+    leaseExpiresAt: null,
+    deliveryToken: 'delivery-secret-token',
+    fencingVersion: 1,
+    errorCode: null,
     errorMessage: null,
-    runnerId: 'runner-secret-id',
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     startedAt: null,
     completedAt: null,
@@ -263,28 +269,28 @@ describe('buildGenerationDiagnostics', () => {
     expect(serialized.toLowerCase()).not.toContain('choices');
   });
 
-  it('returns latestJob: null when no GenerationJob is passed', () => {
+  it('returns latestJob: null when no GenerationRun is passed', () => {
     const diagnostics = buildGenerationDiagnostics(makeBook(), []);
 
     expect(diagnostics.latestJob).toBeNull();
   });
 
-  it('maps a GenerationJob into a safe latestJob summary, excluding runnerId', () => {
-    const job = makeGenerationJob({
-      id: 'job-9',
-      type: 'retry' as GenerationJob['type'],
-      status: 'failed' as GenerationJob['status'],
+  it('projects a GenerationRun into the compatible latestJob summary without lease data', () => {
+    const run = makeGenerationRun({
+      id: 'run-9',
+      kind: 'retry' as GenerationRun['kind'],
+      status: 'failed' as GenerationRun['status'],
       attempt: 2,
-      failedStep: 'image_gen' as GenerationJob['failedStep'],
+      currentStep: 'image_gen' as GenerationRun['currentStep'],
       errorMessage: 'OpenAI image request failed',
       startedAt: new Date('2026-01-01T00:00:01.000Z'),
       failedAt: new Date('2026-01-01T00:00:05.000Z'),
     });
 
-    const diagnostics = buildGenerationDiagnostics(makeBook(), [], job);
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [], run);
 
     expect(diagnostics.latestJob).toEqual({
-      id: 'job-9',
+      id: 'run-9',
       type: 'retry',
       status: 'failed',
       attempt: 2,
@@ -296,7 +302,8 @@ describe('buildGenerationDiagnostics', () => {
       errorMessage: 'OpenAI image request failed',
     });
     const serialized = JSON.stringify(diagnostics);
-    expect(serialized).not.toContain('runner-secret-id');
+    expect(serialized).not.toContain('worker-secret-id');
+    expect(serialized).not.toContain('delivery-secret-token');
   });
 
   it('defaults pdfStorage to a safe local/not-available shape when no pdfStorage state is passed', () => {
@@ -349,12 +356,12 @@ describe('buildGenerationDiagnostics', () => {
   });
 
   it('sets queue.stalledNoWorker=true when the latest job is queued/running and no worker is connected — the "stuck forever" signature', () => {
-    const queuedJob = makeGenerationJob({ status: 'queued' as GenerationJob['status'] });
+    const queuedRun = makeGenerationRun({ status: 'queued' as GenerationRun['status'] });
 
     const diagnostics = buildGenerationDiagnostics(
       makeBook({ status: 'char_build' as Book['status'] }),
       [],
-      queuedJob,
+      queuedRun,
       undefined,
       {
         queueName: 'book-generation',
@@ -367,12 +374,12 @@ describe('buildGenerationDiagnostics', () => {
   });
 
   it('sets queue.stalledNoWorker=false when a worker is connected, even with a queued job', () => {
-    const queuedJob = makeGenerationJob({ status: 'queued' as GenerationJob['status'] });
+    const queuedRun = makeGenerationRun({ status: 'queued' as GenerationRun['status'] });
 
     const diagnostics = buildGenerationDiagnostics(
       makeBook({ status: 'char_build' as Book['status'] }),
       [],
-      queuedJob,
+      queuedRun,
       undefined,
       {
         queueName: 'book-generation',
@@ -385,9 +392,11 @@ describe('buildGenerationDiagnostics', () => {
   });
 
   it('sets queue.stalledNoWorker=false when the latest job is already terminal (completed/failed), even with no worker connected', () => {
-    const completedJob = makeGenerationJob({ status: 'completed' as GenerationJob['status'] });
+    const completedRun = makeGenerationRun({
+      status: 'completed' as GenerationRun['status'],
+    });
 
-    const diagnostics = buildGenerationDiagnostics(makeBook(), [], completedJob, undefined, {
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [], completedRun, undefined, {
       queueName: 'book-generation',
       workerCount: 0,
       counts: { waiting: 0, active: 0, completed: 1, failed: 0, delayed: 0 },

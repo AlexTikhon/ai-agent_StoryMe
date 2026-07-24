@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { BooksModule } from './books.module';
 import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
+import { BookGenerationService } from './book-generation.service';
+import { BookGenerationExecutionService } from './book-generation-execution.service';
 
 /**
  * These assert on the DynamicModule metadata BooksModule.register produces,
@@ -11,6 +13,21 @@ import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
  * instantiated) is only ever wired in when explicitly enabled.
  */
 describe('BooksModule.register', () => {
+  it('registers the generation scheduling boundary in both process modes', () => {
+    expect(BooksModule.register({ enableGenerationWorker: false }).providers).toContain(
+      BookGenerationService,
+    );
+    expect(BooksModule.register({ enableGenerationWorker: true }).providers).toContain(
+      BookGenerationService,
+    );
+    expect(BooksModule.register({ enableGenerationWorker: false }).providers).toContain(
+      BookGenerationExecutionService,
+    );
+    expect(BooksModule.register({ enableGenerationWorker: true }).providers).toContain(
+      BookGenerationExecutionService,
+    );
+  });
+
   it('omits GenerationQueueProcessor when enableGenerationWorker is false (API mode)', () => {
     const dynamicModule = BooksModule.register({ enableGenerationWorker: false });
 

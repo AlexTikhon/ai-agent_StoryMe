@@ -557,7 +557,7 @@ export interface GenerationDiagnosticsDto {
   generationMetadata: GenerationMetadata;
   recentLogs: AgentLogSummary[];
   previewPdfUrl?: string | null;
-  /** Latest GenerationJob for this book (Phase 3I), or null if none exists yet. */
+  /** Latest authoritative GenerationRun projected into the legacy job-summary shape, or null. */
   latestJob?: GenerationJobSummary | null;
   pdfStorage: PdfStorageDiagnostics;
   /** BullMQ generation-queue health — see QueueDiagnostics. */

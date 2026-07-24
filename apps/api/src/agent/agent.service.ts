@@ -60,7 +60,7 @@ import {
   requiredPaidProviderCallsForBook,
   resolveMaxPaidProviderCallsPerRun,
 } from './generation-provider-telemetry';
-import { validateStoryGenerationResult } from './story-generation-result-validator';
+import { StoryContentStage } from './story-content.stage';
 
 /** Stable diagnostics label for one planned image entry: 'cover' | 'page_<n>' | 'back_cover'. */
 function imageAssetLabel(entry: GeneratedImageEntry): string {
@@ -126,6 +126,7 @@ function isResumableBook(book: Book, inputHash: string): boolean {
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
+  private readonly storyContentStage: StoryContentStage;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -138,7 +139,9 @@ export class AgentService {
     @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
     private readonly characterProfileProvider: CharacterProfileProvider,
     private readonly generationExecutionService: GenerationExecutionService,
-  ) {}
+  ) {
+    this.storyContentStage = new StoryContentStage(storyGenerationProvider);
+  }
 
   /** Safe fallback profile provider used when the injected (possibly real) CharacterProfileProvider throws — never blocks the pipeline on a flaky vision call. */
   private readonly fallbackCharacterProfileProvider = new MockCharacterProfileProvider();
@@ -854,17 +857,11 @@ export class AgentService {
           educationalMessage,
           characterProfile,
         };
-        const result = await providerTelemetry.record({
-          operation: 'story',
-          provider: toGenerationProviderName(this.storyGenerationProvider.providerName),
-          ...(this.storyGenerationProvider.modelName && {
-            model: this.storyGenerationProvider.modelName,
-          }),
-          promptVersion: promptVersion(this.storyGenerationProvider, 'legacy-story-v1'),
-          promptInput: storyPromptInput,
-          execute: () => this.storyGenerationProvider.generateStory(storyPromptInput),
+        const result = await this.storyContentStage.execute({
+          prompt: storyPromptInput,
+          targetPageCount,
+          telemetry: providerTelemetry,
         });
-        validateStoryGenerationResult(result, targetPageCount);
         characterCard = result.characterCard;
         storyPlanFinal = result.storyPlan;
         bookPreview = result.bookPreview;

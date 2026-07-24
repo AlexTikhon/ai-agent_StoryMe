@@ -144,7 +144,7 @@ see "Failure behavior" in `local-generation-pipeline.md`.
 generation — it exists so the pipeline has _some_ real, embeddable image
 bytes to prove the storage → resolver → renderer path end-to-end. A real
 `OpenAIImageGenerationProvider` (behind the same `ImageGenerationProvider`
-interface) also exists and is used when `IMAGE_GENERATION_PROVIDER_TOKEN=openai`
+interface) also exists and is used when `IMAGE_GENERATION_PROVIDER=openai`
 is explicitly set — see `local-generation-pipeline.md`. No changes to
 `buildImageBufferResolver` or the renderer were needed to add it.
 
@@ -200,7 +200,7 @@ Out of scope for this boundary, deliberately:
 `ImageAssetStorage.saveImageAsset`, keyed by `imageAssetKey`. The default
 `MockImageGenerationProvider` wraps `generateMockImagePng`; a real
 `OpenAIImageGenerationProvider` is selected via
-`IMAGE_GENERATION_PROVIDER_TOKEN=openai` (see
+`IMAGE_GENERATION_PROVIDER=openai` (see
 `local-generation-pipeline.md` for the full boundary contract). No changes
 to `buildImageBufferResolver` or the renderer itself were needed — the
 boundary was already in place end-to-end; saved bytes are picked up and
