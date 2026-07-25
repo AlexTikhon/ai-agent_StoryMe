@@ -272,6 +272,7 @@ describe('BookDetailPage', () => {
   }
 
   beforeEach(() => {
+    vi.stubEnv('NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS', 'true');
     vi.mocked(useParams).mockReturnValue({ id: 'book-1' });
     vi.mocked(useRouter).mockReturnValue({ push: pushMock } as unknown as ReturnType<
       typeof useRouter
@@ -285,6 +286,7 @@ describe('BookDetailPage', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   // ── Loading state ──────────────────────────────────────────────────────────
@@ -2855,6 +2857,33 @@ describe('BookDetailPage', () => {
   // ── Generation diagnostics panel ──────────────────────────────────────────
 
   describe('Generation diagnostics panel', () => {
+    it('does not fetch or render developer diagnostics and internal asset keys by default', async () => {
+      vi.stubEnv('NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS', '');
+      const bookWithImages: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        bookPreview: makeBookPreview(),
+        imageGenerationResult: makeImageGenerationResult(),
+        previewPdfUrl: null,
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(bookWithImages));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /generated story preview/i })).toBeDefined();
+      });
+
+      expect(screen.queryByTestId('generation-diagnostics')).toBeNull();
+      expect(screen.queryByRole('heading', { name: /images are ready/i })).toBeNull();
+      expect(screen.queryByText('/mock-images/book-1/cover.svg')).toBeNull();
+      expect(
+        fetchMock.fetchFn.mock.calls.some(([input]) =>
+          String(input).includes('/generation-diagnostics'),
+        ),
+      ).toBe(false);
+    });
+
     it('renders provider, model, generated pages, and duration info', async () => {
       const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.ImageGen };
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(generatingBook));

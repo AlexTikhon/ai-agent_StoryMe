@@ -162,6 +162,12 @@ locally: `NEXT_PUBLIC_API_URL="http://localhost:4000/api" pnpm --filter
 @book/web build`. Vercel/Railway/CI must set it as a real build-time env var
 (see [docs/private-demo-deploy.md §10](docs/private-demo-deploy.md#10-vercel--railway-concrete-deployment-configuration)).
 
+Developer generation diagnostics, intermediate plans, provider/layout
+metadata, and internal artifact keys are hidden by default. Set
+`NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true` only in a trusted developer
+build to show them. This public build flag controls UI visibility, not API
+authorization; the diagnostics endpoint still enforces book ownership.
+
 ## Deployment readiness
 
 See **[docs/deployment-readiness.md](docs/deployment-readiness.md)** for a

@@ -20,13 +20,13 @@ export function isGeneratingBookStatus(status: BookStatus): boolean {
 }
 
 /**
- * Owns fetching a book by id, polling it (plus generation diagnostics) while
- * it's actively generating, and the manual "Refresh status" action. Other
+ * Owns fetching a book by id, polling it while actively generating, optional
+ * developer-diagnostics reads, and the manual "Refresh status" action. Other
  * mutations (edit/generate/regenerate/delete) live in the page component and
  * call `setBook` directly with the response they already got back from their
  * own API call, rather than re-fetching here.
  */
-export function useBookDetail(id: string) {
+export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
   const [book, setBook] = useState<BookDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -86,29 +86,33 @@ export function useBookDetail(id: string) {
           setBook((current) => (current?.status === BookStatus.Cancelled ? current : data));
         })
         .catch(() => {});
-      void booksApi
-        .getGenerationDiagnostics(id)
-        .then((data) => {
-          if (!cancelled) {
-            setDiagnostics(data);
-            setDiagnosticsError(null);
-          }
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) {
-            setDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
-          }
-        });
+      if (enableDeveloperDiagnostics) {
+        void booksApi
+          .getGenerationDiagnostics(id)
+          .then((data) => {
+            if (!cancelled) {
+              setDiagnostics(data);
+              setDiagnosticsError(null);
+            }
+          })
+          .catch((err: unknown) => {
+            if (!cancelled) {
+              setDiagnosticsError(
+                err instanceof Error ? err.message : 'Failed to load diagnostics',
+              );
+            }
+          });
+      }
     }, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [id, book?.status]);
+  }, [id, book?.status, enableDeveloperDiagnostics]);
 
   // Fetch diagnostics once generation has started (not for untouched drafts)
   useEffect(() => {
-    if (!book || book.status === BookStatus.Created) return;
+    if (!enableDeveloperDiagnostics || !book || book.status === BookStatus.Created) return;
     let cancelled = false;
     booksApi
       .getGenerationDiagnostics(id)
@@ -126,19 +130,21 @@ export function useBookDetail(id: string) {
     return () => {
       cancelled = true;
     };
-  }, [id, book?.status]);
+  }, [id, book?.status, enableDeveloperDiagnostics]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       const data = await booksApi.get(id);
       setBook(data);
-      try {
-        const diagnosticsData = await booksApi.getGenerationDiagnostics(id);
-        setDiagnostics(diagnosticsData);
-        setDiagnosticsError(null);
-      } catch (err) {
-        setDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
+      if (enableDeveloperDiagnostics) {
+        try {
+          const diagnosticsData = await booksApi.getGenerationDiagnostics(id);
+          setDiagnostics(diagnosticsData);
+          setDiagnosticsError(null);
+        } catch (err) {
+          setDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
+        }
       }
     } catch {
       // silent — manual retry; load errors handled by main effect
