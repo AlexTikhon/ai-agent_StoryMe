@@ -191,6 +191,20 @@ export function resolvePublishedNamespace(
  */
 export type PublishedPdfNamespace = GenerationArtifactNamespace | { readonly kind: 'not_ready' };
 
+/** Published-image counterpart to PublishedPdfNamespace. */
+export type PublishedImageNamespace = PublishedPdfNamespace;
+
+type PublishedArtifactPointer = Pick<
+  Book,
+  'publishedRunId' | 'publishedRunFencingVersion' | 'previewPdfUrl'
+>;
+
+function resolvePublishedArtifactNamespace(book: PublishedArtifactPointer): PublishedPdfNamespace {
+  const namespace = resolvePublishedNamespace(book);
+  if (namespace != null) return namespace;
+  return book.previewPdfUrl != null ? LEGACY_NAMESPACE : { kind: 'not_ready' };
+}
+
 /**
  * The single resolver every production PDF read/existence path must go
  * through (see this type's own doc comment for why). Never infers ownership
@@ -200,9 +214,20 @@ export type PublishedPdfNamespace = GenerationArtifactNamespace | { readonly kin
  * fields null" case, never as an ownership signal in its own right.
  */
 export function resolvePublishedPdfNamespace(
-  book: Pick<Book, 'publishedRunId' | 'publishedRunFencingVersion' | 'previewPdfUrl'>,
+  book: PublishedArtifactPointer,
 ): PublishedPdfNamespace {
-  const namespace = resolvePublishedNamespace(book);
-  if (namespace != null) return namespace;
-  return book.previewPdfUrl != null ? LEGACY_NAMESPACE : { kind: 'not_ready' };
+  return resolvePublishedArtifactNamespace(book);
+}
+
+/**
+ * Resolves only the immutable namespace last published successfully. It never
+ * follows active/last-generation pointers, so a failed or cancelled
+ * regeneration cannot replace images from the previous successful book.
+ * `previewPdfUrl` is the legacy-publication marker for rows created before
+ * exact claim pointers existed.
+ */
+export function resolvePublishedImageNamespace(
+  book: PublishedArtifactPointer,
+): PublishedImageNamespace {
+  return resolvePublishedArtifactNamespace(book);
 }

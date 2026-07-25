@@ -45,6 +45,7 @@ All routes have the `/api` prefix.
 | POST             | `/books/:id/cancel`                   | Fence/cancel active run and refund once  |
 | GET              | `/books/:id/generation-diagnostics`   | Owned run/artifact diagnostics           |
 | GET              | `/books/:id/pdf/preview`              | Ownership-checked PDF bytes              |
+| GET              | `/books/:id/images/:imageId`          | Ownership-checked published image bytes  |
 | GET              | `/credits/balance`                    | Canonical owned balance                  |
 | GET              | `/credits/transactions`               | Cursor-paginated owned ledger            |
 | GET              | `/billing/packages`                   | Server package catalog                   |
@@ -61,9 +62,10 @@ and ownership comes from the authenticated user rather than client-supplied user
 `/dashboard/books/new`, `/dashboard/books/[id]`, `/dashboard/credits`, `/billing/success`, and
 `/billing/cancel`.
 
-There is no in-browser page reader or rendered generated-illustration preview. With developer
-diagnostics explicitly enabled, the book detail screen shows internal image asset keys and
-intermediate pipeline details.
+There is no in-browser page reader or rendered generated-illustration preview yet. The API can
+serve the owner's published `cover`, `back-cover`, or `page-1` through `page-12` bytes without
+exposing storage keys. With developer diagnostics explicitly enabled, the book detail screen
+shows internal image asset keys and intermediate pipeline details.
 
 ## Providers and storage
 
@@ -100,7 +102,7 @@ a later failed/cancelled regeneration preserves the previous publication.
 Implemented: JWT auth/recovery, ownership enforcement, safe child-photo processing, draft CRUD
 and soft-delete, durable queued generation, fencing/heartbeat/recovery, cancellation,
 retry/resume, idempotent charges/refunds, one-time credit purchases, provider limits, local/S3/R2
-artifacts, authenticated PDF access, and extensive unit/integration tests.
+artifacts, authenticated PDF and published-image access, and extensive unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
 management, reader and image thumbnails/previews, single-page editing/regeneration, bounded LLM

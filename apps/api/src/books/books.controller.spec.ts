@@ -25,6 +25,11 @@ const PDF_RESULT = {
   contentType: 'application/pdf' as const,
   filename: 'storyme-preview-b-1.pdf',
 };
+const IMAGE_RESULT = {
+  buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  contentType: 'image/png' as const,
+  filename: 'cover.png',
+};
 
 function createMockBooksService(): jest.Mocked<BooksService> {
   return {
@@ -37,6 +42,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     cancelGeneration: vi.fn(),
     remove: vi.fn(),
     getPreviewPdfBuffer: vi.fn(),
+    getPublishedImage: vi.fn(),
     getGenerationDiagnostics: vi.fn(),
     uploadChildPhoto: vi.fn(),
   } as unknown as jest.Mocked<BooksService>;
@@ -363,6 +369,58 @@ describe('BooksController.getPreviewPdf', () => {
 
     await expect(controller.getPreviewPdf(FAKE_USER, 'b-1', res)).rejects.toThrow(
       ConflictException,
+    );
+    expect(res.set).not.toHaveBeenCalled();
+  });
+});
+
+describe('BooksController.getPublishedImage', () => {
+  it('delegates with ownership context and sets private, sniff-safe image headers', async () => {
+    const booksService = createMockBooksService();
+    booksService.getPublishedImage.mockResolvedValue(IMAGE_RESULT);
+    const controller = new BooksController(booksService);
+    const res = createMockResponse();
+
+    const result = await controller.getPublishedImage(FAKE_USER, 'b-1', 'cover', res);
+
+    expect(booksService.getPublishedImage).toHaveBeenCalledWith('b-1', 'u-1', 'cover');
+    expect(res.set).toHaveBeenCalledWith({
+      'Content-Type': 'image/png',
+      'Content-Disposition': 'inline; filename="cover.png"',
+      'Content-Length': String(IMAGE_RESULT.buffer.length),
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    expect(result.getStream().read()).toEqual(IMAGE_RESULT.buffer);
+  });
+
+  it('adds a sandbox content-security policy when serving SVG', async () => {
+    const booksService = createMockBooksService();
+    booksService.getPublishedImage.mockResolvedValue({
+      buffer: Buffer.from('<svg></svg>'),
+      contentType: 'image/svg+xml',
+      filename: 'cover.svg',
+    });
+    const controller = new BooksController(booksService);
+    const res = createMockResponse();
+
+    await controller.getPublishedImage(FAKE_USER, 'b-1', 'cover', res);
+
+    expect(res.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      }),
+    );
+  });
+
+  it('does not set response headers when ownership fails', async () => {
+    const booksService = createMockBooksService();
+    booksService.getPublishedImage.mockRejectedValue(new NotFoundException('Book not found'));
+    const controller = new BooksController(booksService);
+    const res = createMockResponse();
+
+    await expect(controller.getPublishedImage(FAKE_USER, 'b-1', 'cover', res)).rejects.toThrow(
+      NotFoundException,
     );
     expect(res.set).not.toHaveBeenCalled();
   });

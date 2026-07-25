@@ -463,6 +463,9 @@ export interface BookDto {
   updatedAt: string;
 }
 
+/** Public identifiers accepted by GET /api/books/:id/images/:imageId. */
+export type PublishedBookImageId = 'cover' | 'back-cover' | `page-${number}`;
+
 export interface CreateBookInput {
   title: string;
   childName: string;

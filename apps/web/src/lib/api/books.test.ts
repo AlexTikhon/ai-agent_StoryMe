@@ -251,6 +251,24 @@ describe('booksApi', () => {
     });
   });
 
+  describe('downloadPublishedImage()', () => {
+    it('fetches an ownership-checked published image as a blob', async () => {
+      const image = new Blob(['image-bytes'], { type: 'image/png' });
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        blob: async () => image,
+      } as Response);
+
+      const result = await booksApi.downloadPublishedImage('book-1', 'page-2');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/images/page-2');
+      expect(result).toBe(image);
+    });
+  });
+
   describe('error handling', () => {
     it('throws with the string message from the error body', async () => {
       vi.mocked(fetch).mockResolvedValueOnce(mockError(404, 'Book not found'));

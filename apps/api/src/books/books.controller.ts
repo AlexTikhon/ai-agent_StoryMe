@@ -117,6 +117,27 @@ export class BooksController {
     return new StreamableFile(result.buffer);
   }
 
+  @Get(':id/images/:imageId')
+  async getPublishedImage(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('imageId') imageId: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const result = await this.booksService.getPublishedImage(id, user.id, imageId);
+    res.set({
+      'Content-Type': result.contentType,
+      'Content-Disposition': `inline; filename="${result.filename}"`,
+      'Content-Length': String(result.buffer.length),
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+      ...(result.contentType === 'image/svg+xml' && {
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      }),
+    });
+    return new StreamableFile(result.buffer);
+  }
+
   /** Charges 1 credit the moment the run is durably scheduled — returns the stable 402 `{ code: 'INSUFFICIENT_CREDITS' }` (never a raw balance) if the user's balance is too low. See apps/api/docs/credits.md, "Phase E2". */
   @Post(':id/generate')
   @HttpCode(200)

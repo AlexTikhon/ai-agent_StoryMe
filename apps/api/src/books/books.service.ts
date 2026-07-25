@@ -40,6 +40,7 @@ import { BookAssetService } from './book-asset.service';
 import { BookDiagnosticsService } from './book-diagnostics.service';
 import { BookGenerationService } from './book-generation.service';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
+import type { PublishedImageResult } from './book-asset.service';
 
 export {
   IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
@@ -333,6 +334,14 @@ export class BooksService {
     userId: string,
   ): Promise<{ buffer: Buffer; contentType: 'application/pdf'; filename: string }> {
     return this.assetService.getPreviewPdfBuffer(bookId, userId);
+  }
+
+  async getPublishedImage(
+    bookId: string,
+    userId: string,
+    imageId: string,
+  ): Promise<PublishedImageResult> {
+    return this.assetService.getPublishedImage(bookId, userId, imageId);
   }
 
   /** Safe, non-secret generation diagnostics for a book — see generation-diagnostics.ts. */
