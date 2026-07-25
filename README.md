@@ -32,8 +32,10 @@ generate a book → download the PDF).
 - Create a book from a short form (child's name/age, theme, language,
   page count, optional educational message/dedication).
 - Generate the story (character, story plan, page plan, draft text,
-  illustration plan, images) through a polling status pipeline
-  (`created` → … → `complete`), visible live on the book detail page.
+  illustration plan, images) in a durable queued pipeline. The detail page
+  polls the persisted state; the current implementation records mainly
+  `created` → `layout` → `complete`/`failed` (or `cancelled`), rather than
+  persisting every internal stage as user-visible progress.
 - Render and preview/download the finished book as a PDF.
 - Retry generation after a failure.
 

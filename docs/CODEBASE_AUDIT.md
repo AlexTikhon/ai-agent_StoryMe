@@ -1,8 +1,9 @@
 # StoryMe Codebase Audit
 
-Audit date: 2026-07-23. Findings come from controllers, Next.js route files, Prisma schema and
-runtime delegate use, service/module wiring, providers, storage, tests, and package/deployment
-configuration. Historical design documents were used only to find inconsistencies.
+Audit date: 2026-07-23; updated against the Phase 2 implementation on 2026-07-25. Findings come
+from controllers, Next.js route files, Prisma schema and runtime delegate use, service/module
+wiring, providers, storage, tests, and package/deployment configuration. Historical design
+documents were used only to find inconsistencies.
 
 ## Summary and implemented product
 
@@ -16,9 +17,9 @@ without metadata, versioned, hashed, and stored through local/S3/R2 drivers. Sto
 character-profile, and image generation have deterministic mocks and OpenAI implementations;
 layout/PDF publication is deterministic.
 
-The main risks are maintainability concentrated in three large units, compatibility/schema
-surface implying nonexistent product features, no complete privacy-erasure workflow, diagnostics
-shown to every authenticated owner, and documents mixing current and superseded phases.
+The main risks are remaining large orchestration/UI units, compatibility/schema surface implying
+nonexistent product features, no complete privacy-erasure workflow, diagnostics shown to every
+authenticated owner, and documents mixing current and superseded phases.
 
 ## Actual routes
 
@@ -77,17 +78,19 @@ Book cancelled, and refunds once. `partial` and many fine-grained Book statuses 
   legacy API field/type names remain compatibility vocabulary only.
 - **Credits:** `User.credits` is current balance; `CreditTransaction` is audit/idempotency ledger.
 
-## Large units to split
+## Large units and completed splits
 
-- `agent.service.ts`: now delegates character/reference, story, image, resume/reuse, layout/PDF,
-  telemetry/result collection, scheduling, and execution boundaries; it remains the main
-  deterministic pipeline orchestrator.
-- `books.service.ts`: now a compatibility facade for extracted CRUD, assets, diagnostics,
-  generation scheduling, and worker execution/cancellation services. The generation services
-  no longer maintain the legacy `GenerationJob` mirror.
-- `book-detail-view.tsx` (~1,038): product controls, polling, diagnostics, asset keys, PDF, errors.
-- Later candidates: `story-generation-provider.ts` (~773) and
-  `claim-artifact-cleanup.service.ts` (~617).
+- `agent.service.ts` (~564 lines): delegates character/reference, story, image, resume/reuse,
+  layout/PDF, telemetry, and result collection, but remains the main deterministic pipeline
+  orchestrator.
+- `books.service.ts` (~350 lines): compatibility facade over extracted CRUD, assets, diagnostics,
+  generation scheduling, and worker execution/cancellation services. Its constructor remains
+  broad to preserve the public facade and direct unit-test construction.
+- `book-detail-view.tsx` (~969 lines): product controls, intermediate story/layout detail, internal
+  asset keys, PDF, and errors. Polling lives in `use-book-detail.ts`, and runtime diagnostics have
+  already moved to `generation-diagnostics-panel.tsx`.
+- Later candidates: `story-generation-provider.ts` (~824 lines) and
+  `claim-artifact-cleanup.service.ts` (~673 lines).
 
 Large test files reflect those units; split coverage with implementation boundaries.
 
@@ -102,9 +105,10 @@ placeholders.
 
 No production Prisma delegate use was found for `ChildProfile`, `Upload`, `BookPage`,
 `CharacterCard`, `BookSeries`, `WizardDraft`, `ShareLink`, `Subscription`, `UserBookState`, or
-`Notification`. They remain in relations/migrations and require a data decision before removal.
-`GenerationJob` has no production Prisma consumer. Active models include `User`, `RefreshToken`,
-`Book`, `CreditTransaction`, `AgentLog`, `GenerationRun`, `OutboxEvent`, and `RecoveryLease`.
+`Notification`. They remain in relations/migrations and require a data decision before removal;
+the Phase 2 retain/remove-later decisions are recorded in `PRISMA_MODEL_DECISIONS.md`. Active
+models include `User`, `RefreshToken`, `Book`, `CreditTransaction`, `AgentLog`,
+`GenerationRun`, `OutboxEvent`, and `RecoveryLease`.
 
 Documentation inconsistencies:
 
@@ -141,9 +145,11 @@ artifacts.
 
 ### P1
 
-- Split the three large units without changing fencing, transactions, retry/cancel, credits, or
-  publication.
-- Migrate off `GenerationJob`; decide every unused Prisma model.
+- Continue reducing the remaining orchestrator/UI units without changing fencing, transactions,
+  retry/cancel, credits, or publication. The book-service split, typed generation stages, and
+  diagnostics-panel extraction are complete.
+- Keep the completed `GenerationJob` removal migration in the release path and validate it before
+  deployment; retain the recorded decision for every other unused Prisma model.
 - Gate diagnostics/internal asset details for broader production.
 
 ### P2
@@ -158,5 +164,5 @@ artifacts.
   most one optional validated repair.
 
 Additional risks: console email makes real-user verification/recovery unusable; local storage is
-not shared across deployed API/worker processes; no browser E2E proves full journeys; large units
-and the legacy mirror increase regression surface.
+not shared across deployed API/worker processes; no browser E2E proves full journeys; remaining
+large units increase regression surface.
