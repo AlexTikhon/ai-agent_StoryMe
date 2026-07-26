@@ -159,4 +159,44 @@ describe('BookDiagnosticsService', () => {
       previewAvailable: false,
     });
   });
+
+  it('returns idle progress when the owned book has never had a run', async () => {
+    const result = await service.getGenerationProgress('book-1', 'user-1');
+
+    expect(result).toEqual({ status: 'idle', step: null });
+    expect(runs.findLatestForBook).toHaveBeenCalledWith('book-1');
+    expect(prisma.agentLog.findMany).not.toHaveBeenCalled();
+    expect(queue.getQueueDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it('projects only durable run status and current step into user-facing progress', async () => {
+    runs.findLatestForBook.mockResolvedValue(
+      makeRun({ status: 'running', currentStep: 'image_gen' }),
+    );
+
+    await expect(service.getGenerationProgress('book-1', 'user-1')).resolves.toEqual({
+      status: 'running',
+      step: 'image_gen',
+    });
+  });
+
+  it('maps the internal completed run status to the public complete status', async () => {
+    runs.findLatestForBook.mockResolvedValue(
+      makeRun({ status: 'completed', currentStep: 'pdf_render' }),
+    );
+
+    await expect(service.getGenerationProgress('book-1', 'user-1')).resolves.toEqual({
+      status: 'complete',
+      step: 'pdf_render',
+    });
+  });
+
+  it('checks ownership before reading the latest run for progress', async () => {
+    crud.findOwnedOrThrow.mockRejectedValue(new NotFoundException('Book not found'));
+
+    await expect(service.getGenerationProgress('book-1', 'other-user')).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(runs.findLatestForBook).not.toHaveBeenCalled();
+  });
 });

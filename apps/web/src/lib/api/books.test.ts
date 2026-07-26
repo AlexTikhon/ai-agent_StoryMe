@@ -7,6 +7,7 @@ import type {
   BooksPageDto,
   CancelGenerationResponse,
   GenerateBookResponse,
+  GenerationProgressDto,
 } from '@book/types';
 
 const MOCK_BOOK: BookDto = {
@@ -266,6 +267,23 @@ describe('booksApi', () => {
       const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
       expect(url).toBe('http://localhost:4000/api/books/book-1/images/page-2');
       expect(result).toBe(image);
+    });
+  });
+
+  describe('getGenerationProgress()', () => {
+    it('fetches the minimal owned progress contract', async () => {
+      const progress: GenerationProgressDto = {
+        status: 'running',
+        step: 'image_gen' as GenerationProgressDto['step'],
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(progress));
+
+      const result = await booksApi.getGenerationProgress('book-1');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/generation-progress');
+      expect(result).toEqual(progress);
     });
   });
 

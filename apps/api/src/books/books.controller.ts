@@ -27,6 +27,7 @@ import type {
   CancelGenerationResponse,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
+  GenerationProgressDto,
 } from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -209,6 +210,14 @@ export class BooksController {
   @HttpCode(204)
   remove(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
     return this.booksService.remove(id, user.id);
+  }
+
+  @Get(':id/generation-progress')
+  getGenerationProgress(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<GenerationProgressDto> {
+    return this.booksService.getGenerationProgress(id, user.id);
   }
 
   @Get(':id/generation-diagnostics')

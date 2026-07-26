@@ -7,6 +7,7 @@ import {
   type CancelGenerationResponse,
   type GenerateBookResponse,
   type GenerationDiagnosticsDto,
+  type GenerationProgressDto,
 } from '@book/types';
 import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
@@ -350,6 +351,10 @@ export class BooksService {
     userId: string,
   ): Promise<GenerationDiagnosticsDto> {
     return this.diagnosticsService.getGenerationDiagnostics(bookId, userId);
+  }
+
+  async getGenerationProgress(bookId: string, userId: string): Promise<GenerationProgressDto> {
+    return this.diagnosticsService.getGenerationProgress(bookId, userId);
   }
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */

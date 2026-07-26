@@ -466,6 +466,19 @@ export interface BookDto {
 /** Public identifiers accepted by GET /api/books/:id/images/:imageId. */
 export type PublishedBookImageId = 'cover' | 'back-cover' | `page-${number}`;
 
+export type GenerationProgressStatus =
+  'idle' | 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';
+
+/**
+ * Minimal user-facing generation state backed by the authoritative
+ * GenerationRun row. Deliberately excludes logs, provider metadata, prompts,
+ * queue internals, and cost diagnostics.
+ */
+export interface GenerationProgressDto {
+  status: GenerationProgressStatus;
+  step: AgentStep | null;
+}
+
 export interface CreateBookInput {
   title: string;
   childName: string;

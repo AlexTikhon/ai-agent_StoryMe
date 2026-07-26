@@ -12,6 +12,7 @@ import type {
   CancelGenerationResponse,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
+  GenerationProgressDto,
 } from '@book/types';
 import type { User } from '@prisma/client';
 import { BooksController } from './books.controller';
@@ -44,6 +45,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     getPreviewPdfBuffer: vi.fn(),
     getPublishedImage: vi.fn(),
     getGenerationDiagnostics: vi.fn(),
+    getGenerationProgress: vi.fn(),
     uploadChildPhoto: vi.fn(),
   } as unknown as jest.Mocked<BooksService>;
 }
@@ -452,5 +454,22 @@ describe('BooksController.getGenerationDiagnostics', () => {
     await expect(controller.getGenerationDiagnostics(FAKE_USER, 'missing')).rejects.toThrow(
       NotFoundException,
     );
+  });
+});
+
+describe('BooksController.getGenerationProgress', () => {
+  it('delegates to the owned user-facing progress read', async () => {
+    const booksService = createMockBooksService();
+    const progress: GenerationProgressDto = {
+      status: 'running',
+      step: 'image_gen' as GenerationProgressDto['step'],
+    };
+    booksService.getGenerationProgress.mockResolvedValue(progress);
+    const controller = new BooksController(booksService);
+
+    const result = await controller.getGenerationProgress(FAKE_USER, 'b-1');
+
+    expect(booksService.getGenerationProgress).toHaveBeenCalledWith('b-1', 'u-1');
+    expect(result).toBe(progress);
   });
 });
