@@ -17,6 +17,7 @@ import { booksApi, bookPdfPreviewUrl } from '@/lib/api/books';
 import { safePdfFilename } from '@/lib/pdf-filename';
 import { GenerationDiagnosticsPanel } from './generation-diagnostics-panel';
 import { isGeneratingBookStatus } from './use-book-detail';
+import { PublishedBookReader } from './published-book-reader';
 
 function generationStatusMessage(status: BookStatus): string {
   switch (status) {
@@ -347,6 +348,10 @@ export function BookDetailView({
       )}
 
       {showDeveloperDiagnostics && bookLayout && <BookLayoutSection layout={bookLayout} />}
+
+      {book.status === BookStatus.Complete && book.previewPdfUrl && bookPreview && (
+        <PublishedBookReader bookId={book.id} preview={bookPreview} />
+      )}
 
       <PdfSection book={book} />
 

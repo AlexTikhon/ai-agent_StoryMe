@@ -36,9 +36,10 @@ All API routes have `/api` prefix.
 Health and the signature-checked Stripe webhook are public. Feature ownership derives from the
 authenticated user. Frontend routes are `/`, `/register`, `/login`, `/verify-email`,
 `/forgot-password`, `/reset-password`, `/dashboard`, `/dashboard/books/new`,
-`/dashboard/books/[id]`, `/dashboard/credits`, `/billing/success`, and `/billing/cancel`. There is
-no reader, public share, settings/profile, child-profile, admin, subscription, or page-editor
-route.
+`/dashboard/books/[id]`, `/dashboard/credits`, `/billing/success`, and `/billing/cancel`. The book
+detail route includes an authenticated published-image reader for completed books. There is no
+separate reader route, public share, settings/profile, child-profile, admin, subscription, or
+page-editor route.
 
 ## Pipeline and state
 
