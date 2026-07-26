@@ -211,6 +211,7 @@ describe('AgentService', () => {
     // service.spec.ts and books.service.spec.ts — here it's a thin pass-through
     // to prisma.book.update so this file's book-update assertions are unaffected.
     generationExecutionService = {
+      markStep: vi.fn().mockResolvedValue(undefined),
       applyFencedBookWrite: vi.fn((ctx: GenerationExecutionContext, data: unknown) =>
         prisma.book.update({ where: { id: ctx.bookId }, data }),
       ),
@@ -272,6 +273,17 @@ describe('AgentService', () => {
 
       expect(result.status).toBe('complete');
       expect(result.bookUpdate).not.toHaveProperty('status');
+    });
+
+    it('durably marks only the major stages the worker actually enters', async () => {
+      const book = makeBook();
+      setupMocks();
+
+      await runGeneration(service, prisma, book);
+
+      expect(
+        vi.mocked(generationExecutionService.markStep).mock.calls.map(([, step]) => step),
+      ).toEqual(['char_build', 'story_plan', 'image_gen', 'layout', 'pdf_render']);
     });
 
     it('stamps Book.lastGenerationInputHash with the inputHash this run executed, at the phase-1 persist', async () => {

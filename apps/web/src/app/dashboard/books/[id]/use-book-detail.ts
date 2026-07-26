@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BookStatus } from '@book/types';
-import type { BookDto, GenerationDiagnosticsDto } from '@book/types';
+import type { BookDto, GenerationDiagnosticsDto, GenerationProgressDto } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 import { ApiError } from '@/lib/api/client';
 
@@ -35,6 +35,7 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
 
   const [diagnostics, setDiagnostics] = useState<GenerationDiagnosticsDto | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<GenerationProgressDto | null>(null);
 
   const [refreshing, setRefreshing] = useState(false);
 
@@ -44,6 +45,7 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     setLoadError(null);
     setNotFound(false);
     setBook(null);
+    setProgress(null);
 
     booksApi
       .get(id)
@@ -69,6 +71,30 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     };
   }, [id, loadAttempt]);
 
+  // The Book status intentionally remains coarse. Fetch the authoritative
+  // GenerationRun projection as soon as an active run appears so ordinary
+  // users see only stages that the worker durably recorded.
+  useEffect(() => {
+    if (!book || !isGeneratingBookStatus(book.status)) {
+      setProgress(null);
+      return;
+    }
+    let cancelled = false;
+    setProgress(null);
+    void booksApi
+      .getGenerationProgress(id)
+      .then((data) => {
+        if (!cancelled) setProgress(data);
+      })
+      .catch(() => {
+        // A generic in-progress message remains truthful if this optional
+        // projection cannot be loaded.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, book?.status]);
+
   // Poll while book is in a non-terminal generation state
   useEffect(() => {
     if (!book || !isGeneratingBookStatus(book.status)) return;
@@ -84,6 +110,12 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
           // latest committed state, so a stale non-cancelled poll response
           // can never clobber an already-applied cancellation.
           setBook((current) => (current?.status === BookStatus.Cancelled ? current : data));
+        })
+        .catch(() => {});
+      void booksApi
+        .getGenerationProgress(id)
+        .then((data) => {
+          if (!cancelled) setProgress(data);
         })
         .catch(() => {});
       if (enableDeveloperDiagnostics) {
@@ -137,6 +169,15 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     try {
       const data = await booksApi.get(id);
       setBook(data);
+      if (isGeneratingBookStatus(data.status)) {
+        try {
+          setProgress(await booksApi.getGenerationProgress(id));
+        } catch {
+          setProgress(null);
+        }
+      } else {
+        setProgress(null);
+      }
       if (enableDeveloperDiagnostics) {
         try {
           const diagnosticsData = await booksApi.getGenerationDiagnostics(id);
@@ -162,6 +203,7 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     loadError,
     notFound,
     retryLoad,
+    progress,
     diagnostics,
     diagnosticsError,
     refreshing,

@@ -212,6 +212,8 @@ export class AgentService {
     let skippedCharacterProfileGeneration = false;
     let skippedCharacterSheetGeneration = false;
 
+    await this.generationExecutionService.markStep(ctx, AgentStep.char_build);
+
     if (canReuseCharacterProfile) {
       skippedCharacterProfileGeneration = true;
       const profileProviderName = this.characterProfileProvider.providerName ?? null;
@@ -284,6 +286,7 @@ export class AgentService {
       );
     } else {
       try {
+        await this.generationExecutionService.markStep(ctx, AgentStep.story_plan);
         const storyPromptInput = {
           bookId: book.id,
           childName,
@@ -333,6 +336,7 @@ export class AgentService {
     // provider/storage work as soon as it's detected, rather than only
     // discovering it much later when its final write is rejected anyway.
     this.assertNotSuperseded(ctx, AgentStep.image_gen);
+    await this.generationExecutionService.markStep(ctx, AgentStep.image_gen);
 
     const imageStartedAt = Date.now();
 
@@ -401,6 +405,7 @@ export class AgentService {
     });
 
     const imageDurationMs = Date.now() - imageStartedAt;
+    await this.generationExecutionService.markStep(ctx, bookLayoutStage.step);
     const layoutStartedAt = Date.now();
     const bookLayout = bookLayoutStage.execute({
       bookId: book.id,
@@ -441,6 +446,7 @@ export class AgentService {
     // reason as before image generation: a superseded attempt must not keep
     // doing storage/render work once it's been signaled.
     this.assertNotSuperseded(ctx, pdfPublicationStage.step);
+    await this.generationExecutionService.markStep(ctx, pdfPublicationStage.step);
 
     let previewPdfUrl: string | null = null;
     let pdfRenderError: string | undefined;

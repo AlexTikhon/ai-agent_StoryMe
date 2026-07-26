@@ -15,15 +15,16 @@ forward migration; unused-model decisions are recorded in `PRISMA_MODEL_DECISION
 **Out of scope:** product features, provider/billing/framework changes, output changes, and
 unrelated schema redesign.
 
-## Phase 3: reader, previews, and honest progress
+## Phase 3: reader, previews, and honest progress (completed)
 
-**User value:** read and recognize books without internal details. **Technical scope:**
-authenticated in-browser reader; real image previews; library cover thumbnail; progress derived
-from actual execution stages; diagnostics behind an explicit development/admin flag.
-**Migration risk:** medium-high for ownership, claim scoping, and truthful progress.
-**Acceptance:** only owners can fetch every published asset; reader shows every page; library
-shows the published cover; progress has durable evidence; ordinary production users see no
-diagnostics. **Out of scope:** editing, public sharing, analytics, and broad UI redesign.
+**User value:** read and recognize books without internal details. **Delivered scope:**
+authenticated in-browser reader; real published-image previews; library cover thumbnail; minimal
+owned progress derived from fenced `GenerationRun` stages; diagnostics behind an explicit
+developer build flag. **Migration risk:** medium-high for ownership, claim scoping, and truthful
+progress. **Acceptance met:** only owners can fetch every published asset; the reader shows every
+page; the library shows the published cover; progress has durable evidence and invents no
+percentage; ordinary builds do not request or render diagnostics. **Out of scope:** editing,
+public sharing, analytics, broad UI redesign, and role-based diagnostics authorization.
 
 ## Phase 4: one-page changes
 

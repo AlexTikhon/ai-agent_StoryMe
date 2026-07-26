@@ -111,6 +111,7 @@ describe('AgentService local pipeline (real image storage + real PDF renderer)',
     };
 
     const generationExecutionService = {
+      markStep: vi.fn().mockResolvedValue(undefined),
       applyFencedBookWrite: (ctx: GenerationExecutionContext, data: unknown) =>
         prisma.book.update({ where: { id: ctx.bookId }, data }),
     } as unknown as GenerationExecutionService;

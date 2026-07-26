@@ -49,6 +49,7 @@ export default function BookDetailPage() {
     loadError,
     notFound,
     retryLoad,
+    progress,
     diagnostics,
     diagnosticsError,
     refreshing,
@@ -317,6 +318,7 @@ export default function BookDetailPage() {
                     void handleRefresh();
                   }}
                   refreshing={refreshing}
+                  progress={progress}
                   diagnostics={diagnostics}
                   diagnosticsError={diagnosticsError}
                   showDeveloperDiagnostics={showDeveloperDiagnostics}

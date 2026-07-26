@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { useState, type MouseEvent } from 'react';
-import { BookStatus } from '@book/types';
+import { AgentStep, BookStatus } from '@book/types';
 import type {
   BookDto,
   BookLayout,
@@ -9,6 +9,7 @@ import type {
   BookPreviewPage,
   GeneratedImageEntry,
   GenerationDiagnosticsDto,
+  GenerationProgressDto,
   IllustrationPlan,
   ImageGenerationResult,
   PagePlan,
@@ -19,32 +20,23 @@ import { GenerationDiagnosticsPanel } from './generation-diagnostics-panel';
 import { isGeneratingBookStatus } from './use-book-detail';
 import { PublishedBookReader } from './published-book-reader';
 
-function generationStatusMessage(status: BookStatus): string {
-  switch (status) {
-    case BookStatus.CharBuild:
+function generationStatusMessage(progress: GenerationProgressDto | null): string {
+  if (progress?.status === 'queued') return 'Waiting for a generation worker…';
+  if (progress?.status !== 'running') return 'Generation in progress…';
+
+  switch (progress.step) {
+    case AgentStep.CharBuild:
       return 'Building character profile…';
-    case BookStatus.StoryPlan:
+    case AgentStep.StoryPlan:
       return 'Planning your story…';
-    case BookStatus.PagePlan:
-      return 'Planning pages…';
-    case BookStatus.StoryDraft:
-      return 'Writing your story…';
-    case BookStatus.ChapterGen:
-      return 'Writing chapters…';
-    case BookStatus.IllustPlan:
-      return 'Planning illustrations…';
-    case BookStatus.PreviewReady:
-      return 'Preparing preview…';
-    case BookStatus.ImageGen:
+    case AgentStep.ImageGen:
       return 'Generating images…';
-    case BookStatus.QaReview:
-      return 'Reviewing quality…';
-    case BookStatus.Layout:
+    case AgentStep.Layout:
       return 'Designing book pages…';
-    case BookStatus.PdfRender:
+    case AgentStep.PdfRender:
       return 'Rendering PDF…';
     default:
-      return 'Generation in progress…';
+      return 'Starting generation…';
   }
 }
 
@@ -70,6 +62,7 @@ interface BookDetailViewProps {
   generateInsufficientCredits: boolean;
   onRefresh: () => void;
   refreshing: boolean;
+  progress: GenerationProgressDto | null;
   diagnostics: GenerationDiagnosticsDto | null;
   diagnosticsError: string | null;
   showDeveloperDiagnostics: boolean;
@@ -95,6 +88,7 @@ export function BookDetailView({
   generateInsufficientCredits,
   onRefresh,
   refreshing,
+  progress,
   diagnostics,
   diagnosticsError,
   showDeveloperDiagnostics,
@@ -357,7 +351,7 @@ export function BookDetailView({
 
       {!isDraft && isGeneratingBookStatus(book.status) && (
         <p className="mb-4 rounded-lg bg-violet-50 px-4 py-3 text-sm text-violet-700">
-          {generationStatusMessage(book.status)} This draft can no longer be edited.
+          {generationStatusMessage(progress)} This draft can no longer be edited.
         </p>
       )}
 

@@ -33,9 +33,9 @@ generate a book → download the PDF).
   page count, optional educational message/dedication).
 - Generate the story (character, story plan, page plan, draft text,
   illustration plan, images) in a durable queued pipeline. The detail page
-  polls the persisted state; the current implementation records mainly
-  `created` → `layout` → `complete`/`failed` (or `cancelled`), rather than
-  persisting every internal stage as user-visible progress.
+  polls a minimal `GenerationRun` projection and shows only major stages the
+  worker has durably entered (`char_build`, `story_plan`, `image_gen`,
+  `layout`, `pdf_render`), without invented percentages.
 - Render and preview/download the finished book as a PDF.
 - Retry generation after a failure.
 
