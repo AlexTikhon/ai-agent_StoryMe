@@ -191,6 +191,35 @@ describe('ClaimArtifactCleanupService.sweep', () => {
     expect(imageStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
   });
 
+  it('protects the independent PDF revision namespace published by a page text edit', async () => {
+    pdfStorage.listClaimArtifacts.mockResolvedValue({
+      entries: [
+        entry(
+          'books/book-1/runs/22222222-2222-2222-2222-222222222222/claims/1/storyme-preview-book-1.pdf',
+          OLD,
+        ),
+      ],
+      nextCursor: null,
+    });
+    prisma.book.findMany.mockResolvedValue([
+      {
+        id: 'book-1',
+        activeRunId: null,
+        publishedRunId: '11111111-1111-1111-1111-111111111111',
+        publishedRunFencingVersion: 4,
+        publishedPdfRunId: '22222222-2222-2222-2222-222222222222',
+        publishedPdfFencingVersion: 1,
+        lastGenerationRunId: null,
+        lastGenerationFencingVersion: null,
+      },
+    ]);
+
+    const summary = await service.sweep(now);
+
+    expect(summary.protectedPublished).toBe(1);
+    expect(pdfStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+  });
+
   it('protects the exact resumable (lastGeneration) namespace', async () => {
     imageStorage.listClaimArtifacts.mockResolvedValue({
       entries: [entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD)],

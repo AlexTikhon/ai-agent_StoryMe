@@ -43,13 +43,15 @@ describe('Book artifact-namespace pointer CHECK constraints (real Postgres)', ()
   }
 
   describe('valid rows persist', () => {
-    it('a fully legacy row (all four pointer fields null) persists', async () => {
+    it('a fully legacy row (all pointer fields null) persists', async () => {
       const userId = await createUser();
       const book = await prisma.book.create({ data: { userId } });
       expect(book.lastGenerationRunId).toBeNull();
       expect(book.lastGenerationFencingVersion).toBeNull();
       expect(book.publishedRunId).toBeNull();
       expect(book.publishedRunFencingVersion).toBeNull();
+      expect(book.publishedPdfRunId).toBeNull();
+      expect(book.publishedPdfFencingVersion).toBeNull();
     });
 
     it('a row with an exact lastGeneration claim pointer persists', async () => {
@@ -92,6 +94,23 @@ describe('Book artifact-namespace pointer CHECK constraints (real Postgres)', ()
       });
       expect(updated.lastGenerationRunId).toBe(runId);
       expect(updated.lastGenerationFencingVersion).toBe(1);
+    });
+
+    it('an independent PDF claim pointer and a positive page version persist', async () => {
+      const userId = await createUser();
+      const book = await prisma.book.create({
+        data: {
+          userId,
+          status: 'complete',
+          publishedPdfRunId: randomUUID(),
+          publishedPdfFencingVersion: 1,
+        },
+      });
+      const page = await prisma.bookPage.create({
+        data: { bookId: book.id, pageNumber: 1, version: 2 },
+      });
+      expect(book.publishedPdfFencingVersion).toBe(1);
+      expect(page.version).toBe(2);
     });
   });
 
@@ -173,6 +192,34 @@ describe('Book artifact-namespace pointer CHECK constraints (real Postgres)', ()
           where: { id: book.id },
           data: { lastGenerationFencingVersion: null },
         }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects an incomplete independent PDF pointer', async () => {
+      const userId = await createUser();
+      await expect(
+        prisma.book.create({ data: { userId, publishedPdfRunId: randomUUID() } }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a non-positive independent PDF fencing version', async () => {
+      const userId = await createUser();
+      await expect(
+        prisma.book.create({
+          data: {
+            userId,
+            publishedPdfRunId: randomUUID(),
+            publishedPdfFencingVersion: 0,
+          },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a non-positive page version', async () => {
+      const userId = await createUser();
+      const book = await prisma.book.create({ data: { userId } });
+      await expect(
+        prisma.bookPage.create({ data: { bookId: book.id, pageNumber: 1, version: 0 } }),
       ).rejects.toThrow();
     });
   });

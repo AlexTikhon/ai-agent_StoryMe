@@ -68,7 +68,7 @@ describe('GenerationRunCoordinator', () => {
   });
 
   describe('completeRun', () => {
-    it('on success: transitions GenerationRun to completed and Book to complete, atomically setting both publishedRunId and publishedRunFencingVersion, and returns "applied"', async () => {
+    it('on success: publishes the whole-book namespace, clears an independent PDF revision and page revisions, and returns "applied"', async () => {
       const outcome = makeOutcome();
 
       const result = await coordinator.completeRun(
@@ -89,8 +89,11 @@ describe('GenerationRunCoordinator', () => {
           activeRunId: null,
           publishedRunId: 'run-1',
           publishedRunFencingVersion: 3,
+          publishedPdfRunId: null,
+          publishedPdfFencingVersion: null,
         },
       });
+      expect(prisma.bookPage.deleteMany).toHaveBeenCalledWith({ where: { bookId: 'b-1' } });
     });
 
     it('on an expected content failure: transitions both to failed, never sets either published pointer field', async () => {
@@ -119,8 +122,11 @@ describe('GenerationRunCoordinator', () => {
       };
       expect(bookCall.data['publishedRunId']).toBeUndefined();
       expect(bookCall.data['publishedRunFencingVersion']).toBeUndefined();
+      expect(bookCall.data['publishedPdfRunId']).toBeUndefined();
+      expect(bookCall.data['publishedPdfFencingVersion']).toBeUndefined();
       expect(bookCall.data['status']).toBe('failed');
       expect(bookCall.data['failedStep']).toBe('image_gen');
+      expect(prisma.bookPage.deleteMany).not.toHaveBeenCalled();
     });
 
     it('persists outcome.agentLogs via tx.agentLog.createMany only after the GenerationRun fence and Book mirror check both hold', async () => {

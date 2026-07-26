@@ -107,6 +107,30 @@ describe('resolvePublishedNamespace', () => {
  * previewPdfUrl's value).
  */
 describe('resolvePublishedPdfNamespace', () => {
+  it('prefers the independent page-revision PDF pointer without moving the published image pointer', () => {
+    expect(
+      resolvePublishedPdfNamespace({
+        publishedRunId: RUN_A,
+        publishedRunFencingVersion: 3,
+        publishedPdfRunId: RUN_B,
+        publishedPdfFencingVersion: 1,
+        previewPdfUrl: '/files/books/b-1/runs/run-b/claims/1/storyme-preview-b-1.pdf',
+      }),
+    ).toEqual({ kind: 'claim', runId: RUN_B, fencingVersion: 1 });
+  });
+
+  it('rejects an incomplete independent PDF pointer', () => {
+    expect(() =>
+      resolvePublishedPdfNamespace({
+        publishedRunId: RUN_A,
+        publishedRunFencingVersion: 3,
+        publishedPdfRunId: RUN_B,
+        publishedPdfFencingVersion: null,
+        previewPdfUrl: '/candidate.pdf',
+      }),
+    ).toThrow(InvalidGenerationArtifactPointerError);
+  });
+
   it('resolves to the exact claim when both published pointer fields are set, regardless of previewPdfUrl', () => {
     expect(
       resolvePublishedPdfNamespace({

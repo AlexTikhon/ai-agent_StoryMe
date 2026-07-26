@@ -192,6 +192,12 @@ export class GenerationRunCoordinator {
      * alone.
      */
     refundOnApply?: boolean;
+    /**
+     * A successful whole-book generation replaces every page revision. Clear
+     * the optimistic page-version rows in the same transaction that publishes
+     * the new generation so a later page edit starts from version 1.
+     */
+    clearBookPageRevisionsOnApply?: boolean;
   }): Promise<CoordinatorOutcome> {
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -209,6 +215,10 @@ export class GenerationRunCoordinator {
           throw new BookMirrorMismatchError(
             `GenerationRun ${params.runId} (book ${params.bookId}) passed its fencing check, but Book.activeRunId no longer pointed at it — the run/Book mirror invariant is broken. Rolling back the entire transaction rather than leaving GenerationRun terminal while Book stays stuck.`,
           );
+        }
+
+        if (params.clearBookPageRevisionsOnApply) {
+          await tx.bookPage.deleteMany({ where: { bookId: params.bookId } });
         }
 
         if (params.agentLogs && params.agentLogs.length > 0) {
@@ -304,6 +314,8 @@ export class GenerationRunCoordinator {
       ...(outcome.status === BookStatus.complete && {
         publishedRunId: ctx.runId,
         publishedRunFencingVersion: ctx.fencingVersion,
+        publishedPdfRunId: null,
+        publishedPdfFencingVersion: null,
       }),
     };
 
@@ -332,6 +344,7 @@ export class GenerationRunCoordinator {
       bookData,
       agentLogs: outcome.agentLogs,
       refundOnApply: outcome.status !== BookStatus.complete,
+      clearBookPageRevisionsOnApply: outcome.status === BookStatus.complete,
     });
 
     if (result === 'stale_fence') {

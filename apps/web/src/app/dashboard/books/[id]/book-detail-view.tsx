@@ -75,6 +75,7 @@ interface BookDetailViewProps {
   cancelling: boolean;
   cancelError: string | null;
   cancelMessage: string | null;
+  onBookUpdated: (book: BookDto) => void;
 }
 
 export function BookDetailView({
@@ -101,6 +102,7 @@ export function BookDetailView({
   cancelling,
   cancelError,
   cancelMessage,
+  onBookUpdated,
 }: BookDetailViewProps) {
   const isDraft = book.status === BookStatus.Created;
   const missingFields = getMissingDraftFields(book);
@@ -344,7 +346,7 @@ export function BookDetailView({
       {showDeveloperDiagnostics && bookLayout && <BookLayoutSection layout={bookLayout} />}
 
       {book.status === BookStatus.Complete && book.previewPdfUrl && bookPreview && (
-        <PublishedBookReader bookId={book.id} preview={bookPreview} />
+        <PublishedBookReader bookId={book.id} preview={bookPreview} onBookUpdated={onBookUpdated} />
       )}
 
       <PdfSection book={book} />

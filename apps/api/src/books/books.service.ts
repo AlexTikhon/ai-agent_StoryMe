@@ -36,12 +36,14 @@ import {
 } from '../images/image-generation-provider';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
+import type { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
 import { BookCrudService } from './book-crud.service';
 import { BookAssetService } from './book-asset.service';
 import { BookDiagnosticsService } from './book-diagnostics.service';
 import { BookGenerationService } from './book-generation.service';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
 import type { PublishedImageResult } from './book-asset.service';
+import { BookPageChangeService } from './book-page-change.service';
 
 export {
   IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
@@ -65,6 +67,7 @@ export class BooksService {
   private readonly diagnosticsService: BookDiagnosticsService;
   private readonly generationService: BookGenerationService;
   private readonly generationExecutionService: BookGenerationExecutionService;
+  private readonly pageChangeService: BookPageChangeService;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -90,6 +93,7 @@ export class BooksService {
     @Optional() diagnosticsService?: BookDiagnosticsService,
     @Optional() generationService?: BookGenerationService,
     @Optional() generationExecutionService?: BookGenerationExecutionService,
+    @Optional() pageChangeService?: BookPageChangeService,
   ) {
     this.crudService = crudService ?? new BookCrudService(prisma);
     this.assetService =
@@ -132,6 +136,9 @@ export class BooksService {
         generationQueueService,
         generationRunCoordinator,
       );
+    this.pageChangeService =
+      pageChangeService ??
+      new BookPageChangeService(this.crudService, prisma, pdfStorage, imageAssetStorage);
   }
 
   /**
@@ -199,6 +206,15 @@ export class BooksService {
    */
   async update(id: string, userId: string, dto: UpdateBookDto): Promise<BookDto> {
     return this.crudService.update(id, userId, dto);
+  }
+
+  async updatePageText(
+    userId: string,
+    bookId: string,
+    pageNumber: number,
+    dto: UpdateBookPageTextDto,
+  ): Promise<BookDto> {
+    return this.pageChangeService.updatePageText(userId, bookId, pageNumber, dto);
   }
 
   /** See update()'s doc comment — same CAS reasoning applies to soft-delete. */

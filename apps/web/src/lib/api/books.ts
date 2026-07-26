@@ -7,6 +7,7 @@ import type {
   GenerationDiagnosticsDto,
   GenerationProgressDto,
   PublishedBookImageId,
+  UpdateBookPageTextInput,
   UpdateBookInput,
 } from '@book/types';
 import { apiFetch, apiFetchBlob, apiFetchForm } from './client';
@@ -37,6 +38,16 @@ export const booksApi = {
 
   update: (id: string, data: UpdateBookInput): Promise<BookDto> =>
     apiFetch(`/books/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  updatePageText: (
+    id: string,
+    pageNumber: number,
+    data: UpdateBookPageTextInput,
+  ): Promise<BookDto> =>
+    apiFetch(`/books/${id}/pages/${pageNumber}/text`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
 
   generate: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/generate`, { method: 'POST' }),

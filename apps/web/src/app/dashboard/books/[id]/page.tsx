@@ -335,6 +335,7 @@ export default function BookDetailPage() {
                   cancelling={cancelling}
                   cancelError={cancelError}
                   cancelMessage={cancelMessage}
+                  onBookUpdated={setBook}
                 />
               )}
             </div>

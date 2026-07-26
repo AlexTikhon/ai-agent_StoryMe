@@ -19,6 +19,7 @@ import { BooksController } from './books.controller';
 import type { BooksService } from './books.service';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
+import type { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
 
 const FAKE_USER = { id: 'u-1' } as User;
 const PDF_RESULT = {
@@ -38,6 +39,7 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     create: vi.fn(),
     findOneForUser: vi.fn(),
     update: vi.fn(),
+    updatePageText: vi.fn(),
     startGeneration: vi.fn(),
     retryGeneration: vi.fn(),
     cancelGeneration: vi.fn(),
@@ -134,6 +136,20 @@ describe('BooksController.update', () => {
     await expect(controller.update(FAKE_USER, 'b-1', { title: 'X' })).rejects.toThrow(
       ConflictException,
     );
+  });
+});
+
+describe('BooksController.updatePageText', () => {
+  it('delegates the authenticated owner, page number, and optimistic version', async () => {
+    const booksService = createMockBooksService();
+    booksService.updatePageText.mockResolvedValue(BOOK_DTO);
+    const controller = new BooksController(booksService);
+    const dto: UpdateBookPageTextDto = { text: 'Corrected text', expectedVersion: 2 };
+
+    const result = await controller.updatePageText(FAKE_USER, 'b-1', 3, dto);
+
+    expect(booksService.updatePageText).toHaveBeenCalledWith('u-1', 'b-1', 3, dto);
+    expect(result).toBe(BOOK_DTO);
   });
 });
 

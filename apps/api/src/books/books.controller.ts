@@ -37,6 +37,7 @@ import { UserRateLimitGuard } from '../rate-limit/user-rate-limit.guard';
 import { BooksService } from './books.service';
 import { CreateBookDto } from './dto/create-book.dto';
 import { UpdateBookDto } from './dto/update-book.dto';
+import { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
 import { isAllowedChildPhotoMimeType, MAX_CHILD_PHOTO_BYTES } from './child-photo.constants';
 
 @UseGuards(AuthModeGuard, UserRateLimitGuard)
@@ -61,6 +62,17 @@ export class BooksController {
   @Get(':id')
   findOne(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string): Promise<BookDto> {
     return this.booksService.findOneForUser(id, user.id);
+  }
+
+  @Patch(':id/pages/:pageNumber/text')
+  @UseGuards(RequireVerifiedEmailGuard)
+  updatePageText(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('pageNumber', ParseIntPipe) pageNumber: number,
+    @Body() dto: UpdateBookPageTextDto,
+  ): Promise<BookDto> {
+    return this.booksService.updatePageText(user.id, id, pageNumber, dto);
   }
 
   @Patch(':id')
