@@ -892,7 +892,11 @@ describe('BooksService', () => {
       const result = await service.startGeneration('u-1', 'b-1');
 
       expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1', status: STATUS_CREATED },
+        where: {
+          id: 'b-1',
+          status: STATUS_CREATED,
+          activePageImageRevisionId: null,
+        },
         data: { status: 'char_build', activeRunId: 'run-1', failedStep: null, errorMessage: null },
       });
       expect(result.book.status).toBe('char_build');
@@ -1164,7 +1168,11 @@ describe('BooksService', () => {
       const result = await service.retryGeneration('u-1', 'b-1');
 
       expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1', status: STATUS_FAILED },
+        where: {
+          id: 'b-1',
+          status: STATUS_FAILED,
+          activePageImageRevisionId: null,
+        },
         data: {
           status: 'char_build',
           activeRunId: 'run-1',
@@ -1456,7 +1464,11 @@ describe('BooksService', () => {
       const result = await service.regenerateBook('u-1', 'b-1');
 
       expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1', status: STATUS_COMPLETE },
+        where: {
+          id: 'b-1',
+          status: STATUS_COMPLETE,
+          activePageImageRevisionId: null,
+        },
         data: expect.objectContaining({ status: 'char_build', activeRunId: 'run-1' }),
       });
       expect(prisma.generationRun.create).toHaveBeenCalledWith({
@@ -1521,7 +1533,11 @@ describe('BooksService', () => {
       const result = await service.regenerateBook('u-1', 'b-1');
 
       expect(prisma.book.update).toHaveBeenCalledWith({
-        where: { id: 'b-1', status: 'cancelled' },
+        where: {
+          id: 'b-1',
+          status: 'cancelled',
+          activePageImageRevisionId: null,
+        },
         data: expect.objectContaining({ status: 'char_build', activeRunId: 'regen-run-1' }),
       });
       expect(creditsService.deductInTransaction).toHaveBeenCalledWith(prisma, {

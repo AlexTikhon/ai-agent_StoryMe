@@ -200,13 +200,16 @@ type BookProtectionFields = Pick<
   Book,
   | 'id'
   | 'activeRunId'
+  | 'activePageImageRevisionId'
   | 'publishedRunId'
   | 'publishedRunFencingVersion'
   | 'publishedPdfRunId'
   | 'publishedPdfFencingVersion'
   | 'lastGenerationRunId'
   | 'lastGenerationFencingVersion'
->;
+> & {
+  pageImageNamespaceKeys: ReadonlySet<string>;
+};
 
 @Injectable()
 export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -424,6 +427,7 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
         select: {
           id: true,
           activeRunId: true,
+          activePageImageRevisionId: true,
           publishedRunId: true,
           publishedRunFencingVersion: true,
           publishedPdfRunId: true,
@@ -432,7 +436,20 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
           lastGenerationFencingVersion: true,
         },
       });
-      booksById = new Map(books.map((b) => [b.id, b]));
+      const pageOverrides =
+        (await this.prisma.bookPage.findMany({
+          where: { bookId: { in: bookIds }, imageR2Key: { not: null } },
+          select: { bookId: true, imageR2Key: true },
+        })) ?? [];
+      booksById = new Map(
+        books.map((book) => [
+          book.id,
+          this.withPageImageProtection(
+            book,
+            pageOverrides.filter((page) => page.bookId === book.id),
+          ),
+        ]),
+      );
     } catch (err) {
       dbFailed = true;
       booksById = new Map();
@@ -499,11 +516,12 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       // pass's discovery and this specific delete.
       let freshBook: BookProtectionFields | null;
       try {
-        freshBook = await this.prisma.book.findUnique({
+        const freshBookRow = await this.prisma.book.findUnique({
           where: { id: group.bookId },
           select: {
             id: true,
             activeRunId: true,
+            activePageImageRevisionId: true,
             publishedRunId: true,
             publishedRunFencingVersion: true,
             publishedPdfRunId: true,
@@ -512,6 +530,15 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
             lastGenerationFencingVersion: true,
           },
         });
+        const freshPageOverrides = freshBookRow
+          ? ((await this.prisma.bookPage.findMany({
+              where: { bookId: group.bookId, imageR2Key: { not: null } },
+              select: { bookId: true, imageR2Key: true },
+            })) ?? [])
+          : [];
+        freshBook = freshBookRow
+          ? this.withPageImageProtection(freshBookRow, freshPageOverrides)
+          : null;
       } catch (err) {
         summary.skippedDbErrorNamespaces += 1;
         const message = err instanceof Error ? err.message : String(err);
@@ -604,6 +631,16 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       if (book.activeRunId === group.runId) {
         return 'protected_active_run';
       }
+      if (book.activePageImageRevisionId === group.runId) {
+        return 'protected_active_run';
+      }
+      if (
+        book.pageImageNamespaceKeys.has(
+          claimArtifactNamespaceGroupKey(group.bookId, group.runId, group.fencingVersion),
+        )
+      ) {
+        return 'protected_published';
+      }
     }
 
     if (this.isWithinRetention(group, now, retentionMs)) {
@@ -611,6 +648,22 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
     }
 
     return null;
+  }
+
+  private withPageImageProtection(
+    book: Omit<BookProtectionFields, 'pageImageNamespaceKeys'>,
+    pages: ReadonlyArray<{ bookId: string; imageR2Key: string | null }>,
+  ): BookProtectionFields {
+    const pageImageNamespaceKeys = new Set<string>();
+    for (const page of pages) {
+      if (!page.imageR2Key) continue;
+      const parsed = parseClaimArtifactStorageKey(page.imageR2Key);
+      if (!parsed) continue;
+      pageImageNamespaceKeys.add(
+        claimArtifactNamespaceGroupKey(parsed.bookId, parsed.runId, parsed.fencingVersion),
+      );
+    }
+    return { ...book, pageImageNamespaceKeys };
   }
 
   /** Fails closed: a namespace whose age can't be determined (no driver ever reported a lastModified for any of its objects) is treated as within retention, never as eligible. */

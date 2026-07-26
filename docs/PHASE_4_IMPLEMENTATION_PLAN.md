@@ -30,14 +30,31 @@ The route is `PATCH /api/books/:id/pages/:pageNumber/text` with:
 
 ## Slice 4B — page image revision
 
-Next:
+Implemented in `agent/one-page-image-changes`:
 
-- Produce a server-owned price quote for exactly one page image.
-- Require an explicit confirmation token before any paid provider call.
-- Charge/refund idempotently and fence concurrent image regeneration attempts.
-- Version only the selected image, reuse every unaffected artifact, and atomically publish the
+- The server produces a ten-minute quote for exactly one page image without charging a credit or
+  invoking the image provider.
+- Explicit confirmation atomically reserves the book, deducts one credit with a revision-scoped
+  idempotency key, and creates the durable outbox event.
+- The worker makes one logical paid image call, saves candidate artifacts in a fenced immutable
+  namespace, reuses every unaffected image, and atomically publishes the selected image plus the
   rebuilt layout/PDF.
-- Keep the previous publication readable on provider, storage, render, or publication failure.
+- Provider, storage, render, and stale-publication failures leave the previous publication
+  readable, clear the reservation, and refund the credit idempotently.
+- Whole-book generation, page text changes, and another page-image confirmation are rejected while
+  a page-image revision owns the book. Cleanup protects both active and published page-image
+  namespaces.
+
+The routes are:
+
+- `POST /api/books/:id/pages/:pageNumber/image-regeneration-quote`
+- `POST /api/books/:id/pages/:pageNumber/image-revisions/:revisionId/confirm`
+- `GET /api/books/:id/page-image-revisions/:revisionId`
+
+BullMQ is configured for one attempt for this paid job. The provider may still perform its own
+bounded transport retries. A hard process failure after the provider accepts a request cannot
+provide strict external exactly-once semantics unless the provider offers an idempotency key;
+database charging, refunding, fencing, and publication remain idempotent.
 
 Whole-book free-form editing, concurrent collaborative editors, unbounded revision history, and
 silent paid calls remain out of scope.

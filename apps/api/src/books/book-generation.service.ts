@@ -115,6 +115,9 @@ export class BookGenerationService {
     if (await this.generationRunService.findActiveForBook(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
     }
+    if (book.activePageImageRevisionId) {
+      throw new ConflictException('A page illustration is already being regenerated');
+    }
     await this.assertGenerationAllowed(userId);
 
     const updated = await this.createRunAndSchedule({
@@ -137,6 +140,9 @@ export class BookGenerationService {
     }
     if (await this.generationRunService.findActiveForBook(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
+    }
+    if (book.activePageImageRevisionId) {
+      throw new ConflictException('A page illustration is already being regenerated');
     }
     await this.assertGenerationAllowed(userId);
 
@@ -187,6 +193,9 @@ export class BookGenerationService {
     }
     if (await this.generationRunService.findActiveForBook(bookId)) {
       throw new ConflictException('Generation is already in progress for this book');
+    }
+    if (book.activePageImageRevisionId) {
+      throw new ConflictException('A page illustration is already being regenerated');
     }
     await this.assertGenerationAllowed(userId);
 
@@ -318,7 +327,11 @@ export class BookGenerationService {
           idempotencyKey: generationChargeIdempotencyKey(run.id),
         });
         const updatedBook = await tx.book.update({
-          where: { id: params.book.id, status: params.fromStatus },
+          where: {
+            id: params.book.id,
+            status: params.fromStatus,
+            activePageImageRevisionId: null,
+          },
           data: {
             status: GENERATION_STARTED_STATUS,
             activeRunId: run.id,

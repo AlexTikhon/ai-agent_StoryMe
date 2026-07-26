@@ -124,7 +124,7 @@ function createHarness(book = makeBook()) {
     bookPage: { findUnique: pageFindUnique, upsert: bookPageUpsert },
   };
   const prisma = {
-    bookPage: { findUnique: pageFindUnique },
+    bookPage: { findUnique: pageFindUnique, findMany: vi.fn().mockResolvedValue([]) },
     $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
   } as unknown as PrismaService;
   const pdfStorage = {

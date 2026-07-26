@@ -53,6 +53,7 @@ export interface AddCreditsInput {
 
 /** Cost, in credits, of every newly created GenerationRun — initial generation, retry, and regeneration each create one run and each cost exactly this much. See apps/api/docs/credits.md, "Phase E2". */
 export const GENERATION_CREDIT_COST = 1;
+export const PAGE_IMAGE_REGENERATION_CREDIT_COST = 1;
 
 /**
  * Deterministic idempotency keys for the two generation-owned credit
@@ -79,6 +80,14 @@ export function generationRefundIdempotencyKey(runId: string): string {
  */
 export function generationCancellationRefundIdempotencyKey(runId: string): string {
   return `generation:${runId}:cancel_refund`;
+}
+
+export function pageImageRevisionChargeIdempotencyKey(revisionId: string): string {
+  return `page-image-revision:${revisionId}:charge`;
+}
+
+export function pageImageRevisionRefundIdempotencyKey(revisionId: string): string {
+  return `page-image-revision:${revisionId}:refund`;
 }
 
 /** Input for a credit mutation made inside a caller's own Prisma transaction — see CreditsService.deductInTransaction/addInTransaction. Unlike the standalone deduct/add, idempotencyKey is required: internal generation-owned mutations always use a deterministic key, never an absent one. */

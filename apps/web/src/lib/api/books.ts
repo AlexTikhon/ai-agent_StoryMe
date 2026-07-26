@@ -2,10 +2,13 @@ import type {
   BookDto,
   BooksPageDto,
   CancelGenerationResponse,
+  CreatePageImageRegenerationQuoteInput,
   CreateBookInput,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
   GenerationProgressDto,
+  PageImageRegenerationQuote,
+  PageImageRevisionDto,
   PublishedBookImageId,
   UpdateBookPageTextInput,
   UpdateBookInput,
@@ -48,6 +51,28 @@ export const booksApi = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+
+  createPageImageQuote: (
+    id: string,
+    pageNumber: number,
+    data: CreatePageImageRegenerationQuoteInput,
+  ): Promise<PageImageRegenerationQuote> =>
+    apiFetch(`/books/${id}/pages/${pageNumber}/image-regeneration-quote`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  confirmPageImageRevision: (
+    id: string,
+    pageNumber: number,
+    revisionId: string,
+  ): Promise<PageImageRevisionDto> =>
+    apiFetch(`/books/${id}/pages/${pageNumber}/image-revisions/${revisionId}/confirm`, {
+      method: 'POST',
+    }),
+
+  getPageImageRevision: (id: string, revisionId: string): Promise<PageImageRevisionDto> =>
+    apiFetch(`/books/${id}/page-image-revisions/${revisionId}`),
 
   generate: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/generate`, { method: 'POST' }),

@@ -100,6 +100,7 @@ enum CreditReason {
   book_creation
   regen_page
   refund_generation_failure
+  refund_page_regeneration_failure
   // Phase G1: compensating credit for a user-initiated cancellation
   // (POST /books/:id/cancel) — deliberately distinct from
   // refund_generation_failure so a cancellation refund is never
@@ -167,6 +168,14 @@ enum GenerationRunStatus {
   cancelled
 }
 
+enum PageImageRevisionStatus {
+  quoted
+  queued
+  running
+  completed
+  failed
+}
+
 // ═══════════════════════════════════════════
 // USER & AUTH
 // ═══════════════════════════════════════════
@@ -222,6 +231,7 @@ model User {
   wizardDraft        WizardDraft?
   userBookStates     UserBookState[]
   notifications      Notification[]
+  pageImageRevisions PageImageRevision[]
 
   @@index([email])
   @@index([oauthProvider, oauthId])
@@ -394,8 +404,9 @@ model Book {
   // own bookId relation below — nothing here depends on FK-level cascade
   // behavior for correctness (see GenerationRun.retryOfRunId for the same
   // reasoning).
-  activeRunId    String? @map("active_run_id") @db.Uuid
-  publishedRunId String? @map("published_run_id") @db.Uuid
+  activeRunId               String? @map("active_run_id") @db.Uuid
+  publishedRunId            String? @map("published_run_id") @db.Uuid
+  activePageImageRevisionId String? @map("active_page_image_revision_id") @db.Uuid
 
   // Phase 2D — the GenerationRun.inputHash that produced the story/character/
   // image JSON currently stored on this row, if any. AgentService.
@@ -445,6 +456,7 @@ model Book {
   userBookStates     UserBookState[]
   agentLogs          AgentLog[]
   generationRuns     GenerationRun[]
+  pageImageRevisions PageImageRevision[]
 
   @@index([userId])
   @@index([status])
@@ -487,6 +499,46 @@ model BookPage {
   @@unique([bookId, pageNumber])
   @@index([bookId])
   @@map("book_pages")
+}
+
+// Durable quote/confirmation/run boundary for one paid page-image call.
+model PageImageRevision {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  bookId              String                  @map("book_id") @db.Uuid
+  userId              String                  @map("user_id") @db.Uuid
+  pageNumber          Int                     @map("page_number")
+  expectedPageVersion Int                     @map("expected_page_version")
+  status              PageImageRevisionStatus @default(quoted)
+  costCredits         Int                     @map("cost_credits")
+  provider            String
+  estimatedCostUsd    Decimal?                @map("estimated_cost_usd") @db.Decimal(10, 6)
+  quoteExpiresAt      DateTime                @map("quote_expires_at")
+
+  sourceBookUpdatedAt              DateTime @map("source_book_updated_at")
+  sourcePublishedRunId             String?  @map("source_published_run_id") @db.Uuid
+  sourcePublishedRunFencingVersion Int?     @map("source_published_run_fencing_version")
+  sourcePublishedPdfRunId          String?  @map("source_published_pdf_run_id") @db.Uuid
+  sourcePublishedPdfFencingVersion Int?     @map("source_published_pdf_fencing_version")
+
+  fencingVersion Int     @default(0) @map("fencing_version")
+  deliveryToken  String? @map("delivery_token")
+  errorCode      String? @map("error_code")
+  errorMessage   String? @map("error_message")
+
+  confirmedAt DateTime? @map("confirmed_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  failedAt    DateTime? @map("failed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+  @@map("page_image_revisions")
 }
 
 // ═══════════════════════════════════════════

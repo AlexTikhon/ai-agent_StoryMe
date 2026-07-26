@@ -11,7 +11,6 @@ import { MAX_BOOK_PAGE_COUNT, type BookDto, type PublishedBookImageId } from '@b
 import {
   childPhotoAssetKey,
   IMAGE_ASSET_STORAGE_TOKEN,
-  imageKeyForNamespace,
   type ImageAssetContentType,
   type ImageAssetStorage,
 } from '../images/image-asset-storage';
@@ -24,6 +23,7 @@ import {
 } from '../agent/generation-artifact-namespace';
 import { toBookDto } from './books.mapper';
 import { BookCrudService, EDITABLE_BOOK_STATUSES } from './book-crud.service';
+import { publishedImageKey } from './published-page-image-key';
 
 export interface PublishedImageResult {
   buffer: Buffer;
@@ -157,7 +157,22 @@ export class BookAssetService {
       throw new ConflictException('Images not ready â€” book generation is not complete');
     }
 
-    const key = imageKeyForNamespace(bookId, namespace, image.kind, image.pageNumber);
+    const pageOverride =
+      image.kind === 'page'
+        ? await this.prisma.bookPage.findUnique({
+            where: { bookId_pageNumber: { bookId, pageNumber: image.pageNumber! } },
+            select: { imageR2Key: true },
+          })
+        : null;
+    const key = publishedImageKey(
+      bookId,
+      namespace,
+      image.kind,
+      image.pageNumber,
+      pageOverride?.imageR2Key
+        ? new Map([[image.pageNumber!, pageOverride.imageR2Key]])
+        : new Map(),
+    );
     const buffer = await this.imageStorage.getImageAsset(key);
     if (!buffer) throw new NotFoundException('Published image not found in storage');
 

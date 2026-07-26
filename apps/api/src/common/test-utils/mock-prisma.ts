@@ -41,6 +41,7 @@ export function createMockPrisma(): DeepMockOf<PrismaService> {
     upload: mockModel(),
     book: mockModel(),
     bookPage: mockModel(),
+    pageImageRevision: mockModel(),
     characterCard: mockModel(),
     bookSeries: mockModel(),
     wizardDraft: mockModel(),

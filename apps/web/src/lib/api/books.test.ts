@@ -291,6 +291,54 @@ describe('booksApi', () => {
     });
   });
 
+  describe('page image regeneration', () => {
+    it('requests a server-owned quote with the expected page version', async () => {
+      const quote = {
+        id: 'revision-1',
+        bookId: 'book-1',
+        pageNumber: 2,
+        expectedVersion: 3,
+        costCredits: 1,
+        provider: 'openai',
+        expiresAt: '2026-07-26T12:10:00.000Z',
+        confirmationRequired: true as const,
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(quote));
+
+      await expect(
+        booksApi.createPageImageQuote('book-1', 2, { expectedVersion: 3 }),
+      ).resolves.toEqual(quote);
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/pages/2/image-regeneration-quote');
+      expect(init).toMatchObject({
+        method: 'POST',
+        body: JSON.stringify({ expectedVersion: 3 }),
+      });
+    });
+
+    it('confirms the exact quote and reads its durable status', async () => {
+      const queued = {
+        id: 'revision-1',
+        bookId: 'book-1',
+        pageNumber: 2,
+        status: 'queued' as const,
+        costCredits: 1,
+        provider: 'openai',
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(queued)).mockResolvedValueOnce(mockOk(queued));
+
+      await booksApi.confirmPageImageRevision('book-1', 2, 'revision-1');
+      await booksApi.getPageImageRevision('book-1', 'revision-1');
+
+      expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
+        'http://localhost:4000/api/books/book-1/pages/2/image-revisions/revision-1/confirm',
+      );
+      expect(vi.mocked(fetch).mock.calls[1]?.[0]).toBe(
+        'http://localhost:4000/api/books/book-1/page-image-revisions/revision-1',
+      );
+    });
+  });
+
   describe('getGenerationProgress()', () => {
     it('fetches the minimal owned progress contract', async () => {
       const progress: GenerationProgressDto = {

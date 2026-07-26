@@ -68,7 +68,7 @@ export function hashProviderPrompt(promptVersion: string, input: unknown): strin
     .digest('hex');
 }
 
-function readEstimatedCostUsd(
+export function readEstimatedCostUsd(
   operation: GenerationProviderOperation,
   provider: GenerationProviderName,
   env: NodeJS.ProcessEnv,

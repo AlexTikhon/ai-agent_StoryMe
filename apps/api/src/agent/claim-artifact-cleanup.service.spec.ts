@@ -220,6 +220,73 @@ describe('ClaimArtifactCleanupService.sweep', () => {
     expect(pdfStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
   });
 
+  it('protects a page-image revision namespace while that revision is active', async () => {
+    imageStorage.listClaimArtifacts.mockResolvedValue({
+      entries: [
+        entry(
+          'images/books/book-1/runs/11111111-1111-1111-1111-111111111111/claims/1/page-2.png',
+          OLD,
+        ),
+      ],
+      nextCursor: null,
+    });
+    prisma.book.findMany.mockResolvedValue([
+      {
+        id: 'book-1',
+        activeRunId: null,
+        activePageImageRevisionId: '11111111-1111-1111-1111-111111111111',
+        publishedRunId: 'run-1',
+        publishedRunFencingVersion: 1,
+        publishedPdfRunId: null,
+        publishedPdfFencingVersion: null,
+        lastGenerationRunId: null,
+        lastGenerationFencingVersion: null,
+      },
+    ]);
+
+    const summary = await service.sweep(now);
+
+    expect(summary.protectedActiveRun).toBe(1);
+    expect(imageStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('protects the exact page-image namespace referenced by BookPage.imageR2Key', async () => {
+    imageStorage.listClaimArtifacts.mockResolvedValue({
+      entries: [
+        entry(
+          'images/books/book-1/runs/22222222-2222-2222-2222-222222222222/claims/3/page-2.png',
+          OLD,
+        ),
+      ],
+      nextCursor: null,
+    });
+    prisma.book.findMany.mockResolvedValue([
+      {
+        id: 'book-1',
+        activeRunId: null,
+        activePageImageRevisionId: null,
+        publishedRunId: 'run-1',
+        publishedRunFencingVersion: 1,
+        publishedPdfRunId: null,
+        publishedPdfFencingVersion: null,
+        lastGenerationRunId: null,
+        lastGenerationFencingVersion: null,
+      },
+    ]);
+    prisma.bookPage.findMany.mockResolvedValue([
+      {
+        bookId: 'book-1',
+        imageR2Key:
+          'images/books/book-1/runs/22222222-2222-2222-2222-222222222222/claims/3/page-2.png',
+      },
+    ]);
+
+    const summary = await service.sweep(now);
+
+    expect(summary.protectedPublished).toBe(1);
+    expect(imageStorage.deleteClaimArtifacts).not.toHaveBeenCalled();
+  });
+
   it('protects the exact resumable (lastGeneration) namespace', async () => {
     imageStorage.listClaimArtifacts.mockResolvedValue({
       entries: [entry('images/books/book-1/runs/run-1/claims/1/cover.png', OLD)],

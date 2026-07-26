@@ -30,6 +30,7 @@ function createMockOutboxService(pending: OutboxEvent[] = []): jest.Mocked<Outbo
 function createMockQueueService(): jest.Mocked<GenerationQueueService> {
   return {
     enqueue: vi.fn().mockResolvedValue(undefined),
+    enqueuePageImageRevision: vi.fn().mockResolvedValue(undefined),
   } as unknown as jest.Mocked<GenerationQueueService>;
 }
 
@@ -53,6 +54,29 @@ describe('OutboxDispatcherService', () => {
       expect(queueService.enqueue).toHaveBeenCalledWith({ bookId: 'b-2', runId: 'run-2' });
       expect(outboxService.markDispatched).toHaveBeenCalledWith('event-1');
       expect(outboxService.markDispatched).toHaveBeenCalledWith('event-2');
+    });
+
+    it('dispatches a durable page-image revision without treating it as a whole-book run', async () => {
+      const outboxService = createMockOutboxService([
+        makeEvent({
+          aggregateType: 'page_image_revision',
+          aggregateId: 'revision-1',
+          eventType: 'page_image_revision_queued',
+          payload: { bookId: 'b-1', revisionId: 'revision-1' },
+        }),
+      ]);
+      const queueService = createMockQueueService();
+      const dispatcher = new OutboxDispatcherService(outboxService as never, queueService as never);
+
+      await dispatcher.sweep();
+
+      expect(queueService.enqueuePageImageRevision).toHaveBeenCalledWith({
+        kind: 'page_image_revision',
+        bookId: 'b-1',
+        revisionId: 'revision-1',
+      });
+      expect(queueService.enqueue).not.toHaveBeenCalled();
+      expect(outboxService.markDispatched).toHaveBeenCalledWith('event-1');
     });
 
     it('records an attempt failure (and does not mark dispatched) when the queue publish fails, without aborting the rest of the batch', async () => {
