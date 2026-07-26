@@ -64,9 +64,9 @@ and ownership comes from the authenticated user rather than client-supplied user
 
 The completed-book detail screen has an authenticated in-browser reader for the published cover,
 every generated story page, and the back cover. It lazily fetches one owned published image at a
-time without exposing storage keys. There is no library cover thumbnail yet. With developer
-diagnostics explicitly enabled, the book detail screen shows internal image asset keys and
-intermediate pipeline details.
+time without exposing storage keys. Library cards show the ownership-checked published cover when
+one exists and a neutral placeholder otherwise. With developer diagnostics explicitly enabled,
+the book detail screen shows internal image asset keys and intermediate pipeline details.
 
 ## Providers and storage
 
@@ -104,15 +104,14 @@ Implemented: JWT auth/recovery, ownership enforcement, safe child-photo processi
 and soft-delete, durable queued generation, fencing/heartbeat/recovery, cancellation,
 retry/resume, idempotent charges/refunds, one-time credit purchases, provider limits, local/S3/R2
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
-and extensive unit/integration tests.
+published cover thumbnails in the library, and extensive unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
-management, library cover thumbnails, single-page editing/regeneration, bounded LLM repair,
-hard-delete/data-erasure workflow, Playwright E2E, and role-based admin authorization for
-diagnostics. The reader is currently shown only for a book whose current status is `complete`;
-previous publications are not yet rendered while a regeneration is running, failed, or cancelled.
-The web diagnostics UI is environment-gated and defaults off; the owned diagnostics API contract
-remains available.
+management, single-page editing/regeneration, bounded LLM repair, hard-delete/data-erasure
+workflow, Playwright E2E, and role-based admin authorization for diagnostics. The reader is
+currently shown only for a book whose current status is `complete`; previous publications are not
+yet rendered while a regeneration is running, failed, or cancelled. The web diagnostics UI is
+environment-gated and defaults off; the owned diagnostics API contract remains available.
 
 Known limitations: `AgentService` remains larger than the individual stages it orchestrates;
 `BooksService` is now a compatibility facade over CRUD, asset, diagnostics, generation scheduling,

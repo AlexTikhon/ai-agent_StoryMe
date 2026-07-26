@@ -52,11 +52,21 @@ function mockError(status: number, message: string): Response {
   return { ok: false, status, json: async () => ({ message }) } as unknown as Response;
 }
 
+function mockImageBlob(content = 'cover-bytes'): Response {
+  return {
+    ok: true,
+    status: 200,
+    blob: async () => new Blob([content], { type: 'image/png' }),
+  } as unknown as Response;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('DashboardPage', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
+    global.URL.createObjectURL = vi.fn(() => 'blob:published-cover');
+    global.URL.revokeObjectURL = vi.fn();
   });
 
   afterEach(() => {
@@ -133,6 +143,37 @@ describe('DashboardPage', () => {
       expect(link.getAttribute('href')).toBe('/dashboard/books/book-1');
     });
     expect(screen.queryByRole('link', { name: /^edit$/i })).toBeNull();
+  });
+
+  it('loads the published cover for a book with a publication marker', async () => {
+    const publishedBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/published.pdf',
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(mockPage([publishedBook])))
+      .mockResolvedValueOnce(mockImageBlob());
+
+    render(<DashboardPage />);
+
+    expect(await screen.findByAltText("Cover of Emma's Story")).toHaveAttribute(
+      'src',
+      'blob:published-cover',
+    );
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
+      'http://localhost:4000/api/books/book-1/images/cover',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('does not request a cover for a book without a publication marker', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(mockPage([MOCK_BOOK])));
+
+    render(<DashboardPage />);
+
+    expect(await screen.findByRole('img', { name: 'No published cover' })).toBeDefined();
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
   it('disables the Delete button while a book is still generating', async () => {
