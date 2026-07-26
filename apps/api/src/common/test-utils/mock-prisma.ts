@@ -48,7 +48,6 @@ export function createMockPrisma(): DeepMockOf<PrismaService> {
     creditTransaction: mockModel(),
     subscription: mockModel(),
     agentLog: mockModel(),
-    generationJob: mockModel(),
     generationRun: mockModel(),
     outboxEvent: mockModel(),
     recoveryLease: mockModel(),

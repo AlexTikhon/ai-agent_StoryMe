@@ -12,6 +12,7 @@ import type {
   CancelGenerationResponse,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
+  GenerationProgressDto,
 } from '@book/types';
 import type { User } from '@prisma/client';
 import { BooksController } from './books.controller';
@@ -25,6 +26,11 @@ const PDF_RESULT = {
   contentType: 'application/pdf' as const,
   filename: 'storyme-preview-b-1.pdf',
 };
+const IMAGE_RESULT = {
+  buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  contentType: 'image/png' as const,
+  filename: 'cover.png',
+};
 
 function createMockBooksService(): jest.Mocked<BooksService> {
   return {
@@ -37,7 +43,9 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     cancelGeneration: vi.fn(),
     remove: vi.fn(),
     getPreviewPdfBuffer: vi.fn(),
+    getPublishedImage: vi.fn(),
     getGenerationDiagnostics: vi.fn(),
+    getGenerationProgress: vi.fn(),
     uploadChildPhoto: vi.fn(),
   } as unknown as jest.Mocked<BooksService>;
 }
@@ -368,6 +376,58 @@ describe('BooksController.getPreviewPdf', () => {
   });
 });
 
+describe('BooksController.getPublishedImage', () => {
+  it('delegates with ownership context and sets private, sniff-safe image headers', async () => {
+    const booksService = createMockBooksService();
+    booksService.getPublishedImage.mockResolvedValue(IMAGE_RESULT);
+    const controller = new BooksController(booksService);
+    const res = createMockResponse();
+
+    const result = await controller.getPublishedImage(FAKE_USER, 'b-1', 'cover', res);
+
+    expect(booksService.getPublishedImage).toHaveBeenCalledWith('b-1', 'u-1', 'cover');
+    expect(res.set).toHaveBeenCalledWith({
+      'Content-Type': 'image/png',
+      'Content-Disposition': 'inline; filename="cover.png"',
+      'Content-Length': String(IMAGE_RESULT.buffer.length),
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    expect(result.getStream().read()).toEqual(IMAGE_RESULT.buffer);
+  });
+
+  it('adds a sandbox content-security policy when serving SVG', async () => {
+    const booksService = createMockBooksService();
+    booksService.getPublishedImage.mockResolvedValue({
+      buffer: Buffer.from('<svg></svg>'),
+      contentType: 'image/svg+xml',
+      filename: 'cover.svg',
+    });
+    const controller = new BooksController(booksService);
+    const res = createMockResponse();
+
+    await controller.getPublishedImage(FAKE_USER, 'b-1', 'cover', res);
+
+    expect(res.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      }),
+    );
+  });
+
+  it('does not set response headers when ownership fails', async () => {
+    const booksService = createMockBooksService();
+    booksService.getPublishedImage.mockRejectedValue(new NotFoundException('Book not found'));
+    const controller = new BooksController(booksService);
+    const res = createMockResponse();
+
+    await expect(controller.getPublishedImage(FAKE_USER, 'b-1', 'cover', res)).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(res.set).not.toHaveBeenCalled();
+  });
+});
+
 describe('BooksController.getGenerationDiagnostics', () => {
   it('delegates to booksService.getGenerationDiagnostics with the current user', async () => {
     const booksService = createMockBooksService();
@@ -394,5 +454,22 @@ describe('BooksController.getGenerationDiagnostics', () => {
     await expect(controller.getGenerationDiagnostics(FAKE_USER, 'missing')).rejects.toThrow(
       NotFoundException,
     );
+  });
+});
+
+describe('BooksController.getGenerationProgress', () => {
+  it('delegates to the owned user-facing progress read', async () => {
+    const booksService = createMockBooksService();
+    const progress: GenerationProgressDto = {
+      status: 'running',
+      step: 'image_gen' as GenerationProgressDto['step'],
+    };
+    booksService.getGenerationProgress.mockResolvedValue(progress);
+    const controller = new BooksController(booksService);
+
+    const result = await controller.getGenerationProgress(FAKE_USER, 'b-1');
+
+    expect(booksService.getGenerationProgress).toHaveBeenCalledWith('b-1', 'u-1');
+    expect(result).toBe(progress);
   });
 });

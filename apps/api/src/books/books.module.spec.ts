@@ -28,6 +28,15 @@ describe('BooksModule.register', () => {
     );
   });
 
+  it('does not register the removed legacy GenerationJob mirror services', () => {
+    const providerNames = (BooksModule.register({ enableGenerationWorker: true }).providers ?? [])
+      .map((provider) => (typeof provider === 'function' ? provider.name : null))
+      .filter((name): name is string => name !== null);
+
+    expect(providerNames).not.toContain('GenerationJobService');
+    expect(providerNames).not.toContain('GenerationJobRecoveryService');
+  });
+
   it('omits GenerationQueueProcessor when enableGenerationWorker is false (API mode)', () => {
     const dynamicModule = BooksModule.register({ enableGenerationWorker: false });
 

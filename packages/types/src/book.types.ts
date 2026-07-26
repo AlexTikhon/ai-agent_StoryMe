@@ -367,7 +367,7 @@ export interface ImageGenerationResult {
    * Safe, explicit error when this run's character-sheet asset was recorded
    * as existing (CharacterProfile.hasCharacterSheet + a characterSheetAssetKey)
    * but its bytes could not be read back from storage — distinct from simply
-   * never having created a sheet. See AgentService.loadCharacterReference.
+   * never having created a sheet. See CharacterReferenceStage.loadReference.
    */
   characterReferenceLoadError?: string;
   /** Idempotent-resume diagnostics for this run (see ResumeDiagnostics). Undefined for books generated before this feature existed, or for a run that never reached the point of computing it. */
@@ -461,6 +461,22 @@ export interface BookDto {
   previewPdfUrl?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Public identifiers accepted by GET /api/books/:id/images/:imageId. */
+export type PublishedBookImageId = 'cover' | 'back-cover' | `page-${number}`;
+
+export type GenerationProgressStatus =
+  'idle' | 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';
+
+/**
+ * Minimal user-facing generation state backed by the authoritative
+ * GenerationRun row. Deliberately excludes logs, provider metadata, prompts,
+ * queue internals, and cost diagnostics.
+ */
+export interface GenerationProgressDto {
+  status: GenerationProgressStatus;
+  step: AgentStep | null;
 }
 
 export interface CreateBookInput {

@@ -5,6 +5,8 @@ import type {
   CreateBookInput,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
+  GenerationProgressDto,
+  PublishedBookImageId,
   UpdateBookInput,
 } from '@book/types';
 import { apiFetch, apiFetchBlob, apiFetchForm } from './client';
@@ -56,5 +58,11 @@ export const booksApi = {
   getGenerationDiagnostics: (id: string): Promise<GenerationDiagnosticsDto> =>
     apiFetch(`/books/${id}/generation-diagnostics`),
 
+  getGenerationProgress: (id: string): Promise<GenerationProgressDto> =>
+    apiFetch(`/books/${id}/generation-progress`),
+
   downloadPdf: (id: string): Promise<Blob> => apiFetchBlob(`/books/${id}/pdf/preview`),
+
+  downloadPublishedImage: (id: string, imageId: PublishedBookImageId): Promise<Blob> =>
+    apiFetchBlob(`/books/${id}/images/${imageId}`),
 };

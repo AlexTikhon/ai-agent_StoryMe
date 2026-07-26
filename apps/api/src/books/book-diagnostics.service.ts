@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { GenerationDiagnosticsDto } from '@book/types';
+import type { GenerationDiagnosticsDto, GenerationProgressDto } from '@book/types';
+import type { GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationRunService } from '../agent/generation-run.service';
@@ -55,4 +56,18 @@ export class BookDiagnosticsService {
       queue,
     );
   }
+
+  async getGenerationProgress(bookId: string, userId: string): Promise<GenerationProgressDto> {
+    await this.crud.findOwnedOrThrow(bookId, userId);
+    return toGenerationProgress(await this.generationRunService.findLatestForBook(bookId));
+  }
+}
+
+function toGenerationProgress(run: GenerationRun | null): GenerationProgressDto {
+  if (!run) return { status: 'idle', step: null };
+
+  return {
+    status: run.status === 'completed' ? 'complete' : run.status,
+    step: run.currentStep as GenerationProgressDto['step'],
+  };
 }

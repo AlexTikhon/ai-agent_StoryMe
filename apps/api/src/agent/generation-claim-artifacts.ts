@@ -83,7 +83,7 @@ async function resolveArtifact(
  * namespace, copying it forward from `sourceNamespace` when needed.
  * `sourceNamespace` must be `null` whenever copy-forward must not be
  * attempted at all (e.g. the run's input changed since the source JSON was
- * produced — see AgentService's `resumable` gate) — passing the resolved
+ * produced — see GenerationResumeService's `resumable` gate) — passing the resolved
  * Book pointer unconditionally would let a regenerate-after-edit silently
  * reuse illustrations planned for the *old* story.
  */

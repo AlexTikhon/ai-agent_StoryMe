@@ -17,6 +17,7 @@ import { booksApi, bookPdfPreviewUrl } from '@/lib/api/books';
 import { safePdfFilename } from '@/lib/pdf-filename';
 import { GenerationDiagnosticsPanel } from './generation-diagnostics-panel';
 import { isGeneratingBookStatus } from './use-book-detail';
+import { PublishedBookReader } from './published-book-reader';
 
 function generationStatusMessage(status: BookStatus): string {
   switch (status) {
@@ -71,6 +72,7 @@ interface BookDetailViewProps {
   refreshing: boolean;
   diagnostics: GenerationDiagnosticsDto | null;
   diagnosticsError: string | null;
+  showDeveloperDiagnostics: boolean;
   onRegenerate: () => void;
   retrying: boolean;
   retryError: string | null;
@@ -95,6 +97,7 @@ export function BookDetailView({
   refreshing,
   diagnostics,
   diagnosticsError,
+  showDeveloperDiagnostics,
   onRegenerate,
   retrying,
   retryError,
@@ -193,7 +196,7 @@ export function BookDetailView({
         </div>
       </dl>
 
-      {!isDraft && (
+      {!isDraft && showDeveloperDiagnostics && (
         <GenerationDiagnosticsPanel diagnostics={diagnostics} diagnosticsError={diagnosticsError} />
       )}
 
@@ -241,7 +244,7 @@ export function BookDetailView({
         </div>
       )}
 
-      {storyPlan && (
+      {showDeveloperDiagnostics && storyPlan && (
         <div className="mb-6 rounded-xl border border-violet-100 bg-violet-50 p-4">
           <h2 className="mb-1 font-display text-base font-semibold text-violet-800">
             Story plan is ready
@@ -259,7 +262,7 @@ export function BookDetailView({
         </div>
       )}
 
-      {pages && (
+      {showDeveloperDiagnostics && pages && (
         <div className="mb-6 rounded-xl border border-indigo-100 bg-indigo-50 p-4">
           <h2 className="mb-3 font-display text-base font-semibold text-indigo-800">
             Page plan is ready
@@ -291,7 +294,7 @@ export function BookDetailView({
         </div>
       )}
 
-      {draftPages && draftPages.length > 0 && (
+      {showDeveloperDiagnostics && draftPages && draftPages.length > 0 && (
         <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
           <h2 className="mb-3 font-display text-base font-semibold text-emerald-800">
             Story draft is ready
@@ -315,7 +318,7 @@ export function BookDetailView({
         </div>
       )}
 
-      {illustrationPages && illustrationPages.length > 0 && (
+      {showDeveloperDiagnostics && illustrationPages && illustrationPages.length > 0 && (
         <div className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4">
           <h2 className="mb-3 font-display text-base font-semibold text-amber-800">
             Illustration plan is ready
@@ -340,9 +343,15 @@ export function BookDetailView({
 
       {bookPreview && <BookPreviewSection preview={bookPreview} />}
 
-      {imageGenerationResult && <ImageGenerationSection result={imageGenerationResult} />}
+      {showDeveloperDiagnostics && imageGenerationResult && (
+        <ImageGenerationSection result={imageGenerationResult} />
+      )}
 
-      {bookLayout && <BookLayoutSection layout={bookLayout} />}
+      {showDeveloperDiagnostics && bookLayout && <BookLayoutSection layout={bookLayout} />}
+
+      {book.status === BookStatus.Complete && book.previewPdfUrl && bookPreview && (
+        <PublishedBookReader bookId={book.id} preview={bookPreview} />
+      )}
 
       <PdfSection book={book} />
 

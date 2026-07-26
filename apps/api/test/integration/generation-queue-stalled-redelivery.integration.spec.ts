@@ -95,6 +95,7 @@ describe('BullMQ stalled-job redelivery — delivery-token fencing (real Redis +
     let workerAFencingVersion: number | undefined;
     let workerAAttemptsMadeAtClaim: number | undefined;
     let workerAHeartbeatResult: boolean | undefined;
+    const workerAClaimed = createDeferred<void>();
 
     let workerBToken: string | undefined;
     let workerBFencingVersion: number | undefined;
@@ -108,6 +109,7 @@ describe('BullMQ stalled-job redelivery — delivery-token fencing (real Redis +
         workerAToken = token;
         workerAFencingVersion = claimed?.fencingVersion;
         workerAAttemptsMadeAtClaim = job.attemptsMade;
+        workerAClaimed.resolve();
 
         // Simulate a genuine stall: never renew the lock, and stay "busy"
         // well past both lockDuration and stalledInterval below, so
@@ -130,6 +132,11 @@ describe('BullMQ stalled-job redelivery — delivery-token fencing (real Redis +
     // just keeps it from becoming an unhandled 'error' event.
     workerA.on('error', () => undefined);
 
+    await workerA.waitUntilReady();
+    // Worker B must not compete for the initial delivery. Start it only
+    // after worker A has claimed the run and begun the deliberate stall.
+    await workerAClaimed.promise;
+
     workerB = new Worker(
       queueName,
       async (job: Job, token?: string) => {
@@ -142,7 +149,6 @@ describe('BullMQ stalled-job redelivery — delivery-token fencing (real Redis +
       { connection, lockDuration: 300, stalledInterval: 200 },
     );
 
-    await workerA.waitUntilReady();
     await workerB.waitUntilReady();
 
     // Wait for worker B to receive the stalled redelivery.

@@ -1,8 +1,9 @@
 # StoryMe Codebase Audit
 
-Audit date: 2026-07-23. Findings come from controllers, Next.js route files, Prisma schema and
-runtime delegate use, service/module wiring, providers, storage, tests, and package/deployment
-configuration. Historical design documents were used only to find inconsistencies.
+Audit date: 2026-07-23; updated against the Phase 2 implementation on 2026-07-25. Findings come
+from controllers, Next.js route files, Prisma schema and runtime delegate use, service/module
+wiring, providers, storage, tests, and package/deployment configuration. Historical design
+documents were used only to find inconsistencies.
 
 ## Summary and implemented product
 
@@ -16,28 +17,29 @@ without metadata, versioned, hashed, and stored through local/S3/R2 drivers. Sto
 character-profile, and image generation have deterministic mocks and OpenAI implementations;
 layout/PDF publication is deterministic.
 
-The main risks are maintainability concentrated in three large units, compatibility/schema
-surface implying nonexistent product features, no complete privacy-erasure workflow, diagnostics
-shown to every authenticated owner, and documents mixing current and superseded phases.
+The main risks are remaining large orchestration/UI units, compatibility/schema surface implying
+nonexistent product features, no complete privacy-erasure workflow, diagnostics shown to every
+authenticated owner, and documents mixing current and superseded phases.
 
 ## Actual routes
 
 All API routes have `/api` prefix.
 
-| Area    | Routes                                                                                                                                                                                                                                                                                                               |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Health  | `GET /health`                                                                                                                                                                                                                                                                                                        |
-| Auth    | `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/verify-email`, `POST /auth/resend-verification`, `POST /auth/request-password-reset`, `POST /auth/reset-password`                                                                                  |
-| Books   | `GET /books`, `POST /books`, `GET /books/:id`, `PATCH /books/:id`, `DELETE /books/:id`, `POST /books/:id/child-photo`, `GET /books/:id/pdf/preview`, `POST /books/:id/generate`, `POST /books/:id/retry-generation`, `POST /books/:id/regenerate`, `POST /books/:id/cancel`, `GET /books/:id/generation-diagnostics` |
-| Credits | `GET /credits/balance`, `GET /credits/transactions`                                                                                                                                                                                                                                                                  |
-| Billing | `GET /billing/packages`, `POST /billing/checkout`, `GET /billing/checkout/:sessionId/status`, `POST /billing/webhook`                                                                                                                                                                                                |
+| Area    | Routes                                                                                                                                                                                                                                                                                                                                                 |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Health  | `GET /health`                                                                                                                                                                                                                                                                                                                                          |
+| Auth    | `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/verify-email`, `POST /auth/resend-verification`, `POST /auth/request-password-reset`, `POST /auth/reset-password`                                                                                                                    |
+| Books   | `GET /books`, `POST /books`, `GET /books/:id`, `PATCH /books/:id`, `DELETE /books/:id`, `POST /books/:id/child-photo`, `GET /books/:id/pdf/preview`, `GET /books/:id/images/:imageId`, `POST /books/:id/generate`, `POST /books/:id/retry-generation`, `POST /books/:id/regenerate`, `POST /books/:id/cancel`, `GET /books/:id/generation-diagnostics` |
+| Credits | `GET /credits/balance`, `GET /credits/transactions`                                                                                                                                                                                                                                                                                                    |
+| Billing | `GET /billing/packages`, `POST /billing/checkout`, `GET /billing/checkout/:sessionId/status`, `POST /billing/webhook`                                                                                                                                                                                                                                  |
 
 Health and the signature-checked Stripe webhook are public. Feature ownership derives from the
 authenticated user. Frontend routes are `/`, `/register`, `/login`, `/verify-email`,
 `/forgot-password`, `/reset-password`, `/dashboard`, `/dashboard/books/new`,
-`/dashboard/books/[id]`, `/dashboard/credits`, `/billing/success`, and `/billing/cancel`. There is
-no reader, public share, settings/profile, child-profile, admin, subscription, or page-editor
-route.
+`/dashboard/books/[id]`, `/dashboard/credits`, `/billing/success`, and `/billing/cancel`. The book
+detail route includes an authenticated published-image reader for completed books, and the
+dashboard shows ownership-checked published cover thumbnails. There is no separate reader route,
+public share, settings/profile, child-profile, admin, subscription, or page-editor route.
 
 ## Pipeline and state
 
@@ -72,37 +74,42 @@ Book cancelled, and refunds once. `partial` and many fine-grained Book statuses 
 - **Artifacts:** bytes are authoritative only through Book namespace pointers. Run ID without
   fencing version is insufficient. Legacy positional keys remain for old rows.
   `previewPdfUrl` is a marker/key, not authorization.
-- **GenerationJob:** best-effort legacy mirror still written/recovered pending removal. Several
-  update failures are swallowed; diagnostics now use `GenerationRun`, and this mirror cannot
-  drive correctness.
+- **GenerationJob:** runtime mirror reads/writes, mirror-only recovery, Prisma model, table, and
+  database enums have been removed. Diagnostics and lifecycle ownership use `GenerationRun`;
+  legacy API field/type names remain compatibility vocabulary only.
 - **Credits:** `User.credits` is current balance; `CreditTransaction` is audit/idempotency ledger.
 
-## Large units to split
+## Large units and completed splits
 
-- `agent.service.ts` (~1,268 lines): references, character/story/image orchestration, layout/PDF,
-  telemetry, resume diagnostics, and logs.
-- `books.service.ts`: now a compatibility facade for extracted CRUD, assets, diagnostics,
-  generation scheduling, and worker execution/cancellation services. The generation services
-  still maintain the best-effort legacy mirror pending its reviewed removal.
-- `book-detail-view.tsx` (~1,038): product controls, polling, diagnostics, asset keys, PDF, errors.
-- Later candidates: `story-generation-provider.ts` (~773) and
-  `claim-artifact-cleanup.service.ts` (~617).
+- `agent.service.ts` (~564 lines): delegates character/reference, story, image, resume/reuse,
+  layout/PDF, telemetry, and result collection, but remains the main deterministic pipeline
+  orchestrator.
+- `books.service.ts` (~350 lines): compatibility facade over extracted CRUD, assets, diagnostics,
+  generation scheduling, and worker execution/cancellation services. Its constructor remains
+  broad to preserve the public facade and direct unit-test construction.
+- `book-detail-view.tsx` (~969 lines): product controls, intermediate story/layout detail, internal
+  asset keys, PDF, and errors. Polling lives in `use-book-detail.ts`, and runtime diagnostics have
+  already moved to `generation-diagnostics-panel.tsx`.
+- Later candidates: `story-generation-provider.ts` (~824 lines) and
+  `claim-artifact-cleanup.service.ts` (~673 lines).
 
 Large test files reflect those units; split coverage with implementation boundaries.
 
 ## Legacy, unused schema, and inconsistencies
 
-`GenerationJob` writes and its service/recovery are a runtime legacy mirror; diagnostics no longer
-read it. Positional image/PDF keys support pre-namespace rows. `partial` is reserved/unreachable;
+`GenerationJob` runtime service/recovery, mirror writes, and schema have been removed; diagnostics
+use `GenerationRun`. Positional image/PDF keys support pre-namespace rows. `partial` is
+reserved/unreachable;
 several step/status values describe an older granular state machine. `AUTH_MODE=dev` is local-only.
 OAuth, alternate-provider, subscription, sharing, notification, profile, and plan fields are
 placeholders.
 
 No production Prisma delegate use was found for `ChildProfile`, `Upload`, `BookPage`,
 `CharacterCard`, `BookSeries`, `WizardDraft`, `ShareLink`, `Subscription`, `UserBookState`, or
-`Notification`. They remain in relations/migrations and require a data decision before removal.
-`GenerationJob` is used, but only as the mirror. Active models include `User`, `RefreshToken`,
-`Book`, `CreditTransaction`, `AgentLog`, `GenerationRun`, `OutboxEvent`, and `RecoveryLease`.
+`Notification`. They remain in relations/migrations and require a data decision before removal;
+the Phase 2 retain/remove-later decisions are recorded in `PRISMA_MODEL_DECISIONS.md`. Active
+models include `User`, `RefreshToken`, `Book`, `CreditTransaction`, `AgentLog`,
+`GenerationRun`, `OutboxEvent`, and `RecoveryLease`.
 
 Documentation inconsistencies:
 
@@ -139,9 +146,11 @@ artifacts.
 
 ### P1
 
-- Split the three large units without changing fencing, transactions, retry/cancel, credits, or
-  publication.
-- Migrate off `GenerationJob`; decide every unused Prisma model.
+- Continue reducing the remaining orchestrator/UI units without changing fencing, transactions,
+  retry/cancel, credits, or publication. The book-service split, typed generation stages, and
+  diagnostics-panel extraction are complete.
+- Keep the completed `GenerationJob` removal migration in the release path and validate it before
+  deployment; retain the recorded decision for every other unused Prisma model.
 - Gate diagnostics/internal asset details for broader production.
 
 ### P2
@@ -156,5 +165,5 @@ artifacts.
   most one optional validated repair.
 
 Additional risks: console email makes real-user verification/recovery unusable; local storage is
-not shared across deployed API/worker processes; no browser E2E proves full journeys; large units
-and the legacy mirror increase regression surface.
+not shared across deployed API/worker processes; no browser E2E proves full journeys; remaining
+large units increase regression surface.

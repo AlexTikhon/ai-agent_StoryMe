@@ -121,8 +121,8 @@ network-free stand-in for a real image-generation provider:
   by hand (an uncompressed-per-pixel raster plus one deflate call), and
   PDFKit's `doc.image()` embeds it directly.
 
-`AgentService.startBookGeneration` calls a private
-`generateAndSaveImageAssets` helper right after building
+`AgentService.startBookGeneration` calls
+`ImageGenerationStage.execute` right after building
 `imageGenerationResult` and before building `bookLayout`: for every
 `GeneratedImageEntry`, it calls the injected `ImageGenerationProvider`
 (`apps/api/src/images/image-generation-provider.ts` — see
@@ -195,7 +195,7 @@ Out of scope for this boundary, deliberately:
 
 ### Real-image phase
 
-`AgentService` gets image bytes from the injected `ImageGenerationProvider`
+`ImageGenerationStage` gets image bytes from the injected `ImageGenerationProvider`
 (`apps/api/src/images/image-generation-provider.ts`) and saves them via
 `ImageAssetStorage.saveImageAsset`, keyed by `imageAssetKey`. The default
 `MockImageGenerationProvider` wraps `generateMockImagePng`; a real

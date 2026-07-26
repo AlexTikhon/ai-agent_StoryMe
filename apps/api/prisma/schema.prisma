@@ -145,25 +145,8 @@ enum NotificationChannel {
   push
 }
 
-// Phase 3I: generation job tracking — see GenerationJob model below
-enum GenerationJobType {
-  generate
-  retry
-}
-
-enum GenerationJobStatus {
-  queued
-  running
-  completed
-  failed
-  cancelled
-}
-
-// Phase 2A (production-safety hardening): the GenerationRun aggregate
-// replaces GenerationJob as the source of truth for dispatch/fencing —
-// GenerationJob stays in the schema (unused by new code) until a separate
-// cleanup migration removes it. See docs/local-generation-pipeline.md
-// "Generation runs" once Phase 2B wires this in.
+// Phase 2A (production-safety hardening): the authoritative generation
+// attempt aggregate used for dispatch, fencing, recovery, and diagnostics.
 enum GenerationRunKind {
   initial
   retry
@@ -189,23 +172,23 @@ enum GenerationRunStatus {
 // ═══════════════════════════════════════════
 
 model User {
-  id            String    @id @default(uuid()) @db.Uuid
-  email         String    @unique
-  passwordHash  String?   @map("password_hash")
-  name          String?
-  locale        String    @default("en")
-  timezone      String    @default("UTC")
-  avatarUrl     String?   @map("avatar_url")
+  id           String  @id @default(uuid()) @db.Uuid
+  email        String  @unique
+  passwordHash String? @map("password_hash")
+  name         String?
+  locale       String  @default("en")
+  timezone     String  @default("UTC")
+  avatarUrl    String? @map("avatar_url")
 
-  oauthProvider String?   @map("oauth_provider")
-  oauthId       String?   @map("oauth_id")
+  oauthProvider String? @map("oauth_provider")
+  oauthId       String? @map("oauth_id")
 
   plan             UserPlan  @default(free)
   credits          Int       @default(3)
   creditsUpdatedAt DateTime? @map("credits_updated_at")
 
-  role          UserRole  @default(user)
-  emailVerified Boolean   @default(false) @map("email_verified")
+  role                       UserRole  @default(user)
+  emailVerified              Boolean   @default(false) @map("email_verified")
   emailVerifiedAt            DateTime? @map("email_verified_at")
   // Only a hash of the verification token is ever stored — see AuthService.
   // Unique so a hash collision can never verify the wrong account; null for
@@ -218,15 +201,15 @@ model User {
   passwordResetTokenHash     String?   @unique @map("password_reset_token_hash")
   passwordResetExpiresAt     DateTime? @map("password_reset_expires_at")
   passwordResetRequestedAt   DateTime? @map("password_reset_requested_at")
-  deactivatedAt DateTime? @map("deactivated_at")
+  deactivatedAt              DateTime? @map("deactivated_at")
 
-  notifyEmailOnCompletion Boolean @default(true)  @map("notify_email_on_completion")
+  notifyEmailOnCompletion Boolean @default(true) @map("notify_email_on_completion")
   notifyEmailMarketing    Boolean @default(false) @map("notify_email_marketing")
-  notifyPushOnCompletion  Boolean @default(true)  @map("notify_push_on_completion")
-  notifyBirthdayReminders Boolean @default(true)  @map("notify_birthday_reminders")
+  notifyPushOnCompletion  Boolean @default(true) @map("notify_push_on_completion")
+  notifyBirthdayReminders Boolean @default(true) @map("notify_birthday_reminders")
 
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   refreshTokens      RefreshToken[]
   childProfiles      ChildProfile[]
@@ -256,7 +239,7 @@ model RefreshToken {
   userAgent String?   @map("user_agent")
   createdAt DateTime  @default(now()) @map("created_at")
 
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([family])
@@ -278,12 +261,12 @@ model ChildProfile {
   photoAssetId String?   @map("photo_asset_id") @db.Uuid
   birthday     DateTime? @db.Date
 
-  deletedAt    DateTime? @map("deleted_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
 
-  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  photo          Upload?       @relation(fields: [photoAssetId], references: [id], onDelete: SetNull)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photo          Upload?         @relation(fields: [photoAssetId], references: [id], onDelete: SetNull)
   books          Book[]
   characterCards CharacterCard[]
 
@@ -312,8 +295,8 @@ model Upload {
   createdAt        DateTime     @default(now()) @map("created_at")
   updatedAt        DateTime     @updatedAt @map("updated_at")
 
-  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  childProfiles    ChildProfile[]
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  childProfiles ChildProfile[]
 
   @@index([userId])
   @@map("uploads")
@@ -324,35 +307,35 @@ model Upload {
 // ═══════════════════════════════════════════
 
 model Book {
-  id               String      @id @default(uuid()) @db.Uuid
-  userId           String      @map("user_id") @db.Uuid
-  childProfileId   String?     @map("child_profile_id") @db.Uuid
+  id             String  @id @default(uuid()) @db.Uuid
+  userId         String  @map("user_id") @db.Uuid
+  childProfileId String? @map("child_profile_id") @db.Uuid
 
   // BookStatus.created doubles as the Phase 1A "draft" state — editable/deletable
   // until the generation pipeline (Phase 1B+) advances it to a later status.
-  status           BookStatus  @default(created)
+  status         BookStatus @default(created)
   // Optional in Phase 1A: the simple draft-creation form doesn't populate the
   // full wizard payload yet. Required once the Phase 1B+ wizard lands.
-  request          Json?
-  title            String?
-  dedicationText   String?     @map("dedication_text")
-  pageCount        Int?        @map("page_count")
+  request        Json?
+  title          String?
+  dedicationText String?    @map("dedication_text")
+  pageCount      Int?       @map("page_count")
 
   // Phase 1A draft fields — minimal book-creation form, set directly on Book
   // ahead of the full ChildProfile-driven wizard.
-  childName        String?     @map("child_name")
-  childAge         Int?        @map("child_age")
-  language         BookLanguage?
-  theme            String?
+  childName          String?       @map("child_name")
+  childAge           Int?          @map("child_age")
+  language           BookLanguage?
+  theme              String?
   // Phase 4A: user-supplied desired educational message/lesson, distinct from
   // the generated storyPlan.educationalMessage produced by the pipeline.
-  educationalMessage String?   @map("educational_message")
+  educationalMessage String?       @map("educational_message")
 
-  characterCard         Json?       @map("character_card")
-  storyPlan             Json?       @map("story_plan")
-  bookPreview           Json?       @map("book_preview")
-  imageGenerationResult Json?       @map("image_generation_result")
-  bookLayout            Json?       @map("book_layout")
+  characterCard         Json? @map("character_card")
+  storyPlan             Json? @map("story_plan")
+  bookPreview           Json? @map("book_preview")
+  imageGenerationResult Json? @map("image_generation_result")
+  bookLayout            Json? @map("book_layout")
 
   // Personalized character generation: optional uploaded reference photo,
   // the stylized CharacterProfile built from it (never a realistic
@@ -366,40 +349,40 @@ model Book {
   // re-upload (see GenerationInputSnapshot.childPhoto). sha256/sizeBytes are
   // recorded alongside so a run's input snapshot can carry a full immutable
   // identity for the photo, not just a mutable key.
-  childPhotoAssetKey       String?  @map("child_photo_asset_key")
-  childPhotoContentType    String?  @map("child_photo_content_type")
-  childPhotoSha256         String?  @map("child_photo_sha256")
-  childPhotoSizeBytes      Int?     @map("child_photo_size_bytes")
-  characterProfile         Json?    @map("character_profile")
-  characterSheetAssetKey   String?  @map("character_sheet_asset_key")
-  chapters              Json?
-  imagePrompts     Json?       @map("image_prompts")
-  qualityReport    Json?       @map("quality_report")
-  pageLayouts      Json?       @map("page_layouts")
+  childPhotoAssetKey     String? @map("child_photo_asset_key")
+  childPhotoContentType  String? @map("child_photo_content_type")
+  childPhotoSha256       String? @map("child_photo_sha256")
+  childPhotoSizeBytes    Int?    @map("child_photo_size_bytes")
+  characterProfile       Json?   @map("character_profile")
+  characterSheetAssetKey String? @map("character_sheet_asset_key")
+  chapters               Json?
+  imagePrompts           Json?   @map("image_prompts")
+  qualityReport          Json?   @map("quality_report")
+  pageLayouts            Json?   @map("page_layouts")
 
-  coverUrl         String?     @map("cover_url")
-  pdfR2Key         String?     @map("pdf_r2_key")
-  pdfUrl           String?     @map("pdf_url")
-  printPdfR2Key    String?     @map("print_pdf_r2_key")
-  printPdfUrl      String?     @map("print_pdf_url")
-  previewPdfR2Key  String?     @map("preview_pdf_r2_key")
-  previewPdfUrl    String?     @map("preview_pdf_url")
-  socialCardUrl    String?     @map("social_card_url")
+  coverUrl        String? @map("cover_url")
+  pdfR2Key        String? @map("pdf_r2_key")
+  pdfUrl          String? @map("pdf_url")
+  printPdfR2Key   String? @map("print_pdf_r2_key")
+  printPdfUrl     String? @map("print_pdf_url")
+  previewPdfR2Key String? @map("preview_pdf_r2_key")
+  previewPdfUrl   String? @map("preview_pdf_url")
+  socialCardUrl   String? @map("social_card_url")
 
-  isPaid           Boolean     @default(false) @map("is_paid")
-  paidAt           DateTime?   @map("paid_at")
-  stripePaymentIntentId String? @map("stripe_payment_intent_id")
+  isPaid                Boolean   @default(false) @map("is_paid")
+  paidAt                DateTime? @map("paid_at")
+  stripePaymentIntentId String?   @map("stripe_payment_intent_id")
 
-  isPublic         Boolean     @default(false) @map("is_public")
+  isPublic Boolean @default(false) @map("is_public")
 
-  generationTimeMs  Int?       @map("generation_time_ms")
-  totalCostUsd      Decimal?   @map("total_cost_usd") @db.Decimal(10, 6)
-  aiModelVersions   Json?      @map("ai_model_versions")
-  generatedDegraded Boolean    @default(false) @map("generated_degraded")
+  generationTimeMs  Int?     @map("generation_time_ms")
+  totalCostUsd      Decimal? @map("total_cost_usd") @db.Decimal(10, 6)
+  aiModelVersions   Json?    @map("ai_model_versions")
+  generatedDegraded Boolean  @default(false) @map("generated_degraded")
 
-  errorMessage     String?     @map("error_message")
-  retryCount       Int         @default(0) @map("retry_count")
-  failedStep       AgentStep?  @map("failed_step")
+  errorMessage String?    @map("error_message")
+  retryCount   Int        @default(0) @map("retry_count")
+  failedStep   AgentStep? @map("failed_step")
 
   // Phase 2A (production-safety hardening) — not yet read/written by any
   // code path; wired in by Phase 2B. activeRunId is cleared when the run it
@@ -411,8 +394,8 @@ model Book {
   // own bookId relation below — nothing here depends on FK-level cascade
   // behavior for correctness (see GenerationRun.retryOfRunId for the same
   // reasoning).
-  activeRunId      String?     @map("active_run_id") @db.Uuid
-  publishedRunId   String?     @map("published_run_id") @db.Uuid
+  activeRunId    String? @map("active_run_id") @db.Uuid
+  publishedRunId String? @map("published_run_id") @db.Uuid
 
   // Phase 2D — the GenerationRun.inputHash that produced the story/character/
   // image JSON currently stored on this row, if any. AgentService.
@@ -442,19 +425,18 @@ model Book {
   lastGenerationFencingVersion Int?    @map("last_generation_fencing_version")
   publishedRunFencingVersion   Int?    @map("published_run_fencing_version")
 
-  deletedAt        DateTime?   @map("deleted_at")
-  createdAt        DateTime    @default(now()) @map("created_at")
-  updatedAt        DateTime    @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
 
-  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  childProfile     ChildProfile? @relation(fields: [childProfileId], references: [id], onDelete: SetNull)
-  pages            BookPage[]
-  shareLinks       ShareLink[]
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  childProfile       ChildProfile?       @relation(fields: [childProfileId], references: [id], onDelete: SetNull)
+  pages              BookPage[]
+  shareLinks         ShareLink[]
   creditTransactions CreditTransaction[]
-  userBookStates   UserBookState[]
-  agentLogs        AgentLog[]
-  generationJobs   GenerationJob[]
-  generationRuns   GenerationRun[]
+  userBookStates     UserBookState[]
+  agentLogs          AgentLog[]
+  generationRuns     GenerationRun[]
 
   @@index([userId])
   @@index([status])
@@ -468,30 +450,30 @@ model Book {
 // ═══════════════════════════════════════════
 
 model BookPage {
-  id               String    @id @default(uuid()) @db.Uuid
-  bookId           String    @map("book_id") @db.Uuid
-  pageNumber       Int       @map("page_number")
+  id         String @id @default(uuid()) @db.Uuid
+  bookId     String @map("book_id") @db.Uuid
+  pageNumber Int    @map("page_number")
 
-  textContent      String?   @map("text_content")
-  readingLevel     Decimal?  @map("reading_level") @db.Decimal(3, 1)
+  textContent  String?  @map("text_content")
+  readingLevel Decimal? @map("reading_level") @db.Decimal(3, 1)
 
-  imagePrompt      Json?     @map("image_prompt")
-  imageR2Key       String?   @map("image_r2_key")
-  imageUrl         String?   @map("image_url")
-  imageSeed        BigInt?   @map("image_seed")
+  imagePrompt Json?   @map("image_prompt")
+  imageR2Key  String? @map("image_r2_key")
+  imageUrl    String? @map("image_url")
+  imageSeed   BigInt? @map("image_seed")
 
-  layoutSpec       Json?     @map("layout_spec")
+  layoutSpec Json? @map("layout_spec")
 
-  qaPassed         Boolean?  @map("qa_passed")
-  qaScores         Json?     @map("qa_scores")
+  qaPassed Boolean? @map("qa_passed")
+  qaScores Json?    @map("qa_scores")
 
-  textRegenCount   Int       @default(0) @map("text_regen_count")
-  imageRegenCount  Int       @default(0) @map("image_regen_count")
+  textRegenCount  Int @default(0) @map("text_regen_count")
+  imageRegenCount Int @default(0) @map("image_regen_count")
 
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  book             Book      @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
   @@unique([bookId, pageNumber])
   @@index([bookId])
@@ -513,9 +495,9 @@ model CharacterCard {
   loraTrainedAt    DateTime? @map("lora_trained_at")
   createdAt        DateTime  @default(now()) @map("created_at")
 
-  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  childProfile     ChildProfile?  @relation(fields: [childProfileId], references: [id], onDelete: SetNull)
-  series           BookSeries[]
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  childProfile ChildProfile? @relation(fields: [childProfileId], references: [id], onDelete: SetNull)
+  series       BookSeries[]
 
   @@index([userId])
   @@map("character_cards")
@@ -526,16 +508,16 @@ model CharacterCard {
 // ═══════════════════════════════════════════
 
 model BookSeries {
-  id              String    @id @default(uuid()) @db.Uuid
-  userId          String    @map("user_id") @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
   name            String
-  characterCardId String?   @map("character_card_id") @db.Uuid
-  bookIds         String[]  @default([]) @map("book_ids") @db.Uuid
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  characterCardId String?  @map("character_card_id") @db.Uuid
+  bookIds         String[] @default([]) @map("book_ids") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  characterCard   CharacterCard? @relation(fields: [characterCardId], references: [id], onDelete: SetNull)
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  characterCard CharacterCard? @relation(fields: [characterCardId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@map("series")
@@ -546,18 +528,18 @@ model BookSeries {
 // ═══════════════════════════════════════════
 
 model WizardDraft {
-  id             String    @id @default(uuid()) @db.Uuid
-  userId         String?   @unique @map("user_id") @db.Uuid
-  guestSessionId String?   @unique @map("guest_session_id")
-  step           Int       @default(1)
-  completedSteps Int[]     @default([]) @map("completed_steps")
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String?  @unique @map("user_id") @db.Uuid
+  guestSessionId String?  @unique @map("guest_session_id")
+  step           Int      @default(1)
+  completedSteps Int[]    @default([]) @map("completed_steps")
   data           Json
-  childProfileId String?   @map("child_profile_id") @db.Uuid
-  expiresAt      DateTime  @map("expires_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  childProfileId String?  @map("child_profile_id") @db.Uuid
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  user           User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([guestSessionId])
   @@map("wizard_drafts")
@@ -579,7 +561,7 @@ model ShareLink {
   createdAt    DateTime      @default(now()) @map("created_at")
   updatedAt    DateTime      @updatedAt @map("updated_at")
 
-  book         Book          @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
   @@index([bookId])
   @@index([token])
@@ -609,8 +591,8 @@ model CreditTransaction {
   idempotencyKey  String?      @unique @map("idempotency_key")
   createdAt       DateTime     @default(now()) @map("created_at")
 
-  user            User         @relation(fields: [userId], references: [id])
-  book            Book?        @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  user User  @relation(fields: [userId], references: [id])
+  book Book? @relation(fields: [bookId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([bookId])
@@ -636,7 +618,7 @@ model Subscription {
   createdAt            DateTime           @default(now()) @map("created_at")
   updatedAt            DateTime           @updatedAt @map("updated_at")
 
-  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([stripeCustomerId])
   @@map("subscriptions")
@@ -663,7 +645,7 @@ model AgentLog {
   traceId      String?        @map("trace_id")
   createdAt    DateTime       @default(now()) @map("created_at")
 
-  book         Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
   @@index([bookId])
   @@index([traceId])
@@ -672,46 +654,14 @@ model AgentLog {
 }
 
 // ═══════════════════════════════════════════
-// GENERATION JOBS
+// GENERATION RUNS
 // ═══════════════════════════════════════════
 
-// Phase 3I: a typed, persisted record of one generation attempt (generate or
-// retry), tracked alongside — not instead of — Book.status, which remains the
-// source of truth for user-facing status. Since Phase 3K, scheduled on a
-// durable BullMQ/Redis-backed queue (GenerationQueueService/
-// GenerationQueueProcessor), not in-process; see
-// apps/api/docs/local-generation-pipeline.md.
-model GenerationJob {
-  id           String              @id @default(uuid()) @db.Uuid
-  bookId       String              @map("book_id") @db.Uuid
-  userId       String              @map("user_id") @db.Uuid
-  type         GenerationJobType
-  status       GenerationJobStatus @default(queued)
-  attempt      Int                 @default(1)
-  maxAttempts  Int?                @map("max_attempts")
-  failedStep   AgentStep?          @map("failed_step")
-  errorMessage String?             @map("error_message")
-  runnerId     String?             @map("runner_id")
-
-  createdAt    DateTime            @default(now()) @map("created_at")
-  startedAt    DateTime?           @map("started_at")
-  completedAt  DateTime?           @map("completed_at")
-  failedAt     DateTime?           @map("failed_at")
-  updatedAt    DateTime            @updatedAt @map("updated_at")
-
-  book         Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
-
-  @@index([bookId])
-  @@index([bookId, status])
-  @@map("generation_jobs")
-}
-
 // ═══════════════════════════════════════════
-// GENERATION RUNS (Phase 2A — schema only; wired in by Phase 2B)
 // ═══════════════════════════════════════════
 
-// One generation attempt, replacing GenerationJob as the dispatch/fencing
-// source of truth. Carries its own immutable input snapshot (so a retry
+// One authoritative generation attempt. Carries its own immutable input
+// snapshot (so a retry
 // resumes the exact input a prior run used, while a regenerate captures the
 // book's *current* fields at creation time — see AgentService's
 // isResumableBook, which this replaces) and a lease/fencingVersion pair so a
@@ -762,17 +712,17 @@ model GenerationRun {
   errorCode      String?             @map("error_code")
   errorMessage   String?             @map("error_message")
 
-  startedAt      DateTime?           @map("started_at")
-  completedAt    DateTime?           @map("completed_at")
-  failedAt       DateTime?           @map("failed_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  failedAt    DateTime? @map("failed_at")
   // Phase G1: set only by GenerationRunCoordinator.cancelGeneration's fenced
   // transition — never by the pipeline itself. Null for every run that was
   // never cancelled.
-  cancelledAt    DateTime?           @map("cancelled_at")
-  createdAt      DateTime            @default(now()) @map("created_at")
-  updatedAt      DateTime            @updatedAt @map("updated_at")
+  cancelledAt DateTime? @map("cancelled_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  book           Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
   @@index([bookId])
   @@index([userId])
@@ -808,17 +758,17 @@ model OutboxEvent {
 // GenerationRunRecoveryService). Acquiring/releasing this lease is a plain
 // conditional row UPDATE, safe under any connection pooling.
 model RecoveryLease {
-  id             String    @id
-  leaseOwner     String?   @map("lease_owner")
-  leaseExpiresAt DateTime? @map("lease_expires_at")
+  id              String    @id
+  leaseOwner      String?   @map("lease_owner")
+  leaseExpiresAt  DateTime? @map("lease_expires_at")
   // Incremented on every successful acquire (never on renew) — a fencing
   // token so a former leader whose lease already expired (and was
   // subsequently acquired by a new leader, bumping this) can detect it no
   // longer holds current leadership and must stop issuing further recovery
   // writes for this pass, even if its own wall-clock check hasn't caught up
   // yet. See GenerationRunRecoveryService.stillHoldsLease.
-  leaseGeneration Int      @default(0) @map("lease_generation")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  leaseGeneration Int       @default(0) @map("lease_generation")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   @@map("recovery_leases")
 }
@@ -828,15 +778,15 @@ model RecoveryLease {
 // ═══════════════════════════════════════════
 
 model UserBookState {
-  id        String    @id @default(uuid()) @db.Uuid
-  userId    String    @map("user_id") @db.Uuid
-  bookId    String    @map("book_id") @db.Uuid
-  lastPage  Int       @default(1) @map("last_page")
-  bookmarks Int[]     @default([])
-  updatedAt DateTime  @updatedAt @map("updated_at")
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  bookId    String   @map("book_id") @db.Uuid
+  lastPage  Int      @default(1) @map("last_page")
+  bookmarks Int[]    @default([])
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  book      Book      @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
   @@unique([userId, bookId])
   @@map("user_book_states")
@@ -858,7 +808,7 @@ model Notification {
   sentAt    DateTime?           @map("sent_at")
   createdAt DateTime            @default(now()) @map("created_at")
 
-  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("notifications")

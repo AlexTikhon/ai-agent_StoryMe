@@ -12,8 +12,11 @@ title, child name/age, language (`en`, `ru`, `pl`), theme, page count, optional 
 optional reference photo. Starting generation atomically creates a run/outbox event and charges a
 credit. A separate BullMQ worker generates the story, images, layout, and PDF. The detail screen
 polls status and supports cancellation, retry from a failed run's immutable snapshot,
-regeneration from current input, diagnostics, and authenticated PDF download. Users can view
-their credit ledger and, when explicitly enabled, buy one-time packages through Stripe Checkout.
+regeneration from current input, and authenticated PDF download. Developer diagnostics and
+intermediate technical details are opt-in through
+`NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true`; when disabled, the browser does not request
+diagnostics. Users can view their credit ledger and, when explicitly enabled, buy one-time
+packages through Stripe Checkout.
 
 JWT mode is the default. A local-only `dev` auth mode exists and must not be exposed publicly.
 
@@ -42,6 +45,7 @@ All routes have the `/api` prefix.
 | POST             | `/books/:id/cancel`                   | Fence/cancel active run and refund once  |
 | GET              | `/books/:id/generation-diagnostics`   | Owned run/artifact diagnostics           |
 | GET              | `/books/:id/pdf/preview`              | Ownership-checked PDF bytes              |
+| GET              | `/books/:id/images/:imageId`          | Ownership-checked published image bytes  |
 | GET              | `/credits/balance`                    | Canonical owned balance                  |
 | GET              | `/credits/transactions`               | Cursor-paginated owned ledger            |
 | GET              | `/billing/packages`                   | Server package catalog                   |
@@ -58,8 +62,11 @@ and ownership comes from the authenticated user rather than client-supplied user
 `/dashboard/books/new`, `/dashboard/books/[id]`, `/dashboard/credits`, `/billing/success`, and
 `/billing/cancel`.
 
-There is no in-browser page reader. The book detail screen shows internal image asset keys rather
-than rendered generated illustrations.
+The completed-book detail screen has an authenticated in-browser reader for the published cover,
+every generated story page, and the back cover. It lazily fetches one owned published image at a
+time without exposing storage keys. Library cards show the ownership-checked published cover when
+one exists and a neutral placeholder otherwise. With developer diagnostics explicitly enabled,
+the book detail screen shows internal image asset keys and intermediate pipeline details.
 
 ## Providers and storage
 
@@ -96,17 +103,20 @@ a later failed/cancelled regeneration preserves the previous publication.
 Implemented: JWT auth/recovery, ownership enforcement, safe child-photo processing, draft CRUD
 and soft-delete, durable queued generation, fencing/heartbeat/recovery, cancellation,
 retry/resume, idempotent charges/refunds, one-time credit purchases, provider limits, local/S3/R2
-artifacts, authenticated PDF access, and extensive unit/integration tests.
+artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
+published cover thumbnails in the library, and extensive unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
-management, reader and image thumbnails/previews, single-page editing/regeneration, bounded LLM
-repair, hard-delete/data-erasure workflow, Playwright E2E, and production/admin gating for
-diagnostics.
+management, single-page editing/regeneration, bounded LLM repair, hard-delete/data-erasure
+workflow, Playwright E2E, and role-based admin authorization for diagnostics. The reader is
+currently shown only for a book whose current status is `complete`; previous publications are not
+yet rendered while a regeneration is running, failed, or cancelled. The web diagnostics UI is
+environment-gated and defaults off; the owned diagnostics API contract remains available.
 
-Known limitations: `AgentService` remains oversized; `BooksService` is now a compatibility facade
-over CRUD, asset, diagnostics, generation scheduling, and generation execution services;
-`GenerationJob` is still written and recovered as a best-effort legacy mirror, although product
-diagnostics now read authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
+Known limitations: `AgentService` remains larger than the individual stages it orchestrates;
+`BooksService` is now a compatibility facade over CRUD, asset, diagnostics, generation scheduling,
+and generation execution services; the legacy `GenerationJob` runtime and Prisma model have been
+removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
 local storage cannot serve separately deployed API/worker processes; console email does not
 deliver production mail.
 
@@ -141,4 +151,6 @@ pnpm build
 pnpm --filter @book/api test:integration
 ```
 
-The production web build requires a valid `NEXT_PUBLIC_API_URL` ending in `/api`.
+The production web build requires a valid `NEXT_PUBLIC_API_URL` ending in `/api`. Leave
+`NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS` unset/false for the ordinary product UI; enable it only
+for trusted developer builds.

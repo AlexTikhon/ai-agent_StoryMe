@@ -7,6 +7,7 @@ import type {
   BooksPageDto,
   CancelGenerationResponse,
   GenerateBookResponse,
+  GenerationProgressDto,
 } from '@book/types';
 
 const MOCK_BOOK: BookDto = {
@@ -248,6 +249,41 @@ describe('booksApi', () => {
       expect(url).toBe('http://localhost:4000/api/books/book-1');
       expect(init.method).toBe('DELETE');
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('downloadPublishedImage()', () => {
+    it('fetches an ownership-checked published image as a blob', async () => {
+      const image = new Blob(['image-bytes'], { type: 'image/png' });
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        blob: async () => image,
+      } as Response);
+
+      const result = await booksApi.downloadPublishedImage('book-1', 'page-2');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/images/page-2');
+      expect(result).toBe(image);
+    });
+  });
+
+  describe('getGenerationProgress()', () => {
+    it('fetches the minimal owned progress contract', async () => {
+      const progress: GenerationProgressDto = {
+        status: 'running',
+        step: 'image_gen' as GenerationProgressDto['step'],
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(progress));
+
+      const result = await booksApi.getGenerationProgress('book-1');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/generation-progress');
+      expect(result).toEqual(progress);
     });
   });
 

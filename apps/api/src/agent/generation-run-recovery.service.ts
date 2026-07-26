@@ -4,11 +4,12 @@ import { GenerationRunStatus, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { GenerationQueueService } from './generation-queue.service';
 import { GenerationRunCoordinator } from './generation-run-coordinator.service';
-import { GENERATION_INTERRUPTED_MESSAGE } from './generation-job-recovery.service';
 
 export const DEFAULT_GENERATION_RUN_QUEUED_STALE_MS = 5 * 60 * 1000;
 export const DEFAULT_GENERATION_RUN_RECOVERY_INTERVAL_MS = 60 * 1000;
 export const DEFAULT_RECOVERY_LEASE_MS = 5 * 60 * 1000;
+export const GENERATION_INTERRUPTED_MESSAGE =
+  'Generation was interrupted before completion. Please retry.';
 
 /**
  * Fixed singleton row id every live instance contends over to elect one
@@ -56,10 +57,8 @@ export function readRecoveryLeaseMs(env: NodeJS.ProcessEnv = process.env): numbe
 
 /**
  * Reconciles GenerationRun rows abandoned by a process that died or
- * restarted mid-run, WITHOUT the flaw the old age-only
- * GenerationJobRecoveryService had (see that service's own doc comment,
- * scoped down in this same phase to never touch Book anymore): a `running`
- * run's lease expiring is only ever a *candidate* for recovery — before
+ * restarted mid-run. Unlike the removed age-only legacy mirror recovery, a
+ * `running` run's lease expiring is only ever a *candidate* for recovery — before
  * failing it, this checks BullMQ's own state for that run's job
  * (GenerationQueueService.isJobStillPending). A job BullMQ still considers
  * active/waiting/delayed/retriable is left alone, even past its DB lease —

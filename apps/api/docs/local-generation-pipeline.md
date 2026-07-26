@@ -19,7 +19,7 @@ calls, no external AI providers, no cloud dependency.
      every missing field.
    - Requires `status === created` — otherwise `ConflictException` (409)
      ("Generation already started or completed for this book").
-   - Requires no active (`queued`/`running`) `GenerationJob` already exists
+   - Requires no active (`queued`/`running`) `GenerationRun` already exists
      for the book — otherwise `ConflictException` (409, "Generation is
      already in progress for this book").
    - Charges 1 credit the moment the run is durably scheduled, inside the
@@ -56,13 +56,13 @@ bookPreview, imageGenerationResult }`. If this call throws, `AgentService`
   `errorMessage` from the caught error), writes a single `story_plan`
   `AgentLog` row with `status: 'error'`, and returns immediately — none of
   the steps below run.
-- (b) `generateAndSaveImageAssets` (private helper) — for every
+- (b) `ImageGenerationStage.execute` — for every
   `GeneratedImageEntry` in the provider's `imageGenerationResult`, calls the
   injected `ImageGenerationProvider.generateImage({ bookId, entry,
 characterCard })` (see "Image generation provider boundary" below) to get
   real image bytes, then saves them through
   `ImageAssetStorage.saveImageAsset(imageAssetKey(bookId, kind, pageNumber),
-buffer, contentType)`. **This helper never throws.** Both a `generateImage`
+buffer, contentType)`. **Per-entry failures do not abort the batch.** Both a `generateImage`
   failure (e.g. a real provider's API outage) and a `saveImageAsset` failure
   for one entry are caught per-entry, logged (`Image generation/save failed
 for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
@@ -70,12 +70,12 @@ for entry "<id>" ...`), and counted — that entry simply has no saved bytes.
   (Phase 2 below) requires every planned illustration to have real bytes, so
   any entry left without saved bytes now fails the whole book at `pdf_render`
   with a clear error naming the page, instead of rendering a placeholder for
-  it. The helper returns `{ generatedCount, failedCount, lastError }`,
-  which `AgentService` writes onto `imageGenerationResult.generatedImageCount`/
-  `failedImageCount`/`lastImageError` for diagnostics (see "Generation
-  diagnostics" below), and folds `failedCount` into the final `image_gen`
-  `AgentLog` row's `error` field (status stays `success`, since the failure is
-  only realized later at `pdf_render`) rather than ever setting
+  it. The stage returns `{ generatedCount, failedCount, lastError }`,
+  which `GenerationResultCollector` writes onto
+  `imageGenerationResult.generatedImageCount`/`failedImageCount`/
+  `lastImageError` for diagnostics (see "Generation diagnostics" below), and
+  folds `failedCount` into the final `image_gen` `AgentLog` row's `error`
+  field with `status: 'error'`, rather than setting
   `failedStep: 'image_gen'`.
 - (c) `BookLayoutStage` (`book-layout.stage.ts`) — builds the print-ready
   `BookLayout` (2400×2400px canvas, `square_8x8` trim), referencing the same
@@ -130,7 +130,7 @@ below) never clears
 `errorMessage`/`retryCount`. So a retry against a book that previously made
 it past Phase 1 of a run (e.g. one that failed at `pdf_render`) hands
 `AgentService.startBookGeneration` a `Book` row that already carries a full
-prior generation result. `isResumableBook` (`agent.service.ts`) detects this
+prior generation result. `GenerationResumeService.plan` detects this
 (`storyPlan`/`characterCard`/`bookPreview`/`imageGenerationResult` all
 non-null) and the pipeline reuses as much of it as is still valid instead of
 regenerating from scratch:
@@ -142,11 +142,11 @@ regenerating from scratch:
   `CharacterProfileProvider.buildProfile` is never called.
 - **Character sheet** — skipped when the profile's `hasCharacterSheet` is
   true and `Book.characterSheetAssetKey`'s bytes are still readable and
-  non-empty (`classifyCharacterSheetAsset`). If the profile is being reused
+  non-empty (`GenerationResumeService.plan`). If the profile is being reused
   but the sheet specifically is missing/invalid, only the sheet is
-  regenerated (`regenerateCharacterSheet`) — the profile provider is still
+  regenerated (`CharacterReferenceStage.regenerateSheet`) — the profile provider is still
   never re-called.
-- **Illustrations** — `classifyImageAssets` checks every planned cover/page/
+- **Illustrations** — `GenerationResumeService.classifyImages` checks every planned cover/page/
   back-cover entry's saved bytes via `ImageAssetStorage.getImageAsset`: no
   bytes at all → missing, a zero-length buffer → invalid, otherwise → valid
   and reusable as-is. Only missing/invalid entries are sent to
@@ -162,10 +162,9 @@ regenerating from scratch:
 
 Concurrency (repeated Retry clicks, or two concurrent retries) is guarded the
 same way `startGeneration`/`retryGeneration` already guard against duplicate
-generation: `GenerationJobService.findActive` plus `claimStatusTransition`'s
-conditional UPDATE (see "Retrying failed generation (Phase 3G)" below) —
-idempotent resume adds no
-new concurrency surface.
+generation: the one-active-`GenerationRun` database invariant plus the
+transactional Book status CAS. Idempotent resume adds no new concurrency
+surface.
 
 ### Resume diagnostics
 
@@ -175,7 +174,8 @@ migration, the same pattern Phase 3E used for `generatedImageCount`/
 `failedImageCount`), surfaced as `resume` on
 `GET /:id/generation-diagnostics`'s response
 (`GenerationDiagnosticsDto.resume`, `null` for books generated before this
-existed):
+existed). `GenerationResultCollector.collectResumeDiagnostics` owns the
+deterministic DTO assembly:
 
 ```ts
 interface ResumeDiagnostics {
@@ -199,7 +199,7 @@ interface ResumeDiagnostics {
 
 `missingAssetsAfterRetry` is only populated for `character_sheet` (its own
 independent best-effort check) and, when `pdf_render` fails, a fresh
-`classifyImageAssets` pass — a successful `pdf_render` implies every planned
+`GenerationResumeService.classifyImages` pass — a successful `pdf_render` implies every planned
 illustration resolved (see `PdfPublicationStage` above), so no extra
 storage reads happen on the happy path.
 
@@ -251,16 +251,22 @@ interface StoryGenerationProvider {
   after the provider returns. This split is deliberate: a future real-LLM
   story provider and a future real-image provider are independent phases and
   shouldn't be coupled.
-- `BookLayoutStage` owns print-layout geometry over already-built story/image
-  data. `PdfPublicationStage` owns image resolution, missing-artifact
-  validation, rendering and claim-scoped storage. `AgentService` only orders
-  these stages and retains fencing checkpoints/outcome assembly; neither
-  stage changes retry, cancellation, credit or publication semantics.
+- `CharacterReferenceStage` owns character-profile/reference preparation;
+  `ImageGenerationStage` owns bounded illustration generation and storage;
+  `GenerationResumeService` owns resume/copy-forward decisions;
+  `BookLayoutStage` owns print-layout geometry; and `PdfPublicationStage`
+  owns image resolution, validation, rendering and claim-scoped storage.
+  `GenerationResultCollector` deterministically assembles persisted image
+  telemetry, resume diagnostics, the terminal outcome, and its `AgentLog`
+  batch. `AgentService` orders these boundaries and retains fencing
+  checkpoints; none changes retry, cancellation, credit or publication
+  semantics.
 - **Failure behavior**: if `generateStory` throws, `AgentService` catches it
-  before Phase 1 runs, marks the book `failed` (`failedStep: 'story_plan'`,
-  `errorMessage` from the caught error's message), writes one `story_plan`
-  `AgentLog` row with `status: 'error'`, and returns — no image assets are
-  saved, no layout is built, no PDF is rendered or stored.
+  before Phase 1 runs. `GenerationResultCollector` returns a failed outcome
+  (`failedStep: 'story_plan'`, `errorMessage` from the caught error) with the
+  completed `char_build` log and an error `story_plan` log; the coordinator
+  persists them atomically. No illustration assets are saved, no layout is
+  built, and no PDF is rendered or stored.
 
 ### Real LLM provider (`OpenAIStoryGenerationProvider`)
 
@@ -380,8 +386,8 @@ interface ImageGenerationProvider {
   - Any other value throws a clear `Error` naming the invalid value.
 - **Failure behavior** — a `generateImage` failure for one entry (e.g. a
   transient real-API error) and a `saveImageAsset` failure for one entry are
-  handled identically by `AgentService.generateAndSaveImageAssets`: caught,
-  logged, and counted per-entry, never thrown from that helper. That entry
+  handled identically by `ImageGenerationStage.execute`: caught,
+  logged, and counted per-entry without aborting the batch. That entry
   has no saved bytes, so `PdfPublicationStage` fails the whole book at
   the `pdf_render` step (see "Local mock/real image producer" above and
   `apps/api/docs/pdf-rendering.md`) instead of degrading to a placeholder —
@@ -435,10 +441,10 @@ directly:
 ### Image rate limiter — `OpenAIImageRateLimiter`
 
 `gpt-image-1` organizations on the free/Tier-1-style quota can hit a very low
-images-per-minute limit (observed: 5/min). Since `AgentService.generateAndSaveImageAssets`
+images-per-minute limit (observed: 5/min). Since `ImageGenerationStage.execute`
 fires every page's `generateImage` call concurrently via `Promise.all`
 (cover, pages, and back cover all dispatch at once — see that method in
-`apps/api/src/agent/agent.service.ts`), and the character sheet is one more
+`apps/api/src/agent/image-generation.stage.ts`), and the character sheet is one more
 request before that, a six-page book can easily submit 7-8 requests in the
 same minute. `apps/api/src/images/openai-image-rate-limiter.ts`
 adds one `OpenAIImageRateLimiter` instance, shared by every call this process
@@ -491,7 +497,7 @@ whose `pageNumber` exceeds `REAL_GENERATION_MAX_PAGES` (default `12` if
 unset/malformed) with a clear `ImageGenerationProviderError`, before making
 any network call. `cover`/`back_cover` entries are never capped. This only
 applies to the real provider — `MockImageGenerationProvider` is unchanged.
-`AgentService.generateAndSaveImageAssets` catches this per entry like any
+`ImageGenerationStage.execute` catches this per entry like any
 other `generateImage` failure (see "Failure behavior" above) so the rest of
 the batch can keep going; this guardrail's actual effect is just to skip the
 network call for pages beyond the limit. **That page still has no saved
@@ -529,12 +535,13 @@ capacity returns `503` with `PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT`.
 `AgentService` repeats the check for direct/internal callers, and the telemetry
 collector prevents the runtime count from crossing the configured maximum.
 
-Each logical provider invocation records safe metadata in
-`imageGenerationResult.providerUsage` and exposes it from generation
-diagnostics: provider/model, operation and optional asset label, prompt
-contract version, SHA-256 prompt fingerprint, logical attempt number,
-duration, success/error status, and optional estimated cost. Raw prompts,
-photo/image bytes, API keys, and provider response bodies are never persisted.
+Each logical provider invocation is recorded by
+`GenerationProviderTelemetry`; `GenerationResultCollector` folds its snapshot
+into `imageGenerationResult.providerUsage`, which generation diagnostics
+exposes: provider/model, operation and optional asset label, prompt contract
+version, SHA-256 prompt fingerprint, logical attempt number, duration,
+success/error status, and optional estimated cost. Raw prompts, photo/image
+bytes, API keys, and provider response bodies are never persisted.
 
 Provider prices are deliberately not hardcoded. Operators may configure
 `OPENAI_STORY_ESTIMATED_COST_USD`,
@@ -736,10 +743,10 @@ applies when a character sheet exists and its bytes can be read back.
   purely a matter of repeating the same _words_ on every prompt — the model
   never sees the character's actual pixels.
 - **Visual-reference consistency** (real `IMAGE_GENERATION_PROVIDER=openai`
-  only): `AgentService` generates one standalone character-sheet reference
+  only): `CharacterReferenceStage` generates one standalone character-sheet reference
   image via `ImageGenerationProvider.generateCharacterSheet` and saves it to
-  `ImageAssetStorage` (`buildCharacterProfileAndSheet`). Once per book
-  generation run — not once per page — `AgentService.loadCharacterReference`
+  `ImageAssetStorage` (`CharacterReferenceStage.execute`). Once per book
+  generation run — not once per page — `CharacterReferenceStage.loadReference`
   reads those bytes back from storage and holds them in memory as one shared
   `ImageReference`. Every subsequent cover/page/back-cover
   `ImageGenerationProvider.generateImage` call for that run receives the same
@@ -775,7 +782,7 @@ applies when a character sheet exists and its bytes can be read back.
   used; see "Fallback behavior" below for exactly when these diverge.
 - **Fallback behavior** (verified in `agent.service.spec.ts` and
   `openai-image-generation-provider.spec.ts`): if the `CharacterProfileProvider`
-  throws (e.g. a vision-API error), `AgentService` catches it, logs a
+  throws (e.g. a vision-API error), `CharacterReferenceStage` catches it, logs a
   warning, and falls back to `MockCharacterProfileProvider` — generation is
   never blocked by a profile failure, and the `char_build` `AgentLog` row is
   written with `status: 'error'` and `provider: 'mock'` so the fallback is
@@ -787,7 +794,7 @@ applies when a character sheet exists and its bytes can be read back.
   `status: 'success'` since the profile step (not the best-effort sheet) is
   what that status reflects. If the sheet _was_ generated and saved but its
   bytes can't be read back later (e.g. a storage hiccup),
-  `loadCharacterReference` logs a safe warning (never bytes/base64) and
+  `CharacterReferenceStage.loadReference` logs a safe error (never bytes/base64) and
   every page falls back to the ordinary text-to-image path for that run —
   `characterSheetGenerated: true` but `characterReferenceAvailable: false`.
   `MockImageGenerationProvider` accepts (and ignores) `characterReference` on
@@ -866,7 +873,7 @@ interface GenerationDiagnosticsDto {
   below).
 - `generatedImageCount`/`failedImageCount` come from
   `Book.imageGenerationResult.generatedImageCount`/`failedImageCount` (set by
-  `AgentService.generateAndSaveImageAssets` — see "Image generation provider
+  `ImageGenerationStage.execute` — see "Image generation provider
   boundary" above); both are absent for books generated before this field
   existed. `failedImageCount > 0` now means the book is `failed` (at
   `pdf_render`), not `complete` — a page missing its illustration is never
@@ -1167,6 +1174,11 @@ error for book <id>: <message>`), and swallowed — a background failure
 
 ## Generation jobs (Phase 3I)
 
+> Historical section. Runtime `GenerationJob` reads/writes and mirror-only
+> recovery were removed in Phase 2. After real PostgreSQL + Redis verification,
+> migration `20260724110000_remove_generation_jobs` removed its table and enums.
+> The description below is retained only as implementation history.
+
 Alongside `Book.status` (still the source of truth for user-facing status),
 every `generate`/`retry-generation` call now also creates a `GenerationJob`
 row — a typed, persisted record of that one generation _attempt_. This is
@@ -1446,8 +1458,7 @@ bookId, jobId })` adds one job (`queue.add('run-generation', data, { jobId
 
 `GenerationRun` (`apps/api/prisma/schema.prisma`) is the sole source of truth
 for "is a generation attempt in flight for this book, and who owns it" —
-`GenerationJob` is kept only as a best-effort diagnostics mirror and must never
-be read for ownership, retry, or recovery decisions.
+The legacy `GenerationJob` table is no longer read or written at runtime.
 
 ### Creating a run — one transaction, outbox-dispatched
 
@@ -1537,7 +1548,7 @@ pre-migration; since a retry always builds its _new_ run's hash fresh from its
 own (already-current) copy of the snapshot (`BooksService.createRunAndSchedule`),
 that stale value could never equal `Book.lastGenerationInputHash` (stamped
 from the hash the migrated run actually executed under), so
-`AgentService.isResumableBook` silently forced a full, unnecessary
+the resumability check silently forced a full, unnecessary
 regeneration on every retry of a migrated run instead of resuming — no data
 was lost or corrupted, just wasted work. `GenerationQueueProcessor` builds its
 `GenerationExecutionContext.inputHash` from `normalize`'s return value, not
@@ -1811,10 +1822,11 @@ all." Two gaps remain, deliberately out of scope for this pass:
   still no `GenerationArtifact` model or cleanup for those orphan objects
   (explicitly out of scope for B4 — see its own "Known limitations" below).
 - **`AgentLog` ownership.** _Closed by Phase D — see its own section below._
-  `AgentService` no longer writes `AgentLog` rows itself; it returns them on
-  `GenerationOutcome.agentLogs`, and `GenerationRunCoordinator.completeRun`
-  persists them inside the same fenced transaction as the terminal Book/
-  GenerationRun write, so a stale/superseded claim writes zero AgentLog rows.
+  `GenerationResultCollector` assembles the rows on
+  `GenerationOutcome.agentLogs`; `AgentService` does not write them, and
+  `GenerationRunCoordinator.completeRun` persists them inside the same fenced
+  transaction as the terminal Book/GenerationRun write, so a stale/superseded
+  claim writes zero AgentLog rows.
 
 Do not describe this phase as having made the pipeline fully safe against a
 stale/zombie worker in general — only its _database writes_ (which, as of
@@ -2198,7 +2210,7 @@ caller is unchanged.
   eventual pipeline cutover writes claim metadata for it. No migration
   backfill is possible or attempted — there is no historical per-write claim
   record to reconstruct.
-- **No production storage path has changed.** `classifyImageAssets`,
+- **No production storage path has changed.** `GenerationResumeService.classifyImages`,
   `buildImageBufferResolver`, `pdfStorage.savePreviewPdf`/`getPreviewPdf`,
   and every other real read/write in the pipeline still use the positional
   keys they always have.
@@ -2275,7 +2287,7 @@ over yet — that remains B4.
   algorithm behind every character sheet and generated image:
   1. A valid current-claim artifact is always reused directly — same-claim
      re-entry is idempotent, with no copy or provider call.
-  2. Otherwise, if the Book is resumable (`isResumableBook` — the run's
+  2. Otherwise, if the Book is resumable (`GenerationResumeService.plan` — the run's
      `inputHash` still matches `Book.lastGenerationInputHash`) and the
      resolved source namespace differs from the current claim, the exact
      source key is inspected and copied forward with B2's
@@ -2786,8 +2798,6 @@ changed — only which process registers the BullMQ worker.
     `docker-compose.yml`'s Postgres/Redis and confirm a real
     `generate`/`retry-generation` call is picked up by the worker process's
     logs, not the API process's.
-  - `GenerationJobRecoveryService` still runs redundantly in both processes
-    on every cold start (see above) — harmless, but not eliminated.
   - No independent horizontal scaling guidance beyond "run more worker
     replicas" — BullMQ already distributes jobs across however many worker
     processes are running (Phase 3K), so this phase doesn't need to add
@@ -2959,7 +2969,7 @@ re-verified here — see "Test coverage" below.
 | `ConflictException` (409)                        | `update`/`remove` after `status !== created`                                                                                                                                                                | `PATCH /:id`, `DELETE /:id`                                                                                                                                                                                                             |
 | `ConflictException` (409)                        | `generate` called when `status !== created`                                                                                                                                                                 | `POST /:id/generate`                                                                                                                                                                                                                    |
 | `ConflictException` (409)                        | `retry-generation` called when `status !== failed`                                                                                                                                                          | `POST /:id/retry-generation`                                                                                                                                                                                                            |
-| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationJob` exists for the book (Phase 3I)                                                                                    | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
+| `ConflictException` (409)                        | `generate`/`retry-generation` called while an active (`queued`/`running`) `GenerationRun` exists for the book                                                                                               | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
 | `ServiceUnavailableException` (503)              | real-image budget cannot cover cover + every page + back cover (`IMAGE_GENERATION_BUDGET_INSUFFICIENT`) — rejected before run creation or credit charge                                                     | `POST /:id/generate`, `POST /:id/retry-generation`, `POST /:id/regenerate`                                                                                                                                                              |
 | `InternalServerErrorException` (500)             | enqueueing the pipeline onto the durable queue itself fails, e.g. Redis unreachable (Phase 3K)                                                                                                              | `POST /:id/generate`, `POST /:id/retry-generation`                                                                                                                                                                                      |
 | `ConflictException` (409)                        | preview requested before `previewPdfUrl` is set                                                                                                                                                             | `GET /:id/pdf/preview`                                                                                                                                                                                                                  |
@@ -3135,31 +3145,14 @@ jobId)` directly (as `GenerationQueueProcessor` would) calls
   `GenerationQueueProcessor` in isolation: `process(job)` delegates to
   `BooksService.runGenerationPipeline` with the job's `bookId`/`jobId`.
 
-- `apps/api/src/agent/generation-job.service.spec.ts` (Phase 3I) —
-  `GenerationJobService` in isolation: `findActive` queries `queued`/`running`
-  jobs newest-first, `findLatest` queries any status newest-first,
-  `createQueued` writes `status: 'queued'` with the given type/attempt,
-  `markRunning`/`markCompleted`/`markFailed` set the right status plus their
-  respective timestamp, and `markFailed` defaults `failedStep` to `null` when
-  omitted.
-- `apps/api/src/books/books.service.spec.ts` (Phase 3I) — `startGeneration`/
-  `retryGeneration` create a queued `GenerationJob` (`generate`/`attempt: 1`,
-  or `retry`/`attempt: clearedBook.retryCount + 1`); the scheduled task marks
-  the job `running` then `completed` on a successful pipeline run, `failed`
-  (with `failedStep`/`errorMessage`) when `AgentService.startBookGeneration`
-  returns a `failed` book, and `failed` when the pipeline throws
-  unexpectedly; both `startGeneration` and `retryGeneration` throw
-  `ConflictException` (without touching `prisma.book.update` or scheduling
-  anything) when `generationJobService.findActive` reports an active job; a
-  retry is still allowed when the book is `failed` and no active job exists,
-  regardless of any prior `completed`/`failed` job on record;
-  `getGenerationDiagnostics` includes `latestJob` from
-  `generationJobService.findLatest` (or `null` when none exists).
-- `apps/api/src/books/generation-diagnostics.spec.ts` (Phase 3I) —
-  `buildGenerationDiagnostics` maps a `GenerationJob` row into the safe
-  `latestJob` summary (id/type/status/attempt/timestamps/failedStep/
-  errorMessage), returns `latestJob: null` when no job is passed, and never
-  leaks `runnerId` through the serialized diagnostics.
+- `apps/api/src/books/books.service.spec.ts` and the extracted scheduling/
+  execution specs assert authoritative `GenerationRun` admission, terminal
+  coordination, cancellation, stale-fence behavior, and exhausted-retry
+  recovery without a `GenerationJobService` mock.
+- `apps/api/src/books/generation-diagnostics.spec.ts` asserts that
+  `buildGenerationDiagnostics` maps the latest authoritative `GenerationRun`
+  into the stable `latestJob` compatibility summary and returns
+  `latestJob: null` when no run exists.
 
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see

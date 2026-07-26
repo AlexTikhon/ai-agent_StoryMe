@@ -32,8 +32,10 @@ generate a book → download the PDF).
 - Create a book from a short form (child's name/age, theme, language,
   page count, optional educational message/dedication).
 - Generate the story (character, story plan, page plan, draft text,
-  illustration plan, images) through a polling status pipeline
-  (`created` → … → `complete`), visible live on the book detail page.
+  illustration plan, images) in a durable queued pipeline. The detail page
+  polls the persisted state; the current implementation records mainly
+  `created` → `layout` → `complete`/`failed` (or `cancelled`), rather than
+  persisting every internal stage as user-visible progress.
 - Render and preview/download the finished book as a PDF.
 - Retry generation after a failure.
 
@@ -159,6 +161,12 @@ rather than letting `next build` error once per static page. To build
 locally: `NEXT_PUBLIC_API_URL="http://localhost:4000/api" pnpm --filter
 @book/web build`. Vercel/Railway/CI must set it as a real build-time env var
 (see [docs/private-demo-deploy.md §10](docs/private-demo-deploy.md#10-vercel--railway-concrete-deployment-configuration)).
+
+Developer generation diagnostics, intermediate plans, provider/layout
+metadata, and internal artifact keys are hidden by default. Set
+`NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true` only in a trusted developer
+build to show them. This public build flag controls UI visibility, not API
+authorization; the diagnostics endpoint still enforces book ownership.
 
 ## Deployment readiness
 

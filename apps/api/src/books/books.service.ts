@@ -7,13 +7,13 @@ import {
   type CancelGenerationResponse,
   type GenerateBookResponse,
   type GenerationDiagnosticsDto,
+  type GenerationProgressDto,
 } from '@book/types';
 import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
 import { CreditsService } from '../credits/credits.service';
 import { AgentService } from '../agent/agent.service';
 import { GenerationQueueService } from '../agent/generation-queue.service';
-import { GenerationJobService } from '../agent/generation-job.service';
 import { GenerationRunService } from '../agent/generation-run.service';
 import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
 import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
@@ -41,6 +41,7 @@ import { BookAssetService } from './book-asset.service';
 import { BookDiagnosticsService } from './book-diagnostics.service';
 import { BookGenerationService } from './book-generation.service';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
+import type { PublishedImageResult } from './book-asset.service';
 
 export {
   IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
@@ -53,10 +54,9 @@ export {
 
 /**
  * Statuses where the generation pipeline is not actively running — safe for
- * update()/remove() to mutate. Mirrors TERMINAL_BOOK_STATUSES in
- * generation-job-recovery.service.ts, plus the pre-generation `created` draft
- * state (which is terminal in the sense that nothing is running, even though
- * it isn't a pipeline outcome).
+ * update()/remove() to mutate, plus the pre-generation `created` draft state
+ * (which is terminal in the sense that nothing is running, even though it
+ * isn't a pipeline outcome).
  */
 @Injectable()
 export class BooksService {
@@ -72,7 +72,6 @@ export class BooksService {
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
     @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageAssetStorage: ImageAssetStorage,
     private readonly generationQueueService: GenerationQueueService,
-    private readonly generationJobService: GenerationJobService,
     private readonly generationRunService: GenerationRunService,
     private readonly generationRunCoordinator: GenerationRunCoordinator,
     private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
@@ -116,7 +115,6 @@ export class BooksService {
       new BookGenerationService(
         this.crudService,
         prisma,
-        generationJobService,
         generationRunService,
         snapshotBackfill,
         config,
@@ -132,7 +130,6 @@ export class BooksService {
         prisma,
         agentService,
         generationQueueService,
-        generationJobService,
         generationRunCoordinator,
       );
   }
@@ -214,7 +211,7 @@ export class BooksService {
    * never the book's current fields, even if they were edited since the
    * failure (use regenerateBook for that). Copies inputSnapshot verbatim from
    * the book's most recent GenerationRun and links retryOfRunId to it, so
-   * AgentService.isResumableBook can trust that any story/images already on
+   * GenerationResumeService can trust that any story/images already on
    * the row came from this same input and safely resume past whatever step
    * already succeeded. Falls back to building a fresh snapshot only for a
    * book with no GenerationRun history at all (predates Phase 2A/2B).
@@ -231,7 +228,7 @@ export class BooksService {
    * guarantee. Available for a failed book too (not just complete) so a user
    * who edited a failed book's fields, rather than just retrying, gets a run
    * that actually reflects those edits. Always builds a brand-new
-   * inputSnapshot/inputHash, so AgentService.isResumableBook only resumes
+   * inputSnapshot/inputHash, so GenerationResumeService only resumes
    * this run's own prior output if the input truly didn't change — an edit
    * changes the hash and forces a full regeneration instead of silently
    * reusing stale content (the bug this phase's retry/regenerate split
@@ -267,17 +264,11 @@ export class BooksService {
    * fenced run transition, Book mirror update, outbox suppression, and
    * conditional refund, all inside one transaction) and maps its typed
    * CancelGenerationOutcome onto this endpoint's stable HTTP contract. Two
-   * follow-ups run only after that transaction has already committed, are
-   * both best-effort, and can never roll back or fail an already-applied
-   * cancellation:
-   *   - the legacy GenerationJob diagnostics mirror is marked cancelled only
-   *     now, never before (GenerationJob is not authoritative — see
-   *     markJob's own doc comment, reused here);
-   *   - GenerationQueueService.removeIfSafe best-effort removes a
-   *     still-waiting/delayed BullMQ job; an active one is deliberately left
-   *     alone (see that method's own doc comment for why the committed DB
-   *     fencing above, not queue removal, is the actual correctness
-   *     mechanism).
+   * After that transaction commits,
+   * GenerationQueueService.removeIfSafe best-effort removes a still-waiting/
+   * delayed BullMQ job; an active one is deliberately left alone (see that
+   * method's own doc comment for why the committed DB fencing above, not
+   * queue removal, is the actual correctness mechanism).
    */
   async cancelGeneration(userId: string, bookId: string): Promise<CancelGenerationResponse> {
     return this.generationExecutionService.cancelGeneration(userId, bookId);
@@ -308,10 +299,9 @@ export class BooksService {
    * GenerationQueueProcessor.onFailed for what happens once BullMQ's own
    * attempts are exhausted.
    *
-   * completeRun's result gates the legacy GenerationJob update below: a
-   * 'stale_fence' means a different, still-live attempt for the same book
-   * owns that diagnostics row now, so this attempt quietly returns.
-   * 'book_mirror_mismatch' is not a race — it means the run/Book mirror
+   * A `stale_fence` result from completeRun means another claim already owns
+   * the authoritative run, so this attempt quietly returns.
+   * `book_mirror_mismatch` is not a race — it means the run/Book mirror
    * invariant itself is broken — so it is rethrown as
    * GenerationRunMirrorInvariantError instead, the same way an unexpected
    * pipeline error above is: so BullMQ never treats this delivery as
@@ -347,12 +337,24 @@ export class BooksService {
     return this.assetService.getPreviewPdfBuffer(bookId, userId);
   }
 
+  async getPublishedImage(
+    bookId: string,
+    userId: string,
+    imageId: string,
+  ): Promise<PublishedImageResult> {
+    return this.assetService.getPublishedImage(bookId, userId, imageId);
+  }
+
   /** Safe, non-secret generation diagnostics for a book — see generation-diagnostics.ts. */
   async getGenerationDiagnostics(
     bookId: string,
     userId: string,
   ): Promise<GenerationDiagnosticsDto> {
     return this.diagnosticsService.getGenerationDiagnostics(bookId, userId);
+  }
+
+  async getGenerationProgress(bookId: string, userId: string): Promise<GenerationProgressDto> {
+    return this.diagnosticsService.getGenerationProgress(bookId, userId);
   }
 
   /** Looks up a book and verifies ownership in one query — 404s rather than leaking existence of another user's book. */

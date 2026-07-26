@@ -2,11 +2,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { GenerationRun } from '@prisma/client';
 import {
   GenerationRunRecoveryService,
+  GENERATION_INTERRUPTED_MESSAGE,
   DEFAULT_GENERATION_RUN_QUEUED_STALE_MS,
   readGenerationRunQueuedStaleMs,
   readGenerationRunRecoveryIntervalMs,
 } from './generation-run-recovery.service';
-import { GENERATION_INTERRUPTED_MESSAGE } from './generation-job-recovery.service';
 import type { GenerationQueueService } from './generation-queue.service';
 import type { GenerationRunCoordinator } from './generation-run-coordinator.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';

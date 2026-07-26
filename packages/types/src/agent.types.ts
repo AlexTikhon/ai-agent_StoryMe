@@ -181,11 +181,8 @@ export interface AgentLogSummary {
 }
 
 /**
- * Generation job lifecycle types — mirror the GenerationJobType/
- * GenerationJobStatus enums in schema.prisma (Phase 3I). A GenerationJob
- * tracks one generation attempt (generate or retry); Book.status remains the
- * source of truth for user-facing status. See "Generation jobs (Phase 3I)"
- * in apps/api/docs/local-generation-pipeline.md.
+ * Compatibility vocabulary for the retired GenerationJob API projection.
+ * GenerationRun is authoritative and supplies these values.
  */
 export type GenerationJobType = 'generate' | 'retry';
 

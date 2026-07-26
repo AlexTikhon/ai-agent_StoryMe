@@ -171,6 +171,14 @@ function mockPdfBlob(content = 'pdf-bytes', status = 200): Response {
   } as unknown as Response;
 }
 
+function mockImageBlob(content = 'image-bytes', status = 200): Response {
+  return {
+    ok: true,
+    status,
+    blob: async () => new Blob([content], { type: 'image/png' }),
+  } as unknown as Response;
+}
+
 function makeDiagnostics(
   overrides: Partial<GenerationDiagnosticsDto> = {},
 ): GenerationDiagnosticsDto {
@@ -241,6 +249,9 @@ function createRoutedFetchMock(): {
       const next = diagnosticsQueue.shift();
       return Promise.resolve(next ?? mockOk(DEFAULT_DIAGNOSTICS));
     }
+    if (url.includes('/images/')) {
+      return Promise.resolve(mockImageBlob());
+    }
     const next = bookQueue.shift() ?? bookDefault;
     if (!next) {
       return Promise.reject(new Error(`Unexpected fetch call with no queued response: ${url}`));
@@ -272,6 +283,7 @@ describe('BookDetailPage', () => {
   }
 
   beforeEach(() => {
+    vi.stubEnv('NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS', 'true');
     vi.mocked(useParams).mockReturnValue({ id: 'book-1' });
     vi.mocked(useRouter).mockReturnValue({ push: pushMock } as unknown as ReturnType<
       typeof useRouter
@@ -285,6 +297,7 @@ describe('BookDetailPage', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   // ── Loading state ──────────────────────────────────────────────────────────
@@ -1473,6 +1486,47 @@ describe('BookDetailPage', () => {
       expect(screen.getByRole('heading', { name: /generated story preview/i })).toBeDefined();
       expect(screen.queryByRole('heading', { name: /images are ready/i })).toBeNull();
     });
+  });
+
+  it('shows the authenticated reader for a completed published book', async () => {
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: '/files/books/book-1/storybook.pdf',
+      bookPreview: makeBookPreview(),
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+
+    render(<BookDetailPage />);
+
+    expect(
+      await screen.findByRole('region', { name: /published book reader/i }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        fetchMock.fetchFn.mock.calls.some(([url]) =>
+          String(url).endsWith('/books/book-1/images/cover'),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it('does not show the reader without a successful publication marker', async () => {
+    const completeBook: BookDto = {
+      ...MOCK_BOOK,
+      status: BookStatus.Complete,
+      previewPdfUrl: null,
+      bookPreview: makeBookPreview(),
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
+
+    render(<BookDetailPage />);
+
+    await screen.findByRole('heading', { level: 1, name: "Emma's Story" });
+    expect(screen.queryByRole('region', { name: /published book reader/i })).toBeNull();
+    expect(fetchMock.fetchFn.mock.calls.some(([url]) => String(url).includes('/images/'))).toBe(
+      false,
+    );
   });
 
   // ── PDF section ───────────────────────────────────────────────────────────
@@ -2855,6 +2909,33 @@ describe('BookDetailPage', () => {
   // ── Generation diagnostics panel ──────────────────────────────────────────
 
   describe('Generation diagnostics panel', () => {
+    it('does not fetch or render developer diagnostics and internal asset keys by default', async () => {
+      vi.stubEnv('NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS', '');
+      const bookWithImages: BookDto = {
+        ...MOCK_BOOK,
+        status: BookStatus.Complete,
+        bookPreview: makeBookPreview(),
+        imageGenerationResult: makeImageGenerationResult(),
+        previewPdfUrl: null,
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(bookWithImages));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /generated story preview/i })).toBeDefined();
+      });
+
+      expect(screen.queryByTestId('generation-diagnostics')).toBeNull();
+      expect(screen.queryByRole('heading', { name: /images are ready/i })).toBeNull();
+      expect(screen.queryByText('/mock-images/book-1/cover.svg')).toBeNull();
+      expect(
+        fetchMock.fetchFn.mock.calls.some(([input]) =>
+          String(input).includes('/generation-diagnostics'),
+        ),
+      ).toBe(false);
+    });
+
     it('renders provider, model, generated pages, and duration info', async () => {
       const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.ImageGen };
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(generatingBook));

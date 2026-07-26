@@ -3,17 +3,17 @@
 StoryMe should remain a deterministic durable workflow: no LangGraph, multiple autonomous agents,
 unbounded repair loops, new providers, or SaaS-scale abstractions.
 
-## Phase 2: separate existing responsibilities
+## Phase 2: separate existing responsibilities (completed)
 
-**User value:** safer, faster maintenance. **Technical scope:** extract typed pipeline stages and
+**User value:** safer, faster maintenance. **Delivered scope:** extracted typed pipeline stages and
 a thin `AgentService` orchestrator; split `BooksService` into CRUD, generation, asset, and
 diagnostics services; separate product UI from diagnostics in `book-detail-view.tsx`; migrate
 away from `GenerationJob`; decide whether each unused Prisma model stays or is removed.
-**Migration risk:** high around transactions, fencing, retry, and diagnostics. **Acceptance:**
-existing contracts/tests remain green; all writes retain fencing/coordinator boundaries; each
-service is narrow/tested; legacy removal has an explicit migration and unused-model decisions are
-recorded. **Out of scope:** product features, provider/billing/framework changes, output changes,
-and unrelated schema redesign.
+**Migration risk:** high around transactions, fencing, retry, and diagnostics. **Acceptance met:**
+contracts/tests were retained; writes keep fencing/coordinator boundaries; legacy removal has a
+forward migration; unused-model decisions are recorded in `PRISMA_MODEL_DECISIONS.md`.
+**Out of scope:** product features, provider/billing/framework changes, output changes, and
+unrelated schema redesign.
 
 ## Phase 3: reader, previews, and honest progress
 

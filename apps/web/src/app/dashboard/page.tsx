@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from 'react';
 import type { BookDto } from '@book/types';
 import { BookStatus } from '@book/types';
 import { booksApi } from '@/lib/api/books';
+import { PublishedCoverThumbnail } from './published-cover-thumbnail';
 
 /** Books not actively running the generation pipeline — safe to edit/delete. Mirrors the API's EDITABLE_BOOK_STATUSES gate. */
 function isBookEditable(status: BookStatus): boolean {
@@ -113,15 +114,28 @@ function BookCard({ book, onDelete, deleting }: BookCardProps) {
   const isDraft = book.status === BookStatus.Created;
   const isCancelled = book.status === BookStatus.Cancelled;
   const editable = isBookEditable(book.status);
+  const title = book.title ?? 'Untitled';
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-border-subtle bg-bg-surface p-5 shadow-xs transition-shadow hover:shadow-sm">
+      {book.previewPdfUrl ? (
+        <PublishedCoverThumbnail bookId={book.id} title={title} />
+      ) : (
+        <div
+          role="img"
+          aria-label="No published cover"
+          className="mb-4 flex aspect-[3/4] items-center justify-center rounded-xl bg-stone-100 text-3xl"
+        >
+          📖
+        </div>
+      )}
+
       <div className="mb-3 flex items-start justify-between gap-2">
         <Link
           href={`/dashboard/books/${book.id}`}
           className="font-display text-lg font-semibold leading-snug text-text-primary transition-colors hover:text-violet-700"
         >
-          {book.title ?? 'Untitled'}
+          {title}
         </Link>
         <span
           className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold ${

@@ -8,6 +8,7 @@ import type { BookDto } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 import { ApiError } from '@/lib/api/client';
 import { notifyCreditsUpdated } from '@/lib/credits-events';
+import { isDeveloperDiagnosticsEnabled } from '@/lib/feature-flags';
 import { useBookDetail } from './use-book-detail';
 import {
   defaultEditForm,
@@ -39,6 +40,7 @@ export default function BookDetailPage() {
   const params = useParams();
   const id = params.id as string;
   const router = useRouter();
+  const showDeveloperDiagnostics = isDeveloperDiagnosticsEnabled();
 
   const {
     book,
@@ -51,7 +53,7 @@ export default function BookDetailPage() {
     diagnosticsError,
     refreshing,
     handleRefresh,
-  } = useBookDetail(id);
+  } = useBookDetail(id, showDeveloperDiagnostics);
 
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditForm>(defaultEditForm());
@@ -317,6 +319,7 @@ export default function BookDetailPage() {
                   refreshing={refreshing}
                   diagnostics={diagnostics}
                   diagnosticsError={diagnosticsError}
+                  showDeveloperDiagnostics={showDeveloperDiagnostics}
                   onRegenerate={() => {
                     void handleRegenerate();
                   }}

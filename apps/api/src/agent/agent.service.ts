@@ -1,33 +1,14 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { AgentLogStatus, AgentStep, BookStatus, Prisma, type Book } from '@prisma/client';
+import { AgentStep, BookStatus, Prisma } from '@prisma/client';
 import { PDF_STORAGE_TOKEN, publishedPreviewPdfExists, type PdfStorage } from '../pdf/pdf-storage';
+import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import {
-  claimCharacterSheetAssetKey,
-  claimImageAssetKey,
-  IMAGE_ASSET_STORAGE_TOKEN,
-  type ImageAssetStorage,
-} from '../images/image-asset-storage';
-import {
-  assertCompleteBookImageBudget,
-  hasImageGenerationFailureDetails,
   IMAGE_GENERATION_PROVIDER_TOKEN,
-  resolveMaxGeneratedImagesPerBook,
   type ImageGenerationProvider,
-  type ImageReference,
 } from '../images/image-generation-provider';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
-import { CHILD_PHOTO_INTEGRITY_MISMATCH } from '../books/child-photo.constants';
-import {
-  type BookPreview,
-  type CharacterCard,
-  type CharacterProfile,
-  type GeneratedImageEntry,
-  type GenerationProviderName,
-  type ImageGenerationFailureDetail,
-  type ImageGenerationResult,
-  type ResumeDiagnostics,
-} from '@book/types';
+import { type BookPreview, type ImageGenerationResult } from '@book/types';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
   resolveTargetPageCount,
@@ -36,7 +17,6 @@ import {
 } from './story-generation-provider';
 import {
   CHARACTER_PROFILE_PROVIDER_TOKEN,
-  MockCharacterProfileProvider,
   type CharacterProfileProvider,
 } from './character-profile-provider';
 import {
@@ -45,14 +25,7 @@ import {
 } from './generation-execution.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationOutcome } from './generation-outcome';
-import {
-  claimNamespace,
-  resolveLastGenerationNamespace,
-  resolvePublishedPdfNamespace,
-  type ClaimArtifactNamespace,
-  type GenerationArtifactNamespace,
-} from './generation-artifact-namespace';
-import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generation-claim-artifacts';
+import { resolvePublishedPdfNamespace } from './generation-artifact-namespace';
 import { bookLayoutStage } from './book-layout.stage';
 import { pdfPublicationStage } from './pdf-publication.stage';
 import {
@@ -61,42 +34,14 @@ import {
   resolveMaxPaidProviderCallsPerRun,
 } from './generation-provider-telemetry';
 import { StoryContentStage } from './story-content.stage';
+import {
+  CharacterReferenceStage,
+  type CharacterBuildStageOutput,
+} from './character-reference.stage';
+import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage';
+import { GenerationResumeService } from './generation-resume.service';
+import { GenerationResultCollector } from './generation-result.collector';
 
-/** Stable diagnostics label for one planned image entry: 'cover' | 'page_<n>' | 'back_cover'. */
-function imageAssetLabel(entry: GeneratedImageEntry): string {
-  return entry.kind === 'page' ? `page_${entry.pageNumber}` : entry.kind;
-}
-
-/** Safe provider label for ImageGenerationFailureDetail — never a secret, never a raw response. */
-function toGenerationProviderName(raw: string | undefined): GenerationProviderName {
-  return raw === 'mock' || raw === 'openai' ? raw : 'unknown';
-}
-
-function promptVersion(provider: { readonly promptVersion?: string }, fallback: string): string {
-  return provider.promptVersion ?? fallback;
-}
-
-/**
- * True when `book` already carries a full prior generation result (story
- * plan, character card, book preview, and planned image list) produced by
- * the *exact same input* this run is executing — the signature of a retry
- * resuming a book that previously made it past Phase 1 of a run with an
- * unchanged input, as opposed to a brand-new book, or a book whose
- * childName/theme/etc. were edited since that prior result was produced.
- *
- * `book.lastGenerationInputHash` (Phase 2D) records the GenerationRun.
- * inputHash that produced whatever JSON currently sits on the row — compared
- * against `inputHash`, the hash of the run currently executing. A `retry`
- * run's inputHash is copied verbatim from the run it retries, so this is
- * always true for an unmodified retry-after-failure; a `regenerate` (or
- * `initial`) run's inputHash is built fresh from the book's *current* fields
- * at run-creation time, so an edit made before regenerating changes the hash
- * and correctly forces a full regeneration instead of silently reusing stale
- * story/images (see BooksService.createRunAndSchedule and
- * generation-input-snapshot.ts). Gating idempotent resume on this means an
- * ordinary first-time `generate` is byte-identical to before this feature
- * existed.
- */
 /**
  * Generation-relevant input resolved once at the top of startBookGeneration
  * from the run's immutable GenerationExecutionContext.inputSnapshot — never
@@ -113,20 +58,14 @@ interface ResolvedGenerationInput {
   childPhoto?: { assetKey: string; contentType: string; sha256: string; sizeBytes: number };
 }
 
-function isResumableBook(book: Book, inputHash: string): boolean {
-  return (
-    book.lastGenerationInputHash === inputHash &&
-    book.storyPlan != null &&
-    book.characterCard != null &&
-    book.bookPreview != null &&
-    book.imageGenerationResult != null
-  );
-}
-
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private readonly storyContentStage: StoryContentStage;
+  private readonly characterReferenceStage: CharacterReferenceStage;
+  private readonly imageGenerationStage: ImageGenerationStage;
+  private readonly generationResumeService: GenerationResumeService;
+  private readonly generationResultCollector = new GenerationResultCollector();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -141,184 +80,16 @@ export class AgentService {
     private readonly generationExecutionService: GenerationExecutionService,
   ) {
     this.storyContentStage = new StoryContentStage(storyGenerationProvider);
-  }
-
-  /** Safe fallback profile provider used when the injected (possibly real) CharacterProfileProvider throws — never blocks the pipeline on a flaky vision call. */
-  private readonly fallbackCharacterProfileProvider = new MockCharacterProfileProvider();
-
-  /**
-   * Loads the uploaded child reference photo's bytes and verifies them
-   * against the sha256/sizeBytes recorded in the GenerationInputSnapshot at
-   * run-creation time before ever handing them to a vision provider. A
-   * mismatch — truncated bytes, a different file at the same key, or any
-   * other corruption/replacement — is never silently used: this is the one
-   * piece of a run's snapshot that is itself a *reference* into mutable
-   * storage rather than an inline value, so verifying it is what actually
-   * makes the "immutable input" guarantee (see GenerationInputSnapshot's own
-   * doc comment) hold for a photo, not just for the plain fields. Returns
-   * `{}` (no photo, no error) when nothing was ever uploaded; `{ photo }` on
-   * a verified match; `{ integrityError }` (photo omitted) when bytes were
-   * found but failed verification, logged at `error` with the stable
-   * CHILD_PHOTO_INTEGRITY_MISMATCH code — distinguishable from the ordinary
-   * "no bytes found at all" case, which only ever gets a `warn`. Either way,
-   * this never throws: like every other char_build sub-failure, a bad photo
-   * degrades to text-only character-profile generation rather than failing
-   * the whole book.
-   */
-  private async loadAndVerifyChildPhoto(
-    bookId: string,
-    childPhoto: ResolvedGenerationInput['childPhoto'],
-  ): Promise<{ photo?: { base64: string; contentType: string }; integrityError?: string }> {
-    if (!childPhoto) return {};
-
-    const bytes = await this.imageAssetStorage.getImageAsset(childPhoto.assetKey);
-    if (!bytes) {
-      this.logger.warn(
-        `Book ${bookId} has childPhoto asset "${childPhoto.assetKey}" but no bytes were found in image storage; building character profile without a photo.`,
-      );
-      return {};
-    }
-
-    if (bytes.length !== childPhoto.sizeBytes) {
-      const integrityError = `${CHILD_PHOTO_INTEGRITY_MISMATCH}: childPhoto asset "${childPhoto.assetKey}" for book ${bookId} is ${bytes.length} bytes, expected ${childPhoto.sizeBytes} — refusing to use it.`;
-      this.logger.error(integrityError);
-      return { integrityError };
-    }
-    const actualSha256 = createHash('sha256').update(bytes).digest('hex');
-    if (actualSha256 !== childPhoto.sha256) {
-      const integrityError = `${CHILD_PHOTO_INTEGRITY_MISMATCH}: childPhoto asset "${childPhoto.assetKey}" for book ${bookId} has sha256 ${actualSha256}, expected ${childPhoto.sha256} — refusing to use it.`;
-      this.logger.error(integrityError);
-      return { integrityError };
-    }
-
-    return { photo: { base64: bytes.toString('base64'), contentType: childPhoto.contentType } };
-  }
-
-  /**
-   * Builds the book's CharacterProfile (from name/age/theme and, if
-   * uploaded, the child's reference photo) and a character-sheet reference
-   * image — the actual work behind the AgentStep.char_build step. Never
-   * throws: a profile-provider failure falls back to a locally-built mock
-   * profile, and a character-sheet failure just leaves
-   * characterProfile.hasCharacterSheet = false, so neither can fail the
-   * whole book (matching the per-image failure tolerance elsewhere in this
-   * pipeline).
-   */
-  private async buildCharacterProfileAndSheet(
-    bookId: string,
-    input: ResolvedGenerationInput,
-    currentNamespace: ClaimArtifactNamespace,
-    providerTelemetry: GenerationProviderTelemetry,
-  ): Promise<{
-    characterProfile: CharacterProfile;
-    characterSheetKey?: string;
-    providerName: string | null;
-    modelName: string | null;
-    durationMs: number;
-    error?: string;
-  }> {
-    const startedAt = Date.now();
-    const { childName, childAge, theme, language } = input;
-
-    const { photo, integrityError } = await this.loadAndVerifyChildPhoto(bookId, input.childPhoto);
-
-    let providerName = this.characterProfileProvider.providerName ?? null;
-    const modelName = this.characterProfileProvider.modelName ?? null;
-    let characterProfile: CharacterProfile;
-    let error: string | undefined = integrityError;
-    const profilePromptInput = {
-      bookId,
-      childName,
-      childAge,
-      theme,
-      language,
-      childPhoto: input.childPhoto
-        ? {
-            contentType: input.childPhoto.contentType,
-            sha256: input.childPhoto.sha256,
-          }
-        : null,
-    };
-    try {
-      characterProfile = await providerTelemetry.record({
-        operation: 'character_profile',
-        provider: toGenerationProviderName(this.characterProfileProvider.providerName),
-        ...(this.characterProfileProvider.modelName && {
-          model: this.characterProfileProvider.modelName,
-        }),
-        promptVersion: promptVersion(this.characterProfileProvider, 'legacy-character-profile-v1'),
-        promptInput: profilePromptInput,
-        execute: () =>
-          this.characterProfileProvider.buildProfile({
-            bookId,
-            childName,
-            childAge,
-            theme,
-            language,
-            photo,
-          }),
-      });
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `Character profile provider failed for book ${bookId}: ${error}. Falling back to a generic profile.`,
-      );
-      characterProfile = await providerTelemetry.record({
-        operation: 'character_profile',
-        provider: toGenerationProviderName(this.fallbackCharacterProfileProvider.providerName),
-        promptVersion: promptVersion(
-          this.fallbackCharacterProfileProvider,
-          'fallback-character-profile-v1',
-        ),
-        promptInput: profilePromptInput,
-        execute: () =>
-          this.fallbackCharacterProfileProvider.buildProfile({
-            bookId,
-            childName,
-            childAge,
-            theme,
-            language,
-            photo,
-          }),
-      });
-      providerName = 'mock';
-    }
-
-    let characterSheetKey: string | undefined;
-    try {
-      const { buffer, contentType } = await providerTelemetry.record({
-        operation: 'character_sheet',
-        provider: toGenerationProviderName(this.imageGenerationProvider.providerName),
-        ...(this.imageGenerationProvider.modelName && {
-          model: this.imageGenerationProvider.modelName,
-        }),
-        promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
-        promptInput: { bookId, characterProfile },
-        execute: () =>
-          this.imageGenerationProvider.generateCharacterSheet({
-            bookId,
-            characterProfile,
-          }),
-      });
-      const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
-      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
-      characterSheetKey = key;
-      characterProfile = { ...characterProfile, hasCharacterSheet: true };
-    } catch (err) {
-      const sheetError = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `Character sheet generation/save failed for book ${bookId}: ${sheetError}. Continuing without a character sheet reference image.`,
-      );
-    }
-
-    return {
-      characterProfile,
-      ...(characterSheetKey !== undefined && { characterSheetKey }),
-      providerName,
-      modelName,
-      durationMs: Date.now() - startedAt,
-      ...(error !== undefined && { error }),
-    };
+    this.characterReferenceStage = new CharacterReferenceStage(
+      imageAssetStorage,
+      characterProfileProvider,
+      imageGenerationProvider,
+    );
+    this.imageGenerationStage = new ImageGenerationStage(
+      imageAssetStorage,
+      imageGenerationProvider,
+    );
+    this.generationResumeService = new GenerationResumeService(imageAssetStorage);
   }
 
   /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
@@ -327,303 +98,6 @@ export class AgentService {
     readonly modelName?: string;
   }): string {
     return provider.modelName ?? provider.providerName ?? 'unknown';
-  }
-
-  /**
-   * Loads the book's generated character-sheet reference image bytes once
-   * (never the original uploaded child photo — that only ever reaches the
-   * CharacterProfileProvider's vision step, see buildCharacterProfileAndSheet)
-   * so every generateImage call this run can share the same in-memory
-   * ImageReference instead of re-reading storage per page.
-   *
-   * Returns `{}` (no `reference`, no `loadError`) when no character sheet was
-   * ever created this run — the ordinary, unremarkable case. Returns
-   * `{ loadError }` — logged at `error`, not `warn` — when a character sheet
-   * was recorded as existing (a characterSheetKey is set) but its bytes could
-   * not be read back from storage; this is distinct from "never had a sheet"
-   * and must not be silently indistinguishable from it (see
-   * ImageGenerationResult.characterReferenceLoadError). Either way the caller
-   * still falls back to text-only generation for this run instead of failing
-   * the whole book over a missing consistency aid.
-   */
-  private async loadCharacterReference(
-    bookId: string,
-    characterSheetKey: string | undefined,
-  ): Promise<{ reference?: ImageReference; loadError?: string }> {
-    if (!characterSheetKey) return {};
-
-    const buffer = await this.imageAssetStorage.getImageAsset(characterSheetKey);
-    if (!buffer) {
-      const loadError = `Character sheet asset "${characterSheetKey}" for book ${bookId} is recorded as existing but its bytes could not be loaded from image storage; continuing with text-only image generation for this run.`;
-      this.logger.error(loadError);
-      return { loadError };
-    }
-
-    // Character sheets are always saved as 'image/png' by both
-    // MockImageGenerationProvider.generateCharacterSheet and
-    // OpenAIImageGenerationProvider.generateCharacterSheet — ImageAssetStorage
-    // itself doesn't track content type on read, so this is a safe, stable
-    // assumption rather than a guess.
-    return { reference: { buffer, contentType: 'image/png' } };
-  }
-
-  /**
-   * Generates real image bytes for every generated image entry via the
-   * injected ImageGenerationProvider, then saves them via ImageAssetStorage,
-   * keyed to match buildImageBufferResolver's lookup (imageAssetKey).
-   *
-   * Does not throw here: both a provider.generateImage failure (e.g. a real
-   * API outage) and an ImageAssetStorage.saveImageAsset failure for one entry
-   * are caught, logged, and counted individually so the rest of the batch can
-   * keep going. The caller surfaces generatedCount/failedCount/lastError via
-   * ImageGenerationResult.generatedImageCount/failedImageCount/lastImageError
-   * for diagnostics — but any entry left without saved bytes here causes
-   * PdfPublicationStage to reject before rendering (see
-   * startBookGeneration's Phase 2), failing the book with a clear error
-   * instead of silently rendering a placeholder for it.
-   *
-   * Before any paid call, the real provider also verifies defensively that
-   * MAX_GENERATED_IMAGES_PER_BOOK can cover the complete planned image set.
-   * BooksService performs the primary check before scheduling or charging;
-   * this duplicate boundary protects direct/internal callers from partial
-   * paid generation. The free mock provider is not budget-limited.
-   */
-  private async generateAndSaveImageAssets(
-    bookId: string,
-    characterCard: CharacterCard,
-    images: GeneratedImageEntry[],
-    characterReference: ImageReference | undefined,
-    currentNamespace: ClaimArtifactNamespace,
-    providerTelemetry: GenerationProviderTelemetry,
-  ): Promise<{
-    generatedCount: number;
-    failedCount: number;
-    lastError?: string;
-    usedCharacterReference: boolean;
-    failures: ImageGenerationFailureDetail[];
-  }> {
-    const isRealProvider = this.imageGenerationProvider.providerName === 'openai';
-    const limit = isRealProvider ? resolveMaxGeneratedImagesPerBook() : images.length;
-    if (isRealProvider) assertCompleteBookImageBudget(images.length, limit);
-    const imagesToGenerate = images;
-
-    const providerName = toGenerationProviderName(this.imageGenerationProvider.providerName);
-    const modelName = this.imageGenerationProvider.modelName;
-    const attemptedRequestMode: ImageGenerationFailureDetail['requestMode'] = characterReference
-      ? 'character-reference-edit'
-      : 'text-to-image';
-
-    let generatedCount = 0;
-    let failedCount = 0;
-    let lastError: string | undefined;
-    let usedCharacterReference = false;
-    const failures: ImageGenerationFailureDetail[] = [];
-
-    await Promise.all(
-      imagesToGenerate.map(async (image) => {
-        try {
-          const { buffer, contentType, usedReference } = await providerTelemetry.record({
-            operation: 'illustration',
-            assetLabel: imageAssetLabel(image),
-            provider: providerName,
-            ...(modelName && { model: modelName }),
-            promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
-            promptInput: {
-              bookId,
-              entry: {
-                kind: image.kind,
-                pageNumber: image.pageNumber,
-                prompt: image.prompt,
-                negativePrompt: image.negativePrompt,
-                seed: image.seed,
-              },
-              characterCard,
-              characterReferenceSupplied: characterReference !== undefined,
-            },
-            execute: () =>
-              this.imageGenerationProvider.generateImage({
-                bookId,
-                entry: image,
-                characterCard,
-                ...(characterReference && { characterReference }),
-              }),
-          });
-          const key = claimImageAssetKey(bookId, currentNamespace, image.kind, image.pageNumber);
-          await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
-          generatedCount++;
-          if (usedReference) usedCharacterReference = true;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(
-            `Image generation/save failed for entry "${image.id}" (book ${bookId}): ${message}. Falling back to a placeholder for this entry.`,
-          );
-          failedCount++;
-          lastError = message;
-          const details = hasImageGenerationFailureDetails(err) ? err.details : {};
-          failures.push({
-            assetLabel: imageAssetLabel(image),
-            provider: providerName,
-            ...(modelName && { model: modelName }),
-            ...(details.httpStatus !== undefined && { httpStatus: details.httpStatus }),
-            ...(details.errorType !== undefined && { errorType: details.errorType }),
-            ...(details.errorCode !== undefined && { errorCode: details.errorCode }),
-            message,
-            attempts: details.attempts ?? 1,
-            limiterRetries: details.limiterRetries ?? 0,
-            limiterWaitMs: details.limiterWaitMs ?? 0,
-            characterReferenceSupplied:
-              details.characterReferenceSupplied ?? characterReference !== undefined,
-            requestMode: details.requestMode ?? attemptedRequestMode,
-            ...(details.timeoutMs !== undefined && { timeoutMs: details.timeoutMs }),
-            ...(details.elapsedMs !== undefined && { elapsedMs: details.elapsedMs }),
-            ...(details.retryDecision !== undefined && { retryDecision: details.retryDecision }),
-          });
-        }
-      }),
-    );
-
-    return {
-      generatedCount,
-      failedCount,
-      usedCharacterReference,
-      failures,
-      ...(lastError !== undefined && { lastError }),
-    };
-  }
-
-  /**
-   * Classifies whether a book's character-sheet reference image is usable,
-   * copying it forward from `sourceNamespace` into `currentNamespace` first
-   * when the current claim doesn't already have a valid one (Phase B, Slice
-   * B3 — see generation-claim-artifacts.ts). `sourceNamespace` must be
-   * `null` whenever copy-forward must not be attempted (the run's input
-   * changed since the source JSON was produced — see `resumable` at this
-   * method's call site): 'missing'/'invalid' if none was ever
-   * intended/keyed or is unreadable/empty even after that attempt, 'valid'
-   * (with the current-claim key) otherwise.
-   */
-  private async resolveCharacterSheetForClaim(
-    bookId: string,
-    profile: CharacterProfile,
-    currentNamespace: ClaimArtifactNamespace,
-    sourceNamespace: GenerationArtifactNamespace | null,
-  ): Promise<{ status: 'valid' | 'missing' | 'invalid'; key?: string }> {
-    if (!profile.hasCharacterSheet) return { status: 'missing' };
-    const resolution = await resolveCharacterSheetArtifact({
-      storage: this.imageAssetStorage,
-      bookId,
-      currentNamespace,
-      sourceNamespace,
-    });
-    if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
-      return { status: 'valid', key: resolution.key };
-    }
-    return { status: resolution.sourceStatus === 'invalid' ? 'invalid' : 'missing' };
-  }
-
-  /**
-   * Splits a book's planned image entries (cover/pages/back_cover) into
-   * those with already-valid current-claim bytes or a successfully
-   * copied-forward source (reusable as-is, no provider call needed) and
-   * those that need a fresh generateImage call — either because no source
-   * was ever saved for that entry, a prior save left zero bytes, or no
-   * source applies at all (Phase B, Slice B3 — see
-   * generation-claim-artifacts.ts). On a brand-new book/claim nothing is
-   * saved yet and `sourceNamespace` is `null`, so every entry naturally
-   * lands in `toGenerate` — this is also the ordinary fresh-generation path,
-   * not just resume.
-   */
-  private async classifyImageAssets(
-    bookId: string,
-    images: GeneratedImageEntry[],
-    currentNamespace: ClaimArtifactNamespace,
-    sourceNamespace: GenerationArtifactNamespace | null,
-  ): Promise<{
-    reusable: GeneratedImageEntry[];
-    toGenerate: GeneratedImageEntry[];
-    missing: GeneratedImageEntry[];
-    invalid: GeneratedImageEntry[];
-  }> {
-    const reusable: GeneratedImageEntry[] = [];
-    const toGenerate: GeneratedImageEntry[] = [];
-    const missing: GeneratedImageEntry[] = [];
-    const invalid: GeneratedImageEntry[] = [];
-
-    await Promise.all(
-      images.map(async (image) => {
-        const resolution = await resolveImageArtifact({
-          storage: this.imageAssetStorage,
-          bookId,
-          currentNamespace,
-          sourceNamespace,
-          kind: image.kind,
-          pageNumber: image.pageNumber,
-        });
-        if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
-          reusable.push(image);
-        } else {
-          toGenerate.push(image);
-          (resolution.sourceStatus === 'invalid' ? invalid : missing).push(image);
-        }
-      }),
-    );
-
-    return { reusable, toGenerate, missing, invalid };
-  }
-
-  /**
-   * Regenerates only the character-sheet reference image for a book whose
-   * CharacterProfile is being reused as-is (resume path) but whose
-   * previously saved sheet bytes are missing or invalid. Mirrors the sheet
-   * half of buildCharacterProfileAndSheet above — kept separate so reusing a
-   * valid profile never re-runs the (possibly real, billed)
-   * CharacterProfileProvider just to regenerate a sheet.
-   */
-  private async regenerateCharacterSheet(
-    bookId: string,
-    characterProfile: CharacterProfile,
-    currentNamespace: ClaimArtifactNamespace,
-    providerTelemetry: GenerationProviderTelemetry,
-  ): Promise<{
-    characterProfile: CharacterProfile;
-    characterSheetKey?: string;
-    durationMs: number;
-    error?: string;
-  }> {
-    const startedAt = Date.now();
-    try {
-      const { buffer, contentType } = await providerTelemetry.record({
-        operation: 'character_sheet',
-        provider: toGenerationProviderName(this.imageGenerationProvider.providerName),
-        ...(this.imageGenerationProvider.modelName && {
-          model: this.imageGenerationProvider.modelName,
-        }),
-        promptVersion: promptVersion(this.imageGenerationProvider, 'legacy-image-v1'),
-        promptInput: { bookId, characterProfile },
-        execute: () =>
-          this.imageGenerationProvider.generateCharacterSheet({
-            bookId,
-            characterProfile,
-          }),
-      });
-      const key = claimCharacterSheetAssetKey(bookId, currentNamespace);
-      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
-      return {
-        characterProfile: { ...characterProfile, hasCharacterSheet: true },
-        characterSheetKey: key,
-        durationMs: Date.now() - startedAt,
-      };
-    } catch (err) {
-      const sheetError = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `Character sheet regeneration/save failed for book ${bookId} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
-      );
-      return {
-        characterProfile: { ...characterProfile, hasCharacterSheet: false },
-        durationMs: Date.now() - startedAt,
-        error: sheetError,
-      };
-    }
   }
 
   /**
@@ -716,62 +190,25 @@ export class AgentService {
     // character sheet/image this run writes lands here, never derived from
     // Book.activeRunId, a fresh DB read, or any other source (see
     // generation-artifact-namespace.ts's ClaimArtifactNamespace doc
-    // comment). Resolved unconditionally, alongside `sourceNamespace`
-    // (below), before the resumability check — a malformed partial pointer
-    // on `book` must fail loudly regardless of whether this run ends up
-    // reusing anything.
-    const currentNamespace = claimNamespace(ctx.runId, ctx.fencingVersion);
-    // The namespace backing whatever resumable JSON currently sits on
-    // `book` — a prior claim of this same run (redelivery), a claim from
-    // the run being retried, or `{ kind: 'legacy' }` for a pre-Phase-B row.
-    // Only ever consulted as a copy-forward *source* below, gated on
-    // `resumable` (see copyForwardSourceNamespace) — never trusted as this
-    // run's own ownership.
-    const sourceNamespace = resolveLastGenerationNamespace(book);
-
-    // Idempotent resume (see "Idempotent resume" in
-    // apps/api/docs/local-generation-pipeline.md): a retry against a book
-    // that previously made it past Phase 1 of a run already carries a full
-    // story/character/image plan on the row — reuse it instead of paying for
-    // story/character-profile generation again. A brand-new book has none of
-    // this yet, so `resumable` is false and every branch below falls through
-    // to the original from-scratch behavior.
-    const resumable = isResumableBook(book, inputHash);
-    // Copy-forward must never run when the input changed since the source
-    // JSON was produced — bytes at `sourceNamespace` were planned for the
-    // *old* story/theme (see resolveImageArtifact's doc comment) — so every
-    // entry falls straight through to fresh generation into
-    // `currentNamespace` instead of copying anything old forward. A valid
-    // *current-claim* artifact is still reused either way (see
-    // resolveCharacterSheetForClaim/classifyImageAssets below) — that's
-    // same-claim re-entry idempotency, not copy-forward, and is never gated
-    // on `resumable`.
-    const copyForwardSourceNamespace = resumable ? sourceNamespace : null;
-    const priorCharacterProfile = book.characterProfile as unknown as CharacterProfile | null;
-    const priorSheet = priorCharacterProfile
-      ? await this.resolveCharacterSheetForClaim(
-          book.id,
-          priorCharacterProfile,
-          currentNamespace,
-          copyForwardSourceNamespace,
-        )
-      : ({ status: 'missing' } as const);
+    // comment). GenerationResumeService also resolves the source pointer
+    // unconditionally before its resumability check, so a malformed partial
+    // pointer fails loudly even when this run will not reuse anything.
+    const {
+      resumable,
+      currentNamespace,
+      copyForwardSourceNamespace,
+      priorCharacterProfile,
+      priorSheet,
+      canReuseCharacterProfile,
+    } = await this.generationResumeService.plan(book, inputHash, ctx.runId, ctx.fencingVersion);
     const priorSheetStatus = priorSheet.status;
-    const canReuseCharacterProfile = resumable && priorCharacterProfile != null;
 
     // char_build: build the CharacterProfile (+ character-sheet reference
     // image) before the story itself, so every page/cover/back-cover prompt
     // built below can be seeded with it. Persisted below alongside whichever
     // update comes next (the failure-path update or Phase 1's layout
     // update), rather than as its own extra write.
-    let charBuildResult: {
-      characterProfile: CharacterProfile;
-      characterSheetKey?: string;
-      providerName: string | null;
-      modelName: string | null;
-      durationMs: number;
-      error?: string;
-    };
+    let charBuildResult: CharacterBuildStageOutput;
     let skippedCharacterProfileGeneration = false;
     let skippedCharacterSheetGeneration = false;
 
@@ -797,12 +234,12 @@ export class AgentService {
         this.logger.warn(
           `Book ${book.id} has a character profile but its saved character-sheet bytes are ${priorSheetStatus} — regenerating only the character sheet, reusing the profile as-is.`,
         );
-        const sheetResult = await this.regenerateCharacterSheet(
-          book.id,
-          priorCharacterProfile!,
-          currentNamespace,
-          providerTelemetry,
-        );
+        const sheetResult = await this.characterReferenceStage.regenerateSheet({
+          bookId: book.id,
+          characterProfile: priorCharacterProfile!,
+          namespace: currentNamespace,
+          telemetry: providerTelemetry,
+        });
         charBuildResult = {
           ...sheetResult,
           providerName: profileProviderName,
@@ -810,12 +247,12 @@ export class AgentService {
         };
       }
     } else {
-      charBuildResult = await this.buildCharacterProfileAndSheet(
-        book.id,
-        resolvedInput,
-        currentNamespace,
-        providerTelemetry,
-      );
+      charBuildResult = await this.characterReferenceStage.execute({
+        bookId: book.id,
+        input: resolvedInput,
+        namespace: currentNamespace,
+        telemetry: providerTelemetry,
+      });
     }
     const { characterProfile } = charBuildResult;
     const characterProfileUpdateData: Prisma.BookUpdateInput = {
@@ -869,51 +306,17 @@ export class AgentService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
-        // Not persisted here — see GenerationOutcome's doc comment. Both the
-        // AgentLog rows below and status/errorMessage/failedStep are applied
-        // by the caller (GenerationRunCoordinator.completeRun) atomically
-        // alongside the GenerationRun terminal transition, so a stale/
-        // superseded claim that reaches this catch block still writes zero
-        // AgentLog rows; generationTimeMs/aiModelVersions/the char_build
-        // progress ride along in the same write.
-        return {
-          status: BookStatus.failed,
-          completedStep: AgentStep.story_plan,
-          errorCode: 'GENERATION_FAILED',
+        return this.generationResultCollector.collectStoryFailureOutcome({
+          bookId: book.id,
+          traceId,
+          generationTimeMs: Date.now() - startedAt,
+          aiModelVersions,
+          characterProfileUpdateData,
+          charBuildResult,
+          storyProviderName,
+          storyModelName,
           errorMessage: message,
-          failedStep: AgentStep.story_plan,
-          bookUpdate: {
-            generationTimeMs: Date.now() - startedAt,
-            aiModelVersions,
-            ...characterProfileUpdateData,
-          },
-          agentLogs: [
-            {
-              bookId: book.id,
-              agent: 'LocalPipelineAgent',
-              step: AgentStep.char_build,
-              status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
-              attempt: 1,
-              traceId,
-              provider: charBuildResult.providerName,
-              model: charBuildResult.modelName,
-              durationMs: charBuildResult.durationMs,
-              ...(charBuildResult.error && { error: charBuildResult.error }),
-            },
-            {
-              bookId: book.id,
-              agent: 'LocalPipelineAgent',
-              step: AgentStep.story_plan,
-              status: AgentLogStatus.error,
-              attempt: 1,
-              traceId,
-              error: message,
-              provider: storyProviderName,
-              model: storyModelName,
-              durationMs: Date.now() - startedAt,
-            },
-          ],
-        };
+        });
       }
       storyDurationMs = Date.now() - startedAt;
     }
@@ -934,14 +337,14 @@ export class AgentService {
     const imageStartedAt = Date.now();
 
     const { reference: characterReference, loadError: characterReferenceLoadError } =
-      await this.loadCharacterReference(book.id, charBuildResult.characterSheetKey);
+      await this.characterReferenceStage.loadReference(book.id, charBuildResult.characterSheetKey);
     const characterReferenceAvailable = characterReference !== undefined;
 
     // Idempotent resume: only call the image provider for entries whose
     // current-claim bytes are missing or invalid and no source copy-forward
     // resolves them either; entries with a valid current-claim asset (or a
     // valid, successfully copy-forwarded source one — see
-    // classifyImageAssets/generation-claim-artifacts.ts) are reused
+    // GenerationResumeService.classifyImages/generation-claim-artifacts.ts) are reused
     // untouched. On a fresh book/claim nothing is saved yet and
     // `copyForwardSourceNamespace` is `null` unless resumable, so every
     // entry naturally lands in `imagesNeedingGeneration` on a from-scratch
@@ -952,7 +355,7 @@ export class AgentService {
       toGenerate: imagesNeedingGeneration,
       missing: missingImagesBefore,
       invalid: invalidImagesBefore,
-    } = await this.classifyImageAssets(
+    } = await this.generationResumeService.classifyImages(
       book.id,
       imageGenerationResult.images,
       currentNamespace,
@@ -967,21 +370,15 @@ export class AgentService {
       );
     }
 
-    const priorCharacterReferenceUsedForImages =
-      imageGenerationResult.characterReferenceUsedForImages === true;
-    const priorImageGenerationMode = imageGenerationResult.imageGenerationMode;
-    const priorCharacterReferenceAvailable =
-      imageGenerationResult.characterReferenceAvailable === true;
-
-    const { generatedCount, failedCount, lastError, usedCharacterReference, failures } =
-      await this.generateAndSaveImageAssets(
-        book.id,
-        characterCard,
-        imagesNeedingGeneration,
-        characterReference,
-        currentNamespace,
-        providerTelemetry,
-      );
+    const imageGeneration = await this.imageGenerationStage.execute({
+      bookId: book.id,
+      characterCard,
+      images: imagesNeedingGeneration,
+      ...(characterReference && { characterReference }),
+      namespace: currentNamespace,
+      telemetry: providerTelemetry,
+    });
+    const { generatedCount, failedCount, usedCharacterReference } = imageGeneration;
 
     const rateLimitDiagnostics = this.imageGenerationProvider.getRateLimitDiagnostics?.();
     const rateLimitSummary = rateLimitDiagnostics
@@ -991,47 +388,17 @@ export class AgentService {
       `Image generation for book ${book.id}: ${generatedCount} generated, ${reusableImages.length} reused, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.${rateLimitSummary}`,
     );
 
-    // Whether a character-sheet reference was actually supplied to this
-    // run's attempted images — used for imageGenerationMode below only when
-    // nothing succeeded this run. When at least one image did succeed,
-    // `usedCharacterReference` (the provider-confirmed signal) still governs
-    // mode, exactly as before — e.g. MockImageGenerationProvider never
-    // reports usedReference even when a reference was supplied, and that
-    // 'text-to-image' reporting for a provider that doesn't meaningfully
-    // support reference-edits must stay unchanged. But when every attempted
-    // image failed, there is no provider confirmation to rely on at all — in
-    // that case the request that was actually *sent* (edits endpoint with a
-    // reference attached) must still be reported truthfully instead of
-    // silently falling back to 'text-to-image' just because it failed (see
-    // "Diagnose and Fix Failed Resumed Back-Cover Generation").
-    const attemptedWithCharacterReference =
-      imagesNeedingGeneration.length > 0 &&
-      generatedCount === 0 &&
-      characterReference !== undefined;
-
-    imageGenerationResult.imageByteProvider = imageProviderName;
-    imageGenerationResult.generatedImageCount = reusableImages.length + generatedCount;
-    imageGenerationResult.failedImageCount = failedCount;
-    imageGenerationResult.characterReferenceAvailable =
-      characterReferenceAvailable || priorCharacterReferenceAvailable;
-    imageGenerationResult.characterReferenceUsedForImages =
-      usedCharacterReference || priorCharacterReferenceUsedForImages;
-    imageGenerationResult.imageGenerationMode =
-      imagesNeedingGeneration.length > 0
-        ? usedCharacterReference || attemptedWithCharacterReference
-          ? 'character-reference-edit'
-          : 'text-to-image'
-        : (priorImageGenerationMode ?? 'text-to-image');
-    if (lastError !== undefined) {
-      imageGenerationResult.lastImageError = lastError;
-    }
-    if (characterReferenceLoadError !== undefined) {
-      imageGenerationResult.characterReferenceLoadError = characterReferenceLoadError;
-    } else {
-      delete imageGenerationResult.characterReferenceLoadError;
-    }
-    imageGenerationResult.imageFailures = failures;
-    imageGenerationResult.providerUsage = providerTelemetry.snapshot();
+    imageGenerationResult = this.generationResultCollector.collectImageResult({
+      result: imageGenerationResult,
+      imageProviderName,
+      reusableImageCount: reusableImages.length,
+      attemptedImageCount: imagesNeedingGeneration.length,
+      generation: imageGeneration,
+      characterReferenceAvailable,
+      characterReferenceSupplied: characterReference !== undefined,
+      ...(characterReferenceLoadError !== undefined && { characterReferenceLoadError }),
+      providerUsage: providerTelemetry.snapshot(),
+    });
 
     const imageDurationMs = Date.now() - imageStartedAt;
     const layoutStartedAt = Date.now();
@@ -1053,10 +420,10 @@ export class AgentService {
         bookPreview: bookPreview as unknown as Prisma.InputJsonValue,
         imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
         bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
-        // Records which input produced this JSON — see isResumableBook's doc
+        // Records which input produced this JSON — see GenerationResumeService's
         // comment. Written here (not on the earlier failure path, where
         // these fields are never set) since this is the only point at which
-        // isResumableBook could ever become true for this hash.
+        // a later run can become resumable for this hash.
         lastGenerationInputHash: inputHash,
         // Phase B, Slice B3: the exact claim namespace backing the JSON
         // above, persisted in the same fenced transaction as that JSON — see
@@ -1076,7 +443,6 @@ export class AgentService {
     this.assertNotSuperseded(ctx, pdfPublicationStage.step);
 
     let previewPdfUrl: string | null = null;
-    let pdfRenderLogStatus: AgentLogStatus = AgentLogStatus.success;
     let pdfRenderError: string | undefined;
     const pdfStartedAt = Date.now();
 
@@ -1091,7 +457,6 @@ export class AgentService {
       });
       previewPdfUrl = published.previewPdfUrl;
     } catch (err) {
-      pdfRenderLogStatus = AgentLogStatus.error;
       pdfRenderError = err instanceof Error ? err.message : String(err);
       this.logger.error(`PDF render failed for book ${book.id}: ${pdfRenderError}`);
     }
@@ -1106,7 +471,7 @@ export class AgentService {
     // same pattern Phase 3E used for generatedImageCount/failedImageCount)
     // and surfaced via GET /:id/generation-diagnostics.
     // Reuses the single characterReference already loaded above (via
-    // loadCharacterReference) instead of reading ImageAssetStorage again for
+    // CharacterReferenceStage.loadReference) instead of reading ImageAssetStorage again for
     // the same key — some tests assert the character-sheet key is only ever
     // read once per run (see "loads the character-sheet bytes only once" in
     // agent.service.spec.ts).
@@ -1120,9 +485,9 @@ export class AgentService {
     if (pdfRenderError) {
       missingAssetsAfterRetry.push('pdf');
       // Re-checks current-claim state only — no further copy-forward attempt
-      // (`sourceNamespace: null`), since the first classifyImageAssets pass
+      // (`sourceNamespace: null`), since the first classifyImages pass
       // above already resolved every reusable/copied entry for this claim.
-      const afterImages = await this.classifyImageAssets(
+      const afterImages = await this.generationResumeService.classifyImages(
         book.id,
         imageGenerationResult.images,
         currentNamespace,
@@ -1134,11 +499,6 @@ export class AgentService {
       );
     }
 
-    const requiredAssets = [
-      'character_sheet',
-      ...imageGenerationResult.images.map(imageAssetLabel),
-      'pdf',
-    ];
     // Phase B, Slice B4: what was actually *published* for this book before
     // this attempt started — resolved through the same namespace pointer
     // every other production PDF read goes through (see
@@ -1152,177 +512,53 @@ export class AgentService {
         : (await publishedPreviewPdfExists(this.pdfStorage, book.id, publishedNamespaceBefore))
           ? 'valid'
           : 'invalid';
-    const validExistingAssets = [
-      ...(priorSheetStatus === 'valid' ? ['character_sheet'] : []),
-      ...reusableImages.map(imageAssetLabel),
-      ...(pdfStatusBefore === 'valid' ? ['pdf'] : []),
-    ];
-    const missingAssetsBeforeRetry = [
-      ...(priorSheetStatus === 'missing' ? ['character_sheet'] : []),
-      ...missingImagesBefore.map(imageAssetLabel),
-      ...(pdfStatusBefore === 'missing' ? ['pdf'] : []),
-    ];
-    const invalidAssetsBeforeRetry = [
-      ...(priorSheetStatus === 'invalid' ? ['character_sheet'] : []),
-      ...invalidImagesBefore.map(imageAssetLabel),
-      ...(pdfStatusBefore === 'invalid' ? ['pdf'] : []),
-    ];
-
-    const resumeDiagnostics: ResumeDiagnostics = {
-      resumeMode: resumable,
-      requiredAssets,
-      validExistingAssets,
-      missingAssetsBeforeRetry,
-      invalidAssetsBeforeRetry,
-      reusedImageCount: reusableImages.length,
-      regeneratedImageCount: generatedCount,
+    imageGenerationResult.resume = this.generationResultCollector.collectResumeDiagnostics({
+      resumable,
+      images: imageGenerationResult.images,
+      priorSheetStatus,
+      pdfStatusBefore,
+      reusableImages,
+      missingImagesBefore,
+      invalidImagesBefore,
+      generatedImageCount: generatedCount,
       skippedStoryGeneration,
       skippedCharacterProfileGeneration,
       skippedCharacterSheetGeneration,
-      skippedExistingImageGeneration: reusableImages.length > 0,
       missingAssetsAfterRetry,
-      pdfRenderAttempted: true,
       pdfRenderSucceeded: !pdfRenderError,
-      finalBookStatus: finalStatus as unknown as ResumeDiagnostics['finalBookStatus'],
-    };
-    imageGenerationResult.resume = resumeDiagnostics;
+      finalBookStatus: finalStatus,
+    });
 
     // Not written here — see GenerationOutcome's doc comment. status/
     // errorMessage/failedStep are applied by the caller
     // (GenerationRunCoordinator.completeRun) atomically alongside the
     // GenerationRun terminal transition; everything else below rides along in
     // that same write.
-    const finalBookUpdate: Prisma.BookUpdateInput = {
+    // GenerationResultCollector keeps terminal result/log assembly
+    // deterministic. The caller still persists this outcome atomically (see
+    // GenerationOutcome's doc comment), so a stale claim writes nothing.
+    return this.generationResultCollector.collectOutcome({
+      bookId: book.id,
+      traceId,
       generationTimeMs: Date.now() - startedAt,
       aiModelVersions,
-      imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
-    };
-    if (previewPdfUrl !== null) {
-      finalBookUpdate.previewPdfUrl = previewPdfUrl;
-    }
-
-    // Not persisted here — see GenerationOutcome's doc comment. The caller
-    // (GenerationRunCoordinator.completeRun) writes these rows atomically
-    // inside the same fenced transaction as the terminal Book/GenerationRun
-    // write, so a stale/superseded claim that made it all the way through
-    // the pipeline still writes zero AgentLog rows if its fencing check then
-    // fails.
-    const agentLogs: Prisma.AgentLogCreateManyInput[] = [
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.char_build,
-        status: charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: charBuildResult.providerName,
-        model: charBuildResult.modelName,
-        durationMs: charBuildResult.durationMs,
-        ...(charBuildResult.error && { error: charBuildResult.error }),
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.story_plan,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-        durationMs: storyDurationMs,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.page_plan,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.story_draft,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.illust_plan,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.preview_ready,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: storyProviderName,
-        model: storyModelName,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: AgentStep.image_gen,
-        // Truthful, not optimistic: a run whose only attempted image(s)
-        // failed must not be recorded as 'success' just because the step
-        // itself didn't throw (see "Diagnose and Fix Failed Resumed
-        // Back-Cover Generation"). AgentLogStatus has no dedicated
-        // 'partial' value, so any failedCount > 0 — whether every attempt
-        // failed or only some — is recorded as 'error', with the safe
-        // summary message below explaining exactly how many succeeded.
-        status: failedCount > 0 ? AgentLogStatus.error : AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        provider: imageProviderName,
-        model: imageModelName,
-        durationMs: imageDurationMs,
-        ...(failedCount > 0 && {
-          error: `${failedCount} of ${imagesNeedingGeneration.length} attempted image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
-        }),
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: bookLayoutStage.step,
-        status: AgentLogStatus.success,
-        attempt: 1,
-        traceId,
-        durationMs: layoutDurationMs,
-      },
-      {
-        bookId: book.id,
-        agent: 'LocalPipelineAgent',
-        step: pdfPublicationStage.step,
-        status: pdfRenderLogStatus,
-        attempt: 1,
-        traceId,
-        durationMs: pdfDurationMs,
-        ...(pdfRenderError && { error: pdfRenderError }),
-      },
-    ];
-
-    return {
-      status: finalStatus,
-      completedStep: pdfPublicationStage.step,
-      bookUpdate: finalBookUpdate,
-      ...(pdfRenderError && {
-        errorCode: 'GENERATION_FAILED',
-        errorMessage: pdfRenderError,
-        failedStep: pdfPublicationStage.step,
-      }),
-      agentLogs,
-    };
+      imageGenerationResult,
+      previewPdfUrl,
+      finalStatus,
+      ...(pdfRenderError && { pdfRenderError }),
+      charBuildResult,
+      storyProviderName,
+      storyModelName,
+      imageProviderName,
+      imageModelName,
+      storyDurationMs,
+      imageDurationMs,
+      layoutDurationMs,
+      pdfDurationMs,
+      failedImageCount: failedCount,
+      attemptedImageCount: imagesNeedingGeneration.length,
+      layoutStep: bookLayoutStage.step,
+      pdfStep: pdfPublicationStage.step,
+    });
   }
 }

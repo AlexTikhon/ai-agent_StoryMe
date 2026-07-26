@@ -772,9 +772,7 @@ one-time setup before this point.
       periodic sweep to reconcile the abandoned `GenerationRun` against
       BullMQ's own state and mark it failed (`GENERATION_RUN_RECOVERY_INTERVAL_MS`
       / `RECOVERY_LEASE_MS` in `apps/api/src/agent/generation-run-recovery.service.ts`,
-      default 60s / 5min — the older `GenerationJobRecoveryService`/
-      `GENERATION_JOB_STALE_AFTER_MS` no longer marks `Book` failed at all,
-      see that service's own doc comment), then restarting the worker.
+      default 60s / 5min), then restarting the worker.
 - [ ] Confirm the book's status becomes `failed` and the detail page shows a
       failure state with **Retry generation**.
 - [ ] Confirm the credit spent scheduling that run was refunded exactly
@@ -861,10 +859,10 @@ restated for this private-demo scope:
 - **Generation worker is its own deployable process** (`apps/api/src/worker.ts`,
   `ENABLE_GENERATION_WORKER=true`), separate from the API's `main.ts`. Since
   Phase 3K, generation itself is durable and safe across multiple instances
-  of either process (BullMQ distributes jobs) — but
-  `GenerationJobRecoveryService`'s startup sweep still runs independently on
-  every instance's boot (safe, but redundant), and the default `local`
-  storage drivers aren't shared across instances. This runbook still
+  of either process (BullMQ distributes jobs). The removed legacy
+  `GenerationJobRecoveryService` no longer adds a redundant startup sweep,
+  but the default `local` storage drivers still aren't shared across
+  instances. This runbook still
   provisions a single always-on instance of each; revisit before enabling
   autoscaling/multiple replicas.
 - **Redis is a hard runtime dependency, not just boot-time/health-check
