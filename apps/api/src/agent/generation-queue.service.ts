@@ -4,10 +4,19 @@ import type { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queues.config';
 
 export interface GenerationQueueJobData {
+  kind?: 'book_generation';
   bookId: string;
   /** GenerationRun.id — also used as the BullMQ jobId, so a re-dispatch of the same run (e.g. a re-swept outbox event) is a no-op rather than a duplicate job. */
   runId: string;
 }
+
+export interface PageImageRevisionQueueJobData {
+  kind: 'page_image_revision';
+  bookId: string;
+  revisionId: string;
+}
+
+export type BookWorkQueueJobData = GenerationQueueJobData | PageImageRevisionQueueJobData;
 
 /**
  * Safe, non-secret view of the book-generation queue's health — lets
@@ -46,12 +55,25 @@ export class GenerationQueueService {
   private readonly logger = new Logger(GenerationQueueService.name);
 
   constructor(
-    @InjectQueue(QUEUES.BOOK_GENERATION) private readonly queue: Queue<GenerationQueueJobData>,
+    @InjectQueue(QUEUES.BOOK_GENERATION) private readonly queue: Queue<BookWorkQueueJobData>,
   ) {}
 
   async enqueue(data: GenerationQueueJobData): Promise<void> {
     this.logger.log(`Enqueuing generation run — bookId=${data.bookId} runId=${data.runId}`);
     await this.queue.add('run-generation', data, { jobId: data.runId });
+  }
+
+  async enqueuePageImageRevision(data: PageImageRevisionQueueJobData): Promise<void> {
+    this.logger.log(
+      `Enqueuing page image revision — bookId=${data.bookId} revisionId=${data.revisionId}`,
+    );
+    await this.queue.add('run-page-image-revision', data, {
+      jobId: `page-image-${data.revisionId}`,
+      // One confirmed quote authorizes one logical provider call. Provider
+      // HTTP retries remain bounded inside the provider; BullMQ must not
+      // repeat a paid call after an ordinary thrown failure.
+      attempts: 1,
+    });
   }
 
   /**

@@ -13,6 +13,7 @@ import type { GenerationInputSnapshotBackfillService } from './generation-input-
 import { parseGenerationInputSnapshot } from './generation-input-snapshot';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { GenerationQueueJobData } from './generation-queue.service';
+import type { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
 
 /** The BullMQ per-delivery lock token process(job, token) receives — see GenerationRunService.claim's doc comment for why this, not attemptsMade, is the fencing identity. */
 const TOKEN = 'delivery-token-1';
@@ -93,8 +94,40 @@ function createMockSnapshotBackfillService(): jest.Mocked<GenerationInputSnapsho
   } as unknown as jest.Mocked<GenerationInputSnapshotBackfillService>;
 }
 
+function createMockPageImageRevisionService(): jest.Mocked<BookPageImageRevisionService> {
+  return {
+    claim: vi.fn().mockResolvedValue({ id: 'revision-1', fencingVersion: 2 }),
+    executeClaimed: vi.fn().mockResolvedValue(undefined),
+    failAndRefund: vi.fn().mockResolvedValue(undefined),
+  } as unknown as jest.Mocked<BookPageImageRevisionService>;
+}
+
 describe('GenerationQueueProcessor', () => {
   describe('process', () => {
+    it('claims and executes a durable page-image revision through its own fenced path', async () => {
+      const pageRevisionService = createMockPageImageRevisionService();
+      const processor = new GenerationQueueProcessor(
+        createMockBooksService() as never,
+        createMockGenerationRunService() as never,
+        createMockGenerationRunCoordinator() as never,
+        createMockSnapshotBackfillService() as never,
+        pageRevisionService,
+      );
+      const job = {
+        data: {
+          kind: 'page_image_revision',
+          bookId: 'b-1',
+          revisionId: 'revision-1',
+        },
+        attemptsMade: 0,
+        opts: { attempts: 1 },
+      } as unknown as Job<GenerationQueueJobData>;
+
+      await processor.process(job as never, TOKEN);
+
+      expect(pageRevisionService.claim).toHaveBeenCalledWith('revision-1', TOKEN);
+      expect(pageRevisionService.executeClaimed).toHaveBeenCalledWith('revision-1', 2);
+    });
     it('claims the run before delegating to BooksService.runGenerationPipeline', async () => {
       const booksService = createMockBooksService();
       const claimed = makeGenerationRun();
@@ -342,6 +375,31 @@ describe('GenerationQueueProcessor', () => {
   });
 
   describe('onFailed', () => {
+    it('refunds a failed one-call page-image job instead of finalizing a GenerationRun', async () => {
+      const booksService = createMockBooksService();
+      const pageRevisionService = createMockPageImageRevisionService();
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        createMockGenerationRunService() as never,
+        createMockGenerationRunCoordinator() as never,
+        createMockSnapshotBackfillService() as never,
+        pageRevisionService,
+      );
+      const job = {
+        data: {
+          kind: 'page_image_revision',
+          bookId: 'b-1',
+          revisionId: 'revision-1',
+        },
+        attemptsMade: 1,
+        opts: { attempts: 1 },
+      } as never;
+
+      await processor.onFailed(job, new Error('provider failed'));
+
+      expect(pageRevisionService.failAndRefund).toHaveBeenCalledWith('revision-1');
+      expect(booksService.markRunPermanentlyFailedAfterExhaustedRetries).not.toHaveBeenCalled();
+    });
     it('logs a safe error message without throwing on an undefined job', async () => {
       const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       const booksService = createMockBooksService();

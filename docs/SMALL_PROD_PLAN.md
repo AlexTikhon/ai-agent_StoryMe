@@ -26,12 +26,12 @@ page; the library shows the published cover; progress has durable evidence and i
 percentage; ordinary builds do not request or render diagnostics. **Out of scope:** editing,
 public sharing, analytics, broad UI redesign, and role-based diagnostics authorization.
 
-## Phase 4: one-page changes
+## Phase 4: one-page changes (completed)
 
-**Status:** in progress. Slice 4A delivers versioned one-page text correction, immutable PDF
-republication, unchanged-image reuse, optimistic concurrency, and failure-safe atomic publication.
-Slice 4B (one-page image regeneration with an explicit cost quote and confirmation) is next; see
-[PHASE_4_IMPLEMENTATION_PLAN.md](PHASE_4_IMPLEMENTATION_PLAN.md).
+**Delivered scope:** versioned one-page text correction; immutable PDF republication; one-page
+image regeneration with a server-owned quote and explicit paid confirmation; unchanged-artifact
+reuse; optimistic concurrency; fenced, failure-safe atomic publication; idempotent charge/refund.
+See [PHASE_4_IMPLEMENTATION_PLAN.md](PHASE_4_IMPLEMENTATION_PLAN.md).
 
 **User value:** correct one page without replacing a good book. **Technical scope:** edit one
 page's text; regenerate one page image; version the changed artifact; reuse all unaffected

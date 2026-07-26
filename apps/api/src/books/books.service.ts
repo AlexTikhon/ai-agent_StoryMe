@@ -8,6 +8,8 @@ import {
   type GenerateBookResponse,
   type GenerationDiagnosticsDto,
   type GenerationProgressDto,
+  type PageImageRegenerationQuote,
+  type PageImageRevisionDto,
 } from '@book/types';
 import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
@@ -37,6 +39,7 @@ import {
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
 import type { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
+import type { CreatePageImageQuoteDto } from './dto/create-page-image-quote.dto';
 import { BookCrudService } from './book-crud.service';
 import { BookAssetService } from './book-asset.service';
 import { BookDiagnosticsService } from './book-diagnostics.service';
@@ -44,6 +47,7 @@ import { BookGenerationService } from './book-generation.service';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
 import type { PublishedImageResult } from './book-asset.service';
 import { BookPageChangeService } from './book-page-change.service';
+import { BookPageImageRevisionService } from './book-page-image-revision.service';
 
 export {
   IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
@@ -68,6 +72,7 @@ export class BooksService {
   private readonly generationService: BookGenerationService;
   private readonly generationExecutionService: BookGenerationExecutionService;
   private readonly pageChangeService: BookPageChangeService;
+  private readonly pageImageRevisionService: BookPageImageRevisionService;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -94,6 +99,7 @@ export class BooksService {
     @Optional() generationService?: BookGenerationService,
     @Optional() generationExecutionService?: BookGenerationExecutionService,
     @Optional() pageChangeService?: BookPageChangeService,
+    @Optional() pageImageRevisionService?: BookPageImageRevisionService,
   ) {
     this.crudService = crudService ?? new BookCrudService(prisma);
     this.assetService =
@@ -139,6 +145,16 @@ export class BooksService {
     this.pageChangeService =
       pageChangeService ??
       new BookPageChangeService(this.crudService, prisma, pdfStorage, imageAssetStorage);
+    this.pageImageRevisionService =
+      pageImageRevisionService ??
+      new BookPageImageRevisionService(
+        this.crudService,
+        prisma,
+        creditsService,
+        imageGenerationProvider,
+        imageAssetStorage,
+        pdfStorage,
+      );
   }
 
   /**
@@ -215,6 +231,32 @@ export class BooksService {
     dto: UpdateBookPageTextDto,
   ): Promise<BookDto> {
     return this.pageChangeService.updatePageText(userId, bookId, pageNumber, dto);
+  }
+
+  createPageImageQuote(
+    userId: string,
+    bookId: string,
+    pageNumber: number,
+    dto: CreatePageImageQuoteDto,
+  ): Promise<PageImageRegenerationQuote> {
+    return this.pageImageRevisionService.createQuote(userId, bookId, pageNumber, dto);
+  }
+
+  confirmPageImageRevision(
+    userId: string,
+    bookId: string,
+    pageNumber: number,
+    revisionId: string,
+  ): Promise<PageImageRevisionDto> {
+    return this.pageImageRevisionService.confirm(userId, bookId, pageNumber, revisionId);
+  }
+
+  getPageImageRevision(
+    userId: string,
+    bookId: string,
+    revisionId: string,
+  ): Promise<PageImageRevisionDto> {
+    return this.pageImageRevisionService.getRevision(userId, bookId, revisionId);
   }
 
   /** See update()'s doc comment — same CAS reasoning applies to soft-delete. */

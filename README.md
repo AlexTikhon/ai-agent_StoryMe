@@ -38,8 +38,9 @@ generate a book → download the PDF).
   `layout`, `pdf_render`), without invented percentages.
 - Render and preview/download the finished book as a PDF.
 - Correct the text of one completed story page with optimistic version checking; StoryMe reuses
-  all illustrations and republishes the PDF without an AI call or credit charge. One-page image
-  regeneration is the next Phase 4 slice.
+  all illustrations and republishes the PDF without an AI call or credit charge.
+- Request a server-owned quote, explicitly confirm a one-credit charge, and regenerate exactly one
+  page illustration while reusing the rest of the completed book.
 - Retry generation after a failure.
 
 For the complete implemented/unimplemented boundary, use

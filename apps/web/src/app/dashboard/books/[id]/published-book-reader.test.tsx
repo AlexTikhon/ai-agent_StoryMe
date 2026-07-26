@@ -8,6 +8,9 @@ vi.mock('@/lib/api/books', () => ({
   booksApi: {
     downloadPublishedImage: vi.fn(),
     updatePageText: vi.fn(),
+    createPageImageQuote: vi.fn(),
+    confirmPageImageRevision: vi.fn(),
+    getPageImageRevision: vi.fn(),
   },
 }));
 
@@ -163,5 +166,71 @@ describe('PublishedBookReader', () => {
       });
       expect(onBookUpdated).toHaveBeenCalledWith(updatedBook);
     });
+  });
+
+  it('shows the server-owned price before confirmation and publishes one regenerated image', async () => {
+    const onBookUpdated = vi.fn();
+    const updatedBook = {
+      id: 'book-1',
+      status: BookStatus.Complete,
+      bookPreview: {
+        ...PREVIEW,
+        pages: PREVIEW.pages.map((page) =>
+          page.pageNumber === 1 ? { ...page, version: 5 } : page,
+        ),
+      },
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T02:00:00.000Z',
+    } as BookDto;
+    vi.mocked(booksApi.createPageImageQuote).mockResolvedValueOnce({
+      id: 'revision-1',
+      bookId: 'book-1',
+      pageNumber: 1,
+      expectedVersion: 4,
+      costCredits: 1,
+      provider: 'openai',
+      estimatedCostUsd: 0.04,
+      expiresAt: '2026-07-26T02:10:00.000Z',
+      confirmationRequired: true,
+    });
+    vi.mocked(booksApi.confirmPageImageRevision).mockResolvedValueOnce({
+      id: 'revision-1',
+      bookId: 'book-1',
+      pageNumber: 1,
+      status: 'queued',
+      costCredits: 1,
+      provider: 'openai',
+    });
+    vi.mocked(booksApi.getPageImageRevision).mockResolvedValueOnce({
+      id: 'revision-1',
+      bookId: 'book-1',
+      pageNumber: 1,
+      status: 'completed',
+      costCredits: 1,
+      provider: 'openai',
+      book: updatedBook,
+    });
+
+    render(<PublishedBookReader bookId="book-1" preview={PREVIEW} onBookUpdated={onBookUpdated} />);
+    await screen.findByAltText('Illustration for cover');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await screen.findByAltText('Illustration for page 1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate illustration' }));
+    expect(await screen.findByText('Confirm paid regeneration')).toBeInTheDocument();
+    expect(screen.getByText(/costs 1 credit/i)).toBeInTheDocument();
+    expect(screen.getByText(/estimated provider cost: \$0.04/i)).toBeInTheDocument();
+    expect(booksApi.confirmPageImageRevision).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm 1-credit call' }));
+
+    await waitFor(
+      () => {
+        expect(booksApi.confirmPageImageRevision).toHaveBeenCalledWith('book-1', 1, 'revision-1');
+        expect(booksApi.getPageImageRevision).toHaveBeenCalledWith('book-1', 'revision-1');
+        expect(onBookUpdated).toHaveBeenCalledWith(updatedBook);
+      },
+      { timeout: 2000 },
+    );
   });
 });

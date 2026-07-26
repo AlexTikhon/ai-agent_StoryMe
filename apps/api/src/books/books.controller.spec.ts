@@ -40,6 +40,9 @@ function createMockBooksService(): jest.Mocked<BooksService> {
     findOneForUser: vi.fn(),
     update: vi.fn(),
     updatePageText: vi.fn(),
+    createPageImageQuote: vi.fn(),
+    confirmPageImageRevision: vi.fn(),
+    getPageImageRevision: vi.fn(),
     startGeneration: vi.fn(),
     retryGeneration: vi.fn(),
     cancelGeneration: vi.fn(),
@@ -487,5 +490,54 @@ describe('BooksController.getGenerationProgress', () => {
 
     expect(booksService.getGenerationProgress).toHaveBeenCalledWith('b-1', 'u-1');
     expect(result).toBe(progress);
+  });
+});
+
+describe('BooksController page image revisions', () => {
+  it('delegates quote, explicit confirmation, and owned status reads', async () => {
+    const booksService = createMockBooksService();
+    const quote = {
+      id: 'revision-1',
+      bookId: 'b-1',
+      pageNumber: 2,
+      expectedVersion: 3,
+      costCredits: 1,
+      provider: 'openai',
+      expiresAt: '2026-07-26T12:10:00.000Z',
+      confirmationRequired: true as const,
+    };
+    const revision = {
+      id: 'revision-1',
+      bookId: 'b-1',
+      pageNumber: 2,
+      status: 'queued' as const,
+      costCredits: 1,
+      provider: 'openai',
+    };
+    booksService.createPageImageQuote.mockResolvedValue(quote);
+    booksService.confirmPageImageRevision.mockResolvedValue(revision);
+    booksService.getPageImageRevision.mockResolvedValue(revision);
+    const controller = new BooksController(booksService);
+
+    await expect(
+      controller.createPageImageQuote(FAKE_USER, 'b-1', 2, { expectedVersion: 3 }),
+    ).resolves.toBe(quote);
+    await expect(
+      controller.confirmPageImageRevision(FAKE_USER, 'b-1', 2, 'revision-1'),
+    ).resolves.toBe(revision);
+    await expect(controller.getPageImageRevision(FAKE_USER, 'b-1', 'revision-1')).resolves.toBe(
+      revision,
+    );
+
+    expect(booksService.createPageImageQuote).toHaveBeenCalledWith('u-1', 'b-1', 2, {
+      expectedVersion: 3,
+    });
+    expect(booksService.confirmPageImageRevision).toHaveBeenCalledWith(
+      'u-1',
+      'b-1',
+      2,
+      'revision-1',
+    );
+    expect(booksService.getPageImageRevision).toHaveBeenCalledWith('u-1', 'b-1', 'revision-1');
   });
 });

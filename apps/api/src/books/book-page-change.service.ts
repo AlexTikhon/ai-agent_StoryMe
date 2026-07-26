@@ -8,17 +8,14 @@ import {
   resolvePublishedImageNamespace,
 } from '../agent/generation-artifact-namespace';
 import { PrismaService } from '../database/prisma.service';
-import {
-  IMAGE_ASSET_STORAGE_TOKEN,
-  imageKeyForNamespace,
-  type ImageAssetStorage,
-} from '../images/image-asset-storage';
+import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import { renderStorybookPdf } from '../pdf/pdf-renderer';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { toBookDto } from './books.mapper';
 import { bookPreviewSchema, imageGenerationResultSchema, storyPlanSchema } from './books.schemas';
 import { BookCrudService } from './book-crud.service';
 import type { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
+import { publishedImageKey } from './published-page-image-key';
 
 const PAGE_EDIT_FENCING_VERSION = 1;
 
@@ -59,7 +56,11 @@ export class BookPageChangeService {
     dto: UpdateBookPageTextDto,
   ): Promise<BookDto> {
     const book = await this.crud.findOwnedOrThrow(bookId, userId);
-    if (book.status !== BookStatus.complete || book.activeRunId != null) {
+    if (
+      book.status !== BookStatus.complete ||
+      book.activeRunId != null ||
+      book.activePageImageRevisionId != null
+    ) {
       throw new ConflictException('Only a completed, idle book can have one page edited');
     }
 
@@ -108,12 +109,28 @@ export class BookPageChangeService {
     if (imageNamespace.kind === 'not_ready') {
       throw new ConflictException('Published images are not ready');
     }
+    const imageOverrides = new Map(
+      (
+        await this.prisma.bookPage.findMany({
+          where: { bookId, imageR2Key: { not: null } },
+          select: { pageNumber: true, imageR2Key: true },
+        })
+      )
+        .filter((page): page is { pageNumber: number; imageR2Key: string } => !!page.imageR2Key)
+        .map((page) => [page.pageNumber, page.imageR2Key]),
+    );
     const imageBuffers = new Map<string, Buffer>();
     await Promise.all(
       nextLayout.entries
         .filter((entry) => entry.imageBlock)
         .map(async (entry) => {
-          const key = imageKeyForNamespace(bookId, imageNamespace, entry.kind, entry.pageNumber);
+          const key = publishedImageKey(
+            bookId,
+            imageNamespace,
+            entry.kind,
+            entry.pageNumber,
+            imageOverrides,
+          );
           const buffer = await this.imageStorage.getImageAsset(key);
           if (!buffer) {
             throw new ConflictException(
@@ -155,6 +172,7 @@ export class BookPageChangeService {
           deletedAt: null,
           status: BookStatus.complete,
           activeRunId: null,
+          activePageImageRevisionId: null,
           updatedAt: book.updatedAt,
           publishedRunId: book.publishedRunId,
           publishedRunFencingVersion: book.publishedRunFencingVersion,
@@ -197,7 +215,13 @@ export class BookPageChangeService {
               prompt: image.prompt,
               negativePrompt: image.negativePrompt ?? null,
             } as Prisma.InputJsonValue,
-            imageR2Key: imageKeyForNamespace(bookId, imageNamespace, 'page', pageNumber),
+            imageR2Key: publishedImageKey(
+              bookId,
+              imageNamespace,
+              'page',
+              pageNumber,
+              imageOverrides,
+            ),
             imageUrl: image.imageUrl,
           }),
           ...(pageLayout && {

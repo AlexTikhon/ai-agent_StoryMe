@@ -74,26 +74,43 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async dispatchOne(event: OutboxEvent): Promise<void> {
-    if (event.aggregateType !== 'generation_run') {
+    if (event.aggregateType !== 'generation_run' && event.aggregateType !== 'page_image_revision') {
       this.logger.warn(
         `Skipping outbox event ${event.id} with unknown aggregateType "${event.aggregateType}".`,
       );
       return;
     }
-    const payload = event.payload as { bookId?: unknown; runId?: unknown };
-    if (typeof payload.bookId !== 'string' || typeof payload.runId !== 'string') {
+    const payload = event.payload as {
+      bookId?: unknown;
+      runId?: unknown;
+      revisionId?: unknown;
+    };
+    const aggregateId =
+      event.aggregateType === 'generation_run' ? payload.runId : payload.revisionId;
+    if (typeof payload.bookId !== 'string' || typeof aggregateId !== 'string') {
       this.logger.error(
         `Outbox event ${event.id} has a malformed payload — skipping without dispatching.`,
       );
       return;
     }
     try {
-      await this.generationQueueService.enqueue({ bookId: payload.bookId, runId: payload.runId });
+      if (event.aggregateType === 'generation_run') {
+        await this.generationQueueService.enqueue({
+          bookId: payload.bookId,
+          runId: aggregateId,
+        });
+      } else {
+        await this.generationQueueService.enqueuePageImageRevision({
+          kind: 'page_image_revision',
+          bookId: payload.bookId,
+          revisionId: aggregateId,
+        });
+      }
       await this.outboxService.markDispatched(event.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(
-        `Failed to dispatch outbox event ${event.id} (run ${payload.runId}): ${message}`,
+        `Failed to dispatch outbox event ${event.id} (${event.aggregateType} ${aggregateId}): ${message}`,
       );
       await this.outboxService.recordAttemptFailure(event.id).catch(() => undefined);
     }

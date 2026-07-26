@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -12,7 +12,12 @@ import {
   GenerationRunMirrorInvariantError,
 } from './generation-run-coordinator.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
-import type { GenerationQueueJobData } from './generation-queue.service';
+import type {
+  BookWorkQueueJobData,
+  GenerationQueueJobData,
+  PageImageRevisionQueueJobData,
+} from './generation-queue.service';
+import { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
 
 /** Safe, public-facing message for a run whose stored input_snapshot is permanently malformed — never the raw Zod issue list. */
 const INVALID_SNAPSHOT_PUBLIC_MESSAGE =
@@ -49,11 +54,16 @@ export class GenerationQueueProcessor extends WorkerHost {
     private readonly generationRunService: GenerationRunService,
     private readonly generationRunCoordinator: GenerationRunCoordinator,
     private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
+    @Optional()
+    private readonly pageImageRevisionService?: BookPageImageRevisionService,
   ) {
     super();
   }
 
-  async process(job: Job<GenerationQueueJobData>, token?: string): Promise<void> {
+  async process(job: Job<BookWorkQueueJobData>, token?: string): Promise<void> {
+    if (job.data.kind === 'page_image_revision') {
+      return this.processPageImageRevision(job as Job<PageImageRevisionQueueJobData>, token);
+    }
     const maxAttempts = job.opts.attempts ?? 1;
     this.logger.log(
       `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId} attempt=${job.attemptsMade + 1}/${maxAttempts}`,
@@ -143,8 +153,31 @@ export class GenerationQueueProcessor extends WorkerHost {
     }
   }
 
+  private async processPageImageRevision(
+    job: Job<PageImageRevisionQueueJobData>,
+    token?: string,
+  ): Promise<void> {
+    if (!token) {
+      throw new Error(
+        `BullMQ invoked page image revision ${job.data.revisionId} without a delivery token.`,
+      );
+    }
+    if (!this.pageImageRevisionService) {
+      throw new Error('Page image revision worker service is not registered.');
+    }
+    const claimed = await this.pageImageRevisionService.claim(job.data.revisionId, token);
+    if (!claimed) return;
+    await this.pageImageRevisionService.executeClaimed(claimed.id, claimed.fencingVersion);
+  }
+
   @OnWorkerEvent('completed')
-  onCompleted(job: Job<GenerationQueueJobData>): void {
+  onCompleted(job: Job<BookWorkQueueJobData>): void {
+    if (job.data.kind === 'page_image_revision') {
+      this.logger.log(
+        `Page image revision job completed — bullmqJobId=${job.id} revisionId=${job.data.revisionId}`,
+      );
+      return;
+    }
     this.logger.log(
       `Job completed — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId}`,
     );
@@ -161,20 +194,34 @@ export class GenerationQueueProcessor extends WorkerHost {
    * just one job) dies mid-attempt.
    */
   @OnWorkerEvent('failed')
-  async onFailed(job: Job<GenerationQueueJobData> | undefined, error: Error): Promise<void> {
+  async onFailed(job: Job<BookWorkQueueJobData> | undefined, error: Error): Promise<void> {
+    const durableId =
+      job?.data.kind === 'page_image_revision'
+        ? `revisionId=${job.data.revisionId}`
+        : `runId=${job?.data.runId}`;
     this.logger.error(
-      `Job failed — bullmqJobId=${job?.id} bookId=${job?.data.bookId} runId=${job?.data.runId} attemptsMade=${job?.attemptsMade} error=${error.name}: ${error.message}`,
+      `Job failed — bullmqJobId=${job?.id} bookId=${job?.data.bookId} ${durableId} attemptsMade=${job?.attemptsMade} error=${error.name}: ${error.message}`,
       error.stack,
     );
     if (!job) return;
     const maxAttempts = job.opts.attempts ?? 1;
     if (job.attemptsMade < maxAttempts) return;
 
+    if (job.data.kind === 'page_image_revision') {
+      const revisionId = job.data.revisionId;
+      await this.pageImageRevisionService?.failAndRefund(revisionId).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Failed to finalize page image revision ${revisionId}: ${message}`);
+      });
+      return;
+    }
+
+    const runId = (job.data as GenerationQueueJobData).runId;
     await this.booksService
-      .markRunPermanentlyFailedAfterExhaustedRetries(job.data.runId)
+      .markRunPermanentlyFailedAfterExhaustedRetries(runId)
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`Failed to finalize exhausted run ${job.data.runId}: ${message}`);
+        this.logger.error(`Failed to finalize exhausted run ${runId}: ${message}`);
       });
   }
 }

@@ -43,6 +43,27 @@ describe('GenerationQueueService', () => {
     );
   });
 
+  it('queues one confirmed page-image call with a distinct id and no BullMQ paid-call retry', async () => {
+    const queue = createMockQueue();
+    const service = new GenerationQueueService(queue as never);
+
+    await service.enqueuePageImageRevision({
+      kind: 'page_image_revision',
+      bookId: 'b-1',
+      revisionId: 'revision-1',
+    });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'run-page-image-revision',
+      {
+        kind: 'page_image_revision',
+        bookId: 'b-1',
+        revisionId: 'revision-1',
+      },
+      { jobId: 'page-image-revision-1', attempts: 1 },
+    );
+  });
+
   it('propagates a rejection from the underlying queue (e.g. Redis unreachable)', async () => {
     const queue = createMockQueue();
     queue.add.mockRejectedValue(new Error('Redis connection refused'));

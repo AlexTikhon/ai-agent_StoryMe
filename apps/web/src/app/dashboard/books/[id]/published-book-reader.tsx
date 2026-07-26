@@ -1,7 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { BookDto, BookPreview, PublishedBookImageId } from '@book/types';
+import type {
+  BookDto,
+  BookPreview,
+  PageImageRegenerationQuote,
+  PageImageRevisionDto,
+  PublishedBookImageId,
+} from '@book/types';
 import { booksApi } from '@/lib/api/books';
 
 interface ReaderSlide {
@@ -57,7 +63,15 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
   const [draftText, setDraftText] = useState('');
   const [savingText, setSavingText] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [imageQuote, setImageQuote] = useState<PageImageRegenerationQuote | null>(null);
+  const [imageRevision, setImageRevision] = useState<PageImageRevisionDto | null>(null);
+  const [requestingImageQuote, setRequestingImageQuote] = useState(false);
+  const [confirmingImage, setConfirmingImage] = useState(false);
+  const [imageActionError, setImageActionError] = useState<string | null>(null);
   const slide = slides[currentIndex];
+  const imageRevisionActive =
+    imageRevision?.status === 'queued' || imageRevision?.status === 'running';
+  const imageActionBusy = requestingImageQuote || confirmingImage || imageRevisionActive;
 
   useEffect(() => {
     setCurrentIndex(0);
@@ -67,6 +81,9 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
     setEditingText(false);
     setDraftText(slide.text ?? '');
     setSaveError(null);
+    setImageQuote(null);
+    setImageRevision(null);
+    setImageActionError(null);
   }, [slide.imageId, slide.text]);
 
   const savePageText = async () => {
@@ -91,6 +108,84 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
       setSavingText(false);
     }
   };
+
+  const requestImageQuote = async () => {
+    if (!slide.pageNumber || !onBookUpdated) return;
+    setRequestingImageQuote(true);
+    setImageActionError(null);
+    try {
+      const quote = await booksApi.createPageImageQuote(bookId, slide.pageNumber, {
+        expectedVersion: slide.version ?? 1,
+      });
+      setImageQuote(quote);
+    } catch (error) {
+      setImageActionError(
+        error instanceof Error ? error.message : 'Failed to load the regeneration price.',
+      );
+    } finally {
+      setRequestingImageQuote(false);
+    }
+  };
+
+  const confirmImageRevision = async () => {
+    if (!slide.pageNumber || !imageQuote) return;
+    setConfirmingImage(true);
+    setImageActionError(null);
+    try {
+      const revision = await booksApi.confirmPageImageRevision(
+        bookId,
+        slide.pageNumber,
+        imageQuote.id,
+      );
+      setImageRevision(revision);
+    } catch (error) {
+      setImageActionError(
+        error instanceof Error ? error.message : 'Failed to start image regeneration.',
+      );
+    } finally {
+      setConfirmingImage(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!imageRevisionActive || !imageRevision) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      try {
+        const current = await booksApi.getPageImageRevision(bookId, imageRevision.id);
+        if (cancelled) return;
+        setImageRevision(current);
+        if (current.status === 'completed' && current.book) {
+          onBookUpdated?.(current.book);
+          setImageQuote(null);
+          setRetryNonce((value) => value + 1);
+          return;
+        }
+        if (current.status === 'failed') {
+          setImageActionError(
+            current.errorMessage ??
+              'The illustration could not be regenerated. Your credit was refunded.',
+          );
+          return;
+        }
+        timer = setTimeout(() => void poll(), 1500);
+      } catch (error) {
+        if (!cancelled) {
+          setImageActionError(
+            error instanceof Error ? error.message : 'Failed to check regeneration status.',
+          );
+        }
+      }
+    };
+
+    timer = setTimeout(() => void poll(), 500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [bookId, imageRevision, imageRevisionActive, onBookUpdated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,17 +318,77 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
             </div>
           )}
           {!editingText && slide.pageNumber && onBookUpdated && (
-            <button
-              type="button"
-              onClick={() => {
-                setDraftText(slide.text ?? '');
-                setSaveError(null);
-                setEditingText(true);
-              }}
-              className="mt-3 rounded-lg border border-violet-300 px-3 py-1.5 text-sm font-semibold text-violet-700"
-            >
-              Edit page text
-            </button>
+            <div className="mt-3 flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftText(slide.text ?? '');
+                  setSaveError(null);
+                  setEditingText(true);
+                }}
+                disabled={imageActionBusy}
+                className="rounded-lg border border-violet-300 px-3 py-1.5 text-sm font-semibold text-violet-700 disabled:opacity-60"
+              >
+                Edit page text
+              </button>
+              <button
+                type="button"
+                onClick={() => void requestImageQuote()}
+                disabled={imageActionBusy || imageQuote !== null}
+                className="rounded-lg border border-violet-300 px-3 py-1.5 text-sm font-semibold text-violet-700 disabled:opacity-60"
+              >
+                {requestingImageQuote ? 'Loading price…' : 'Regenerate illustration'}
+              </button>
+            </div>
+          )}
+          {imageQuote && !imageRevisionActive && imageRevision?.status !== 'completed' && (
+            <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-left">
+              <p className="text-sm font-semibold text-amber-900">Confirm paid regeneration</p>
+              <p className="mt-1 text-xs text-amber-800">
+                This regenerates only page {imageQuote.pageNumber} and costs{' '}
+                {imageQuote.costCredits} credit{imageQuote.costCredits === 1 ? '' : 's'}.
+                {imageQuote.estimatedCostUsd != null
+                  ? ` Estimated provider cost: $${imageQuote.estimatedCostUsd.toFixed(2)}.`
+                  : ''}{' '}
+                The previous published book stays available if the operation fails, and a failed
+                operation is refunded.
+              </p>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void confirmImageRevision()}
+                  disabled={confirmingImage}
+                  className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {confirmingImage
+                    ? 'Confirming…'
+                    : `Confirm ${imageQuote.costCredits}-credit call`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImageQuote(null)}
+                  disabled={confirmingImage}
+                  className="rounded-lg border border-border-default px-3 py-1.5 text-sm font-semibold text-text-secondary disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {imageRevisionActive && (
+            <p role="status" className="mt-3 text-sm text-violet-700">
+              Regenerating this illustration. The current published page remains available…
+            </p>
+          )}
+          {imageRevision?.status === 'completed' && (
+            <p role="status" className="mt-3 text-sm text-success-base">
+              The new illustration and PDF are published.
+            </p>
+          )}
+          {imageActionError && (
+            <p role="alert" className="mt-3 text-sm text-danger-base">
+              {imageActionError}
+            </p>
           )}
         </div>
       </div>
@@ -242,7 +397,7 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
         <button
           type="button"
           onClick={() => setCurrentIndex((value) => Math.max(0, value - 1))}
-          disabled={currentIndex === 0 || savingText}
+          disabled={currentIndex === 0 || savingText || imageActionBusy}
           className="rounded-lg border border-border-default bg-white px-3 py-1.5 text-sm font-semibold text-text-secondary disabled:opacity-40"
         >
           Previous page
@@ -250,7 +405,7 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
         <button
           type="button"
           onClick={() => setCurrentIndex((value) => Math.min(slides.length - 1, value + 1))}
-          disabled={currentIndex === slides.length - 1 || savingText}
+          disabled={currentIndex === slides.length - 1 || savingText || imageActionBusy}
           className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
         >
           Next page

@@ -160,7 +160,11 @@ describe('BookGenerationService scheduling boundary', () => {
       idempotencyKey: 'generation:run-1:charge',
     });
     expect(prisma.book.update).toHaveBeenCalledWith({
-      where: { id: 'book-1', status: 'created' },
+      where: {
+        id: 'book-1',
+        status: 'created',
+        activePageImageRevisionId: null,
+      },
       data: {
         status: 'char_build',
         activeRunId: 'run-1',

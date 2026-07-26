@@ -12,9 +12,12 @@ title, child name/age, language (`en`, `ru`, `pl`), theme, page count, optional 
 optional reference photo. Starting generation atomically creates a run/outbox event and charges a
 credit. A separate BullMQ worker generates the story, images, layout, and PDF. The detail screen
 polls status and supports cancellation, retry from a failed run's immutable snapshot,
-regeneration from current input, authenticated PDF download, and version-checked text correction
-for one page of a completed book. A page text correction reuses every published image, invokes no
-AI provider, charges no credit, and atomically republishes the dependent layout/PDF. Developer diagnostics and
+regeneration from current input, authenticated PDF download, version-checked text correction, and
+explicitly confirmed image regeneration for one page of a completed book. A page text correction
+reuses every published image, invokes no AI provider, charges no credit, and atomically republishes
+the dependent layout/PDF. A page image regeneration first displays a server-owned one-credit
+quote; only confirmation schedules the paid call, and failure preserves the book and refunds that
+credit. Developer diagnostics and
 intermediate technical details are opt-in through
 `NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true`; when disabled, the browser does not request
 diagnostics. The ordinary progress banner reads a minimal owned `GenerationRun` projection and
@@ -28,36 +31,39 @@ JWT mode is the default. A local-only `dev` auth mode exists and must not be exp
 
 All routes have the `/api` prefix.
 
-| Method           | Route                                 | Behavior                                 |
-| ---------------- | ------------------------------------- | ---------------------------------------- |
-| GET              | `/health`                             | PostgreSQL and Redis health              |
-| POST             | `/auth/register`                      | Create account and refresh cookie        |
-| POST             | `/auth/login`                         | Authenticate and set refresh cookie      |
-| POST             | `/auth/refresh`                       | Rotate refresh token                     |
-| POST             | `/auth/logout`                        | Revoke token and clear cookie            |
-| GET              | `/auth/me`                            | Current authenticated user               |
-| POST             | `/auth/verify-email`                  | Consume verification token               |
-| POST             | `/auth/resend-verification`           | Request verification message             |
-| POST             | `/auth/request-password-reset`        | Request reset without enumeration        |
-| POST             | `/auth/reset-password`                | Consume reset token                      |
-| GET/POST         | `/books`                              | List owned books / create draft          |
-| GET/PATCH/DELETE | `/books/:id`                          | Read, edit, or soft-delete an owned book |
-| POST             | `/books/:id/child-photo`              | Validate, re-encode, and store photo     |
-| POST             | `/books/:id/generate`                 | Schedule initial generation              |
-| POST             | `/books/:id/retry-generation`         | Resume failed snapshot                   |
-| POST             | `/books/:id/regenerate`               | Generate from current input              |
-| POST             | `/books/:id/cancel`                   | Fence/cancel active run and refund once  |
-| GET              | `/books/:id/generation-progress`      | Minimal owned durable progress           |
-| GET              | `/books/:id/generation-diagnostics`   | Owned run/artifact diagnostics           |
-| GET              | `/books/:id/pdf/preview`              | Ownership-checked PDF bytes              |
-| GET              | `/books/:id/images/:imageId`          | Ownership-checked published image bytes  |
-| PATCH            | `/books/:id/pages/:pageNumber/text`   | Versioned page text edit and PDF rebuild |
-| GET              | `/credits/balance`                    | Canonical owned balance                  |
-| GET              | `/credits/transactions`               | Cursor-paginated owned ledger            |
-| GET              | `/billing/packages`                   | Server package catalog                   |
-| POST             | `/billing/checkout`                   | Hosted one-time Checkout session         |
-| GET              | `/billing/checkout/:sessionId/status` | Durable grant state                      |
-| POST             | `/billing/webhook`                    | Stripe-signature-authenticated webhook   |
+| Method           | Route                                                              | Behavior                                 |
+| ---------------- | ------------------------------------------------------------------ | ---------------------------------------- |
+| GET              | `/health`                                                          | PostgreSQL and Redis health              |
+| POST             | `/auth/register`                                                   | Create account and refresh cookie        |
+| POST             | `/auth/login`                                                      | Authenticate and set refresh cookie      |
+| POST             | `/auth/refresh`                                                    | Rotate refresh token                     |
+| POST             | `/auth/logout`                                                     | Revoke token and clear cookie            |
+| GET              | `/auth/me`                                                         | Current authenticated user               |
+| POST             | `/auth/verify-email`                                               | Consume verification token               |
+| POST             | `/auth/resend-verification`                                        | Request verification message             |
+| POST             | `/auth/request-password-reset`                                     | Request reset without enumeration        |
+| POST             | `/auth/reset-password`                                             | Consume reset token                      |
+| GET/POST         | `/books`                                                           | List owned books / create draft          |
+| GET/PATCH/DELETE | `/books/:id`                                                       | Read, edit, or soft-delete an owned book |
+| POST             | `/books/:id/child-photo`                                           | Validate, re-encode, and store photo     |
+| POST             | `/books/:id/generate`                                              | Schedule initial generation              |
+| POST             | `/books/:id/retry-generation`                                      | Resume failed snapshot                   |
+| POST             | `/books/:id/regenerate`                                            | Generate from current input              |
+| POST             | `/books/:id/cancel`                                                | Fence/cancel active run and refund once  |
+| GET              | `/books/:id/generation-progress`                                   | Minimal owned durable progress           |
+| GET              | `/books/:id/generation-diagnostics`                                | Owned run/artifact diagnostics           |
+| GET              | `/books/:id/pdf/preview`                                           | Ownership-checked PDF bytes              |
+| GET              | `/books/:id/images/:imageId`                                       | Ownership-checked published image bytes  |
+| PATCH            | `/books/:id/pages/:pageNumber/text`                                | Versioned page text edit and PDF rebuild |
+| POST             | `/books/:id/pages/:pageNumber/image-regeneration-quote`            | Quote one page image without charging    |
+| POST             | `/books/:id/pages/:pageNumber/image-revisions/:revisionId/confirm` | Confirm charge and queue revision        |
+| GET              | `/books/:id/page-image-revisions/:revisionId`                      | Read owned durable revision status       |
+| GET              | `/credits/balance`                                                 | Canonical owned balance                  |
+| GET              | `/credits/transactions`                                            | Cursor-paginated owned ledger            |
+| GET              | `/billing/packages`                                                | Server package catalog                   |
+| POST             | `/billing/checkout`                                                | Hosted one-time Checkout session         |
+| GET              | `/billing/checkout/:sessionId/status`                              | Durable grant state                      |
+| POST             | `/billing/webhook`                                                 | Stripe-signature-authenticated webhook   |
 
 The webhook is intentionally public; health is public. Other feature routes use authentication,
 and ownership comes from the authenticated user rather than client-supplied user IDs.
@@ -73,7 +79,9 @@ every generated story page, and the back cover. It lazily fetches one owned publ
 time without exposing storage keys. Library cards show the ownership-checked published cover when
 one exists and a neutral placeholder otherwise. A story page can be edited in place; the UI sends
 its expected version, explains that illustrations are unchanged and no credit is charged, and
-refreshes the reader from the atomically republished book. With developer diagnostics explicitly enabled,
+refreshes the reader from the atomically republished book. It can also request a one-page image
+quote, show the exact credit charge before confirmation, poll the durable revision, and refresh
+only after atomic publication. With developer diagnostics explicitly enabled,
 the book detail screen shows internal image asset keys and intermediate pipeline details.
 
 ## Providers and storage
@@ -115,11 +123,12 @@ and soft-delete, durable queued generation, fencing/heartbeat/recovery, cancella
 retry/resume, idempotent charges/refunds, one-time credit purchases, provider limits, local/S3/R2
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
 published cover thumbnails in the library, durable user-facing generation progress, and
-versioned one-page text correction with failure-safe PDF republication, and extensive
+versioned one-page text correction and explicitly confirmed one-page image regeneration with
+failure-safe PDF republication, and extensive
 unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
-management, one-page image regeneration and its paid confirmation flow, bounded LLM repair, hard-delete/data-erasure
+management, bounded LLM repair, hard-delete/data-erasure
 workflow, Playwright E2E, and role-based admin authorization for diagnostics. The reader is
 currently shown only for a book whose current status is `complete`; previous publications are not
 yet rendered while a regeneration is running, failed, or cancelled. The web diagnostics UI is

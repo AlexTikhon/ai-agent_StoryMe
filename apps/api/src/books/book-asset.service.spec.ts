@@ -40,14 +40,17 @@ function createHarness(book: Book | null = makeBook()) {
   const imageStorage = {
     getImageAsset: vi.fn(),
   } as unknown as jest.Mocked<ImageAssetStorage>;
+  const prisma = {
+    bookPage: { findUnique: vi.fn().mockResolvedValue(null) },
+  } as unknown as PrismaService;
   const service = new BookAssetService(
     crud,
-    {} as PrismaService,
+    prisma,
     {} as PdfStorage,
     imageStorage,
     {} as ChildPhotoProcessor,
   );
-  return { service, crud, imageStorage };
+  return { service, crud, imageStorage, prisma };
 }
 
 describe('parsePublishedImageId', () => {
@@ -87,6 +90,17 @@ describe('BookAssetService.getPublishedImage', () => {
       contentType: 'image/png',
       filename: 'cover.png',
     });
+  });
+
+  it('prefers a page-level immutable image key while leaving the book namespace unchanged', async () => {
+    const { service, imageStorage, prisma } = createHarness();
+    const pageKey = 'books/b-1/runs/22222222-2222-2222-2222-222222222222/claims/1/page-2';
+    vi.mocked(prisma.bookPage.findUnique).mockResolvedValue({ imageR2Key: pageKey } as never);
+    imageStorage.getImageAsset.mockResolvedValue(PNG_BYTES);
+
+    await service.getPublishedImage('b-1', 'u-1', 'page-2');
+
+    expect(imageStorage.getImageAsset).toHaveBeenCalledWith(pageKey);
   });
 
   it('uses the legacy published namespace for pre-claim books', async () => {

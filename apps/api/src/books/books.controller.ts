@@ -28,6 +28,8 @@ import type {
   GenerateBookResponse,
   GenerationDiagnosticsDto,
   GenerationProgressDto,
+  PageImageRegenerationQuote,
+  PageImageRevisionDto,
 } from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -38,6 +40,7 @@ import { BooksService } from './books.service';
 import { CreateBookDto } from './dto/create-book.dto';
 import { UpdateBookDto } from './dto/update-book.dto';
 import { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
+import { CreatePageImageQuoteDto } from './dto/create-page-image-quote.dto';
 import { isAllowedChildPhotoMimeType, MAX_CHILD_PHOTO_BYTES } from './child-photo.constants';
 
 @UseGuards(AuthModeGuard, UserRateLimitGuard)
@@ -73,6 +76,37 @@ export class BooksController {
     @Body() dto: UpdateBookPageTextDto,
   ): Promise<BookDto> {
     return this.booksService.updatePageText(user.id, id, pageNumber, dto);
+  }
+
+  @Post(':id/pages/:pageNumber/image-regeneration-quote')
+  @UseGuards(RequireVerifiedEmailGuard)
+  createPageImageQuote(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('pageNumber', ParseIntPipe) pageNumber: number,
+    @Body() dto: CreatePageImageQuoteDto,
+  ): Promise<PageImageRegenerationQuote> {
+    return this.booksService.createPageImageQuote(user.id, id, pageNumber, dto);
+  }
+
+  @Post(':id/pages/:pageNumber/image-revisions/:revisionId/confirm')
+  @UseGuards(RequireVerifiedEmailGuard)
+  confirmPageImageRevision(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('pageNumber', ParseIntPipe) pageNumber: number,
+    @Param('revisionId', ParseUUIDPipe) revisionId: string,
+  ): Promise<PageImageRevisionDto> {
+    return this.booksService.confirmPageImageRevision(user.id, id, pageNumber, revisionId);
+  }
+
+  @Get(':id/page-image-revisions/:revisionId')
+  getPageImageRevision(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('revisionId', ParseUUIDPipe) revisionId: string,
+  ): Promise<PageImageRevisionDto> {
+    return this.booksService.getPageImageRevision(user.id, id, revisionId);
   }
 
   @Patch(':id')

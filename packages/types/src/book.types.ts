@@ -470,6 +470,36 @@ export interface UpdateBookPageTextInput {
   expectedVersion: number;
 }
 
+export interface CreatePageImageRegenerationQuoteInput {
+  expectedVersion: number;
+}
+
+export type PageImageRevisionStatus = 'quoted' | 'queued' | 'running' | 'completed' | 'failed';
+
+export interface PageImageRegenerationQuote {
+  id: string;
+  bookId: string;
+  pageNumber: number;
+  expectedVersion: number;
+  costCredits: number;
+  provider: string;
+  estimatedCostUsd?: number | null;
+  expiresAt: string;
+  confirmationRequired: true;
+}
+
+export interface PageImageRevisionDto {
+  id: string;
+  bookId: string;
+  pageNumber: number;
+  status: PageImageRevisionStatus;
+  costCredits: number;
+  provider: string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  book?: BookDto;
+}
+
 /** Public identifiers accepted by GET /api/books/:id/images/:imageId. */
 export type PublishedBookImageId = 'cover' | 'back-cover' | `page-${number}`;
 
