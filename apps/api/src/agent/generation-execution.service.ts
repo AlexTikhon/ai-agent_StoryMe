@@ -28,6 +28,25 @@ export class GenerationExecutionService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Publishes the user-visible durable stage without touching the Book row.
+   * The same run/fence predicate used by Book writes prevents a stale worker
+   * from reporting progress after another attempt has reclaimed the run.
+   */
+  async markStep(ctx: GenerationExecutionContext, step: AgentStep): Promise<void> {
+    const fenceCheck = await this.prisma.generationRun.updateMany({
+      where: {
+        id: ctx.runId,
+        status: GenerationRunStatus.running,
+        fencingVersion: ctx.fencingVersion,
+      },
+      data: { currentStep: step },
+    });
+    if (fenceCheck.count === 0) {
+      throw new StaleGenerationRunError(ctx.runId, step);
+    }
+  }
+
+  /**
    * Atomically (1) proves `ctx.fencingVersion` still matches the run's
    * current fencingVersion and it is still `running` — the same row-level
    * lock + WHERE-clause re-check Postgres performs for every UPDATE under

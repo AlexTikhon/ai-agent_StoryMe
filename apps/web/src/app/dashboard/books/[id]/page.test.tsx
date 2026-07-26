@@ -10,6 +10,7 @@ import type {
   BookPreview,
   GeneratedImageEntry,
   GenerationDiagnosticsDto,
+  GenerationProgressDto,
   IllustrationPlan,
   ImageGenerationResult,
   PagePlan,
@@ -217,6 +218,7 @@ function makeDiagnostics(
 }
 
 const DEFAULT_DIAGNOSTICS = makeDiagnostics();
+const DEFAULT_PROGRESS: GenerationProgressDto = { status: 'running', step: null };
 
 // The book detail page now issues an automatic GET .../generation-diagnostics
 // call alongside every book fetch/poll. Routing fetch responses by URL (instead
@@ -236,10 +238,12 @@ interface RoutedFetchMock {
 function createRoutedFetchMock(): {
   fetchFn: RoutedFetchMock;
   queueDiagnostics: (response: Response) => void;
+  queueProgress: (response: Response) => void;
 } {
   const bookQueue: Response[] = [];
   let bookDefault: Response | undefined;
   const diagnosticsQueue: Response[] = [];
+  const progressQueue: Response[] = [];
   const calls: unknown[][] = [];
 
   const fetchFn = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -248,6 +252,10 @@ function createRoutedFetchMock(): {
     if (url.includes('/generation-diagnostics')) {
       const next = diagnosticsQueue.shift();
       return Promise.resolve(next ?? mockOk(DEFAULT_DIAGNOSTICS));
+    }
+    if (url.includes('/generation-progress')) {
+      const next = progressQueue.shift();
+      return Promise.resolve(next ?? mockOk(DEFAULT_PROGRESS));
     }
     if (url.includes('/images/')) {
       return Promise.resolve(mockImageBlob());
@@ -269,7 +277,11 @@ function createRoutedFetchMock(): {
     return fetchFn;
   };
 
-  return { fetchFn, queueDiagnostics: (response: Response) => diagnosticsQueue.push(response) };
+  return {
+    fetchFn,
+    queueDiagnostics: (response: Response) => diagnosticsQueue.push(response),
+    queueProgress: (response: Response) => progressQueue.push(response),
+  };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -280,6 +292,10 @@ describe('BookDetailPage', () => {
 
   function queueDiagnostics(response: Response) {
     fetchMock.queueDiagnostics(response);
+  }
+
+  function queueProgress(response: Response) {
+    fetchMock.queueProgress(response);
   }
 
   beforeEach(() => {
@@ -941,14 +957,15 @@ describe('BookDetailPage', () => {
     expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
   });
 
-  it('shows "Writing your story…" message when status is story_draft', async () => {
+  it('does not infer a writing stage from the legacy story_draft Book status', async () => {
     const storyDraftBook = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(storyDraftBook));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
 
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/writing your story/i)).toBeDefined();
+      expect(screen.getByText(/planning your story/i)).toBeDefined();
     });
   });
 
@@ -1096,14 +1113,15 @@ describe('BookDetailPage', () => {
     expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
   });
 
-  it('shows "Planning illustrations…" message when status is illust_plan', async () => {
+  it('shows the durable image stage for a legacy illust_plan Book status', async () => {
     const illustPlanBook = { ...MOCK_BOOK, status: BookStatus.IllustPlan };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(illustPlanBook));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.ImageGen }));
 
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/planning illustrations/i)).toBeDefined();
+      expect(screen.getByText(/generating images/i)).toBeDefined();
     });
   });
 
@@ -1243,18 +1261,19 @@ describe('BookDetailPage', () => {
     expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
   });
 
-  it('shows "Preparing preview…" message when status is preview_ready', async () => {
+  it('shows the durable layout stage for a legacy preview_ready Book status', async () => {
     const bookWithPreview = {
       ...MOCK_BOOK,
       status: BookStatus.PreviewReady,
       bookPreview: makeBookPreview(),
     };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(bookWithPreview));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.Layout }));
 
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/preparing preview/i)).toBeDefined();
+      expect(screen.getByText(/designing book pages/i)).toBeDefined();
     });
   });
 
@@ -1277,6 +1296,7 @@ describe('BookDetailPage', () => {
   it('shows "Planning your story…" message when status is story_plan', async () => {
     const inProgress = { ...MOCK_BOOK, status: BookStatus.StoryPlan };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(inProgress));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
 
     render(<BookDetailPage />);
 
@@ -1338,14 +1358,15 @@ describe('BookDetailPage', () => {
     expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
   });
 
-  it('shows "Planning pages…" message when status is page_plan', async () => {
+  it('uses the durable story stage for a legacy page_plan Book status', async () => {
     const pagePlanBook = { ...MOCK_BOOK, status: BookStatus.PagePlan };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(pagePlanBook));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
 
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/planning pages/i)).toBeDefined();
+      expect(screen.getByText(/planning your story/i)).toBeDefined();
     });
   });
 
@@ -1953,9 +1974,10 @@ describe('BookDetailPage', () => {
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockOk(generatingBook))
         .mockResolvedValueOnce(mockOk(failedBook));
+      queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
 
       render(<BookDetailPage />);
-      await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
+      await waitFor(() => expect(screen.getByText(/planning your story/i)).toBeDefined());
 
       await act(async () => {
         await act(async () => {
@@ -2864,26 +2886,44 @@ describe('BookDetailPage', () => {
 
   // ── Status messages ───────────────────────────────────────────────────────
 
-  it('shows "Rendering PDF…" status message in banner when status is pdf_render', async () => {
+  it('shows the durable pdf_render stage in the generation banner', async () => {
     const pdfRenderBook: BookDto = { ...MOCK_BOOK, status: BookStatus.PdfRender };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(pdfRenderBook));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.PdfRender }));
 
     render(<BookDetailPage />);
 
-    // Both the PdfSection heading and the generating banner contain "Rendering PDF"
     await waitFor(() => {
-      expect(screen.getAllByText(/rendering pdf/i).length).toBeGreaterThan(0);
+      expect(screen.getByText(/rendering pdf.*this draft can no longer be edited/i)).toBeDefined();
     });
   });
 
-  it('shows "Designing book pages…" status message when status is layout', async () => {
-    const layoutBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Layout };
-    vi.mocked(fetch).mockResolvedValueOnce(mockOk(layoutBook));
+  it('uses the durable run step instead of the coarse Book status', async () => {
+    const coarseBook: BookDto = { ...MOCK_BOOK, status: BookStatus.CharBuild };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(coarseBook));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.ImageGen }));
 
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/designing book pages/i)).toBeDefined();
+      expect(
+        screen.getByText(/generating images.*this draft can no longer be edited/i),
+      ).toBeDefined();
+    });
+    expect(screen.queryByText(/building character profile/i)).toBeNull();
+  });
+
+  it('shows queue wait without inventing a pipeline stage', async () => {
+    const queuedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.CharBuild };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(queuedBook));
+    queueProgress(mockOk({ status: 'queued', step: null }));
+
+    render(<BookDetailPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/waiting for a generation worker.*this draft can no longer be edited/i),
+      ).toBeDefined();
     });
   });
 
@@ -3143,9 +3183,10 @@ describe('BookDetailPage', () => {
             }),
           ),
         );
+        queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
 
         render(<BookDetailPage />);
-        await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
+        await waitFor(() => expect(screen.getByText(/planning your story/i)).toBeDefined());
 
         await act(async () => {
           await act(async () => {

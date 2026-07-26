@@ -1,6 +1,6 @@
 # StoryMe Codebase Audit
 
-Audit date: 2026-07-23; updated against the Phase 2 implementation on 2026-07-25. Findings come
+Audit date: 2026-07-23; updated through the Phase 3 implementation on 2026-07-26. Findings come
 from controllers, Next.js route files, Prisma schema and runtime delegate use, service/module
 wiring, providers, storage, tests, and package/deployment configuration. Historical design
 documents were used only to find inconsistencies.
@@ -18,20 +18,21 @@ character-profile, and image generation have deterministic mocks and OpenAI impl
 layout/PDF publication is deterministic.
 
 The main risks are remaining large orchestration/UI units, compatibility/schema surface implying
-nonexistent product features, no complete privacy-erasure workflow, diagnostics shown to every
-authenticated owner, and documents mixing current and superseded phases.
+nonexistent product features, no complete privacy-erasure workflow, the owned diagnostics API
+having no role-based admin boundary, and documents mixing current and superseded phases. The
+ordinary web UI hides diagnostics unless its explicit developer build flag is enabled.
 
 ## Actual routes
 
 All API routes have `/api` prefix.
 
-| Area    | Routes                                                                                                                                                                                                                                                                                                                                                 |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Health  | `GET /health`                                                                                                                                                                                                                                                                                                                                          |
-| Auth    | `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/verify-email`, `POST /auth/resend-verification`, `POST /auth/request-password-reset`, `POST /auth/reset-password`                                                                                                                    |
-| Books   | `GET /books`, `POST /books`, `GET /books/:id`, `PATCH /books/:id`, `DELETE /books/:id`, `POST /books/:id/child-photo`, `GET /books/:id/pdf/preview`, `GET /books/:id/images/:imageId`, `POST /books/:id/generate`, `POST /books/:id/retry-generation`, `POST /books/:id/regenerate`, `POST /books/:id/cancel`, `GET /books/:id/generation-diagnostics` |
-| Credits | `GET /credits/balance`, `GET /credits/transactions`                                                                                                                                                                                                                                                                                                    |
-| Billing | `GET /billing/packages`, `POST /billing/checkout`, `GET /billing/checkout/:sessionId/status`, `POST /billing/webhook`                                                                                                                                                                                                                                  |
+| Area    | Routes                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Health  | `GET /health`                                                                                                                                                                                                                                                                                                                                                                                |
+| Auth    | `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/verify-email`, `POST /auth/resend-verification`, `POST /auth/request-password-reset`, `POST /auth/reset-password`                                                                                                                                                          |
+| Books   | `GET /books`, `POST /books`, `GET /books/:id`, `PATCH /books/:id`, `DELETE /books/:id`, `POST /books/:id/child-photo`, `GET /books/:id/pdf/preview`, `GET /books/:id/images/:imageId`, `POST /books/:id/generate`, `POST /books/:id/retry-generation`, `POST /books/:id/regenerate`, `POST /books/:id/cancel`, `GET /books/:id/generation-progress`, `GET /books/:id/generation-diagnostics` |
+| Credits | `GET /credits/balance`, `GET /credits/transactions`                                                                                                                                                                                                                                                                                                                                          |
+| Billing | `GET /billing/packages`, `POST /billing/checkout`, `GET /billing/checkout/:sessionId/status`, `POST /billing/webhook`                                                                                                                                                                                                                                                                        |
 
 Health and the signature-checked Stripe webhook are public. Feature ownership derives from the
 authenticated user. Frontend routes are `/`, `/register`, `/login`, `/verify-email`,
@@ -61,7 +62,9 @@ The orchestrator persists `Book.status=layout`, then the coordinator atomically 
 failed` with `Book -> failed`, active-pointer removal, and idempotent refund. Invalid snapshots,
 exhausted retries, and abandoned runs use the same fenced failure mechanism. Cancellation moves
 queued/running to `cancelled`, increments the fence, suppresses pending outbox dispatch, sets
-Book cancelled, and refunds once. `partial` and many fine-grained Book statuses are not written.
+Book cancelled, and refunds once. The worker durably and fence-safely records the five major
+stages above in `GenerationRun.currentStep`; the user progress endpoint projects only run status
+and this step. `partial` and many fine-grained Book statuses are not written.
 
 ## Sources of truth
 
@@ -116,8 +119,8 @@ Documentation inconsistencies:
 - `API_SPEC.md`, PRD/design and long phased docs mix planned endpoints/models with code. Child
   profiles, uploads, sharing, subscriptions, notifications, reader/editing and admin APIs are
   absent.
-- The old status machine implies every stage is durable; code primarily persists layout/terminal
-  status and logs other labels.
+- The old status machine implies every fine-grained stage is durable; code persists only the five
+  actual major stages in `GenerationRun` and keeps the other labels historical/diagnostic.
 - README/local-demo use `IMAGE_GENERATION_PROVIDER_TOKEN`; code uses
   `IMAGE_GENERATION_PROVIDER`.
 - README's “does not do” section contains implemented/crossed-out history.
@@ -151,11 +154,10 @@ artifacts.
   diagnostics-panel extraction are complete.
 - Keep the completed `GenerationJob` removal migration in the release path and validate it before
   deployment; retain the recorded decision for every other unused Prisma model.
-- Gate diagnostics/internal asset details for broader production.
+- Add role-based authorization before exposing the owned diagnostics API outside trusted builds.
 
 ### P2
 
-- Add ownership-checked reader/images and progress based on real durable stages.
 - Add Playwright journeys and privacy-safe request/run correlation.
 - Design/test retention and hard-delete across DB, queue, local, and cloud storage.
 

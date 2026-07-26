@@ -15,7 +15,9 @@ polls status and supports cancellation, retry from a failed run's immutable snap
 regeneration from current input, and authenticated PDF download. Developer diagnostics and
 intermediate technical details are opt-in through
 `NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true`; when disabled, the browser does not request
-diagnostics. Users can view their credit ledger and, when explicitly enabled, buy one-time
+diagnostics. The ordinary progress banner reads a minimal owned `GenerationRun` projection and
+shows only fenced stages the worker has durably entered, without internal logs or invented
+percentages. Users can view their credit ledger and, when explicitly enabled, buy one-time
 packages through Stripe Checkout.
 
 JWT mode is the default. A local-only `dev` auth mode exists and must not be exposed publicly.
@@ -43,6 +45,7 @@ All routes have the `/api` prefix.
 | POST             | `/books/:id/retry-generation`         | Resume failed snapshot                   |
 | POST             | `/books/:id/regenerate`               | Generate from current input              |
 | POST             | `/books/:id/cancel`                   | Fence/cancel active run and refund once  |
+| GET              | `/books/:id/generation-progress`      | Minimal owned durable progress           |
 | GET              | `/books/:id/generation-diagnostics`   | Owned run/artifact diagnostics           |
 | GET              | `/books/:id/pdf/preview`              | Ownership-checked PDF bytes              |
 | GET              | `/books/:id/images/:imageId`          | Ownership-checked published image bytes  |
@@ -89,9 +92,11 @@ transactional terminal publication`.
 The content stages are character profile/sheet, one story-provider result containing story plan,
 page plan, story text, illustration plan and preview, image generation/reuse, deterministic
 layout, and PDF publication. The current orchestrator primarily persists `Book` as `created`,
-then `layout`, then `complete` or `failed`; cancellation writes `cancelled`. Finer enum values are
-largely diagnostic/historical and are not each persisted as progress states. `partial` is
-unreachable.
+then the scheduled `char_build` marker, `layout`, and finally `complete` or `failed`;
+cancellation writes `cancelled`. The authoritative `GenerationRun.currentStep` separately records
+the major stages the worker actually enters: `char_build`, `story_plan`, `image_gen`, `layout`,
+and `pdf_render`. Finer Book/step enum values remain diagnostic or historical and are not
+fabricated as progress. `partial` is unreachable.
 
 `GenerationRun` (`queued`, `running`, then `completed`, `failed`, or `cancelled`) is the durable
 execution source of truth. Every write verifies `(runId, fencingVersion)`. Reuse requires matching
@@ -104,7 +109,8 @@ Implemented: JWT auth/recovery, ownership enforcement, safe child-photo processi
 and soft-delete, durable queued generation, fencing/heartbeat/recovery, cancellation,
 retry/resume, idempotent charges/refunds, one-time credit purchases, provider limits, local/S3/R2
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
-published cover thumbnails in the library, and extensive unit/integration tests.
+published cover thumbnails in the library, durable user-facing generation progress, and
+extensive unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
 management, single-page editing/regeneration, bounded LLM repair, hard-delete/data-erasure
