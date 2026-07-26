@@ -137,6 +137,8 @@ export interface BookPreviewPage {
   illustrationPrompt: string;
   layout: string;
   learningGoal: string;
+  /** Optimistic-concurrency version for Phase 4 page-level changes. Legacy/generated pages start at 1. */
+  version?: number;
 }
 
 export interface BookPreviewBackCover {
@@ -461,6 +463,11 @@ export interface BookDto {
   previewPdfUrl?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface UpdateBookPageTextInput {
+  text: string;
+  expectedVersion: number;
 }
 
 /** Public identifiers accepted by GET /api/books/:id/images/:imageId. */

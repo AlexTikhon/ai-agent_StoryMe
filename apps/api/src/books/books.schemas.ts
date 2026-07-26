@@ -112,6 +112,7 @@ const bookPreviewPageSchema = z.object({
   illustrationPrompt: z.string(),
   layout: z.string(),
   learningGoal: z.string(),
+  version: z.number().int().positive().optional(),
 });
 
 const bookPreviewBackCoverSchema = z.object({

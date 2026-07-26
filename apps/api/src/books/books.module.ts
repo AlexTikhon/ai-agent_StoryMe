@@ -19,6 +19,7 @@ import { BookAssetService } from './book-asset.service';
 import { BookDiagnosticsService } from './book-diagnostics.service';
 import { BookGenerationService } from './book-generation.service';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
+import { BookPageChangeService } from './book-page-change.service';
 import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
 import { IMAGE_ASSET_STORAGE_TOKEN, createImageAssetStorage } from '../images/image-asset-storage';
 import { ChildPhotoProcessor } from '../images/child-photo-processor';
@@ -64,6 +65,7 @@ export class BooksModule {
       BookDiagnosticsService,
       BookGenerationService,
       BookGenerationExecutionService,
+      BookPageChangeService,
       AgentService,
       GenerationQueueService,
       GenerationRunService,

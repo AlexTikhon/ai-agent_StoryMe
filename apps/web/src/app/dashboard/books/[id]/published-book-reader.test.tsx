@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { BookPreview } from '@book/types';
+import { BookStatus, type BookDto, type BookPreview } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 import { PublishedBookReader } from './published-book-reader';
 
 vi.mock('@/lib/api/books', () => ({
   booksApi: {
     downloadPublishedImage: vi.fn(),
+    updatePageText: vi.fn(),
   },
 }));
 
@@ -35,6 +36,7 @@ const PREVIEW: BookPreview = {
       illustrationPrompt: 'Emma on a path',
       layout: 'image_top_text_bottom',
       learningGoal: 'Courage',
+      version: 4,
     },
   ],
   backCover: {
@@ -124,5 +126,42 @@ describe('PublishedBookReader', () => {
     });
     expect(booksApi.downloadPublishedImage).toHaveBeenCalledTimes(2);
     expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover');
+  });
+
+  it('edits one story page with its optimistic version and returns the updated book', async () => {
+    const onBookUpdated = vi.fn();
+    const updatedBook = {
+      id: 'book-1',
+      status: BookStatus.Complete,
+      bookPreview: {
+        ...PREVIEW,
+        pages: PREVIEW.pages.map((page) =>
+          page.pageNumber === 1 ? { ...page, text: 'A safer new ending.', version: 5 } : page,
+        ),
+      },
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T01:00:00.000Z',
+    } as BookDto;
+    vi.mocked(booksApi.updatePageText).mockResolvedValueOnce(updatedBook);
+
+    render(<PublishedBookReader bookId="book-1" preview={PREVIEW} onBookUpdated={onBookUpdated} />);
+    await screen.findByAltText('Illustration for cover');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await screen.findByAltText('Illustration for page 1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit page text' }));
+    fireEvent.change(screen.getByLabelText('Page text'), {
+      target: { value: 'A safer new ending.' },
+    });
+    expect(screen.getByText(/saving uses no ai call or credits/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save page' }));
+
+    await waitFor(() => {
+      expect(booksApi.updatePageText).toHaveBeenCalledWith('book-1', 1, {
+        text: 'A safer new ending.',
+        expectedVersion: 4,
+      });
+      expect(onBookUpdated).toHaveBeenCalledWith(updatedBook);
+    });
   });
 });

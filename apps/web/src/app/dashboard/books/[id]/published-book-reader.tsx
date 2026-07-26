@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { BookPreview, PublishedBookImageId } from '@book/types';
+import type { BookDto, BookPreview, PublishedBookImageId } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 
 interface ReaderSlide {
@@ -9,14 +9,17 @@ interface ReaderSlide {
   label: string;
   title: string;
   text?: string;
+  pageNumber?: number;
+  version?: number;
 }
 
 interface PublishedBookReaderProps {
   bookId: string;
   preview: BookPreview;
+  onBookUpdated?: (book: BookDto) => void;
 }
 
-export function PublishedBookReader({ bookId, preview }: PublishedBookReaderProps) {
+export function PublishedBookReader({ bookId, preview, onBookUpdated }: PublishedBookReaderProps) {
   const slides = useMemo<ReaderSlide[]>(
     () => [
       {
@@ -33,6 +36,8 @@ export function PublishedBookReader({ bookId, preview }: PublishedBookReaderProp
           label: `Page ${page.pageNumber}`,
           title: page.title,
           text: page.text,
+          pageNumber: page.pageNumber,
+          version: page.version ?? 1,
         })),
       {
         imageId: 'back-cover',
@@ -48,11 +53,44 @@ export function PublishedBookReader({ bookId, preview }: PublishedBookReaderProp
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
+  const [editingText, setEditingText] = useState(false);
+  const [draftText, setDraftText] = useState('');
+  const [savingText, setSavingText] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const slide = slides[currentIndex];
 
   useEffect(() => {
     setCurrentIndex(0);
   }, [bookId]);
+
+  useEffect(() => {
+    setEditingText(false);
+    setDraftText(slide.text ?? '');
+    setSaveError(null);
+  }, [slide.imageId, slide.text]);
+
+  const savePageText = async () => {
+    if (!slide.pageNumber || !onBookUpdated) return;
+    const text = draftText.trim();
+    if (!text) {
+      setSaveError('Page text cannot be empty.');
+      return;
+    }
+    setSavingText(true);
+    setSaveError(null);
+    try {
+      const updated = await booksApi.updatePageText(bookId, slide.pageNumber, {
+        text,
+        expectedVersion: slide.version ?? 1,
+      });
+      onBookUpdated(updated);
+      setEditingText(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Failed to update page text.');
+    } finally {
+      setSavingText(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -129,10 +167,73 @@ export function PublishedBookReader({ bookId, preview }: PublishedBookReaderProp
 
         <div className="px-1 pb-1 pt-4 text-center">
           <h3 className="font-display text-lg font-semibold text-text-primary">{slide.title}</h3>
-          {slide.text && (
+          {!editingText && slide.text && (
             <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-text-secondary">
               {slide.text}
             </p>
+          )}
+          {editingText && (
+            <div className="mt-3 text-left">
+              <label
+                htmlFor={`page-text-${slide.pageNumber}`}
+                className="mb-1 block text-sm font-semibold text-text-primary"
+              >
+                Page text
+              </label>
+              <textarea
+                id={`page-text-${slide.pageNumber}`}
+                value={draftText}
+                onChange={(event) => setDraftText(event.target.value)}
+                maxLength={2000}
+                rows={7}
+                disabled={savingText}
+                className="w-full rounded-lg border border-border-default px-3 py-2 text-sm text-text-primary"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                Saving uses no AI call or credits. StoryMe rebuilds the PDF and keeps every
+                published illustration unchanged.
+              </p>
+              {saveError && (
+                <p role="alert" className="mt-2 text-sm text-danger-base">
+                  {saveError}
+                </p>
+              )}
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void savePageText()}
+                  disabled={savingText}
+                  className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {savingText ? 'Saving page…' : 'Save page'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingText(false);
+                    setDraftText(slide.text ?? '');
+                    setSaveError(null);
+                  }}
+                  disabled={savingText}
+                  className="rounded-lg border border-border-default px-3 py-1.5 text-sm font-semibold text-text-secondary disabled:opacity-60"
+                >
+                  Cancel edit
+                </button>
+              </div>
+            </div>
+          )}
+          {!editingText && slide.pageNumber && onBookUpdated && (
+            <button
+              type="button"
+              onClick={() => {
+                setDraftText(slide.text ?? '');
+                setSaveError(null);
+                setEditingText(true);
+              }}
+              className="mt-3 rounded-lg border border-violet-300 px-3 py-1.5 text-sm font-semibold text-violet-700"
+            >
+              Edit page text
+            </button>
           )}
         </div>
       </div>
@@ -141,7 +242,7 @@ export function PublishedBookReader({ bookId, preview }: PublishedBookReaderProp
         <button
           type="button"
           onClick={() => setCurrentIndex((value) => Math.max(0, value - 1))}
-          disabled={currentIndex === 0}
+          disabled={currentIndex === 0 || savingText}
           className="rounded-lg border border-border-default bg-white px-3 py-1.5 text-sm font-semibold text-text-secondary disabled:opacity-40"
         >
           Previous page
@@ -149,7 +250,7 @@ export function PublishedBookReader({ bookId, preview }: PublishedBookReaderProp
         <button
           type="button"
           onClick={() => setCurrentIndex((value) => Math.min(slides.length - 1, value + 1))}
-          disabled={currentIndex === slides.length - 1}
+          disabled={currentIndex === slides.length - 1 || savingText}
           className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
         >
           Next page

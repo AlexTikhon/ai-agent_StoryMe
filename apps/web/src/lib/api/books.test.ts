@@ -161,6 +161,27 @@ describe('booksApi', () => {
     });
   });
 
+  describe('updatePageText()', () => {
+    it('sends a versioned PATCH to the one-page text endpoint', async () => {
+      const updated = { ...MOCK_BOOK, status: BookStatus.Complete };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(updated));
+
+      const result = await booksApi.updatePageText('book-1', 3, {
+        text: 'A corrected page.',
+        expectedVersion: 2,
+      });
+
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/book-1/pages/3/text');
+      expect(init.method).toBe('PATCH');
+      expect(JSON.parse(init.body as string)).toEqual({
+        text: 'A corrected page.',
+        expectedVersion: 2,
+      });
+      expect(result).toEqual(updated);
+    });
+  });
+
   describe('generate()', () => {
     it('sends POST /books/:id/generate and returns GenerateBookResponse', async () => {
       const generated: GenerateBookResponse = {

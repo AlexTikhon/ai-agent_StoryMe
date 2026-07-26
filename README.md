@@ -37,6 +37,9 @@ generate a book → download the PDF).
   worker has durably entered (`char_build`, `story_plan`, `image_gen`,
   `layout`, `pdf_render`), without invented percentages.
 - Render and preview/download the finished book as a PDF.
+- Correct the text of one completed story page with optimistic version checking; StoryMe reuses
+  all illustrations and republishes the PDF without an AI call or credit charge. One-page image
+  regeneration is the next Phase 4 slice.
 - Retry generation after a failure.
 
 For the complete implemented/unimplemented boundary, use

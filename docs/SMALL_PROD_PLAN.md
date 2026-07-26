@@ -28,6 +28,11 @@ public sharing, analytics, broad UI redesign, and role-based diagnostics authori
 
 ## Phase 4: one-page changes
 
+**Status:** in progress. Slice 4A delivers versioned one-page text correction, immutable PDF
+republication, unchanged-image reuse, optimistic concurrency, and failure-safe atomic publication.
+Slice 4B (one-page image regeneration with an explicit cost quote and confirmation) is next; see
+[PHASE_4_IMPLEMENTATION_PLAN.md](PHASE_4_IMPLEMENTATION_PLAN.md).
+
 **User value:** correct one page without replacing a good book. **Technical scope:** edit one
 page's text; regenerate one page image; version the changed artifact; reuse all unaffected
 artifacts; rebuild only dependent layout/PDF; show/confirm cost before a paid call.

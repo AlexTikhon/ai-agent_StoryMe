@@ -199,6 +199,9 @@ type PublishedArtifactPointer = Pick<
   'publishedRunId' | 'publishedRunFencingVersion' | 'previewPdfUrl'
 >;
 
+type PublishedPdfPointer = PublishedArtifactPointer &
+  Partial<Pick<Book, 'publishedPdfRunId' | 'publishedPdfFencingVersion'>>;
+
 function resolvePublishedArtifactNamespace(book: PublishedArtifactPointer): PublishedPdfNamespace {
   const namespace = resolvePublishedNamespace(book);
   if (namespace != null) return namespace;
@@ -213,9 +216,15 @@ function resolvePublishedArtifactNamespace(book: PublishedArtifactPointer): Publ
  * pair, with previewPdfUrl used strictly to disambiguate the "both pointer
  * fields null" case, never as an ownership signal in its own right.
  */
-export function resolvePublishedPdfNamespace(
-  book: PublishedArtifactPointer,
-): PublishedPdfNamespace {
+export function resolvePublishedPdfNamespace(book: PublishedPdfPointer): PublishedPdfNamespace {
+  if (book.publishedPdfRunId != null || book.publishedPdfFencingVersion != null) {
+    if (book.publishedPdfRunId == null || book.publishedPdfFencingVersion == null) {
+      throw new InvalidGenerationArtifactPointerError(
+        'Book has an incomplete published PDF pointer — revision id and fencing version must move together.',
+      );
+    }
+    return claimNamespace(book.publishedPdfRunId, book.publishedPdfFencingVersion);
+  }
   return resolvePublishedArtifactNamespace(book);
 }
 

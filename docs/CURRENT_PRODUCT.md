@@ -12,7 +12,9 @@ title, child name/age, language (`en`, `ru`, `pl`), theme, page count, optional 
 optional reference photo. Starting generation atomically creates a run/outbox event and charges a
 credit. A separate BullMQ worker generates the story, images, layout, and PDF. The detail screen
 polls status and supports cancellation, retry from a failed run's immutable snapshot,
-regeneration from current input, and authenticated PDF download. Developer diagnostics and
+regeneration from current input, authenticated PDF download, and version-checked text correction
+for one page of a completed book. A page text correction reuses every published image, invokes no
+AI provider, charges no credit, and atomically republishes the dependent layout/PDF. Developer diagnostics and
 intermediate technical details are opt-in through
 `NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true`; when disabled, the browser does not request
 diagnostics. The ordinary progress banner reads a minimal owned `GenerationRun` projection and
@@ -49,6 +51,7 @@ All routes have the `/api` prefix.
 | GET              | `/books/:id/generation-diagnostics`   | Owned run/artifact diagnostics           |
 | GET              | `/books/:id/pdf/preview`              | Ownership-checked PDF bytes              |
 | GET              | `/books/:id/images/:imageId`          | Ownership-checked published image bytes  |
+| PATCH            | `/books/:id/pages/:pageNumber/text`   | Versioned page text edit and PDF rebuild |
 | GET              | `/credits/balance`                    | Canonical owned balance                  |
 | GET              | `/credits/transactions`               | Cursor-paginated owned ledger            |
 | GET              | `/billing/packages`                   | Server package catalog                   |
@@ -68,7 +71,9 @@ and ownership comes from the authenticated user rather than client-supplied user
 The completed-book detail screen has an authenticated in-browser reader for the published cover,
 every generated story page, and the back cover. It lazily fetches one owned published image at a
 time without exposing storage keys. Library cards show the ownership-checked published cover when
-one exists and a neutral placeholder otherwise. With developer diagnostics explicitly enabled,
+one exists and a neutral placeholder otherwise. A story page can be edited in place; the UI sends
+its expected version, explains that illustrations are unchanged and no credit is charged, and
+refreshes the reader from the atomically republished book. With developer diagnostics explicitly enabled,
 the book detail screen shows internal image asset keys and intermediate pipeline details.
 
 ## Providers and storage
@@ -110,10 +115,11 @@ and soft-delete, durable queued generation, fencing/heartbeat/recovery, cancella
 retry/resume, idempotent charges/refunds, one-time credit purchases, provider limits, local/S3/R2
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
 published cover thumbnails in the library, durable user-facing generation progress, and
-extensive unit/integration tests.
+versioned one-page text correction with failure-safe PDF republication, and extensive
+unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
-management, single-page editing/regeneration, bounded LLM repair, hard-delete/data-erasure
+management, one-page image regeneration and its paid confirmation flow, bounded LLM repair, hard-delete/data-erasure
 workflow, Playwright E2E, and role-based admin authorization for diagnostics. The reader is
 currently shown only for a book whose current status is `complete`; previous publications are not
 yet rendered while a regeneration is running, failed, or cancelled. The web diagnostics UI is

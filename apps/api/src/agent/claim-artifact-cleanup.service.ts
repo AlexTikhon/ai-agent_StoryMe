@@ -202,6 +202,8 @@ type BookProtectionFields = Pick<
   | 'activeRunId'
   | 'publishedRunId'
   | 'publishedRunFencingVersion'
+  | 'publishedPdfRunId'
+  | 'publishedPdfFencingVersion'
   | 'lastGenerationRunId'
   | 'lastGenerationFencingVersion'
 >;
@@ -424,6 +426,8 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
           activeRunId: true,
           publishedRunId: true,
           publishedRunFencingVersion: true,
+          publishedPdfRunId: true,
+          publishedPdfFencingVersion: true,
           lastGenerationRunId: true,
           lastGenerationFencingVersion: true,
         },
@@ -502,6 +506,8 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
             activeRunId: true,
             publishedRunId: true,
             publishedRunFencingVersion: true,
+            publishedPdfRunId: true,
+            publishedPdfFencingVersion: true,
             lastGenerationRunId: true,
             lastGenerationFencingVersion: true,
           },
@@ -580,6 +586,12 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       if (
         book.publishedRunId === group.runId &&
         book.publishedRunFencingVersion === group.fencingVersion
+      ) {
+        return 'protected_published';
+      }
+      if (
+        book.publishedPdfRunId === group.runId &&
+        book.publishedPdfFencingVersion === group.fencingVersion
       ) {
         return 'protected_published';
       }
