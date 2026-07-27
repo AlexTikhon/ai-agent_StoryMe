@@ -57,6 +57,10 @@ autonomous agents, recursive reflection, multiple repair attempts, and replacing
 
 ## Phase 6: E2E, observability, and retention
 
+**Status:** in progress. Slice 6A establishes Playwright browser coverage over
+the real local API/worker boundaries with disposable data and deterministic
+mock providers. See [PHASE_6_IMPLEMENTATION_PLAN.md](PHASE_6_IMPLEMENTATION_PLAN.md).
+
 **User value:** release-tested journeys, diagnosable failures, and deliberate private-data
 lifecycle. **Technical scope:** Playwright register/login, mock generation, cancellation, retry,
 and PDF download; structured request/run correlation; privacy-aware retention and hard-delete
