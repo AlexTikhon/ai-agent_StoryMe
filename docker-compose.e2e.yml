@@ -1,0 +1,29 @@
+services:
+  postgres-e2e:
+    image: postgres:16-alpine
+    ports:
+      - '5440:5432'
+    environment:
+      POSTGRES_USER: storyme
+      POSTGRES_PASSWORD: storyme_e2e
+      POSTGRES_DB: storyme_e2e
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U storyme -d storyme_e2e']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis-e2e:
+    image: redis:7-alpine
+    ports:
+      - '6380:6379'
+    command: redis-server --save "" --appendonly no
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 20

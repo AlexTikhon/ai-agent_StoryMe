@@ -67,6 +67,11 @@ desktop.ini
 # Vitest
 .vitest/
 
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+
 # MinIO data (local dev)
 minio-data/
 

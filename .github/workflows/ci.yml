@@ -275,3 +275,78 @@ jobs:
 
       - name: Build API production image (local tag, not pushed)
         run: docker build -f apps/api/Dockerfile -t storyme-api:ci-${{ github.sha }} .
+
+  # ── Job 7: Browser E2E (real API/worker + mock providers) ────────────────
+  e2e:
+    name: Browser E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: storyme
+          POSTGRES_PASSWORD: storyme_e2e
+          POSTGRES_DB: storyme_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U storyme -d storyme_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://storyme:storyme_e2e@127.0.0.1:5432/storyme_e2e
+      REDIS_URL: redis://127.0.0.1:6379/15
+      JWT_SECRET: storyme-e2e-jwt-secret-minimum-32-characters
+      JWT_REFRESH_SECRET: storyme-e2e-refresh-secret-minimum-32-characters
+      CI: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared types
+        run: pnpm --filter @book/types build
+
+      - name: Generate Prisma client
+        run: pnpm --filter @book/api prisma:generate
+
+      - name: Install Chromium
+        run: pnpm --filter @book/web exec playwright install --with-deps chromium
+
+      - name: Run browser E2E
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 14

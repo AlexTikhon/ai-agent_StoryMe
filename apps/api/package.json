@@ -28,6 +28,9 @@
     "smoke:real-generation": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/smoke-real-generation.ts",
     "preflight:deploy": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-deploy.ts",
     "preflight:deploy:ci-check": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-deploy-ci-fixtures.ts",
+    "e2e:seed": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/e2e-fixtures.ts seed",
+    "e2e:cleanup": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/e2e-fixtures.ts cleanup",
+    "start:e2e": "prisma migrate deploy && pnpm e2e:seed && nest start",
     "migrate:target-guard": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/migrate-target-guard.ts"
   },
   "dependencies": {
