@@ -20,6 +20,7 @@ import {
   type StoryGenerationInput,
   type StoryGenerationProvider,
   type StoryGenerationResult,
+  type StoryRepairInput,
 } from './story-generation-provider';
 import {
   DEFAULT_OPENAI_MAX_RETRIES,
@@ -132,6 +133,51 @@ export function buildStoryGenerationPrompt(
   ].join('\n');
 
   return { system, user };
+}
+
+export function buildStoryRepairPrompt(
+  input: StoryRepairInput,
+  targetPageCount: number,
+): { system: string; user: string } {
+  const base = buildStoryGenerationPrompt(input.generationInput, targetPageCount);
+  const candidate = {
+    title: input.candidate.storyPlan.title,
+    subtitle: input.candidate.storyPlan.subtitle,
+    theme: input.candidate.storyPlan.theme,
+    educationalMessage: input.candidate.storyPlan.educationalMessage,
+    openingHook: input.candidate.storyPlan.openingHook,
+    resolution: input.candidate.storyPlan.resolution,
+    characterCard: {
+      visualAnchor: input.candidate.characterCard.visualAnchor,
+      narrativeDescription: input.candidate.characterCard.narrativeDescription,
+    },
+    pages: input.candidate.bookPreview.pages.map((page) => ({
+      pageNumber: page.pageNumber,
+      title: page.title,
+      sceneDescription:
+        input.candidate.storyPlan.pages.find(
+          (candidatePage) => candidatePage.pageNumber === page.pageNumber,
+        )?.sceneDescription ?? page.illustrationPrompt,
+      storyText: page.text,
+      illustrationPrompt: page.illustrationPrompt,
+      learningGoal: page.learningGoal,
+    })),
+  };
+  const findings = input.qualityReport.issues.map(({ code, pageNumber }) => ({
+    code,
+    ...(pageNumber !== undefined && { pageNumber }),
+  }));
+
+  return {
+    system: `${base.system} You are performing one bounded repair of an existing candidate, not a critique. Correct every supplied finding and return the complete corrected JSON object.`,
+    user: [
+      base.user,
+      '',
+      'Repair the following candidate exactly once. Preserve good content, page numbering, and the requested child identity. Return the entire corrected story, not a patch.',
+      `Deterministic findings: ${JSON.stringify(findings)}`,
+      `Candidate: ${JSON.stringify(candidate)}`,
+    ].join('\n'),
+  };
 }
 
 function mapLlmResponseToResult(
@@ -286,7 +332,26 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     const targetPageCount =
       input.pageCount != null ? resolveTargetPageCount(input.pageCount) : this.targetPageCount;
     const { system, user } = buildStoryGenerationPrompt(input, targetPageCount);
+    const data = await this.requestStoryCompletion(system, user, 'generation');
+    return mapLlmResponseToResult(input, data);
+  }
 
+  async repairStory(input: StoryRepairInput): Promise<StoryGenerationResult> {
+    const generationInput = input.generationInput;
+    const targetPageCount =
+      generationInput.pageCount != null
+        ? resolveTargetPageCount(generationInput.pageCount)
+        : this.targetPageCount;
+    const { system, user } = buildStoryRepairPrompt(input, targetPageCount);
+    const data = await this.requestStoryCompletion(system, user, 'repair');
+    return mapLlmResponseToResult(generationInput, data);
+  }
+
+  private async requestStoryCompletion(
+    system: string,
+    user: string,
+    operation: 'generation' | 'repair',
+  ): Promise<LlmStoryGenerationResponse> {
     let response: Response;
     try {
       response = await fetchWithRetry({
@@ -312,24 +377,24 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
         maxRetries: this.maxRetries,
         onAttempt: (attempt, maxAttempts) => {
           this.logger.log(
-            `Story generation request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
+            `Story ${operation} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
           );
         },
         onRetry: (attempt, reason) => {
-          this.logger.warn(`Story generation attempt ${attempt} failed (${reason}); retrying`);
+          this.logger.warn(`Story ${operation} attempt ${attempt} failed (${reason}); retrying`);
         },
       });
     } catch (err) {
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
-        `Story generation failed: provider=openai model=${this.model} reason=${message}`,
+        `Story ${operation} failed: provider=openai model=${this.model} reason=${message}`,
       );
       throw new StoryGenerationProviderError(`OpenAI request failed: ${message}`, err);
     }
 
     if (!response.ok) {
       this.logger.error(
-        `Story generation failed: provider=openai model=${this.model} status=${response.status}`,
+        `Story ${operation} failed: provider=openai model=${this.model} status=${response.status}`,
       );
       throw new StoryGenerationProviderError(
         `OpenAI request failed with status ${response.status}`,
@@ -363,7 +428,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
       );
     }
 
-    this.logger.log(`Story generation succeeded: provider=openai model=${this.model}`);
-    return mapLlmResponseToResult(input, parsed.data);
+    this.logger.log(`Story ${operation} succeeded: provider=openai model=${this.model}`);
+    return parsed.data;
   }
 }

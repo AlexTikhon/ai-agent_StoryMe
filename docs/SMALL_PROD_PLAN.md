@@ -44,8 +44,9 @@ paid calls.
 
 ## Phase 5: bounded quality and repair
 
-**Status:** in progress. Slice 5A adds a deterministic, privacy-safe quality gate before image
-generation. Slice 5B will add at most one optional typed repair attempt with an explicit budget.
+**Status:** completed. Slice 5A adds a deterministic, privacy-safe quality gate before image
+generation. Slice 5B adds an off-by-default, at-most-once typed repair attempt with an explicit
+pre-scheduled budget and deterministic revalidation.
 
 **User value:** fewer consistency and age-suitability problems. **Technical scope:** deterministic
 checks followed by at most one optional typed LLM repair; validate the candidate before

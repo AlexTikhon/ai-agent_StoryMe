@@ -232,6 +232,7 @@ export class BookGenerationService {
         storyProvider: this.storyGenerationProvider.providerName,
         characterProfileProvider: this.characterProfileProvider.providerName,
         imageProvider: this.imageGenerationProvider.providerName,
+        storyRepairEnabled: this.config.get('STORY_REPAIR_ENABLED', { infer: true }) === 'true',
       },
     );
     const configuredLimit = this.config.get('MAX_PAID_PROVIDER_CALLS_PER_RUN', { infer: true });

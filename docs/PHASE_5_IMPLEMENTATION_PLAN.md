@@ -27,10 +27,17 @@ keeps a previous publication unchanged. No LLM repair occurs in Slice 5A.
 
 ## Slice 5B — one optional typed repair
 
-After Slice 5A is stable, a feature-flagged repair provider may receive the immutable candidate and
-typed findings. It may run at most once, must be included in the paid-call plan before generation,
-and its result is run through the same deterministic validator exactly once. A second failure ends
-the run safely; there is no repair loop.
+Implemented behind `STORY_REPAIR_ENABLED=false` by default. A repair-capable story provider
+receives an immutable clone of the candidate and typed findings only when every error is marked
+repairable. It may run at most once; its complete typed result passes structural validation and
+the same deterministic gate exactly once. A provider error or second validation failure ends the
+run safely, while non-repairable safety findings never reach the repair provider.
+
+When the OpenAI story provider is selected, the possible repair call is included in the paid-call
+plan before a run or credit charge is created. A maximum-size all-OpenAI run therefore needs a
+limit of 18 instead of 17 when repair is enabled. Repair telemetry persists only safe metadata
+(operation, provider/model, prompt hash, duration, status, and configured estimate), never prompt
+or response content.
 
 Polish remains part of the public input contract, while the deterministic mock provider currently
 falls back to English content for non-Russian input. Correct Polish mock content is a prerequisite

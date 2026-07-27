@@ -100,13 +100,17 @@ export const envSchema = z
     // invalid value is still caught at boot, just one layer down from here.
     STORY_GENERATION_PROVIDER: z.string().optional(),
     IMAGE_GENERATION_PROVIDER: z.string().optional(),
+    // Phase 5B bounded repair. Disabled by default; when enabled the story
+    // provider may make at most one additional typed call after deterministic
+    // review fails, and the potential paid call is budgeted before scheduling.
+    STORY_REPAIR_ENABLED: z.enum(['true', 'false']).default('false'),
     // A real book needs one illustration per story page plus cover and back
     // cover. The default covers the current 12-page product maximum; runtime
     // scheduling still checks each immutable input snapshot before charging.
     REAL_GENERATION_MAX_PAGES: z.coerce.number().int().positive().default(12),
     MAX_GENERATED_IMAGES_PER_BOOK: z.coerce.number().int().positive().default(14),
     // Logical paid-provider calls for a complete maximum-length run:
-    // profile + story + character sheet + 14 book illustrations.
+    // profile + story + optional repair + character sheet + 14 book illustrations.
     MAX_PAID_PROVIDER_CALLS_PER_RUN: z.coerce.number().int().positive().default(17),
     // Operator-maintained estimates. Optional because silently hardcoding
     // vendor pricing would make historical cost diagnostics misleading.

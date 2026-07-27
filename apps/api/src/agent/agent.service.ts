@@ -42,6 +42,7 @@ import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage'
 import { GenerationResumeService } from './generation-resume.service';
 import { GenerationResultCollector } from './generation-result.collector';
 import { evaluateStoryQuality } from './story-quality-gate';
+import { resolveStoryRepairEnabled, StoryQualityRepairStage } from './story-quality-repair.stage';
 
 /**
  * Generation-relevant input resolved once at the top of startBookGeneration
@@ -63,6 +64,7 @@ interface ResolvedGenerationInput {
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
   private readonly storyContentStage: StoryContentStage;
+  private readonly storyQualityRepairStage: StoryQualityRepairStage;
   private readonly characterReferenceStage: CharacterReferenceStage;
   private readonly imageGenerationStage: ImageGenerationStage;
   private readonly generationResumeService: GenerationResumeService;
@@ -81,6 +83,7 @@ export class AgentService {
     private readonly generationExecutionService: GenerationExecutionService,
   ) {
     this.storyContentStage = new StoryContentStage(storyGenerationProvider);
+    this.storyQualityRepairStage = new StoryQualityRepairStage(storyGenerationProvider);
     this.characterReferenceStage = new CharacterReferenceStage(
       imageAssetStorage,
       characterProfileProvider,
@@ -173,10 +176,12 @@ export class AgentService {
     const imageProviderName = this.imageGenerationProvider.providerName ?? null;
     const imageModelName = this.imageGenerationProvider.modelName ?? null;
     const targetPageCount = resolveTargetPageCount(pageCount);
+    const storyRepairEnabled = resolveStoryRepairEnabled();
     const plannedPaidCalls = requiredPaidProviderCallsForBook(targetPageCount, {
       storyProvider: this.storyGenerationProvider.providerName,
       characterProfileProvider: this.characterProfileProvider.providerName,
       imageProvider: this.imageGenerationProvider.providerName,
+      storyRepairEnabled,
     });
     const providerTelemetry = new GenerationProviderTelemetry(
       resolveMaxPaidProviderCallsPerRun(),
@@ -334,7 +339,7 @@ export class AgentService {
     this.assertNotSuperseded(ctx, AgentStep.qa_review);
     await this.generationExecutionService.markStep(ctx, AgentStep.qa_review);
     const qualityStartedAt = Date.now();
-    const qualityReport: QualityReport = evaluateStoryQuality(
+    let qualityReport: QualityReport = evaluateStoryQuality(
       {
         characterCard,
         storyPlan: storyPlanFinal,
@@ -349,6 +354,83 @@ export class AgentService {
         ...(educationalMessage !== undefined && { educationalMessage }),
       },
     );
+
+    const repairableQualityFailure =
+      !qualityReport.overallPassed &&
+      qualityReport.issues
+        .filter((finding) => finding.severity === 'error')
+        .every((finding) => finding.repairable);
+    if (
+      storyRepairEnabled &&
+      repairableQualityFailure &&
+      this.storyGenerationProvider.repairStory
+    ) {
+      try {
+        const repaired = await this.storyQualityRepairStage.execute({
+          repairInput: {
+            generationInput: {
+              bookId: book.id,
+              childName,
+              childAge,
+              theme,
+              language,
+              pageCount,
+              educationalMessage,
+              characterProfile,
+            },
+            candidate: {
+              characterCard,
+              storyPlan: storyPlanFinal,
+              bookPreview,
+              imageGenerationResult,
+            },
+            qualityReport,
+          },
+          targetPageCount,
+          telemetry: providerTelemetry,
+        });
+        const repairedReport = evaluateStoryQuality(repaired, {
+          childName,
+          childAge,
+          language,
+          theme,
+          ...(educationalMessage !== undefined && { educationalMessage }),
+        });
+        const repairProviderCall = providerTelemetry
+          .snapshot()
+          .calls.filter((call) => call.operation === 'story_repair')
+          .at(-1);
+        qualityReport = {
+          ...repairedReport,
+          repair: {
+            attempted: true,
+            outcome: repairedReport.overallPassed ? 'passed' : 'failed_validation',
+            ...(repairProviderCall && { providerCall: repairProviderCall }),
+          },
+        };
+        if (qualityReport.overallPassed) {
+          characterCard = repaired.characterCard;
+          storyPlanFinal = repaired.storyPlan;
+          bookPreview = repaired.bookPreview;
+          imageGenerationResult = repaired.imageGenerationResult;
+        }
+      } catch {
+        const repairProviderCall = providerTelemetry
+          .snapshot()
+          .calls.filter((call) => call.operation === 'story_repair')
+          .at(-1);
+        qualityReport = {
+          ...qualityReport,
+          repair: {
+            attempted: true,
+            outcome: 'provider_error',
+            ...(repairProviderCall && { providerCall: repairProviderCall }),
+          },
+        };
+        this.logger.warn(`Book ${book.id}: bounded story repair failed.`);
+      }
+    }
+
     const qualityDurationMs = Date.now() - qualityStartedAt;
     if (!qualityReport.overallPassed) {
       this.logger.warn(

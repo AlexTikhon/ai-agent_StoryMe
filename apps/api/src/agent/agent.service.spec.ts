@@ -9,6 +9,7 @@ import type { ImageAssetStorage } from '../images/image-asset-storage';
 import {
   MockStoryGenerationProvider,
   type StoryGenerationProvider,
+  type StoryRepairInput,
 } from './story-generation-provider';
 import {
   MockImageGenerationProvider,
@@ -2072,6 +2073,245 @@ describe('AgentService', () => {
         expect(prisma.book.update).not.toHaveBeenCalled();
         expect(JSON.stringify(result.bookUpdate.qualityReport)).not.toContain('different-theme');
         expect(JSON.stringify(result.agentLogs)).not.toContain('different-theme');
+      });
+
+      it('makes at most one enabled typed repair attempt and continues only after revalidation passes', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const generateStory = vi.fn(async (input: StoryRepairInput['generationInput']) => {
+            const result = await realProvider.generateStory(input);
+            return {
+              ...result,
+              bookPreview: {
+                ...result.bookPreview,
+                metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+              },
+            };
+          });
+          const repairStory = vi.fn((input: StoryRepairInput) =>
+            realProvider.generateStory(input.generationInput),
+          );
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            promptVersion: 'test-story-v1',
+            generateStory,
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+          setupMocks();
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result.status).toBe('complete');
+          expect(generateStory).toHaveBeenCalledTimes(1);
+          expect(repairStory).toHaveBeenCalledTimes(1);
+          expect(prisma.book.update.mock.calls[0]?.[0].data).toMatchObject({
+            qualityReport: {
+              overallPassed: true,
+              repair: { attempted: true, outcome: 'passed' },
+            },
+            imageGenerationResult: {
+              providerUsage: {
+                calls: expect.arrayContaining([
+                  expect.objectContaining({
+                    operation: 'story_repair',
+                    status: 'success',
+                  }),
+                ]),
+              },
+            },
+          });
+          expect(
+            (result.agentLogs as unknown as Array<Record<string, unknown>>).find(
+              (entry) => entry.step === 'qa_review',
+            ),
+          ).toMatchObject({ status: 'success' });
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it('does not loop when the single repaired candidate still fails deterministic review', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const generateInvalid = async (
+            input: Parameters<StoryGenerationProvider['generateStory']>[0],
+          ) => {
+            const result = await realProvider.generateStory(input);
+            return {
+              ...result,
+              bookPreview: {
+                ...result.bookPreview,
+                metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+              },
+            };
+          };
+          const repairStory = vi.fn((input: StoryRepairInput) =>
+            generateInvalid(input.generationInput),
+          );
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            generateStory: vi.fn(generateInvalid),
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result).toMatchObject({
+            status: 'failed',
+            failedStep: 'qa_review',
+            bookUpdate: {
+              qualityReport: {
+                overallPassed: false,
+                repair: { attempted: true, outcome: 'failed_validation' },
+              },
+            },
+          });
+          expect(repairStory).toHaveBeenCalledTimes(1);
+          expect(renderStorybookPdf).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it('fails safely when the bounded repair provider errors without persisting private error content', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const repairStory = vi
+            .fn()
+            .mockRejectedValue(new Error('Mia private generated fragment must not persist'));
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            generateStory: vi.fn(async (input) => {
+              const result = await realProvider.generateStory(input);
+              return {
+                ...result,
+                bookPreview: {
+                  ...result.bookPreview,
+                  metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+                },
+              };
+            }),
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result).toMatchObject({
+            status: 'failed',
+            failedStep: 'qa_review',
+            bookUpdate: {
+              qualityReport: {
+                repair: {
+                  attempted: true,
+                  outcome: 'provider_error',
+                  providerCall: {
+                    operation: 'story_repair',
+                    status: 'error',
+                  },
+                },
+              },
+            },
+          });
+          expect(repairStory).toHaveBeenCalledTimes(1);
+          expect(JSON.stringify(result.bookUpdate.qualityReport)).not.toContain(
+            'private generated fragment',
+          );
+          expect(JSON.stringify(result.agentLogs)).not.toContain('private generated fragment');
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it('does not send non-repairable safety findings to the repair provider', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const unsafeText = 'Mia found a quiet path.\u0001 Then she went home.';
+          const repairStory = vi.fn();
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            generateStory: vi.fn(async (input) => {
+              const result = await realProvider.generateStory(input);
+              return {
+                ...result,
+                storyPlan: {
+                  ...result.storyPlan,
+                  pages: result.storyPlan.pages.map((page) =>
+                    page.pageNumber === 1
+                      ? { ...page, storyText: unsafeText, narration: unsafeText }
+                      : page,
+                  ),
+                },
+                bookPreview: {
+                  ...result.bookPreview,
+                  pages: result.bookPreview.pages.map((page) =>
+                    page.pageNumber === 1 ? { ...page, text: unsafeText } : page,
+                  ),
+                },
+              };
+            }),
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result).toMatchObject({
+            status: 'failed',
+            bookUpdate: {
+              qualityReport: {
+                issues: [
+                  expect.objectContaining({
+                    code: 'unsafe_control_characters',
+                    repairable: false,
+                  }),
+                ],
+              },
+            },
+          });
+          expect((result.bookUpdate.qualityReport as { repair?: unknown }).repair).toBeUndefined();
+          expect(repairStory).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllEnvs();
+        }
       });
     });
 

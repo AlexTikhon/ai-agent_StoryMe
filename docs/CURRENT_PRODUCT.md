@@ -103,8 +103,9 @@ dispatcher -> BullMQ/Redis -> worker claim/heartbeat/fencing -> deterministic pi
 transactional terminal publication`.
 
 The content stages are character profile/sheet, one story-provider result containing story plan,
-page plan, story text, illustration plan and preview, deterministic quality review, image
-generation/reuse, deterministic layout, and PDF publication. The current orchestrator primarily
+page plan, story text, illustration plan and preview, deterministic quality review, an optional
+single bounded repair attempt for repairable findings, image generation/reuse, deterministic
+layout, and PDF publication. The current orchestrator primarily
 persists `Book` as `created`,
 then the scheduled `char_build` marker, `layout`, and finally `complete` or `failed`;
 cancellation writes `cancelled`. The authoritative `GenerationRun.currentStep` separately records
@@ -130,7 +131,7 @@ failure-safe PDF republication, a deterministic pre-image quality gate, and exte
 unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
-management, bounded LLM repair, hard-delete/data-erasure
+management, hard-delete/data-erasure
 workflow, Playwright E2E, and role-based admin authorization for diagnostics. The reader is
 currently shown only for a book whose current status is `complete`; previous publications are not
 yet rendered while a regeneration is running, failed, or cancelled. The web diagnostics UI is
@@ -141,8 +142,9 @@ Known limitations: `AgentService` remains larger than the individual stages it o
 and generation execution services; the legacy `GenerationJob` runtime and Prisma model have been
 removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
 local storage cannot serve separately deployed API/worker processes; console email does not
-deliver production mail; Polish mock story content currently falls back to English, and the
-optional one-attempt LLM repair is not implemented yet.
+deliver production mail; Polish mock story content currently falls back to English. Bounded story
+repair exists but is disabled by default and requires an explicitly configured repair-capable
+story provider and paid-call budget.
 
 ## Local run and validation
 

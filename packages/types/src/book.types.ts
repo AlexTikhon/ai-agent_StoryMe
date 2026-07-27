@@ -5,6 +5,7 @@ import type {
   BookLength,
   GenerationJobSummary,
   GenerationMetadata,
+  GenerationProviderCallMetadata,
   GenerationProviderUsage,
   IllustrationStyle,
   ImageGenerationFailureDetail,
@@ -230,6 +231,12 @@ export interface QualityReport {
   overallPassed: boolean;
   issues: QualityIssue[];
   flaggedPages: number[];
+  repair?: {
+    attempted: true;
+    outcome: 'passed' | 'failed_validation' | 'provider_error';
+    /** Privacy-safe telemetry only; prompt content and provider response are never persisted. */
+    providerCall?: GenerationProviderCallMetadata;
+  };
 }
 
 export interface PageRegion {

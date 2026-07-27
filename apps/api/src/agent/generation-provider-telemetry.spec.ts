@@ -29,6 +29,22 @@ describe('generation provider telemetry', () => {
         imageProvider: 'openai',
       }),
     ).toBe(9);
+    expect(
+      requiredPaidProviderCallsForBook(12, {
+        storyProvider: 'openai',
+        characterProfileProvider: 'openai',
+        imageProvider: 'openai',
+        storyRepairEnabled: true,
+      }),
+    ).toBe(18);
+    expect(
+      requiredPaidProviderCallsForBook(12, {
+        storyProvider: 'mock',
+        characterProfileProvider: 'openai',
+        imageProvider: 'openai',
+        storyRepairEnabled: true,
+      }),
+    ).toBe(16);
   });
 
   it('rejects a run whose complete plan exceeds its paid-call limit', () => {

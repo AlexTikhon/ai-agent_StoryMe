@@ -1,11 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { CharacterProfile } from '@book/types';
+import type { CharacterProfile, QualityReport } from '@book/types';
 import {
   OpenAIStoryGenerationProvider,
   StoryGenerationProviderError,
   buildStoryGenerationPrompt,
+  buildStoryRepairPrompt,
 } from './openai-story-generation-provider';
-import type { StoryGenerationInput } from './story-generation-provider';
+import {
+  MockStoryGenerationProvider,
+  type StoryGenerationInput,
+} from './story-generation-provider';
 
 const DEFAULT_CHARACTER_PROFILE: CharacterProfile = {
   childName: 'Mia',
@@ -65,6 +69,22 @@ function makeFetchOk(content: string) {
     text: async () => '',
   });
 }
+
+const repairReport: QualityReport = {
+  version: 1,
+  overallPassed: false,
+  issues: [
+    {
+      code: 'duplicate_page_text',
+      category: 'consistency',
+      severity: 'error',
+      repairable: true,
+      pageNumber: 2,
+      message: 'Two story pages contain the same narration.',
+    },
+  ],
+  flaggedPages: [2],
+};
 
 describe('buildStoryGenerationPrompt', () => {
   it('includes childName, childAge, theme, language, and target page count', () => {
@@ -150,6 +170,42 @@ describe('OpenAIStoryGenerationProvider', () => {
     expect(result.bookPreview.pages).toHaveLength(6);
     expect(result.imageGenerationResult.provider).toBe('local_mock');
     expect(result.imageGenerationResult.images).toHaveLength(8); // 6 pages + cover + back cover
+  });
+
+  it('builds a typed one-attempt repair prompt from safe finding codes and the candidate', async () => {
+    const baseProvider = new OpenAIStoryGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl: makeFetchOk(JSON.stringify(makeValidLlmPayload(6))),
+    });
+    const candidate = await baseProvider.generateStory(makeInput());
+
+    const prompt = buildStoryRepairPrompt(
+      { generationInput: makeInput(), candidate, qualityReport: repairReport },
+      6,
+    );
+
+    expect(prompt.system).toMatch(/one bounded repair/i);
+    expect(prompt.user).toContain('duplicate_page_text');
+    expect(prompt.user).toContain('"pageNumber":2');
+    expect(prompt.user).toContain("Mia's Friendship Adventure");
+    expect(prompt.user).toMatch(/complete corrected story|entire corrected story/i);
+  });
+
+  it('repairs a candidate with one OpenAI completion and maps the complete result', async () => {
+    const candidateProvider = new MockStoryGenerationProvider();
+    const candidate = await candidateProvider.generateStory(makeInput());
+    const fetchImpl = makeFetchOk(JSON.stringify(makeValidLlmPayload(6)));
+    const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-test', fetchImpl });
+
+    const result = await provider.repairStory({
+      generationInput: makeInput(),
+      candidate,
+      qualityReport: repairReport,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.storyPlan.pages).toHaveLength(6);
+    expect(result.bookPreview.metadata.theme).toBe('friendship');
   });
 
   it('sends the model, auth header, and json_object response format', async () => {
