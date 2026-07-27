@@ -115,9 +115,9 @@ Then, in three phases against the database:
   - On failure: status → `failed`, `errorMessage` set to the caught error's
     message, `failedStep` set to `pdf_render`. `previewPdfUrl` is left
     untouched (not set).
-- Finally, nine `AgentLog` rows are written in one `createMany` call, all
+- Finally, ten `AgentLog` rows are written in one `createMany` call, all
   sharing a single `traceId`: `char_build`, `story_plan`, `page_plan`,
-  `story_draft`, `illust_plan`, `preview_ready`, `image_gen`, `layout`,
+  `story_draft`, `illust_plan`, `preview_ready`, `qa_review`, `image_gen`, `layout`,
   `pdf_render` — the last one's `status` is `success` or `error` depending on
   Phase 2's outcome, with the error message attached when it failed.
 
@@ -821,7 +821,7 @@ from data `AgentService.startBookGeneration` already writes:
   `provider` (`'mock' | 'openai'`, from the injected provider's
   `providerName`), `model` (from `modelName`, only set for real providers),
   and `durationMs` where a step's timing is actually measured
-  (`story_plan`, `image_gen`, `layout`, `pdf_render`; the other five
+  (`story_plan`, `qa_review`, `image_gen`, `layout`, `pdf_render`; the other five
   sub-steps of story generation share the story provider's `provider`/
   `model` tag but not a separate duration, since they're all produced by one
   `generateStory` call). `AgentLogStatus` has no `"started"` value, so this
@@ -2680,7 +2680,7 @@ inserted, not what they contain.
 
 **Verified behavior:**
 
-- An accepted successful run's nine `AgentLog` rows, and an accepted failed/
+- An accepted successful run's ten `AgentLog` rows, and an accepted failed/
   partial run's truthful error rows, are byte-for-byte the same as before
   this phase (`agent.service.spec.ts` — every prior assertion on row shape
   was migrated from asserting `prisma.agentLog.createMany`'s call arguments

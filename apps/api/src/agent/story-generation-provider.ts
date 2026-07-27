@@ -11,6 +11,7 @@ import {
   type IllustrationPlan,
   type ImageGenerationResult,
   type PagePlan,
+  type QualityReport,
   type StoryPlan,
 } from '@book/types';
 
@@ -63,6 +64,12 @@ export interface StoryGenerationResult {
   imageGenerationResult: ImageGenerationResult;
 }
 
+export interface StoryRepairInput {
+  generationInput: StoryGenerationInput;
+  candidate: StoryGenerationResult;
+  qualityReport: QualityReport;
+}
+
 /**
  * Internal boundary for producing a book's character/story/page/image-metadata
  * plan. AgentService depends on this interface rather than owning the
@@ -80,6 +87,8 @@ export interface StoryGenerationProvider {
   /** Version of the provider's prompt contract; bump whenever prompt semantics change. */
   readonly promptVersion?: string;
   generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult>;
+  /** Optional Phase 5B capability. The orchestrator may invoke it at most once per run. */
+  repairStory?(input: StoryRepairInput): Promise<StoryGenerationResult>;
 }
 
 export const STORY_GENERATION_PROVIDER_TOKEN = 'STORY_GENERATION_PROVIDER';

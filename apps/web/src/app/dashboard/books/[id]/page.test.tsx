@@ -2898,6 +2898,20 @@ describe('BookDetailPage', () => {
     });
   });
 
+  it('shows the durable qa_review stage in the generation banner', async () => {
+    const reviewBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryPlan };
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(reviewBook));
+    queueProgress(mockOk({ status: 'running', step: AgentStep.QaReview }));
+
+    render(<BookDetailPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/reviewing story quality.*this draft can no longer be edited/i),
+      ).toBeDefined();
+    });
+  });
+
   it('uses the durable run step instead of the coarse Book status', async () => {
     const coarseBook: BookDto = { ...MOCK_BOOK, status: BookStatus.CharBuild };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(coarseBook));

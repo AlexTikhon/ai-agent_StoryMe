@@ -24,6 +24,7 @@ export interface PaidProviderSelection {
   readonly storyProvider: string | undefined;
   readonly characterProfileProvider: string | undefined;
   readonly imageProvider: string | undefined;
+  readonly storyRepairEnabled?: boolean;
 }
 
 export function requiredPaidProviderCallsForBook(
@@ -33,6 +34,7 @@ export function requiredPaidProviderCallsForBook(
   return (
     (providers.characterProfileProvider === 'openai' ? 1 : 0) +
     (providers.storyProvider === 'openai' ? 1 : 0) +
+    (providers.storyProvider === 'openai' && providers.storyRepairEnabled === true ? 1 : 0) +
     // One character sheet plus cover + pages + back cover.
     (providers.imageProvider === 'openai' ? pageCount + 3 : 0)
   );
@@ -79,6 +81,7 @@ export function readEstimatedCostUsd(
     character_profile: 'OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD',
     character_sheet: 'OPENAI_IMAGE_ESTIMATED_COST_USD',
     story: 'OPENAI_STORY_ESTIMATED_COST_USD',
+    story_repair: 'OPENAI_STORY_ESTIMATED_COST_USD',
     illustration: 'OPENAI_IMAGE_ESTIMATED_COST_USD',
   };
   const raw = env[envKey[operation]];

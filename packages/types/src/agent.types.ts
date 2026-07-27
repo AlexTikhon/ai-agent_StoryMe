@@ -113,7 +113,7 @@ export interface AgentLogEntry {
 export type GenerationProviderName = 'mock' | 'openai' | 'unknown';
 
 export type GenerationProviderOperation =
-  'character_profile' | 'character_sheet' | 'story' | 'illustration';
+  'character_profile' | 'character_sheet' | 'story' | 'story_repair' | 'illustration';
 
 /**
  * Safe metadata for one logical provider invocation. Prompt text and provider

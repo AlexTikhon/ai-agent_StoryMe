@@ -9,6 +9,7 @@ import type { ImageAssetStorage } from '../images/image-asset-storage';
 import {
   MockStoryGenerationProvider,
   type StoryGenerationProvider,
+  type StoryRepairInput,
 } from './story-generation-provider';
 import {
   MockImageGenerationProvider,
@@ -283,7 +284,7 @@ describe('AgentService', () => {
 
       expect(
         vi.mocked(generationExecutionService.markStep).mock.calls.map(([, step]) => step),
-      ).toEqual(['char_build', 'story_plan', 'image_gen', 'layout', 'pdf_render']);
+      ).toEqual(['char_build', 'story_plan', 'qa_review', 'image_gen', 'layout', 'pdf_render']);
     });
 
     it('stamps Book.lastGenerationInputHash with the inputHash this run executed, at the phase-1 persist', async () => {
@@ -458,23 +459,24 @@ describe('AgentService', () => {
       expect(updateArg?.data?.title).toContain('Mia');
     });
 
-    it('returns nine AgentLog records on the outcome, all sharing the same traceId', async () => {
+    it('returns ten AgentLog records on the outcome, all sharing the same traceId', async () => {
       const book = makeBook();
       setupMocks();
 
       const result = await runGeneration(service, prisma, book);
 
       const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
-      expect(entries).toHaveLength(9);
+      expect(entries).toHaveLength(10);
       expect(entries[0]?.step).toBe('char_build');
       expect(entries[1]?.step).toBe('story_plan');
       expect(entries[2]?.step).toBe('page_plan');
       expect(entries[3]?.step).toBe('story_draft');
       expect(entries[4]?.step).toBe('illust_plan');
       expect(entries[5]?.step).toBe('preview_ready');
-      expect(entries[6]?.step).toBe('image_gen');
-      expect(entries[7]?.step).toBe('layout');
-      expect(entries[8]?.step).toBe('pdf_render');
+      expect(entries[6]?.step).toBe('qa_review');
+      expect(entries[7]?.step).toBe('image_gen');
+      expect(entries[8]?.step).toBe('layout');
+      expect(entries[9]?.step).toBe('pdf_render');
       const traceId = entries[0]?.traceId;
       expect(typeof traceId).toBe('string');
       for (const entry of entries) {
@@ -2016,6 +2018,303 @@ describe('AgentService', () => {
       });
     });
 
+    describe('when deterministic quality review fails', () => {
+      it('returns a privacy-safe qa_review failure before generating story images or a PDF', async () => {
+        const realProvider = new MockStoryGenerationProvider();
+        const mismatchedThemeProvider: StoryGenerationProvider = {
+          providerName: 'test',
+          generateStory: vi.fn(async (input) => {
+            const result = await realProvider.generateStory(input);
+            return {
+              ...result,
+              bookPreview: {
+                ...result.bookPreview,
+                metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+              },
+            };
+          }),
+        };
+        const qualityService = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          mismatchedThemeProvider,
+          new MockImageGenerationProvider(),
+          new MockCharacterProfileProvider(),
+          generationExecutionService as never,
+        );
+
+        const result = await runGeneration(qualityService, prisma, makeBook());
+
+        expect(result).toMatchObject({
+          status: 'failed',
+          completedStep: 'qa_review',
+          failedStep: 'qa_review',
+          errorCode: 'QUALITY_REVIEW_FAILED',
+          bookUpdate: {
+            qualityReport: {
+              overallPassed: false,
+              issues: [
+                expect.objectContaining({
+                  code: 'metadata_theme_mismatch',
+                  category: 'alignment',
+                }),
+              ],
+            },
+          },
+        });
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(1);
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
+          sheetKey(RUN_1),
+          expect.any(Buffer),
+          'image/png',
+        );
+        expect(renderStorybookPdf).not.toHaveBeenCalled();
+        expect(prisma.book.update).not.toHaveBeenCalled();
+        expect(JSON.stringify(result.bookUpdate.qualityReport)).not.toContain('different-theme');
+        expect(JSON.stringify(result.agentLogs)).not.toContain('different-theme');
+      });
+
+      it('makes at most one enabled typed repair attempt and continues only after revalidation passes', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const generateStory = vi.fn(async (input: StoryRepairInput['generationInput']) => {
+            const result = await realProvider.generateStory(input);
+            return {
+              ...result,
+              bookPreview: {
+                ...result.bookPreview,
+                metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+              },
+            };
+          });
+          const repairStory = vi.fn((input: StoryRepairInput) =>
+            realProvider.generateStory(input.generationInput),
+          );
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            promptVersion: 'test-story-v1',
+            generateStory,
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+          setupMocks();
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result.status).toBe('complete');
+          expect(generateStory).toHaveBeenCalledTimes(1);
+          expect(repairStory).toHaveBeenCalledTimes(1);
+          expect(prisma.book.update.mock.calls[0]?.[0].data).toMatchObject({
+            qualityReport: {
+              overallPassed: true,
+              repair: { attempted: true, outcome: 'passed' },
+            },
+            imageGenerationResult: {
+              providerUsage: {
+                calls: expect.arrayContaining([
+                  expect.objectContaining({
+                    operation: 'story_repair',
+                    status: 'success',
+                  }),
+                ]),
+              },
+            },
+          });
+          expect(
+            (result.agentLogs as unknown as Array<Record<string, unknown>>).find(
+              (entry) => entry.step === 'qa_review',
+            ),
+          ).toMatchObject({ status: 'success' });
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it('does not loop when the single repaired candidate still fails deterministic review', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const generateInvalid = async (
+            input: Parameters<StoryGenerationProvider['generateStory']>[0],
+          ) => {
+            const result = await realProvider.generateStory(input);
+            return {
+              ...result,
+              bookPreview: {
+                ...result.bookPreview,
+                metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+              },
+            };
+          };
+          const repairStory = vi.fn((input: StoryRepairInput) =>
+            generateInvalid(input.generationInput),
+          );
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            generateStory: vi.fn(generateInvalid),
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result).toMatchObject({
+            status: 'failed',
+            failedStep: 'qa_review',
+            bookUpdate: {
+              qualityReport: {
+                overallPassed: false,
+                repair: { attempted: true, outcome: 'failed_validation' },
+              },
+            },
+          });
+          expect(repairStory).toHaveBeenCalledTimes(1);
+          expect(renderStorybookPdf).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it('fails safely when the bounded repair provider errors without persisting private error content', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const repairStory = vi
+            .fn()
+            .mockRejectedValue(new Error('Mia private generated fragment must not persist'));
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            generateStory: vi.fn(async (input) => {
+              const result = await realProvider.generateStory(input);
+              return {
+                ...result,
+                bookPreview: {
+                  ...result.bookPreview,
+                  metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+                },
+              };
+            }),
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result).toMatchObject({
+            status: 'failed',
+            failedStep: 'qa_review',
+            bookUpdate: {
+              qualityReport: {
+                repair: {
+                  attempted: true,
+                  outcome: 'provider_error',
+                  providerCall: {
+                    operation: 'story_repair',
+                    status: 'error',
+                  },
+                },
+              },
+            },
+          });
+          expect(repairStory).toHaveBeenCalledTimes(1);
+          expect(JSON.stringify(result.bookUpdate.qualityReport)).not.toContain(
+            'private generated fragment',
+          );
+          expect(JSON.stringify(result.agentLogs)).not.toContain('private generated fragment');
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it('does not send non-repairable safety findings to the repair provider', async () => {
+        vi.stubEnv('STORY_REPAIR_ENABLED', 'true');
+        try {
+          const realProvider = new MockStoryGenerationProvider();
+          const unsafeText = 'Mia found a quiet path.\u0001 Then she went home.';
+          const repairStory = vi.fn();
+          const repairProvider: StoryGenerationProvider = {
+            providerName: 'mock',
+            generateStory: vi.fn(async (input) => {
+              const result = await realProvider.generateStory(input);
+              return {
+                ...result,
+                storyPlan: {
+                  ...result.storyPlan,
+                  pages: result.storyPlan.pages.map((page) =>
+                    page.pageNumber === 1
+                      ? { ...page, storyText: unsafeText, narration: unsafeText }
+                      : page,
+                  ),
+                },
+                bookPreview: {
+                  ...result.bookPreview,
+                  pages: result.bookPreview.pages.map((page) =>
+                    page.pageNumber === 1 ? { ...page, text: unsafeText } : page,
+                  ),
+                },
+              };
+            }),
+            repairStory,
+          };
+          const repairService = new AgentService(
+            prisma as never,
+            mockPdfStorage as unknown as PdfStorage,
+            mockImageAssetStorage as unknown as ImageAssetStorage,
+            repairProvider,
+            new MockImageGenerationProvider(),
+            new MockCharacterProfileProvider(),
+            generationExecutionService as never,
+          );
+
+          const result = await runGeneration(repairService, prisma, makeBook());
+
+          expect(result).toMatchObject({
+            status: 'failed',
+            bookUpdate: {
+              qualityReport: {
+                issues: [
+                  expect.objectContaining({
+                    code: 'unsafe_control_characters',
+                    repairable: false,
+                  }),
+                ],
+              },
+            },
+          });
+          expect((result.bookUpdate.qualityReport as { repair?: unknown }).repair).toBeUndefined();
+          expect(repairStory).not.toHaveBeenCalled();
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+    });
+
     describe('story generation provider integration', () => {
       it('calls storyGenerationProvider.generateStory with the book fields', async () => {
         const book = makeBook({ childName: 'Mia', childAge: 5, theme: 'friendship' });
@@ -2072,14 +2371,14 @@ describe('AgentService', () => {
         expect(imageEntry?.provider).toBe('mock');
       });
 
-      it('records durationMs on the story_plan, image_gen, layout, and pdf_render AgentLog entries', async () => {
+      it('records durationMs on the story_plan, qa_review, image_gen, layout, and pdf_render AgentLog entries', async () => {
         const book = makeBook();
         setupMocks();
 
         const result = await runGeneration(service, prisma, book);
 
         const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
-        for (const step of ['story_plan', 'image_gen', 'layout', 'pdf_render']) {
+        for (const step of ['story_plan', 'qa_review', 'image_gen', 'layout', 'pdf_render']) {
           const entry = entries.find((e) => e.step === step);
           expect(entry?.durationMs).toEqual(expect.any(Number));
         }

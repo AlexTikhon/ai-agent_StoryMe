@@ -29,6 +29,8 @@ function generationStatusMessage(progress: GenerationProgressDto | null): string
       return 'Building character profile…';
     case AgentStep.StoryPlan:
       return 'Planning your story…';
+    case AgentStep.QaReview:
+      return 'Reviewing story quality…';
     case AgentStep.ImageGen:
       return 'Generating images…';
     case AgentStep.Layout:

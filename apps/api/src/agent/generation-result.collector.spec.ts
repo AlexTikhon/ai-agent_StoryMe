@@ -85,6 +85,61 @@ describe('GenerationResultCollector', () => {
     ]);
   });
 
+  it('collects a privacy-safe quality failure before image generation', () => {
+    const qualityReport = {
+      version: 1 as const,
+      overallPassed: false,
+      issues: [
+        {
+          code: 'metadata_theme_mismatch' as const,
+          category: 'alignment' as const,
+          severity: 'error' as const,
+          repairable: true,
+          message: 'Generated theme metadata does not match the requested theme.',
+        },
+      ],
+      flaggedPages: [],
+    };
+
+    const outcome = collector.collectQualityFailureOutcome({
+      bookId: 'book-1',
+      traceId: 'trace-1',
+      generationTimeMs: 50,
+      aiModelVersions: { story: 'story-model', image: 'image-model' },
+      characterProfileUpdateData: { characterSheetAssetKey: 'sheet-key' },
+      charBuildResult: {
+        characterProfile: {} as never,
+        providerName: 'mock',
+        modelName: null,
+        durationMs: 10,
+      },
+      storyProviderName: 'openai',
+      storyModelName: 'story-model',
+      storyDurationMs: 30,
+      qualityDurationMs: 2,
+      qualityReport,
+    });
+
+    expect(outcome).toMatchObject({
+      status: BookStatus.failed,
+      completedStep: AgentStep.qa_review,
+      failedStep: AgentStep.qa_review,
+      errorCode: 'QUALITY_REVIEW_FAILED',
+      bookUpdate: { qualityReport },
+    });
+    expect(outcome.errorMessage).toBe(
+      'Generated story did not pass deterministic quality review (1 finding(s)).',
+    );
+    expect(outcome.agentLogs).toHaveLength(3);
+    expect(outcome.agentLogs.at(-1)).toMatchObject({
+      step: AgentStep.qa_review,
+      status: AgentLogStatus.error,
+      durationMs: 2,
+      error: 'Generated story did not pass deterministic quality review (1 finding(s)).',
+    });
+    expect(JSON.stringify(outcome)).not.toContain('Mia');
+  });
+
   it('folds image counters and provider telemetry while preserving prior reuse signals', () => {
     const result = collector.collectImageResult({
       result: {
@@ -205,6 +260,7 @@ describe('GenerationResultCollector', () => {
       imageProviderName: 'mock',
       imageModelName: null,
       storyDurationMs: 20,
+      qualityDurationMs: 5,
       imageDurationMs: 30,
       layoutDurationMs: 40,
       pdfDurationMs: 50,
@@ -219,7 +275,15 @@ describe('GenerationResultCollector', () => {
       generationTimeMs: 120,
       previewPdfUrl: '/preview.pdf',
     });
-    expect(outcome.agentLogs).toHaveLength(9);
+    expect(outcome.agentLogs).toHaveLength(10);
+    expect(outcome.agentLogs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          step: AgentStep.qa_review,
+          status: AgentLogStatus.success,
+        }),
+      ]),
+    );
     expect(outcome.agentLogs.at(-1)).toMatchObject({
       step: AgentStep.pdf_render,
       status: AgentLogStatus.success,
@@ -247,6 +311,7 @@ describe('GenerationResultCollector', () => {
       imageProviderName: 'openai',
       imageModelName: 'gpt-image',
       storyDurationMs: 20,
+      qualityDurationMs: 5,
       imageDurationMs: 30,
       layoutDurationMs: 40,
       pdfDurationMs: 50,

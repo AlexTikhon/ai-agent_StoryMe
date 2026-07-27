@@ -59,7 +59,20 @@ describe('envSchema', () => {
     if (result.success) {
       expect(result.data.PORT).toBe(4000);
       expect(result.data.MAX_PAID_PROVIDER_CALLS_PER_RUN).toBe(17);
+      expect(result.data.STORY_REPAIR_ENABLED).toBe('false');
     }
+  });
+
+  it('accepts only explicit boolean strings for bounded story repair', () => {
+    const required = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+
+    expect(envSchema.safeParse({ ...required, STORY_REPAIR_ENABLED: 'true' }).success).toBe(true);
+    expect(envSchema.safeParse({ ...required, STORY_REPAIR_ENABLED: 'yes' }).success).toBe(false);
   });
 
   it('accepts non-negative provider cost estimates and rejects negative values', () => {

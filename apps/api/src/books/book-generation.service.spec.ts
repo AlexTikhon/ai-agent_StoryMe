@@ -9,7 +9,10 @@ import type { ImageGenerationProvider } from '../images/image-generation-provide
 import type { StoryGenerationProvider } from '../agent/story-generation-provider';
 import type { CharacterProfileProvider } from '../agent/character-profile-provider';
 import type { BookCrudService } from './book-crud.service';
-import { BookGenerationService } from './book-generation.service';
+import {
+  BookGenerationService,
+  PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE,
+} from './book-generation.service';
 
 const SNAPSHOT = {
   childName: 'Mia',
@@ -91,19 +94,18 @@ describe('BookGenerationService scheduling boundary', () => {
   const rateLimiter = {
     consume: vi.fn(),
   };
+  const configValues: Record<string, number | string> = {
+    GLOBAL_GENERATION_CIRCUIT_WINDOW_MS: 60_000,
+    GLOBAL_GENERATION_CIRCUIT_MAX_PER_WINDOW: 100,
+    MAX_CONCURRENT_GENERATIONS_PER_USER: 2,
+    GENERATION_USER_WINDOW_MS: 86_400_000,
+    MAX_GENERATIONS_PER_USER_PER_WINDOW: 20,
+    MAX_GENERATED_IMAGES_PER_BOOK: 14,
+    MAX_PAID_PROVIDER_CALLS_PER_RUN: 17,
+    STORY_REPAIR_ENABLED: 'false',
+  };
   const config = {
-    get: vi.fn((key: string) => {
-      const values: Record<string, number> = {
-        GLOBAL_GENERATION_CIRCUIT_WINDOW_MS: 60_000,
-        GLOBAL_GENERATION_CIRCUIT_MAX_PER_WINDOW: 100,
-        MAX_CONCURRENT_GENERATIONS_PER_USER: 2,
-        GENERATION_USER_WINDOW_MS: 86_400_000,
-        MAX_GENERATIONS_PER_USER_PER_WINDOW: 20,
-        MAX_GENERATED_IMAGES_PER_BOOK: 14,
-        MAX_PAID_PROVIDER_CALLS_PER_RUN: 17,
-      };
-      return values[key];
-    }),
+    get: vi.fn((key: string) => configValues[key]),
   };
   const imageProvider = { providerName: 'mock' } as ImageGenerationProvider;
   const storyProvider = { providerName: 'mock' } as StoryGenerationProvider;
@@ -113,6 +115,10 @@ describe('BookGenerationService scheduling boundary', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    config.get.mockImplementation((key: string) => configValues[key]);
+    Object.assign(imageProvider, { providerName: 'mock' });
+    Object.assign(storyProvider, { providerName: 'mock' });
+    Object.assign(characterProvider, { providerName: 'mock' });
     crud.findOwnedOrThrow.mockResolvedValue(makeBook());
     runs.findActiveForBook.mockResolvedValue(null);
     runs.findLatestForBook.mockResolvedValue(null);
@@ -188,6 +194,25 @@ describe('BookGenerationService scheduling boundary', () => {
     await expect(service.startGeneration('user-1', 'book-1')).rejects.toMatchObject({
       status: HttpStatus.SERVICE_UNAVAILABLE,
       response: expect.objectContaining({ code: 'GENERATION_CAPACITY_EXCEEDED' }),
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(credits.deductInTransaction).not.toHaveBeenCalled();
+  });
+
+  it('budgets an enabled OpenAI repair before creating a run or charging credit', async () => {
+    crud.findOwnedOrThrow.mockResolvedValue(makeBook({ pageCount: 12 }));
+    Object.assign(imageProvider, { providerName: 'openai' });
+    Object.assign(storyProvider, { providerName: 'openai' });
+    Object.assign(characterProvider, { providerName: 'openai' });
+    config.get.mockImplementation((key: string) =>
+      key === 'STORY_REPAIR_ENABLED' ? 'true' : configValues[key],
+    );
+
+    await expect(service.startGeneration('user-1', 'book-1')).rejects.toMatchObject({
+      status: HttpStatus.SERVICE_UNAVAILABLE,
+      response: expect.objectContaining({
+        code: PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE,
+      }),
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(credits.deductInTransaction).not.toHaveBeenCalled();

@@ -5,6 +5,7 @@ import type {
   BookLength,
   GenerationJobSummary,
   GenerationMetadata,
+  GenerationProviderCallMetadata,
   GenerationProviderUsage,
   IllustrationStyle,
   ImageGenerationFailureDetail,
@@ -194,20 +195,48 @@ export interface Chapter {
 
 // ─── QA / Layout ─────────────────────────────────────────────────────────────
 
-export interface QualityScore {
-  pageNumber: number;
-  consistency: number;
-  alignment: number;
-  safety: number;
-  ageAppropriateness: number;
-  action: 'pass' | 'regen_image' | 'regen_text' | 'flag';
-  notes?: string;
+export type QualityIssueCategory =
+  'structure' | 'consistency' | 'alignment' | 'age_appropriateness' | 'safety';
+
+export type QualityIssueCode =
+  | 'metadata_language_mismatch'
+  | 'metadata_theme_mismatch'
+  | 'metadata_age_mismatch'
+  | 'cover_child_name_mismatch'
+  | 'child_name_missing_from_story'
+  | 'educational_message_mismatch'
+  | 'page_text_mismatch'
+  | 'page_illustration_prompt_mismatch'
+  | 'page_text_too_short'
+  | 'page_text_too_long'
+  | 'duplicate_page_text'
+  | 'unsafe_control_characters'
+  | 'unexpected_markup_or_url';
+
+/**
+ * Privacy-safe deterministic finding. It deliberately contains no generated
+ * prose, prompts, child name, or other candidate content.
+ */
+export interface QualityIssue {
+  code: QualityIssueCode;
+  category: QualityIssueCategory;
+  severity: 'warning' | 'error';
+  repairable: boolean;
+  pageNumber?: number;
+  message: string;
 }
 
 export interface QualityReport {
-  scores: QualityScore[];
+  version: 1;
   overallPassed: boolean;
+  issues: QualityIssue[];
   flaggedPages: number[];
+  repair?: {
+    attempted: true;
+    outcome: 'passed' | 'failed_validation' | 'provider_error';
+    /** Privacy-safe telemetry only; prompt content and provider response are never persisted. */
+    providerCall?: GenerationProviderCallMetadata;
+  };
 }
 
 export interface PageRegion {
