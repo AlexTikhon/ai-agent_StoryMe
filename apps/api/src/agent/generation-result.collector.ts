@@ -2,6 +2,7 @@ import type {
   GeneratedImageEntry,
   GenerationProviderUsage,
   ImageGenerationResult,
+  QualityReport,
   ResumeDiagnostics,
 } from '@book/types';
 import { AgentLogStatus, AgentStep, Prisma } from '@prisma/client';
@@ -56,6 +57,7 @@ export interface CollectGenerationOutcomeInput {
   imageProviderName: string | null;
   imageModelName: string | null;
   storyDurationMs: number;
+  qualityDurationMs: number;
   imageDurationMs: number;
   layoutDurationMs: number;
   pdfDurationMs: number;
@@ -75,6 +77,20 @@ export interface CollectStoryFailureOutcomeInput {
   storyProviderName: string | null;
   storyModelName: string | null;
   errorMessage: string;
+}
+
+export interface CollectQualityFailureOutcomeInput {
+  bookId: string;
+  traceId: string;
+  generationTimeMs: number;
+  aiModelVersions: Record<string, string>;
+  characterProfileUpdateData: Prisma.BookUpdateInput;
+  charBuildResult: CharacterBuildStageOutput;
+  storyProviderName: string | null;
+  storyModelName: string | null;
+  storyDurationMs: number;
+  qualityDurationMs: number;
+  qualityReport: QualityReport;
 }
 
 /**
@@ -132,6 +148,58 @@ export class GenerationResultCollector {
           provider: storyProviderName,
           model: storyModelName,
           durationMs: generationTimeMs,
+        },
+      ],
+    };
+  }
+
+  collectQualityFailureOutcome(input: CollectQualityFailureOutcomeInput): GenerationOutcome {
+    const errorMessage = `Generated story did not pass deterministic quality review (${input.qualityReport.issues.length} finding(s)).`;
+    return {
+      status: 'failed',
+      completedStep: AgentStep.qa_review,
+      errorCode: 'QUALITY_REVIEW_FAILED',
+      errorMessage,
+      failedStep: AgentStep.qa_review,
+      bookUpdate: {
+        generationTimeMs: input.generationTimeMs,
+        aiModelVersions: input.aiModelVersions,
+        qualityReport: input.qualityReport as unknown as Prisma.InputJsonValue,
+        ...input.characterProfileUpdateData,
+      },
+      agentLogs: [
+        {
+          bookId: input.bookId,
+          agent: 'LocalPipelineAgent',
+          step: AgentStep.char_build,
+          status: input.charBuildResult.error ? AgentLogStatus.error : AgentLogStatus.success,
+          attempt: 1,
+          traceId: input.traceId,
+          provider: input.charBuildResult.providerName,
+          model: input.charBuildResult.modelName,
+          durationMs: input.charBuildResult.durationMs,
+          ...(input.charBuildResult.error && { error: input.charBuildResult.error }),
+        },
+        {
+          bookId: input.bookId,
+          agent: 'LocalPipelineAgent',
+          step: AgentStep.story_plan,
+          status: AgentLogStatus.success,
+          attempt: 1,
+          traceId: input.traceId,
+          provider: input.storyProviderName,
+          model: input.storyModelName,
+          durationMs: input.storyDurationMs,
+        },
+        {
+          bookId: input.bookId,
+          agent: 'LocalPipelineAgent',
+          step: AgentStep.qa_review,
+          status: AgentLogStatus.error,
+          attempt: 1,
+          traceId: input.traceId,
+          durationMs: input.qualityDurationMs,
+          error: errorMessage,
         },
       ],
     };
@@ -248,6 +316,7 @@ export class GenerationResultCollector {
       imageProviderName,
       imageModelName,
       storyDurationMs,
+      qualityDurationMs,
       imageDurationMs,
       layoutDurationMs,
       pdfDurationMs,
@@ -302,6 +371,15 @@ export class GenerationResultCollector {
         provider: storyProviderName,
         model: storyModelName,
       })),
+      {
+        bookId,
+        agent: 'LocalPipelineAgent',
+        step: AgentStep.qa_review,
+        status: AgentLogStatus.success,
+        attempt: 1,
+        traceId,
+        durationMs: qualityDurationMs,
+      },
       {
         bookId,
         agent: 'LocalPipelineAgent',

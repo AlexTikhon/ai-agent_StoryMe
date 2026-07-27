@@ -8,7 +8,7 @@ import {
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
-import { type BookPreview, type ImageGenerationResult } from '@book/types';
+import { type BookPreview, type ImageGenerationResult, type QualityReport } from '@book/types';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
   resolveTargetPageCount,
@@ -41,6 +41,7 @@ import {
 import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage';
 import { GenerationResumeService } from './generation-resume.service';
 import { GenerationResultCollector } from './generation-result.collector';
+import { evaluateStoryQuality } from './story-quality-gate';
 
 /**
  * Generation-relevant input resolved once at the top of startBookGeneration
@@ -330,6 +331,44 @@ export class AgentService {
         : `Story generated for book ${book.id}: ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} illustrations planned (cover + pages + back cover).`,
     );
 
+    this.assertNotSuperseded(ctx, AgentStep.qa_review);
+    await this.generationExecutionService.markStep(ctx, AgentStep.qa_review);
+    const qualityStartedAt = Date.now();
+    const qualityReport: QualityReport = evaluateStoryQuality(
+      {
+        characterCard,
+        storyPlan: storyPlanFinal,
+        bookPreview,
+        imageGenerationResult,
+      },
+      {
+        childName,
+        childAge,
+        language,
+        theme,
+        ...(educationalMessage !== undefined && { educationalMessage }),
+      },
+    );
+    const qualityDurationMs = Date.now() - qualityStartedAt;
+    if (!qualityReport.overallPassed) {
+      this.logger.warn(
+        `Book ${book.id} failed deterministic quality review with ${qualityReport.issues.length} finding(s).`,
+      );
+      return this.generationResultCollector.collectQualityFailureOutcome({
+        bookId: book.id,
+        traceId,
+        generationTimeMs: Date.now() - startedAt,
+        aiModelVersions,
+        characterProfileUpdateData,
+        charBuildResult,
+        storyProviderName,
+        storyModelName,
+        storyDurationMs,
+        qualityDurationMs,
+        qualityReport,
+      });
+    }
+
     // A superseded run (heartbeat found a newer claim already owns it) is
     // signaled via ctx.signal — checked here, before the expensive/paid
     // image-generation step, so a fenced-out attempt stops doing real
@@ -423,6 +462,7 @@ export class AgentService {
         characterCard: characterCard as unknown as Prisma.InputJsonValue,
         storyPlan: storyPlanFinal as unknown as Prisma.InputJsonValue,
         bookPreview: bookPreview as unknown as Prisma.InputJsonValue,
+        qualityReport: qualityReport as unknown as Prisma.InputJsonValue,
         imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
         bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
         // Records which input produced this JSON — see GenerationResumeService's
@@ -558,6 +598,7 @@ export class AgentService {
       imageProviderName,
       imageModelName,
       storyDurationMs,
+      qualityDurationMs,
       imageDurationMs,
       layoutDurationMs,
       pdfDurationMs,

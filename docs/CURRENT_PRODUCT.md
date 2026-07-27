@@ -103,13 +103,15 @@ dispatcher -> BullMQ/Redis -> worker claim/heartbeat/fencing -> deterministic pi
 transactional terminal publication`.
 
 The content stages are character profile/sheet, one story-provider result containing story plan,
-page plan, story text, illustration plan and preview, image generation/reuse, deterministic
-layout, and PDF publication. The current orchestrator primarily persists `Book` as `created`,
+page plan, story text, illustration plan and preview, deterministic quality review, image
+generation/reuse, deterministic layout, and PDF publication. The current orchestrator primarily
+persists `Book` as `created`,
 then the scheduled `char_build` marker, `layout`, and finally `complete` or `failed`;
 cancellation writes `cancelled`. The authoritative `GenerationRun.currentStep` separately records
-the major stages the worker actually enters: `char_build`, `story_plan`, `image_gen`, `layout`,
-and `pdf_render`. Finer Book/step enum values remain diagnostic or historical and are not
-fabricated as progress. `partial` is unreachable.
+the major stages the worker actually enters: `char_build`, `story_plan`, `qa_review`, `image_gen`,
+`layout`, and `pdf_render`. Finer Book/step enum values remain diagnostic or historical and are
+not fabricated as progress. `partial` is unreachable. Deterministic quality errors stop the run
+before page-image generation and persist only typed, privacy-safe findings.
 
 `GenerationRun` (`queued`, `running`, then `completed`, `failed`, or `cancelled`) is the durable
 execution source of truth. Every write verifies `(runId, fencingVersion)`. Reuse requires matching
@@ -124,7 +126,7 @@ retry/resume, idempotent charges/refunds, one-time credit purchases, provider li
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
 published cover thumbnails in the library, durable user-facing generation progress, and
 versioned one-page text correction and explicitly confirmed one-page image regeneration with
-failure-safe PDF republication, and extensive
+failure-safe PDF republication, a deterministic pre-image quality gate, and extensive
 unit/integration tests.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
@@ -139,7 +141,8 @@ Known limitations: `AgentService` remains larger than the individual stages it o
 and generation execution services; the legacy `GenerationJob` runtime and Prisma model have been
 removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
 local storage cannot serve separately deployed API/worker processes; console email does not
-deliver production mail.
+deliver production mail; Polish mock story content currently falls back to English, and the
+optional one-attempt LLM repair is not implemented yet.
 
 ## Local run and validation
 

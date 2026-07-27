@@ -283,7 +283,7 @@ describe('AgentService', () => {
 
       expect(
         vi.mocked(generationExecutionService.markStep).mock.calls.map(([, step]) => step),
-      ).toEqual(['char_build', 'story_plan', 'image_gen', 'layout', 'pdf_render']);
+      ).toEqual(['char_build', 'story_plan', 'qa_review', 'image_gen', 'layout', 'pdf_render']);
     });
 
     it('stamps Book.lastGenerationInputHash with the inputHash this run executed, at the phase-1 persist', async () => {
@@ -458,23 +458,24 @@ describe('AgentService', () => {
       expect(updateArg?.data?.title).toContain('Mia');
     });
 
-    it('returns nine AgentLog records on the outcome, all sharing the same traceId', async () => {
+    it('returns ten AgentLog records on the outcome, all sharing the same traceId', async () => {
       const book = makeBook();
       setupMocks();
 
       const result = await runGeneration(service, prisma, book);
 
       const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
-      expect(entries).toHaveLength(9);
+      expect(entries).toHaveLength(10);
       expect(entries[0]?.step).toBe('char_build');
       expect(entries[1]?.step).toBe('story_plan');
       expect(entries[2]?.step).toBe('page_plan');
       expect(entries[3]?.step).toBe('story_draft');
       expect(entries[4]?.step).toBe('illust_plan');
       expect(entries[5]?.step).toBe('preview_ready');
-      expect(entries[6]?.step).toBe('image_gen');
-      expect(entries[7]?.step).toBe('layout');
-      expect(entries[8]?.step).toBe('pdf_render');
+      expect(entries[6]?.step).toBe('qa_review');
+      expect(entries[7]?.step).toBe('image_gen');
+      expect(entries[8]?.step).toBe('layout');
+      expect(entries[9]?.step).toBe('pdf_render');
       const traceId = entries[0]?.traceId;
       expect(typeof traceId).toBe('string');
       for (const entry of entries) {
@@ -2016,6 +2017,64 @@ describe('AgentService', () => {
       });
     });
 
+    describe('when deterministic quality review fails', () => {
+      it('returns a privacy-safe qa_review failure before generating story images or a PDF', async () => {
+        const realProvider = new MockStoryGenerationProvider();
+        const mismatchedThemeProvider: StoryGenerationProvider = {
+          providerName: 'test',
+          generateStory: vi.fn(async (input) => {
+            const result = await realProvider.generateStory(input);
+            return {
+              ...result,
+              bookPreview: {
+                ...result.bookPreview,
+                metadata: { ...result.bookPreview.metadata, theme: 'different-theme' },
+              },
+            };
+          }),
+        };
+        const qualityService = new AgentService(
+          prisma as never,
+          mockPdfStorage as unknown as PdfStorage,
+          mockImageAssetStorage as unknown as ImageAssetStorage,
+          mismatchedThemeProvider,
+          new MockImageGenerationProvider(),
+          new MockCharacterProfileProvider(),
+          generationExecutionService as never,
+        );
+
+        const result = await runGeneration(qualityService, prisma, makeBook());
+
+        expect(result).toMatchObject({
+          status: 'failed',
+          completedStep: 'qa_review',
+          failedStep: 'qa_review',
+          errorCode: 'QUALITY_REVIEW_FAILED',
+          bookUpdate: {
+            qualityReport: {
+              overallPassed: false,
+              issues: [
+                expect.objectContaining({
+                  code: 'metadata_theme_mismatch',
+                  category: 'alignment',
+                }),
+              ],
+            },
+          },
+        });
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledTimes(1);
+        expect(mockImageAssetStorage.saveImageAsset).toHaveBeenCalledWith(
+          sheetKey(RUN_1),
+          expect.any(Buffer),
+          'image/png',
+        );
+        expect(renderStorybookPdf).not.toHaveBeenCalled();
+        expect(prisma.book.update).not.toHaveBeenCalled();
+        expect(JSON.stringify(result.bookUpdate.qualityReport)).not.toContain('different-theme');
+        expect(JSON.stringify(result.agentLogs)).not.toContain('different-theme');
+      });
+    });
+
     describe('story generation provider integration', () => {
       it('calls storyGenerationProvider.generateStory with the book fields', async () => {
         const book = makeBook({ childName: 'Mia', childAge: 5, theme: 'friendship' });
@@ -2072,14 +2131,14 @@ describe('AgentService', () => {
         expect(imageEntry?.provider).toBe('mock');
       });
 
-      it('records durationMs on the story_plan, image_gen, layout, and pdf_render AgentLog entries', async () => {
+      it('records durationMs on the story_plan, qa_review, image_gen, layout, and pdf_render AgentLog entries', async () => {
         const book = makeBook();
         setupMocks();
 
         const result = await runGeneration(service, prisma, book);
 
         const entries = result.agentLogs as unknown as Array<Record<string, unknown>>;
-        for (const step of ['story_plan', 'image_gen', 'layout', 'pdf_render']) {
+        for (const step of ['story_plan', 'qa_review', 'image_gen', 'layout', 'pdf_render']) {
           const entry = entries.find((e) => e.step === step);
           expect(entry?.durationMs).toEqual(expect.any(Number));
         }
