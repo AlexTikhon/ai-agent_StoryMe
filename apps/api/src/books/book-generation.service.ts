@@ -52,6 +52,7 @@ import {
   requiredGeneratedImagesForBook,
   type ImageGenerationProvider,
 } from '../images/image-generation-provider';
+import { correlationFields, getRequestId } from '../common/correlation/correlation-context';
 import { toBookDto } from './books.mapper';
 import { BookCrudService } from './book-crud.service';
 
@@ -306,6 +307,7 @@ export class BookGenerationService {
     this.assertCompleteImageBudget(params.inputSnapshot);
     this.assertPaidProviderCallBudget(params.inputSnapshot);
     const inputHash = hashInputSnapshot(params.inputSnapshot);
+    const requestId = getRequestId();
 
     let created: { book: Book; run: GenerationRun };
     try {
@@ -346,7 +348,11 @@ export class BookGenerationService {
             aggregateType: 'generation_run',
             aggregateId: run.id,
             eventType: 'run_queued',
-            payload: { bookId: params.book.id, runId: run.id } as unknown as Prisma.InputJsonValue,
+            payload: {
+              bookId: params.book.id,
+              runId: run.id,
+              ...(requestId && { requestId }),
+            } as unknown as Prisma.InputJsonValue,
           },
         });
         return { book: updatedBook, run };
@@ -359,7 +365,9 @@ export class BookGenerationService {
     }
 
     this.logger.log(
-      `Book ${params.book.id} status ${params.fromStatus} -> ${created.book.status}; run ${created.run.id} (${params.kind}) queued`,
+      `generation_run_queued kind=${params.kind} transition=${params.fromStatus} -> ${created.book.status} ${correlationFields(
+        { bookId: params.book.id, runId: created.run.id },
+      )}`,
     );
     return created.book;
   }

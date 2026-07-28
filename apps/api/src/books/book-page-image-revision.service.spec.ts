@@ -8,6 +8,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderStorybookPdf } from '../pdf/pdf-renderer';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
+import { runWithCorrelation } from '../common/correlation/correlation-context';
 import type { BookCrudService } from './book-crud.service';
 import type { CreditsService } from '../credits/credits.service';
 import type { ImageGenerationProvider } from '../images/image-generation-provider';
@@ -240,7 +241,10 @@ describe('BookPageImageRevisionService', () => {
     harness.prisma.book.findFirst.mockResolvedValue(makeBook());
     harness.prisma.pageImageRevision.findUniqueOrThrow.mockResolvedValue(queued);
 
-    const result = await harness.service.confirm('u-1', 'b-1', 1, quoted.id);
+    const requestId = '88888888-8888-4888-8888-888888888888';
+    const result = await runWithCorrelation({ requestId }, () =>
+      harness.service.confirm('u-1', 'b-1', 1, quoted.id),
+    );
 
     expect(result.status).toBe('queued');
     expect(harness.credits.deductInTransaction).toHaveBeenCalledWith(
@@ -255,6 +259,7 @@ describe('BookPageImageRevisionService', () => {
       data: expect.objectContaining({
         aggregateType: 'page_image_revision',
         aggregateId: quoted.id,
+        payload: { bookId: 'b-1', revisionId: quoted.id, requestId },
       }),
     });
     expect(harness.provider.generateImage).not.toHaveBeenCalled();

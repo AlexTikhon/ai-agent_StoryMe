@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { getRequestId } from '../correlation/correlation-context';
 
 interface ErrorResponse {
   statusCode: number;
@@ -15,6 +16,7 @@ interface ErrorResponse {
   code?: string;
   timestamp: string;
   path: string;
+  requestId?: string;
 }
 
 /**
@@ -29,6 +31,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+    const requestId = getRequestId();
+    const requestPath = request.path || '/';
 
     let statusCode: number;
     let error: string;
@@ -57,8 +61,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message = 'An unexpected error occurred';
 
       this.logger.error(
-        `Unhandled exception on ${request.method} ${request.url}`,
-        exception instanceof Error ? exception.stack : String(exception),
+        `Unhandled exception on ${request.method} ${requestPath}${
+          requestId ? ` requestId=${requestId}` : ''
+        } errorName=${exception instanceof Error ? exception.name : 'UnknownError'}`,
       );
     }
 
@@ -68,7 +73,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message,
       ...(code ? { code } : {}),
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path: requestPath,
+      ...(requestId && { requestId }),
     };
 
     response.status(statusCode).json(body);

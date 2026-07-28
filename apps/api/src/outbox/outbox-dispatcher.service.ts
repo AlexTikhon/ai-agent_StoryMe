@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { OutboxEvent } from '@prisma/client';
 import { GenerationQueueService } from '../agent/generation-queue.service';
+import { correlationFields, isRequestId } from '../common/correlation/correlation-context';
 import { OutboxService } from './outbox.service';
 
 export const DEFAULT_OUTBOX_DISPATCH_INTERVAL_MS = 2_000;
@@ -48,8 +49,8 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
     const intervalMs = readOutboxDispatchIntervalMs();
     this.timer = setInterval(() => {
       this.sweep().catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`Outbox sweep failed unexpectedly: ${message}`);
+        const errorName = err instanceof Error ? err.name : 'UnknownError';
+        this.logger.error(`outbox_sweep_failed errorName=${errorName}`);
       });
     }, intervalMs);
     this.timer.unref?.();
@@ -84,6 +85,7 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
       bookId?: unknown;
       runId?: unknown;
       revisionId?: unknown;
+      requestId?: unknown;
     };
     const aggregateId =
       event.aggregateType === 'generation_run' ? payload.runId : payload.revisionId;
@@ -93,24 +95,46 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
+    const requestId = isRequestId(payload.requestId) ? payload.requestId : undefined;
     try {
       if (event.aggregateType === 'generation_run') {
         await this.generationQueueService.enqueue({
           bookId: payload.bookId,
           runId: aggregateId,
+          ...(requestId && { requestId }),
         });
       } else {
         await this.generationQueueService.enqueuePageImageRevision({
           kind: 'page_image_revision',
           bookId: payload.bookId,
           revisionId: aggregateId,
+          ...(requestId && { requestId }),
         });
       }
       await this.outboxService.markDispatched(event.id);
+      this.logger.log(
+        `outbox_dispatched eventId=${event.id} aggregateType=${event.aggregateType} ${correlationFields(
+          {
+            ...(requestId && { requestId }),
+            bookId: payload.bookId,
+            ...(event.aggregateType === 'generation_run'
+              ? { runId: aggregateId }
+              : { revisionId: aggregateId }),
+          },
+        )}`,
+      );
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const errorName = err instanceof Error ? err.name : 'UnknownError';
       this.logger.error(
-        `Failed to dispatch outbox event ${event.id} (${event.aggregateType} ${aggregateId}): ${message}`,
+        `outbox_dispatch_failed eventId=${event.id} aggregateType=${event.aggregateType} errorName=${errorName} ${correlationFields(
+          {
+            ...(requestId && { requestId }),
+            bookId: payload.bookId,
+            ...(event.aggregateType === 'generation_run'
+              ? { runId: aggregateId }
+              : { revisionId: aggregateId }),
+          },
+        )}`,
       );
       await this.outboxService.recordAttemptFailure(event.id).catch(() => undefined);
     }

@@ -43,6 +43,20 @@ describe('GenerationQueueService', () => {
     );
   });
 
+  it('keeps request correlation in job data while using runId as the idempotent job id', async () => {
+    const queue = createMockQueue();
+    const service = new GenerationQueueService(queue as never);
+    const requestId = '55555555-5555-4555-8555-555555555555';
+
+    await service.enqueue({ bookId: 'b-1', runId: 'run-1', requestId });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'run-generation',
+      { bookId: 'b-1', runId: 'run-1', requestId },
+      { jobId: 'run-1' },
+    );
+  });
+
   it('queues one confirmed page-image call with a distinct id and no BullMQ paid-call retry', async () => {
     const queue = createMockQueue();
     const service = new GenerationQueueService(queue as never);
@@ -79,9 +93,17 @@ describe('GenerationQueueService', () => {
     const queue = createMockQueue();
     const service = new GenerationQueueService(queue as never);
 
-    await service.enqueue({ bookId: 'b-1', runId: 'run-1' });
+    await service.enqueue({
+      bookId: 'b-1',
+      runId: 'run-1',
+      requestId: '55555555-5555-4555-8555-555555555555',
+    });
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('bookId=b-1 runId=run-1'));
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'requestId=55555555-5555-4555-8555-555555555555 bookId=b-1 runId=run-1',
+      ),
+    );
     logSpy.mockRestore();
   });
 

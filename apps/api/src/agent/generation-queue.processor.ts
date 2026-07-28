@@ -18,6 +18,7 @@ import type {
   PageImageRevisionQueueJobData,
 } from './generation-queue.service';
 import { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
+import { correlationFields } from '../common/correlation/correlation-context';
 
 /** Safe, public-facing message for a run whose stored input_snapshot is permanently malformed — never the raw Zod issue list. */
 const INVALID_SNAPSHOT_PUBLIC_MESSAGE =
@@ -66,7 +67,13 @@ export class GenerationQueueProcessor extends WorkerHost {
     }
     const maxAttempts = job.opts.attempts ?? 1;
     this.logger.log(
-      `Picked up job — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId} attempt=${job.attemptsMade + 1}/${maxAttempts}`,
+      `worker_job_started kind=book_generation bullmqJobId=${job.id} attempt=${job.attemptsMade + 1}/${maxAttempts} ${correlationFields(
+        {
+          ...(job.data.requestId && { requestId: job.data.requestId }),
+          bookId: job.data.bookId,
+          runId: job.data.runId,
+        },
+      )}`,
     );
     if (!token) {
       // BullMQ always supplies a lock token to a real Worker's processor —
@@ -157,6 +164,16 @@ export class GenerationQueueProcessor extends WorkerHost {
     job: Job<PageImageRevisionQueueJobData>,
     token?: string,
   ): Promise<void> {
+    const maxAttempts = job.opts.attempts ?? 1;
+    this.logger.log(
+      `worker_job_started kind=page_image_revision bullmqJobId=${job.id} attempt=${job.attemptsMade + 1}/${maxAttempts} ${correlationFields(
+        {
+          ...(job.data.requestId && { requestId: job.data.requestId }),
+          bookId: job.data.bookId,
+          revisionId: job.data.revisionId,
+        },
+      )}`,
+    );
     if (!token) {
       throw new Error(
         `BullMQ invoked page image revision ${job.data.revisionId} without a delivery token.`,
@@ -174,12 +191,20 @@ export class GenerationQueueProcessor extends WorkerHost {
   onCompleted(job: Job<BookWorkQueueJobData>): void {
     if (job.data.kind === 'page_image_revision') {
       this.logger.log(
-        `Page image revision job completed — bullmqJobId=${job.id} revisionId=${job.data.revisionId}`,
+        `worker_job_completed kind=page_image_revision bullmqJobId=${job.id} ${correlationFields({
+          ...(job.data.requestId && { requestId: job.data.requestId }),
+          bookId: job.data.bookId,
+          revisionId: job.data.revisionId,
+        })}`,
       );
       return;
     }
     this.logger.log(
-      `Job completed — bullmqJobId=${job.id} bookId=${job.data.bookId} runId=${job.data.runId}`,
+      `worker_job_completed kind=book_generation bullmqJobId=${job.id} ${correlationFields({
+        ...(job.data.requestId && { requestId: job.data.requestId }),
+        bookId: job.data.bookId,
+        runId: job.data.runId,
+      })}`,
     );
   }
 
@@ -195,13 +220,18 @@ export class GenerationQueueProcessor extends WorkerHost {
    */
   @OnWorkerEvent('failed')
   async onFailed(job: Job<BookWorkQueueJobData> | undefined, error: Error): Promise<void> {
-    const durableId =
-      job?.data.kind === 'page_image_revision'
-        ? `revisionId=${job.data.revisionId}`
-        : `runId=${job?.data.runId}`;
     this.logger.error(
-      `Job failed — bullmqJobId=${job?.id} bookId=${job?.data.bookId} ${durableId} attemptsMade=${job?.attemptsMade} error=${error.name}: ${error.message}`,
-      error.stack,
+      `worker_job_failed bullmqJobId=${job?.id} attemptsMade=${job?.attemptsMade} errorName=${error.name} ${correlationFields(
+        {
+          ...(job?.data.requestId && { requestId: job.data.requestId }),
+          ...(job?.data.bookId && { bookId: job.data.bookId }),
+          ...(job?.data.kind === 'page_image_revision'
+            ? { revisionId: job.data.revisionId }
+            : job
+              ? { runId: job.data.runId }
+              : {}),
+        },
+      )}`,
     );
     if (!job) return;
     const maxAttempts = job.opts.attempts ?? 1;

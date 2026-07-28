@@ -2,18 +2,23 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queues.config';
+import { correlationFields } from '../common/correlation/correlation-context';
 
 export interface GenerationQueueJobData {
   kind?: 'book_generation';
   bookId: string;
   /** GenerationRun.id — also used as the BullMQ jobId, so a re-dispatch of the same run (e.g. a re-swept outbox event) is a no-op rather than a duplicate job. */
   runId: string;
+  /** Originating API request UUID when this run was created; absent for legacy/recovery jobs. */
+  requestId?: string;
 }
 
 export interface PageImageRevisionQueueJobData {
   kind: 'page_image_revision';
   bookId: string;
   revisionId: string;
+  /** Originating API request UUID when this revision was confirmed; absent for legacy jobs. */
+  requestId?: string;
 }
 
 export type BookWorkQueueJobData = GenerationQueueJobData | PageImageRevisionQueueJobData;
@@ -59,13 +64,23 @@ export class GenerationQueueService {
   ) {}
 
   async enqueue(data: GenerationQueueJobData): Promise<void> {
-    this.logger.log(`Enqueuing generation run — bookId=${data.bookId} runId=${data.runId}`);
+    this.logger.log(
+      `queue_publish kind=book_generation ${correlationFields({
+        ...(data.requestId && { requestId: data.requestId }),
+        bookId: data.bookId,
+        runId: data.runId,
+      })}`,
+    );
     await this.queue.add('run-generation', data, { jobId: data.runId });
   }
 
   async enqueuePageImageRevision(data: PageImageRevisionQueueJobData): Promise<void> {
     this.logger.log(
-      `Enqueuing page image revision — bookId=${data.bookId} revisionId=${data.revisionId}`,
+      `queue_publish kind=page_image_revision ${correlationFields({
+        ...(data.requestId && { requestId: data.requestId }),
+        bookId: data.bookId,
+        revisionId: data.revisionId,
+      })}`,
     );
     await this.queue.add('run-page-image-revision', data, {
       jobId: `page-image-${data.revisionId}`,

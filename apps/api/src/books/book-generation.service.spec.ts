@@ -2,6 +2,7 @@ import { ConflictException, HttpStatus } from '@nestjs/common';
 import { Prisma, type Book, type GenerationRun } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
+import { runWithCorrelation } from '../common/correlation/correlation-context';
 import type { CreditsService } from '../credits/credits.service';
 import type { GenerationRunService } from '../agent/generation-run.service';
 import type { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
@@ -185,6 +186,18 @@ describe('BookGenerationService scheduling boundary', () => {
         eventType: 'run_queued',
         payload: { bookId: 'book-1', runId: 'run-1' },
       },
+    });
+  });
+
+  it('persists only the originating request ID as correlation metadata in the outbox payload', async () => {
+    const requestId = '33333333-3333-4333-8333-333333333333';
+
+    await runWithCorrelation({ requestId }, () => service.startGeneration('user-1', 'book-1'));
+
+    expect(prisma.outboxEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        payload: { bookId: 'book-1', runId: 'run-1', requestId },
+      }),
     });
   });
 
