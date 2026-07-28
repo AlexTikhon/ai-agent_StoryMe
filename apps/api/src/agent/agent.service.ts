@@ -313,6 +313,10 @@ export class AgentService {
         bookPreview = result.bookPreview;
         imageGenerationResult = result.imageGenerationResult;
       } catch (err) {
+        // Cancellation/reclaim fencing is an expected control-flow signal,
+        // not a story-provider failure. Let BookGenerationExecutionService
+        // classify it as an abandoned attempt at warn severity.
+        if (err instanceof StaleGenerationRunError) throw err;
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
         return this.generationResultCollector.collectStoryFailureOutcome({

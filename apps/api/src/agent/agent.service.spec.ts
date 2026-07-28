@@ -21,7 +21,10 @@ import {
 } from './character-profile-provider';
 import { buildInputSnapshot } from './generation-input-snapshot';
 import type { GenerationExecutionContext } from './generation-execution-context';
-import type { GenerationExecutionService } from './generation-execution.service';
+import {
+  StaleGenerationRunError,
+  type GenerationExecutionService,
+} from './generation-execution.service';
 import type { GenerationOutcome } from './generation-outcome';
 import {
   claimImageAssetKey,
@@ -2015,6 +2018,21 @@ describe('AgentService', () => {
         const storyPlanEntry = entries.find((e) => e.step === 'story_plan');
         expect(storyPlanEntry?.status).toBe('error');
         expect(storyPlanEntry?.error).toBe('bad prompt');
+      });
+
+      it('rethrows a stale-run cancellation signal instead of logging it as a provider failure', async () => {
+        const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        vi.mocked(generationExecutionService.markStep)
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new StaleGenerationRunError(RUN_1, 'story_plan' as never));
+
+        await expect(runGeneration(service, prisma, makeBook())).rejects.toBeInstanceOf(
+          StaleGenerationRunError,
+        );
+        expect(errorSpy).not.toHaveBeenCalledWith(
+          expect.stringContaining('Story generation failed'),
+        );
+        errorSpy.mockRestore();
       });
     });
 

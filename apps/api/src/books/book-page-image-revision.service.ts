@@ -40,6 +40,7 @@ import {
 } from '../images/image-generation-provider';
 import { renderStorybookPdf } from '../pdf/pdf-renderer';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
+import { getRequestId } from '../common/correlation/correlation-context';
 import { toBookDto } from './books.mapper';
 import {
   bookPreviewSchema,
@@ -147,6 +148,7 @@ export class BookPageImageRevisionService {
     pageNumber: number,
     revisionId: string,
   ): Promise<PageImageRevisionDto> {
+    const requestId = getRequestId();
     const revision = await this.prisma.$transaction(async (tx) => {
       const current = await tx.pageImageRevision.findFirst({
         where: { id: revisionId, userId, bookId, pageNumber },
@@ -232,6 +234,7 @@ export class BookPageImageRevisionService {
           payload: {
             bookId,
             revisionId: current.id,
+            ...(requestId && { requestId }),
           } as unknown as Prisma.InputJsonValue,
         },
       });

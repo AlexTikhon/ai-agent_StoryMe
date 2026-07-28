@@ -56,6 +56,36 @@ describe('OutboxDispatcherService', () => {
       expect(outboxService.markDispatched).toHaveBeenCalledWith('event-2');
     });
 
+    it('propagates a valid request ID and drops malformed correlation metadata', async () => {
+      const requestId = '44444444-4444-4444-8444-444444444444';
+      const outboxService = createMockOutboxService([
+        makeEvent({ payload: { bookId: 'b-1', runId: 'run-1', requestId } }),
+        makeEvent({
+          id: 'event-2',
+          aggregateId: 'run-2',
+          payload: {
+            bookId: 'b-2',
+            runId: 'run-2',
+            requestId: 'forged\nprompt=private',
+          },
+        }),
+      ]);
+      const queueService = createMockQueueService();
+      const dispatcher = new OutboxDispatcherService(outboxService as never, queueService as never);
+
+      await dispatcher.sweep();
+
+      expect(queueService.enqueue).toHaveBeenNthCalledWith(1, {
+        bookId: 'b-1',
+        runId: 'run-1',
+        requestId,
+      });
+      expect(queueService.enqueue).toHaveBeenNthCalledWith(2, {
+        bookId: 'b-2',
+        runId: 'run-2',
+      });
+    });
+
     it('dispatches a durable page-image revision without treating it as a whole-book run', async () => {
       const outboxService = createMockOutboxService([
         makeEvent({

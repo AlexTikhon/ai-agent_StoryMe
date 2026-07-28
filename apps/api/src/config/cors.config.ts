@@ -25,5 +25,6 @@ export function buildCorsOptions(env: CorsEnvironment = process.env): CorsOption
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [...CORS_ALLOWED_HEADERS],
+    exposedHeaders: ['X-Request-ID'],
   };
 }

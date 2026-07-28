@@ -3,6 +3,7 @@ import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { BooksModule, type BooksModuleOptions } from './books/books.module';
 import { CacheModule } from './cache/cache.module';
+import { CorrelationModule } from './common/correlation/correlation.module';
 import { CreditsModule } from './credits/credits.module';
 import { EnvModule } from './config/env.module';
 import { DatabaseModule } from './database/database.module';
@@ -32,6 +33,7 @@ export class AppModule {
         // Infrastructure (global)
         DatabaseModule,
         CacheModule,
+        CorrelationModule,
         RedisModule,
         RateLimitModule,
 

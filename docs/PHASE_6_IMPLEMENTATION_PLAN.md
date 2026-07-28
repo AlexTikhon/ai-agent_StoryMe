@@ -24,8 +24,23 @@ HTML report for failures.
 
 ## Slice 6B — request and run correlation
 
-Add privacy-safe correlation across API, outbox, and worker logs. Correlation
-metadata must never contain prompts, story text, photos, passwords, or tokens.
+Complete. Every API request now receives a UUID request ID: a valid inbound
+`X-Request-ID` is preserved, an invalid or missing value is replaced, and the
+chosen ID is exposed in the response header and structured error body. API
+request logs contain only the method, query-free path, status, duration, and
+allowlisted identifiers.
+
+Generation and page-image-revision commands persist the request ID in the
+existing outbox JSON payload and propagate it through BullMQ job data. Outbox,
+queue, and worker lifecycle logs can therefore be joined using `requestId`,
+`bookId`, and the applicable `runId` or `revisionId`. Legacy outbox events and
+jobs without a request ID remain valid; no schema migration is required.
+
+The shared correlation boundary accepts UUID request IDs and restricted
+durable identifiers only. Tests prove that prompts, query strings,
+authorization headers, malformed IDs, and exception messages cannot enter
+these operational logs. Expected stale-run cancellation now bypasses provider
+error logging so the execution layer can retain its warning-level semantics.
 
 ## Slice 6C — retention and hard-delete
 

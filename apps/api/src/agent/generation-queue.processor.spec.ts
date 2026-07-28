@@ -105,6 +105,7 @@ function createMockPageImageRevisionService(): jest.Mocked<BookPageImageRevision
 describe('GenerationQueueProcessor', () => {
   describe('process', () => {
     it('claims and executes a durable page-image revision through its own fenced path', async () => {
+      const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       const pageRevisionService = createMockPageImageRevisionService();
       const processor = new GenerationQueueProcessor(
         createMockBooksService() as never,
@@ -118,6 +119,7 @@ describe('GenerationQueueProcessor', () => {
           kind: 'page_image_revision',
           bookId: 'b-1',
           revisionId: 'revision-1',
+          requestId: '77777777-7777-4777-8777-777777777777',
         },
         attemptsMade: 0,
         opts: { attempts: 1 },
@@ -127,6 +129,12 @@ describe('GenerationQueueProcessor', () => {
 
       expect(pageRevisionService.claim).toHaveBeenCalledWith('revision-1', TOKEN);
       expect(pageRevisionService.executeClaimed).toHaveBeenCalledWith('revision-1', 2);
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'requestId=77777777-7777-4777-8777-777777777777 bookId=b-1 revisionId=revision-1',
+        ),
+      );
+      logSpy.mockRestore();
     });
     it('claims the run before delegating to BooksService.runGenerationPipeline', async () => {
       const booksService = createMockBooksService();
@@ -227,14 +235,20 @@ describe('GenerationQueueProcessor', () => {
         snapshotBackfill as never,
       );
       const job = {
-        ...makeJob({ bookId: 'b-1', runId: 'run-1' }),
+        ...makeJob({
+          bookId: 'b-1',
+          runId: 'run-1',
+          requestId: '66666666-6666-4666-8666-666666666666',
+        }),
         id: 'bullmq-42',
       } as Job<GenerationQueueJobData>;
 
       await processor.process(job, TOKEN);
 
       expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('bullmqJobId=bullmq-42 bookId=b-1 runId=run-1 attempt=1/3'),
+        expect.stringContaining(
+          'bullmqJobId=bullmq-42 attempt=1/3 requestId=66666666-6666-4666-8666-666666666666 bookId=b-1 runId=run-1',
+        ),
       );
       logSpy.mockRestore();
     });
@@ -415,9 +429,9 @@ describe('GenerationQueueProcessor', () => {
 
       await processor.onFailed(undefined, new Error('Redis connection refused'));
 
-      expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('error=Error: Redis connection refused'),
-        expect.any(String),
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('errorName=Error'));
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('Redis connection refused'),
       );
       errorSpy.mockRestore();
     });
