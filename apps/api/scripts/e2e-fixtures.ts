@@ -1,5 +1,5 @@
 import * as bcrypt from 'bcryptjs';
-import { PrismaClient } from '@prisma/client';
+import { BookStatus, PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 export const E2E_EMAIL_SUFFIX = '@e2e.storyme.test';
 export const E2E_LOGIN_EMAIL = `verified-login${E2E_EMAIL_SUFFIX}`;
 export const E2E_LOGIN_PASSWORD = 'StoryMeE2E1!';
+export const E2E_RETRY_BOOK_ID = '00000000-0000-4000-8000-000000000006';
 
 function assertDedicatedE2eTargets(): void {
   const databaseUrl = process.env['DATABASE_URL'];
@@ -61,16 +62,36 @@ async function resetFixtures(seed: boolean): Promise<void> {
     );
 
     if (seed) {
-      await prisma.user.create({
+      const user = await prisma.user.create({
         data: {
           email: E2E_LOGIN_EMAIL,
           passwordHash: await bcrypt.hash(E2E_LOGIN_PASSWORD, 12),
           name: 'Verified E2E User',
           emailVerified: true,
           emailVerifiedAt: new Date(),
-          credits: 3,
+          credits: 10,
         },
       });
+      await prisma.book.create({
+        data: {
+          id: E2E_RETRY_BOOK_ID,
+          userId: user.id,
+          status: BookStatus.failed,
+          title: 'Retry Journey Fixture',
+          childName: 'Riley',
+          childAge: 7,
+          language: 'en',
+          theme: 'Trying again after a setback',
+          pageCount: 4,
+          errorMessage: 'Deterministic E2E fixture failure',
+        },
+      });
+    } else {
+      // The API/worker webServer is still alive while Playwright runs global
+      // teardown and may recreate a BullMQ metadata key after the initial
+      // flush. Finish cleanup with a second flush after all durable work has
+      // been removed so the disposable Redis DB is empty at handoff.
+      await redis.flushdb();
     }
   } finally {
     redis.disconnect();

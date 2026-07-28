@@ -5,13 +5,15 @@ data-lifecycle work.
 
 ## Slice 6A — browser E2E foundation
 
-In progress. Playwright runs Chromium against the real Next.js app, Nest API,
+Complete. Playwright runs Chromium against the real Next.js app, Nest API,
 BullMQ worker, PostgreSQL, and Redis while every content provider remains in
 deterministic mock mode. The first smoke journeys cover:
 
 - registration through the real JWT API;
 - login with a disposable verified fixture account;
 - book creation and mock generation through the durable queue;
+- cancellation of an active run with its compensating credit refund;
+- retry of a disposable failed-book fixture through a new durable run;
 - authenticated PDF download.
 
 Local E2E services use a separate, ephemeral Docker Compose stack. Fixture
@@ -19,8 +21,6 @@ management refuses to reset a database whose name does not contain `e2e` or
 Redis database zero. GitHub Actions runs the same browser test with disposable
 service containers and retains Playwright traces, screenshots, video, and the
 HTML report for failures.
-
-Cancellation and retry browser journeys remain for the next 6A increment.
 
 ## Slice 6B — request and run correlation
 
