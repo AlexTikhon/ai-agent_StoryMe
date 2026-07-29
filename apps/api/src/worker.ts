@@ -4,6 +4,7 @@ import { AppModule } from './app.module';
 import { envPresent, logStartup } from './common/startup-log';
 import { QUEUES } from './queue/queues.config';
 import { assertPdfStorageSupportsWorker } from './pdf/pdf-storage';
+import { assertImageStorageSupportsWorker } from './images/image-asset-storage';
 
 /**
  * Dedicated generation-worker process — consumes BullMQ book-generation jobs
@@ -16,11 +17,11 @@ async function bootstrap(): Promise<void> {
   const logger = new Logger('Worker');
 
   // Fail fast, before opening any DB/Redis connection, if this process would
-  // generate PDFs no API instance could ever read back. See
-  // assertPdfStorageSupportsWorker's own doc comment (pdf-storage.ts) and
-  // "Troubleshooting: PDF ready but preview/download 404s" in
-  // apps/api/docs/local-generation-pipeline.md.
+  // generate artifacts no API instance could read back or fully hard-delete.
+  // The deploy preflight checks the same invariant, but worker boot must stay
+  // safe even when an operator accidentally skips that separate command.
   assertPdfStorageSupportsWorker(process.env);
+  assertImageStorageSupportsWorker(process.env);
 
   logStartup(logger, {
     mode: 'worker',

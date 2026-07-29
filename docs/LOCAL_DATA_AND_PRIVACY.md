@@ -61,7 +61,10 @@ The verified owner can poll `GET /api/books/deletion-requests/:requestId`. A req
 `requested`, `processing`, or `retry_pending` while active queue work is quiescing or any required
 artifact remains. It reaches `completed` only after legacy and claim-scoped artifacts have been
 deleted and freshly verified absent from both configured storage drivers, followed by deletion of
-the private PostgreSQL book graph.
+the private PostgreSQL book graph. Completion is irreversible. Local filesystem traversal validates
+the exact deletion root and refuses symlinks/junctions, but filesystem mutation retains a
+theoretical time-of-check/time-of-use race against a privileged actor changing paths concurrently;
+production storage directories must therefore remain inaccessible to untrusted local writers.
 
 `PRIVATE_DATA_RETENTION_DAYS` and `GENERATED_ARTIFACT_RETENTION_DAYS` are explicit policy
 configuration snapshotted for audit. They do not cause automatic deletion. The surviving audit

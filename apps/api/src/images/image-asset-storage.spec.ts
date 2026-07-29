@@ -24,6 +24,7 @@ import {
 import {
   LocalImageAssetStorage,
   CloudImageAssetStorage,
+  assertImageStorageSupportsWorker,
   createImageAssetStorage,
   imageAssetKey,
   imageObjectKey,
@@ -627,6 +628,45 @@ describe('createImageAssetStorage', () => {
 
   it('throws a clear error for unsupported drivers', () => {
     expect(() => createImageAssetStorage('gcs')).toThrow(/gcs/);
+  });
+});
+
+describe('assertImageStorageSupportsWorker', () => {
+  it('throws a clear, actionable error for local image storage in production', () => {
+    expect(() =>
+      assertImageStorageSupportsWorker({
+        NODE_ENV: 'production',
+        IMAGE_STORAGE_DRIVER: 'local',
+      }),
+    ).toThrow(/IMAGE_STORAGE_DRIVER=local cannot be used by the generation worker in production/);
+  });
+
+  it('treats an unset production driver as the local default and rejects it', () => {
+    expect(() => assertImageStorageSupportsWorker({ NODE_ENV: 'production' })).toThrow(
+      /IMAGE_STORAGE_DRIVER=local cannot be used/,
+    );
+  });
+
+  it('allows production cloud drivers and non-production local storage', () => {
+    expect(() =>
+      assertImageStorageSupportsWorker({
+        NODE_ENV: 'production',
+        IMAGE_STORAGE_DRIVER: 's3',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertImageStorageSupportsWorker({
+        NODE_ENV: 'production',
+        IMAGE_STORAGE_DRIVER: 'r2',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertImageStorageSupportsWorker({
+        NODE_ENV: 'development',
+        IMAGE_STORAGE_DRIVER: 'local',
+      }),
+    ).not.toThrow();
+    expect(() => assertImageStorageSupportsWorker({})).not.toThrow();
   });
 });
 
