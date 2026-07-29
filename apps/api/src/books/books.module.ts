@@ -13,6 +13,8 @@ import { GenerationInputSnapshotBackfillService } from '../agent/generation-inpu
 import { OutboxService } from '../outbox/outbox.service';
 import { OutboxDispatcherService } from '../outbox/outbox-dispatcher.service';
 import { BooksController } from './books.controller';
+import { BookDeletionController } from './book-deletion.controller';
+import { BookHardDeletionService } from './book-hard-deletion.service';
 import { BooksService } from './books.service';
 import { BookCrudService } from './book-crud.service';
 import { BookAssetService } from './book-asset.service';
@@ -68,6 +70,7 @@ export class BooksModule {
       BookGenerationExecutionService,
       BookPageChangeService,
       BookPageImageRevisionService,
+      BookHardDeletionService,
       AgentService,
       GenerationQueueService,
       GenerationRunService,
@@ -104,7 +107,7 @@ export class BooksModule {
     return {
       module: BooksModule,
       imports: [AuthModule, CreditsModule],
-      controllers: [BooksController],
+      controllers: [BooksController, BookDeletionController],
       providers,
     };
   }

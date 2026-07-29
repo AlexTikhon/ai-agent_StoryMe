@@ -21,7 +21,25 @@ export interface PageImageRevisionQueueJobData {
   requestId?: string;
 }
 
-export type BookWorkQueueJobData = GenerationQueueJobData | PageImageRevisionQueueJobData;
+export interface BookDeletionQueueJobData {
+  kind: 'book_deletion';
+  bookId: string;
+  deletionRequestId: string;
+  requestId?: string;
+}
+
+export type BookWorkQueueJobData =
+  GenerationQueueJobData | PageImageRevisionQueueJobData | BookDeletionQueueJobData;
+
+export function readHardDeleteJobAttempts(env: NodeJS.ProcessEnv = process.env): number {
+  const value = Number(env['HARD_DELETE_JOB_ATTEMPTS'] ?? 8);
+  return Number.isInteger(value) && value > 0 ? value : 8;
+}
+
+export function readHardDeleteJobBackoffMs(env: NodeJS.ProcessEnv = process.env): number {
+  const value = Number(env['HARD_DELETE_JOB_BACKOFF_MS'] ?? 5_000);
+  return Number.isInteger(value) && value > 0 ? value : 5_000;
+}
 
 /**
  * Safe, non-secret view of the book-generation queue's health — lets
@@ -89,6 +107,62 @@ export class GenerationQueueService {
       // repeat a paid call after an ordinary thrown failure.
       attempts: 1,
     });
+  }
+
+  async enqueueBookDeletion(data: BookDeletionQueueJobData): Promise<void> {
+    this.logger.log(
+      `queue_publish kind=book_deletion ${correlationFields({
+        ...(data.requestId && { requestId: data.requestId }),
+        bookId: data.bookId,
+        deletionRequestId: data.deletionRequestId,
+      })}`,
+    );
+    const jobId = `book-deletion-${data.deletionRequestId}`;
+    const existing = await this.queue.getJob(jobId);
+    if (existing && (await existing.getState()) === 'failed') await existing.remove();
+    await this.queue.add('run-book-deletion', data, {
+      jobId,
+      attempts: readHardDeleteJobAttempts(),
+      backoff: {
+        type: 'exponential',
+        delay: readHardDeleteJobBackoffMs(),
+      },
+    });
+  }
+
+  async hasActiveBookWork(bookId: string, deletionRequestId: string): Promise<boolean> {
+    // Include every state that can still become/represent execution. A
+    // dispatcher may have read a pending generation event just before the
+    // deletion transaction suppressed it and publish milliseconds later.
+    // Waiting/delayed jobs must therefore quiesce too, not only jobs already
+    // holding an active lock at this instant.
+    const pending = await this.queue.getJobs(['active', 'waiting', 'delayed', 'prioritized']);
+    return pending.some(
+      (job) =>
+        job.data.bookId === bookId &&
+        !(job.data.kind === 'book_deletion' && job.data.deletionRequestId === deletionRequestId),
+    );
+  }
+
+  async removeBookWorkIfSafe(
+    runIds: readonly string[],
+    revisionIds: readonly string[],
+  ): Promise<void> {
+    await Promise.all([
+      ...runIds.map((runId) => this.removeIfSafe(runId)),
+      ...revisionIds.map(async (revisionId) => {
+        try {
+          const job = await this.queue.getJob(`page-image-${revisionId}`);
+          if (!job) return;
+          const state = await job.getState();
+          if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
+            await job.remove();
+          }
+        } catch {
+          // PostgreSQL fencing is authoritative; queue removal is only tidying.
+        }
+      }),
+    ]);
   }
 
   /**

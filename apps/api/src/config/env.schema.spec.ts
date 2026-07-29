@@ -210,6 +210,32 @@ describe('envSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('defaults retention policy safely and accepts an explicit zero-day policy', () => {
+    const required = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+    const defaults = envSchema.safeParse(required);
+    expect(defaults.success).toBe(true);
+    if (defaults.success) {
+      expect(defaults.data.PRIVATE_DATA_RETENTION_DAYS).toBe(30);
+      expect(defaults.data.GENERATED_ARTIFACT_RETENTION_DAYS).toBe(30);
+      expect(defaults.data.HARD_DELETE_JOB_ATTEMPTS).toBe(8);
+    }
+    expect(
+      envSchema.safeParse({
+        ...required,
+        PRIVATE_DATA_RETENTION_DAYS: '0',
+        GENERATED_ARTIFACT_RETENTION_DAYS: '0',
+      }).success,
+    ).toBe(true);
+    expect(envSchema.safeParse({ ...required, PRIVATE_DATA_RETENTION_DAYS: '-1' }).success).toBe(
+      false,
+    );
+  });
+
   it('defaults AUTH_MODE to jwt when unset (safe default outside dev)', () => {
     const result = envSchema.safeParse({
       DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',

@@ -22,6 +22,11 @@ import {
   listLocalClaimArtifacts,
 } from '../agent/claim-artifact-local-walk';
 import { deleteCloudClaimArtifacts, listCloudClaimArtifacts } from '../agent/claim-artifact-cloud';
+import {
+  deleteCloudBookArtifactPrefixes,
+  deleteLocalBookArtifactRoots,
+  type BookArtifactDeletionResult,
+} from '../storage/book-artifact-deletion';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
@@ -79,6 +84,8 @@ export interface PdfStorage {
    * pass.
    */
   deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]>;
+  /** Slice 6C: explicit hard-delete scope, including legacy and claim objects. */
+  deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult>;
 }
 
 export const PDF_STORAGE_TOKEN = 'PDF_STORAGE';
@@ -167,6 +174,11 @@ export class LocalPdfStorage implements PdfStorage {
 
   async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
     return deleteLocalClaimArtifacts(TMP_ROOT, keys);
+  }
+
+  async deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult> {
+    validateBookId(bookId);
+    return deleteLocalBookArtifactRoots(TMP_ROOT, [['books', bookId]]);
   }
 }
 
@@ -351,6 +363,14 @@ export class CloudPdfStorage implements PdfStorage {
 
   async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
     return deleteCloudClaimArtifacts(this.client, this.bucket, keys);
+  }
+
+  async deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult> {
+    validateBookId(bookId);
+    return deleteCloudBookArtifactPrefixes(this.client, this.bucket, [
+      `previews/${bookId}/`,
+      `books/${bookId}/`,
+    ]);
   }
 }
 

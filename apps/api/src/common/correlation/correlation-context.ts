@@ -11,6 +11,7 @@ export interface CorrelationIdentifiers {
   bookId?: string;
   runId?: string;
   revisionId?: string;
+  deletionRequestId?: string;
 }
 
 const storage = new AsyncLocalStorage<Readonly<CorrelationIdentifiers>>();
@@ -36,11 +37,13 @@ export function sanitizeCorrelation(
   const bookId = safeDurableId(identifiers.bookId);
   const runId = safeDurableId(identifiers.runId);
   const revisionId = safeDurableId(identifiers.revisionId);
+  const deletionRequestId = safeDurableId(identifiers.deletionRequestId);
   return {
     ...(requestId && { requestId }),
     ...(bookId && { bookId }),
     ...(runId && { runId }),
     ...(revisionId && { revisionId }),
+    ...(deletionRequestId && { deletionRequestId }),
   };
 }
 
@@ -72,6 +75,7 @@ export function correlationFields(identifiers: CorrelationIdentifiers = {}): str
     safe.bookId && `bookId=${safe.bookId}`,
     safe.runId && `runId=${safe.runId}`,
     safe.revisionId && `revisionId=${safe.revisionId}`,
+    safe.deletionRequestId && `deletionRequestId=${safe.deletionRequestId}`,
   ]
     .filter(Boolean)
     .join(' ');

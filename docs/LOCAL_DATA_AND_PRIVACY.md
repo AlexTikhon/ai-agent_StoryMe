@@ -46,9 +46,28 @@ The confirmed command removes only `apps/api/tmp/`. It does not touch PostgreSQL
 volumes, S3/R2, or arbitrary user directories. Database/cloud deletion remains a deliberate
 provider-specific operation. Never invoke the apply form from startup, tests, archive, or deploy.
 
-Deleting a Book currently sets `deletedAt`. It hides the Book from normal reads but does not
-necessarily erase generated JSON, logs, processed photos, images, PDFs, or cloud objects. It must
-not be described as complete erasure.
+`DELETE /api/books/:id` sets `deletedAt`. It hides the Book from normal reads but does not erase
+generated JSON, logs, processed photos, images, PDFs, or cloud objects. It must not be described
+as complete erasure.
+
+Permanent deletion is a separate explicit-intent workflow:
+
+```text
+POST /api/books/:id/hard-delete
+{ "confirmation": "<the exact book UUID>" }
+```
+
+The verified owner can poll `GET /api/books/deletion-requests/:requestId`. A request remains
+`requested`, `processing`, or `retry_pending` while active queue work is quiescing or any required
+artifact remains. It reaches `completed` only after legacy and claim-scoped artifacts have been
+deleted and freshly verified absent from both configured storage drivers, followed by deletion of
+the private PostgreSQL book graph.
+
+`PRIVATE_DATA_RETENTION_DAYS` and `GENERATED_ARTIFACT_RETENTION_DAYS` are explicit policy
+configuration snapshotted for audit. They do not cause automatic deletion. The surviving audit
+row is pseudonymous and contains identifiers, role, policy values, counts, bounded status/error
+codes, and timestamps only—never account email, prompts, story text, photos, generated JSON,
+storage keys, credentials, or tokens.
 
 ## Exposed-key response
 
