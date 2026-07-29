@@ -130,6 +130,12 @@ describe('BookHardDeletionService', () => {
         activePageImageRevisionId: null,
       },
     });
+    expect(h.prisma.book.update.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.prisma.generationRun.findMany.mock.invocationCallOrder[0]!,
+    );
+    expect(h.prisma.book.update.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.prisma.pageImageRevision.findMany.mock.invocationCallOrder[0]!,
+    );
     expect(h.prisma.generationRun.updateMany).toHaveBeenCalledWith({
       where: {
         id: { in: ['run-1'] },
