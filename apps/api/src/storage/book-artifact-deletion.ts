@@ -21,6 +21,24 @@ function assertSafeSegments(segments: readonly string[]): void {
   }
 }
 
+async function verifyRealDirectoryChain(
+  root: string,
+  segments: readonly string[],
+): Promise<'ok' | 'missing' | 'suspicious'> {
+  let current = resolve(root);
+  for (const segment of segments) {
+    current = join(current, segment);
+    try {
+      const stat = await lstat(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return 'suspicious';
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+      return 'suspicious';
+    }
+  }
+  return 'ok';
+}
+
 /**
  * Deletes only regular files beneath exact, caller-owned book directories.
  * Symlinks/junctions are never followed or removed; they fail closed and keep
@@ -41,14 +59,9 @@ export async function deleteLocalBookArtifactRoots(
       failureCount += 1;
       return;
     }
-    let stat;
-    try {
-      stat = await lstat(path);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') failureCount += 1;
-      return;
-    }
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    const chain = await verifyRealDirectoryChain(root, segments);
+    if (chain === 'missing') return;
+    if (chain === 'suspicious') {
       failureCount += 1;
       return;
     }
@@ -72,6 +85,12 @@ export async function deleteLocalBookArtifactRoots(
         await walkAndDelete(childSegments);
       } else if (entry.isFile()) {
         try {
+          const parentChain = await verifyRealDirectoryChain(root, segments);
+          if (parentChain === 'missing') continue;
+          if (parentChain === 'suspicious') {
+            failureCount += 1;
+            continue;
+          }
           const fresh = await lstat(childPath);
           if (!fresh.isFile() || fresh.isSymbolicLink()) {
             failureCount += 1;
@@ -93,6 +112,12 @@ export async function deleteLocalBookArtifactRoots(
   let remainingCount = 0;
   const countRemaining = async (segments: readonly string[]): Promise<void> => {
     const path = resolve(root, ...segments);
+    const chain = await verifyRealDirectoryChain(root, segments);
+    if (chain === 'missing') return;
+    if (chain === 'suspicious') {
+      remainingCount += 1;
+      return;
+    }
     let entries;
     try {
       entries = await readdir(path, { withFileTypes: true });

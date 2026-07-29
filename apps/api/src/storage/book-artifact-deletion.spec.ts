@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from '@aws-sdk/client-s3';
@@ -56,6 +56,31 @@ describe('book artifact deletion', () => {
       errorCode: null,
     });
     await expect(readFile(other, 'utf8')).resolves.toBe('keep-me');
+  });
+
+  it('refuses to follow an intermediate symlink or junction outside the storage root', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'storyme-hard-delete-outside-'));
+    const outsideBook = join(outside, 'book-1');
+    const outsideFile = join(outsideBook, 'private.png');
+    await mkdir(outsideBook, { recursive: true });
+    await writeFile(outsideFile, 'must-survive');
+    await mkdir(join(root, 'images'), { recursive: true });
+    await symlink(
+      outside,
+      join(root, 'images', 'books'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    try {
+      const result = await deleteLocalBookArtifactRoots(root, [['images', 'books', 'book-1']]);
+
+      expect(result.complete).toBe(false);
+      expect(result.deletedCount).toBe(0);
+      expect(result.failureCount).toBeGreaterThan(0);
+      await expect(readFile(outsideFile, 'utf8')).resolves.toBe('must-survive');
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it('treats a partial cloud provider failure as incomplete and observable', async () => {
