@@ -247,6 +247,16 @@ describe('BookPageImageRevisionService', () => {
     );
 
     expect(result.status).toBe('queued');
+    expect(harness.prisma.book.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'b-1',
+          deletedAt: null,
+          activeRunId: null,
+          activePageImageRevisionId: null,
+        }),
+      }),
+    );
     expect(harness.credits.deductInTransaction).toHaveBeenCalledWith(
       harness.prisma,
       expect.objectContaining({

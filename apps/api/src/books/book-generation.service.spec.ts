@@ -170,6 +170,7 @@ describe('BookGenerationService scheduling boundary', () => {
       where: {
         id: 'book-1',
         status: 'created',
+        deletedAt: null,
         activePageImageRevisionId: null,
       },
       data: {
