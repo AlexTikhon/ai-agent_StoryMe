@@ -12,7 +12,7 @@ import {
 import type { GenerationInputSnapshotBackfillService } from './generation-input-snapshot-backfill.service';
 import { parseGenerationInputSnapshot } from './generation-input-snapshot';
 import type { GenerationExecutionContext } from './generation-execution-context';
-import type { GenerationQueueJobData } from './generation-queue.service';
+import type { BookWorkQueueJobData, GenerationQueueJobData } from './generation-queue.service';
 import type { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
 
 /** The BullMQ per-delivery lock token process(job, token) receives — see GenerationRunService.claim's doc comment for why this, not attemptsMade, is the fencing identity. */
@@ -104,6 +104,31 @@ function createMockPageImageRevisionService(): jest.Mocked<BookPageImageRevision
 
 describe('GenerationQueueProcessor', () => {
   describe('process', () => {
+    it('executes a durable hard-delete request through the deletion service', async () => {
+      const deletionService = { process: vi.fn().mockResolvedValue(undefined) };
+      const processor = new GenerationQueueProcessor(
+        createMockBooksService() as never,
+        createMockGenerationRunService() as never,
+        createMockGenerationRunCoordinator() as never,
+        createMockSnapshotBackfillService() as never,
+        createMockPageImageRevisionService(),
+        deletionService as never,
+      );
+      const job = {
+        data: {
+          kind: 'book_deletion',
+          bookId: 'b-1',
+          deletionRequestId: 'deletion-1',
+        },
+        attemptsMade: 0,
+        opts: { attempts: 8 },
+      } as unknown as Job<BookWorkQueueJobData>;
+
+      await processor.process(job);
+
+      expect(deletionService.process).toHaveBeenCalledWith('deletion-1');
+    });
+
     it('claims and executes a durable page-image revision through its own fenced path', async () => {
       const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       const pageRevisionService = createMockPageImageRevisionService();

@@ -113,10 +113,11 @@ describe('TokenService', () => {
     it('sets a 24 hour expiry', () => {
       const before = Date.now();
       const token = service.generateEmailVerificationToken();
-      const hours = (token.expiresAt.getTime() - before) / (60 * 60 * 1000);
+      const after = Date.now();
+      const ttlMs = 24 * 60 * 60 * 1000;
 
-      expect(hours).toBeGreaterThan(23.9);
-      expect(hours).toBeLessThanOrEqual(24);
+      expect(token.expiresAt.getTime()).toBeGreaterThanOrEqual(before + ttlMs);
+      expect(token.expiresAt.getTime()).toBeLessThanOrEqual(after + ttlMs);
     });
 
     it('hash does not depend on JWT_REFRESH_SECRET (plain SHA-256, not HMAC)', () => {
@@ -143,10 +144,11 @@ describe('TokenService', () => {
     it('sets a 30 minute expiry', () => {
       const before = Date.now();
       const token = service.generatePasswordResetToken();
-      const minutes = (token.expiresAt.getTime() - before) / (60 * 1000);
+      const after = Date.now();
+      const ttlMs = 30 * 60 * 1000;
 
-      expect(minutes).toBeGreaterThan(29.9);
-      expect(minutes).toBeLessThanOrEqual(30);
+      expect(token.expiresAt.getTime()).toBeGreaterThanOrEqual(before + ttlMs);
+      expect(token.expiresAt.getTime()).toBeLessThanOrEqual(after + ttlMs);
     });
 
     it('hash does not depend on JWT_REFRESH_SECRET (plain SHA-256, not HMAC)', () => {

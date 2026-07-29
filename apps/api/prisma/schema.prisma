@@ -176,6 +176,13 @@ enum PageImageRevisionStatus {
   failed
 }
 
+enum BookDeletionStatus {
+  requested
+  processing
+  retry_pending
+  completed
+}
+
 // ═══════════════════════════════════════════
 // USER & AUTH
 // ═══════════════════════════════════════════
@@ -809,6 +816,33 @@ model OutboxEvent {
 
   @@index([status, createdAt])
   @@map("outbox_events")
+}
+
+// Durable, explicit-intent workflow for permanently deleting one owned Book.
+// This row intentionally has no FK to Book or User: it must survive the
+// private book graph it audits. owner_hash is a one-way, pseudonymous
+// ownership proof used only to authorize idempotent status/retry requests.
+// It never stores an email, prompt, story, photo, token, credential, storage
+// key, or raw provider error.
+model BookDeletionRequest {
+  id                             String             @id @default(uuid()) @db.Uuid
+  bookId                         String             @unique @map("book_id") @db.Uuid
+  ownerHash                      String             @map("owner_hash")
+  requestedByRole                UserRole           @map("requested_by_role")
+  status                         BookDeletionStatus @default(requested)
+  privateDataRetentionDays       Int                @map("private_data_retention_days")
+  generatedArtifactRetentionDays Int                @map("generated_artifact_retention_days")
+  attemptCount                   Int                @default(0) @map("attempt_count")
+  deletedArtifactCount           Int                @default(0) @map("deleted_artifact_count")
+  remainingArtifactCount         Int                @default(0) @map("remaining_artifact_count")
+  lastErrorCode                  String?            @map("last_error_code")
+  requestedAt                    DateTime           @default(now()) @map("requested_at")
+  startedAt                      DateTime?          @map("started_at")
+  completedAt                    DateTime?          @map("completed_at")
+  updatedAt                      DateTime           @updatedAt @map("updated_at")
+
+  @@index([status, requestedAt])
+  @@map("book_deletion_requests")
 }
 
 // A single-row (id fixed, seeded by migration) lease used to elect one

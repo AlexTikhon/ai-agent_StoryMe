@@ -31,6 +31,7 @@ function createMockQueueService(): jest.Mocked<GenerationQueueService> {
   return {
     enqueue: vi.fn().mockResolvedValue(undefined),
     enqueuePageImageRevision: vi.fn().mockResolvedValue(undefined),
+    enqueueBookDeletion: vi.fn().mockResolvedValue(undefined),
   } as unknown as jest.Mocked<GenerationQueueService>;
 }
 
@@ -106,6 +107,30 @@ describe('OutboxDispatcherService', () => {
         revisionId: 'revision-1',
       });
       expect(queueService.enqueue).not.toHaveBeenCalled();
+      expect(outboxService.markDispatched).toHaveBeenCalledWith('event-1');
+    });
+
+    it('dispatches a durable hard-delete request without private payload data', async () => {
+      const outboxService = createMockOutboxService([
+        makeEvent({
+          aggregateType: 'book_deletion',
+          aggregateId: 'deletion-1',
+          eventType: 'book_deletion_requested',
+          payload: { bookId: 'b-1', deletionRequestId: 'deletion-1' },
+        }),
+      ]);
+      const queueService = createMockQueueService();
+      const dispatcher = new OutboxDispatcherService(outboxService as never, queueService as never);
+
+      await dispatcher.sweep();
+
+      expect(queueService.enqueueBookDeletion).toHaveBeenCalledWith({
+        kind: 'book_deletion',
+        bookId: 'b-1',
+        deletionRequestId: 'deletion-1',
+      });
+      expect(queueService.enqueue).not.toHaveBeenCalled();
+      expect(queueService.enqueuePageImageRevision).not.toHaveBeenCalled();
       expect(outboxService.markDispatched).toHaveBeenCalledWith('event-1');
     });
 

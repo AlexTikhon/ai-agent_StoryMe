@@ -75,7 +75,11 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async dispatchOne(event: OutboxEvent): Promise<void> {
-    if (event.aggregateType !== 'generation_run' && event.aggregateType !== 'page_image_revision') {
+    if (
+      event.aggregateType !== 'generation_run' &&
+      event.aggregateType !== 'page_image_revision' &&
+      event.aggregateType !== 'book_deletion'
+    ) {
       this.logger.warn(
         `Skipping outbox event ${event.id} with unknown aggregateType "${event.aggregateType}".`,
       );
@@ -85,10 +89,15 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
       bookId?: unknown;
       runId?: unknown;
       revisionId?: unknown;
+      deletionRequestId?: unknown;
       requestId?: unknown;
     };
     const aggregateId =
-      event.aggregateType === 'generation_run' ? payload.runId : payload.revisionId;
+      event.aggregateType === 'generation_run'
+        ? payload.runId
+        : event.aggregateType === 'page_image_revision'
+          ? payload.revisionId
+          : payload.deletionRequestId;
     if (typeof payload.bookId !== 'string' || typeof aggregateId !== 'string') {
       this.logger.error(
         `Outbox event ${event.id} has a malformed payload — skipping without dispatching.`,
@@ -103,11 +112,18 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
           runId: aggregateId,
           ...(requestId && { requestId }),
         });
-      } else {
+      } else if (event.aggregateType === 'page_image_revision') {
         await this.generationQueueService.enqueuePageImageRevision({
           kind: 'page_image_revision',
           bookId: payload.bookId,
           revisionId: aggregateId,
+          ...(requestId && { requestId }),
+        });
+      } else {
+        await this.generationQueueService.enqueueBookDeletion({
+          kind: 'book_deletion',
+          bookId: payload.bookId,
+          deletionRequestId: aggregateId,
           ...(requestId && { requestId }),
         });
       }
@@ -119,7 +135,9 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
             bookId: payload.bookId,
             ...(event.aggregateType === 'generation_run'
               ? { runId: aggregateId }
-              : { revisionId: aggregateId }),
+              : event.aggregateType === 'page_image_revision'
+                ? { revisionId: aggregateId }
+                : { deletionRequestId: aggregateId }),
           },
         )}`,
       );
@@ -132,7 +150,9 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
             bookId: payload.bookId,
             ...(event.aggregateType === 'generation_run'
               ? { runId: aggregateId }
-              : { revisionId: aggregateId }),
+              : event.aggregateType === 'page_image_revision'
+                ? { revisionId: aggregateId }
+                : { deletionRequestId: aggregateId }),
           },
         )}`,
       );

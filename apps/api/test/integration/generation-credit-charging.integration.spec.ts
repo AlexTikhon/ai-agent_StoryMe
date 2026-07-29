@@ -167,8 +167,6 @@ describe('Generation credit charging and refunds (Phase E2, real Postgres)', () 
 
     it('commits none of them (no run, no Book transition, no outbox, no ledger row) when the user has insufficient credits', async () => {
       const book = await createUserAndBook(0);
-      const outboxCountBefore = await prisma.outboxEvent.count();
-
       await expect(booksService.startGeneration(book.userId, book.id)).rejects.toMatchObject({
         status: HttpStatus.PAYMENT_REQUIRED,
         response: expect.objectContaining({ code: INSUFFICIENT_CREDITS_CODE }),
@@ -179,7 +177,16 @@ describe('Generation credit charging and refunds (Phase E2, real Postgres)', () 
       const reloadedBook = await prisma.book.findUniqueOrThrow({ where: { id: book.id } });
       expect(reloadedBook.status).toBe('created');
       expect(reloadedBook.activeRunId).toBeNull();
-      expect(await prisma.outboxEvent.count()).toBe(outboxCountBefore);
+      expect(
+        await prisma.outboxEvent.count({
+          where: {
+            payload: {
+              path: ['bookId'],
+              equals: book.id,
+            },
+          },
+        }),
+      ).toBe(0);
       const reloadedUser = await prisma.user.findUniqueOrThrow({ where: { id: book.userId } });
       expect(reloadedUser.credits).toBe(0);
       const ledger = await prisma.creditTransaction.findMany({ where: { userId: book.userId } });

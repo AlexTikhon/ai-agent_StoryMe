@@ -57,11 +57,13 @@ autonomous agents, recursive reflection, multiple repair attempts, and replacing
 
 ## Phase 6: E2E, observability, and retention
 
-**Status:** in progress. Slices 6A and 6B are complete. Playwright covers the
+**Status:** completed. Slices 6A, 6B, and 6C are complete. Playwright covers the
 real local API/worker boundaries with disposable data and deterministic mock
 providers, including cancellation/refund and failed-run retry. Privacy-safe
 request IDs now span API responses, outbox events, BullMQ jobs, and worker logs
-without adding private content. Slice 6C (retention and hard-delete) is next.
+without adding private content. Configurable retention policy and an
+explicit-intent, owned, fenced, retriable hard-delete workflow now cover
+PostgreSQL plus local/S3/R2 artifacts without automatic destructive cleanup.
 See [PHASE_6_IMPLEMENTATION_PLAN.md](PHASE_6_IMPLEMENTATION_PLAN.md).
 
 **User value:** release-tested journeys, diagnosable failures, and deliberate private-data

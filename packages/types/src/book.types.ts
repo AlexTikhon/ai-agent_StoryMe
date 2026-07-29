@@ -585,6 +585,25 @@ export interface CancelGenerationResponse {
   creditsRefunded: number;
 }
 
+export type BookDeletionStatus = 'requested' | 'processing' | 'retry_pending' | 'completed';
+
+/**
+ * Privacy-safe status for an explicit permanent-deletion request. It contains
+ * operational identifiers and aggregate counts only, never deleted content,
+ * storage keys, provider messages, or account details.
+ */
+export interface BookDeletionRequestDto {
+  id: string;
+  bookId: string;
+  status: BookDeletionStatus;
+  attemptCount: number;
+  deletedArtifactCount: number;
+  remainingArtifactCount: number;
+  lastErrorCode: string | null;
+  requestedAt: string;
+  completedAt: string | null;
+}
+
 /**
  * Safe, non-secret view of PDF storage state for a book — lets the caller
  * (support, ops, or the frontend) tell whether preview/download should

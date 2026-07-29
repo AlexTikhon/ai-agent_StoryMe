@@ -14,11 +14,13 @@ import {
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type {
   BookWorkQueueJobData,
+  BookDeletionQueueJobData,
   GenerationQueueJobData,
   PageImageRevisionQueueJobData,
 } from './generation-queue.service';
 import { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
 import { correlationFields } from '../common/correlation/correlation-context';
+import { BookHardDeletionService } from '../books/book-hard-deletion.service';
 
 /** Safe, public-facing message for a run whose stored input_snapshot is permanently malformed — never the raw Zod issue list. */
 const INVALID_SNAPSHOT_PUBLIC_MESSAGE =
@@ -57,11 +59,16 @@ export class GenerationQueueProcessor extends WorkerHost {
     private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
     @Optional()
     private readonly pageImageRevisionService?: BookPageImageRevisionService,
+    @Optional()
+    private readonly bookHardDeletionService?: BookHardDeletionService,
   ) {
     super();
   }
 
   async process(job: Job<BookWorkQueueJobData>, token?: string): Promise<void> {
+    if (job.data.kind === 'book_deletion') {
+      return this.processBookDeletion(job as Job<BookDeletionQueueJobData>);
+    }
     if (job.data.kind === 'page_image_revision') {
       return this.processPageImageRevision(job as Job<PageImageRevisionQueueJobData>, token);
     }
@@ -160,6 +167,23 @@ export class GenerationQueueProcessor extends WorkerHost {
     }
   }
 
+  private async processBookDeletion(job: Job<BookDeletionQueueJobData>): Promise<void> {
+    const maxAttempts = job.opts.attempts ?? 1;
+    this.logger.log(
+      `worker_job_started kind=book_deletion bullmqJobId=${job.id} attempt=${job.attemptsMade + 1}/${maxAttempts} ${correlationFields(
+        {
+          ...(job.data.requestId && { requestId: job.data.requestId }),
+          bookId: job.data.bookId,
+          deletionRequestId: job.data.deletionRequestId,
+        },
+      )}`,
+    );
+    if (!this.bookHardDeletionService) {
+      throw new Error('Book hard-deletion worker service is not registered.');
+    }
+    await this.bookHardDeletionService.process(job.data.deletionRequestId);
+  }
+
   private async processPageImageRevision(
     job: Job<PageImageRevisionQueueJobData>,
     token?: string,
@@ -189,6 +213,16 @@ export class GenerationQueueProcessor extends WorkerHost {
 
   @OnWorkerEvent('completed')
   onCompleted(job: Job<BookWorkQueueJobData>): void {
+    if (job.data.kind === 'book_deletion') {
+      this.logger.log(
+        `worker_job_completed kind=book_deletion bullmqJobId=${job.id} ${correlationFields({
+          ...(job.data.requestId && { requestId: job.data.requestId }),
+          bookId: job.data.bookId,
+          deletionRequestId: job.data.deletionRequestId,
+        })}`,
+      );
+      return;
+    }
     if (job.data.kind === 'page_image_revision') {
       this.logger.log(
         `worker_job_completed kind=page_image_revision bullmqJobId=${job.id} ${correlationFields({
@@ -227,15 +261,19 @@ export class GenerationQueueProcessor extends WorkerHost {
           ...(job?.data.bookId && { bookId: job.data.bookId }),
           ...(job?.data.kind === 'page_image_revision'
             ? { revisionId: job.data.revisionId }
-            : job
-              ? { runId: job.data.runId }
-              : {}),
+            : job?.data.kind === 'book_deletion'
+              ? { deletionRequestId: job.data.deletionRequestId }
+              : job
+                ? { runId: job.data.runId }
+                : {}),
         },
       )}`,
     );
     if (!job) return;
     const maxAttempts = job.opts.attempts ?? 1;
     if (job.attemptsMade < maxAttempts) return;
+
+    if (job.data.kind === 'book_deletion') return;
 
     if (job.data.kind === 'page_image_revision') {
       const revisionId = job.data.revisionId;

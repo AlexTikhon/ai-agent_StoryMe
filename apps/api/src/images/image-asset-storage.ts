@@ -26,6 +26,11 @@ import {
   listLocalClaimArtifacts,
 } from '../agent/claim-artifact-local-walk';
 import { deleteCloudClaimArtifacts, listCloudClaimArtifacts } from '../agent/claim-artifact-cloud';
+import {
+  deleteCloudBookArtifactPrefixes,
+  deleteLocalBookArtifactRoots,
+  type BookArtifactDeletionResult,
+} from '../storage/book-artifact-deletion';
 
 const TMP_ROOT = resolve(__dirname, '..', '..', 'tmp');
 
@@ -85,6 +90,8 @@ export interface ImageAssetStorage {
    * pass.
    */
   deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]>;
+  /** Slice 6C: explicit hard-delete scope, including legacy and claim objects. */
+  deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult>;
 }
 
 export const IMAGE_ASSET_STORAGE_TOKEN = 'IMAGE_ASSET_STORAGE';
@@ -191,6 +198,14 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
 
   async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
     return deleteLocalClaimArtifacts(TMP_ROOT, keys);
+  }
+
+  async deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult> {
+    validateImageAssetKey(bookId);
+    return deleteLocalBookArtifactRoots(TMP_ROOT, [
+      ['images', bookId],
+      ['images', 'books', bookId],
+    ]);
   }
 }
 
@@ -364,6 +379,14 @@ export class CloudImageAssetStorage implements ImageAssetStorage {
 
   async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
     return deleteCloudClaimArtifacts(this.client, this.bucket, keys);
+  }
+
+  async deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult> {
+    validateImageAssetKey(bookId);
+    return deleteCloudBookArtifactPrefixes(this.client, this.bucket, [
+      `images/${bookId}/`,
+      `images/books/${bookId}/`,
+    ]);
   }
 }
 

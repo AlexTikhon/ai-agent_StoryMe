@@ -177,6 +177,17 @@ export const envSchema = z
     // storage without a second set of credentials.
     IMAGE_STORAGE_DRIVER: z.enum(['local', 's3', 'r2']).default('local'),
 
+    // Slice 6C retention policy. These values document and snapshot the
+    // operator-owned policy; they do not schedule destructive startup work.
+    // An authenticated hard-delete request is explicit intent and is handled
+    // immediately by its durable workflow.
+    PRIVATE_DATA_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(30),
+    GENERATED_ARTIFACT_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(30),
+    HARD_DELETE_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(3_600_000),
+    HARD_DELETE_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
+    HARD_DELETE_JOB_ATTEMPTS: z.coerce.number().int().positive().default(8),
+    HARD_DELETE_JOB_BACKOFF_MS: z.coerce.number().int().positive().default(5_000),
+
     // ─── Orphaned claim-artifact cleanup (Phase C) ──────────────────────────
     // Storage-listing sweeper that deletes claim-scoped image/PDF artifacts
     // (see generation-artifact-namespace.ts) once nothing references them

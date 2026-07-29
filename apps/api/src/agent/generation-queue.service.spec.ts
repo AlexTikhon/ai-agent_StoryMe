@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
 import type { Queue } from 'bullmq';
-import { GenerationQueueService } from './generation-queue.service';
+import {
+  GenerationQueueService,
+  readHardDeleteJobAttempts,
+  readHardDeleteJobBackoffMs,
+} from './generation-queue.service';
 
 function createMockQueue(): jest.Mocked<Queue> {
   return {
@@ -15,6 +19,7 @@ function createMockQueue(): jest.Mocked<Queue> {
       delayed: 0,
     }),
     getWorkers: vi.fn().mockResolvedValue([]),
+    getJobs: vi.fn().mockResolvedValue([]),
   } as unknown as jest.Mocked<Queue>;
 }
 
@@ -76,6 +81,53 @@ describe('GenerationQueueService', () => {
       },
       { jobId: 'page-image-revision-1', attempts: 1 },
     );
+  });
+
+  it('queues hard-delete with a stable id and bounded retriable options', async () => {
+    const queue = createMockQueue();
+    const service = new GenerationQueueService(queue as never);
+
+    await service.enqueueBookDeletion({
+      kind: 'book_deletion',
+      bookId: 'b-1',
+      deletionRequestId: 'deletion-1',
+    });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'run-book-deletion',
+      {
+        kind: 'book_deletion',
+        bookId: 'b-1',
+        deletionRequestId: 'deletion-1',
+      },
+      {
+        jobId: 'book-deletion-deletion-1',
+        attempts: 8,
+        backoff: { type: 'exponential', delay: 5_000 },
+      },
+    );
+  });
+
+  it('uses safe hard-delete retry defaults for malformed environment values', () => {
+    expect(readHardDeleteJobAttempts({ HARD_DELETE_JOB_ATTEMPTS: 'nope' })).toBe(8);
+    expect(readHardDeleteJobBackoffMs({ HARD_DELETE_JOB_BACKOFF_MS: '0' })).toBe(5_000);
+  });
+
+  it('detects another active job for the same book but excludes its own deletion job', async () => {
+    const queue = createMockQueue();
+    queue.getJobs.mockResolvedValue([
+      {
+        data: {
+          kind: 'book_deletion',
+          bookId: 'b-1',
+          deletionRequestId: 'deletion-1',
+        },
+      },
+      { data: { kind: 'book_generation', bookId: 'b-1', runId: 'run-1' } },
+    ] as never);
+    const service = new GenerationQueueService(queue as never);
+
+    await expect(service.hasActiveBookWork('b-1', 'deletion-1')).resolves.toBe(true);
   });
 
   it('propagates a rejection from the underlying queue (e.g. Redis unreachable)', async () => {
