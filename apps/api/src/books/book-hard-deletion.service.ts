@@ -100,6 +100,19 @@ export class BookHardDeletionService {
         const book = await tx.book.findFirst({ where: { id: bookId, userId } });
         if (!book) throw new NotFoundException('Book not found');
 
+        // Lock and tombstone the book before enumerating active work. This
+        // serializes against generation/revision reservations on the same row:
+        // a reservation that committed first is visible to the queries below,
+        // while one that waits behind this update must fail its deletedAt fence.
+        await tx.book.update({
+          where: { id: bookId },
+          data: {
+            deletedAt: book.deletedAt ?? new Date(),
+            activeRunId: null,
+            activePageImageRevisionId: null,
+          },
+        });
+
         const [runs, revisions] = await Promise.all([
           tx.generationRun.findMany({
             where: {
@@ -117,14 +130,6 @@ export class BookHardDeletionService {
           }),
         ]);
 
-        await tx.book.update({
-          where: { id: bookId },
-          data: {
-            deletedAt: book.deletedAt ?? new Date(),
-            activeRunId: null,
-            activePageImageRevisionId: null,
-          },
-        });
         await tx.generationRun.updateMany({
           where: {
             id: { in: runs.map((run) => run.id) },

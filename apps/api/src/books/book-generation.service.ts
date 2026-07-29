@@ -333,6 +333,7 @@ export class BookGenerationService {
           where: {
             id: params.book.id,
             status: params.fromStatus,
+            deletedAt: null,
             activePageImageRevisionId: null,
           },
           data: {

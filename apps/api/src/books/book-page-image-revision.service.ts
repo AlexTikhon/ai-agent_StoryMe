@@ -192,6 +192,7 @@ export class BookPageImageRevisionService {
           id: bookId,
           userId,
           status: BookStatus.complete,
+          deletedAt: null,
           activeRunId: null,
           activePageImageRevisionId: null,
           updatedAt: current.sourceBookUpdatedAt,

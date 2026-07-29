@@ -895,6 +895,7 @@ describe('BooksService', () => {
         where: {
           id: 'b-1',
           status: STATUS_CREATED,
+          deletedAt: null,
           activePageImageRevisionId: null,
         },
         data: { status: 'char_build', activeRunId: 'run-1', failedStep: null, errorMessage: null },
@@ -1171,6 +1172,7 @@ describe('BooksService', () => {
         where: {
           id: 'b-1',
           status: STATUS_FAILED,
+          deletedAt: null,
           activePageImageRevisionId: null,
         },
         data: {
@@ -1467,6 +1469,7 @@ describe('BooksService', () => {
         where: {
           id: 'b-1',
           status: STATUS_COMPLETE,
+          deletedAt: null,
           activePageImageRevisionId: null,
         },
         data: expect.objectContaining({ status: 'char_build', activeRunId: 'run-1' }),
@@ -1536,6 +1539,7 @@ describe('BooksService', () => {
         where: {
           id: 'b-1',
           status: 'cancelled',
+          deletedAt: null,
           activePageImageRevisionId: null,
         },
         data: expect.objectContaining({ status: 'char_build', activeRunId: 'regen-run-1' }),
