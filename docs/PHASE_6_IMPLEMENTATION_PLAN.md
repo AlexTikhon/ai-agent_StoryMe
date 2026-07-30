@@ -78,9 +78,11 @@ cannot republish it.
 
 Image and PDF drivers delete both legacy and claim-scoped book prefixes.
 Local deletion walks only exact validated directories and never follows a
-symlink/junction. S3/R2 deletion lists exact prefixes, deletes in provider
-batches, and freshly re-lists them. A request is never marked `completed`
-while either driver reports a failed list/delete or any remaining object.
+symlink/junction. This narrows local deletion to the intended tree but retains
+a theoretical filesystem time-of-check/time-of-use limitation if a privileged
+actor can mutate paths concurrently. S3/R2 deletion lists exact prefixes,
+deletes in provider batches, and freshly re-lists them. A request is never
+marked `completed` while either driver reports a failed list/delete or any remaining object.
 Partial success is counted, the private PostgreSQL graph remains intact, and
 the next bounded worker attempt retries the remaining scope.
 

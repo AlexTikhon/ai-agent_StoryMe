@@ -391,6 +391,27 @@ export class CloudImageAssetStorage implements ImageAssetStorage {
 }
 
 /**
+ * Refuses a production worker topology that stores generated images on its
+ * private local filesystem. The API and worker are separate processes on the
+ * supported production topology, so locally written images cannot be served
+ * by the API or reliably included in API-owned deletion checks.
+ */
+export function assertImageStorageSupportsWorker(env: NodeJS.ProcessEnv = process.env): void {
+  const driver = env['IMAGE_STORAGE_DRIVER'] ?? 'local';
+  if (env['NODE_ENV'] === 'production' && driver === 'local') {
+    throw new Error(
+      'IMAGE_STORAGE_DRIVER=local cannot be used by the generation worker in production: ' +
+        'the worker and the API run as separate processes/containers on every recommended ' +
+        'deploy target, so generated images saved to the worker filesystem are not available ' +
+        'to the API for previews or complete hard deletion. Set IMAGE_STORAGE_DRIVER=s3 or ' +
+        '=r2 (plus the shared PDF_STORAGE_BUCKET, PDF_STORAGE_REGION, ' +
+        'PDF_STORAGE_ACCESS_KEY_ID, PDF_STORAGE_SECRET_ACCESS_KEY, and PDF_STORAGE_ENDPOINT ' +
+        'for r2) on both the api and worker services — see docs/deployment-readiness.md.',
+    );
+  }
+}
+
+/**
  * Returns the configured ImageAssetStorage implementation.
  * Supported drivers: local (default), s3, r2.
  * s3/r2 reuse the PDF_STORAGE_* credential env vars (see readCloudConfig in
