@@ -607,9 +607,12 @@ real transactional email provider are all done end-to-end.
   link server-side, which is fine for a private/trusted demo but not for
   real signups. Boot fails fast if `resend` is set without both required
   vars (`env.schema.ts`).
-- **Wire `prisma migrate deploy` into an actual release pipeline** (CI job
-  or platform release-phase hook) instead of running it by hand per this
-  doc's [Migration command](#migration-command).
+- ~~Wire `prisma migrate deploy` into an actual release pipeline~~ **Done
+  (Phase F3)** — `.github/workflows/migrate.yml` provides the
+  approval-protected staging/production migration workflow. Repository
+  administrators must still configure the GitHub Environments, secrets,
+  expected database identity, and required reviewers before its first real
+  use.
 - ~~Move generation to a real queue + worker~~ **Done (Phase 3K)** — see
   [Known blockers](#known-blockers) item 5.
 - ~~Consider a Redis-backed rate limiter before running more than one API
@@ -636,9 +639,9 @@ real transactional email provider are all done end-to-end.
   itself is disabled by default (`STRIPE_BILLING_ENABLED=false`) until a
   deployment supplies real Stripe configuration — the credits dashboard shows
   a clear unavailable state in that case.
-- **Cancellation / partial-completion flow** — `BookStatus.Cancelled` and
-  `BookStatus.Partial` are reserved schema states with no code path that
-  produces them yet.
+- ~~Cancellation~~ **Done (Phase G1/G2)**. `BookStatus.Partial` remains a
+  reserved schema state with no production path and partial-completion
+  recovery remains a future product choice.
 
 ## Phase 5C: Docker build verification {#phase-5c-docker}
 
@@ -881,11 +884,11 @@ step-by-step diagnosis procedure this incident led to.
    credentials. **For `PDF_STORAGE_DRIVER`, the standalone worker process
    now refuses to boot in production with `local`** — see
    [PDF storage: separate worker guard](#pdf-storage-worker-guard) above.
-   `IMAGE_STORAGE_DRIVER` has no equivalent boot guard yet — a production
-   deploy that forgets to set it will silently degrade generated images to
-   placeholder rectangles at PDF-render time rather than 404ing (see
-   "Images" in `apps/api/docs/pdf-rendering.md`), which is a real but
-   separate follow-up, not covered by this phase.
+   The standalone worker also refuses to boot in production with
+   `IMAGE_STORAGE_DRIVER=local`; this prevents generation from writing images
+   that the separately deployed API cannot serve or include in complete
+   hard-deletion checks. The deployment preflight rejects local storage for
+   both roles as an earlier configuration gate.
 2. **No `prisma migrate deploy` step in the container.** `apps/api/Dockerfile`
    builds and runs `node dist/main` only — it does not apply migrations.
    Migrations must be run as a separate deploy step (`pnpm --filter @book/api
@@ -1503,23 +1506,13 @@ that undoes the change, not running the old one backwards.
 
 ## Suggested next phase {#suggested-next-phase}
 
-1. Wire a real, approval-protected migration/release hook with actual
-   staging/production `DATABASE_URL` credentials into whatever deploy
-   platform is chosen (Railway/Fly/Render release-phase hook, or a separate
-   manually-triggered deploy workflow) — this remains the one external step
-   [Phase F2](#phase-f2-ci) deliberately does not add. CI ([Phase
-   F2](#phase-f2-ci)) now proves the migration set applies cleanly and
-   idempotently to a _throwaway CI database_ on every push/PR, which is real
-   coverage but not a substitute for this: the container itself still
-   intentionally never runs `prisma migrate deploy` (see [Known
-   blockers](#known-blockers) above), and no CI job holds or is meant to
-   hold real production credentials.
-2. ~~A real transactional email provider behind `EmailService`~~ **Resolved
-   in Phase 6H** — `ResendEmailService` is available behind
-   `EMAIL_PROVIDER=resend`; a real deploy just needs `RESEND_API_KEY` and
-   `EMAIL_FROM` set (see [Auth limitation note](#auth-limitation) and
-   `docs/auth-architecture.md` §16). OAuth remains the last documented auth
-   follow-up.
+The next production-readiness step is operational rather than another broad
+application phase: choose the staging/production providers, configure their
+managed PostgreSQL, Redis, S3/R2, Resend, Stripe, API/worker, and web settings,
+configure the protected GitHub Environments required by the Phase F3
+migration workflow, and execute the private-demo runbook plus post-deploy
+smoke checks against staging. No repository change can safely choose or
+provision those accounts and credentials on the operator's behalf.
 
 ## Private demo runbook
 

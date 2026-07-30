@@ -127,24 +127,26 @@ retry/resume, idempotent charges/refunds, one-time credit purchases, provider li
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
 published cover thumbnails in the library, durable user-facing generation progress, and
 versioned one-page text correction and explicitly confirmed one-page image regeneration with
-failure-safe PDF republication, a deterministic pre-image quality gate, and extensive
-unit/integration tests.
+failure-safe PDF republication, a deterministic pre-image quality gate, privacy-safe request/run
+correlation, Playwright coverage of the real local API/worker boundary, and explicit owned,
+fenced, retriable hard deletion across PostgreSQL and configured artifact storage.
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
-management, hard-delete/data-erasure
-workflow, Playwright E2E, and role-based admin authorization for diagnostics. The reader is
-currently shown only for a book whose current status is `complete`; previous publications are not
-yet rendered while a regeneration is running, failed, or cancelled. The web diagnostics UI is
-environment-gated and defaults off; the owned diagnostics API contract remains available.
+management, automatic retention scheduling, and role-based admin authorization for diagnostics.
+The reader is currently shown only for a book whose current status is `complete`; previous
+publications are not yet rendered while a regeneration is running, failed, or cancelled. The web
+diagnostics UI is environment-gated and defaults off; the owned diagnostics API contract remains
+available.
 
 Known limitations: `AgentService` remains larger than the individual stages it orchestrates;
 `BooksService` is now a compatibility facade over CRUD, asset, diagnostics, generation scheduling,
 and generation execution services; the legacy `GenerationJob` runtime and Prisma model have been
-removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts;
-local storage cannot serve separately deployed API/worker processes; console email does not
-deliver production mail; Polish mock story content currently falls back to English. Bounded story
-repair exists but is disabled by default and requires an explicitly configured repair-capable
-story provider and paid-call budget.
+removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts and
+must not be confused with the separate irreversible hard-delete workflow; local storage cannot
+serve separately deployed API/worker processes; console email does not deliver production mail;
+Polish mock story content currently falls back to English. Bounded story repair exists but is
+disabled by default and requires an explicitly configured repair-capable story provider and
+paid-call budget.
 
 ## Local run and validation
 
