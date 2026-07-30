@@ -610,8 +610,8 @@ once, end-to-end, against the real OpenAI API:
   "Smoke test output" below).
 - Exits non-zero with a clear error on any failed check. Not part of
   `pnpm --filter @book/api test` or CI — matches the existing
-  `smoke:pdf-storage` script's pattern (see
-  `apps/api/docs/pdf-storage-smoke-test.md`).
+  `smoke:cloud-storage` script's pattern (see
+  `apps/api/docs/cloud-storage-smoke-test.md`).
 
 **Known limitations**: this smoke test creates real rows against whatever
 database `DATABASE_URL` points at (nothing is cleaned up afterward — same as
@@ -2592,8 +2592,8 @@ a real bucket — cloud-driver behavior is covered by mocked-client unit tests
 (`image-asset-storage.claim-cleanup.spec.ts`,
 `pdf-storage.claim-cleanup.spec.ts`) only. Verifying against a real S3/R2
 bucket, if ever needed, is exactly the existing manual, explicitly-invoked
-`pnpm --filter @book/api smoke:pdf-storage` convention (see
-`docs/pdf-storage-smoke-test.md`) — never something CI or this service runs
+`pnpm --filter @book/api smoke:cloud-storage` convention (see
+`docs/cloud-storage-smoke-test.md`) — never something CI or this service runs
 on its own.
 
 ### Local-filesystem deletion hardening (TOCTOU defense)

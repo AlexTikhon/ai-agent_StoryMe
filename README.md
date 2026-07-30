@@ -131,8 +131,9 @@ OpenAI API (real image generation costs money per call — see the
 
 - `local` (default) — written to `apps/api/tmp/`, no external service needed.
 - `s3` / `r2` — requires the `PDF_STORAGE_*` credentials in `.env.example`
-  and is only exercised by the manual `smoke:pdf-storage` script, never by
-  the normal test suite. See `apps/api/docs/pdf-storage-smoke-test.md`.
+  and is exercised with image storage by the manual `smoke:cloud-storage`
+  script, never by the normal test suite. See
+  `apps/api/docs/cloud-storage-smoke-test.md`.
 
 The PDF preview endpoint is always `GET /api/books/:id/pdf/preview`, regardless
 of driver.
