@@ -1,0 +1,119 @@
+name: Staging Database Backup
+
+on:
+  schedule:
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Backup and verify restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.BACKUP_S3_REGION }}
+      BACKUP_S3_BUCKET: ${{ vars.BACKUP_S3_BUCKET }}
+      BACKUP_S3_ENDPOINT: ${{ vars.BACKUP_S3_ENDPOINT }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Validate backup configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in DATABASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+            BACKUP_S3_BUCKET BACKUP_S3_ENDPOINT AWS_DEFAULT_REGION; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured in the staging GitHub Environment."
+              exit 1
+            fi
+          done
+
+      - name: Create logical backup
+        id: backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          timestamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+          key="backups/postgres/storyme-staging-${timestamp}-${GITHUB_SHA::12}.dump"
+          dump="${RUNNER_TEMP}/storyme-staging.dump"
+
+          docker run --rm \
+            --env DATABASE_URL \
+            postgres:18 \
+            sh -ceu 'pg_dump "$DATABASE_URL" --format=custom --compress=9 --no-owner --no-acl' \
+            > "$dump"
+
+          test -s "$dump"
+          docker run --rm -i postgres:18 pg_restore --list < "$dump" > /dev/null
+          aws s3 cp "$dump" "s3://${BACKUP_S3_BUCKET}/${key}" \
+            --endpoint-url "$BACKUP_S3_ENDPOINT" \
+            --only-show-errors
+
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "dump=$dump" >> "$GITHUB_OUTPUT"
+
+      - name: Restore into disposable Postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          dump="${{ steps.backup.outputs.dump }}"
+          container="storyme-staging-restore-${GITHUB_RUN_ID}"
+
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach --name "$container" \
+            --env POSTGRES_PASSWORD=restore-check \
+            --env POSTGRES_DB=storyme_restore_check \
+            postgres:18 >/dev/null
+
+          for attempt in $(seq 1 30); do
+            if docker exec "$container" pg_isready --username postgres --dbname storyme_restore_check >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "::error::Disposable restore database did not become ready."
+              exit 1
+            fi
+            sleep 1
+          done
+
+          docker cp "$dump" "${container}:/tmp/storyme.dump"
+          docker exec --env PGPASSWORD=restore-check "$container" \
+            pg_restore \
+            --username postgres \
+            --dbname storyme_restore_check \
+            --no-owner \
+            --no-acl \
+            --exit-on-error \
+            /tmp/storyme.dump
+
+          table_count="$(
+            docker exec --env PGPASSWORD=restore-check "$container" \
+              psql --username postgres --dbname storyme_restore_check --tuples-only --no-align \
+              --command "select count(*) from information_schema.tables where table_schema = 'public';"
+          )"
+          if [ "${table_count:-0}" -lt 1 ]; then
+            echo "::error::Restore completed without any public tables."
+            exit 1
+          fi
+
+          {
+            echo "### Staging backup verified"
+            echo
+            echo "- Object: \`${{ steps.backup.outputs.key }}\`"
+            echo "- Restore target: disposable Postgres 18"
+            echo "- Restored public tables: ${table_count}"
+          } >> "$GITHUB_STEP_SUMMARY"

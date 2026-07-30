@@ -1,0 +1,117 @@
+name: Staging Health Monitor
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: staging-health-monitor
+  cancel-in-progress: true
+
+jobs:
+  health:
+    name: Check API health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: staging
+    env:
+      API_BASE_URL: ${{ vars.STAGING_API_BASE_URL }}
+      GH_TOKEN: ${{ github.token }}
+      ALERT_TITLE: '[staging] API health check is failing'
+    steps:
+      - name: Probe staging API
+        id: probe
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [[ ! "$API_BASE_URL" =~ ^https:// ]]; then
+            echo "::error::STAGING_API_BASE_URL must be an HTTPS origin."
+            exit 1
+          fi
+
+          response="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              --retry 2 \
+              --retry-all-errors \
+              --connect-timeout 5 \
+              --max-time 20 \
+              "${API_BASE_URL%/}/api/health"
+          )"
+          echo "$response" | jq -e '.status == "ok"' >/dev/null
+
+      - name: Open or update alert issue
+        if: steps.probe.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh label create staging-alert \
+            --repo "$GITHUB_REPOSITORY" \
+            --color D73A4A \
+            --description "Automated staging availability alert" \
+            --force
+
+          issue="$(
+            gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --label staging-alert \
+              --search "\"$ALERT_TITLE\" in:title" \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+          body="$(
+            cat <<EOF
+          The scheduled staging health probe failed.
+
+          - Endpoint: \`${API_BASE_URL%/}/api/health\`
+          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Checked at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          No credentials or response body are included.
+          EOF
+          )"
+
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$ALERT_TITLE" \
+              --label staging-alert \
+              --body "$body"
+          fi
+
+      - name: Close recovered alert
+        if: steps.probe.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          issues="$(
+            gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --label staging-alert \
+              --search "\"$ALERT_TITLE\" in:title" \
+              --json number \
+              --jq '.[].number'
+          )"
+          for issue in $issues; do
+            gh issue close "$issue" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "Staging health recovered at $(date -u +'%Y-%m-%dT%H:%M:%SZ')."
+          done
+
+      - name: Fail the workflow when unhealthy
+        if: steps.probe.outcome == 'failure'
+        shell: bash
+        run: exit 1

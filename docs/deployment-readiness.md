@@ -1,5 +1,10 @@
 # Deployment Readiness — Phase 5A/5B/5C/5D Audit
 
+> This is the historical readiness audit. StoryMe now has a real staging
+> environment; see [staging-operations.md](staging-operations.md) for the
+> selected providers, EU region, release process, backup/restore, monitoring,
+> and alerting.
+
 Audit of the current MVP's readiness to deploy outside a local dev machine.
 Phase 5A was an audit + minimal-cleanup pass; Phase 5B closed the one real
 code gap it found by adding `CloudImageAssetStorage`; Phase 5C actually built
@@ -7,8 +12,8 @@ and ran the Docker image end-to-end for the first time (previous phases had
 only inspected the Dockerfile statically) and fixed what that uncovered;
 Phase 5D audited the web app's deployment path (build/runtime assumptions,
 env handling, CORS alignment) and made the hosting decision that Phase 5C
-left open. Nothing here has been deployed to a real host, and no cloud
-provider, payments, or real auth were added.
+left open. At the time of this audit nothing had been deployed to a real
+host; that statement is no longer current for staging.
 
 ## Current deployability status
 

@@ -1,5 +1,9 @@
 # Private Demo Deployment Runbook
 
+> Historical/provider-neutral reference. The deployed staging topology,
+> current environment names, backup/restore procedure, and monitoring setup
+> are maintained in [staging-operations.md](staging-operations.md).
+
 A concrete, step-by-step guide to deploying the current MVP to a **private,
 internal** environment — not a general-purpose production deployment guide.
 For the underlying audit this runbook is based on (what's already
