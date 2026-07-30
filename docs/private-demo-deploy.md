@@ -299,6 +299,19 @@ pnpm --filter @book/api preflight:deploy --role=api
 pnpm --filter @book/api preflight:deploy --role=worker
 ```
 
+With the selected staging bucket credentials exported only in the operator's
+current shell, also verify both real storage drivers before deployment:
+
+```text
+pnpm --filter @book/api smoke:cloud-storage
+```
+
+This opt-in command uses a fresh `smoke-<uuid>` namespace, exercises PDF and
+image write/read/copy/delete behavior, and freshly verifies cleanup. It never
+runs in CI and must not be given production credentials without explicit
+operator authorization. See
+[`apps/api/docs/cloud-storage-smoke-test.md`](../apps/api/docs/cloud-storage-smoke-test.md).
+
 Run **both** roles — the api/worker env ownership split above means a
 combination that's valid for one role can be invalid for the other (e.g. a
 missing `RESEND_API_KEY` only fails the api role, since the worker never

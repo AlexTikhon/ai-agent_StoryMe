@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import type { ConfigService } from '@nestjs/config';
 import { UserRole } from '@book/types';
 import type { Env } from '../config/env.schema';
-import { TokenService, ACCESS_TOKEN_TTL_SECONDS } from './token.service';
+import {
+  TokenService,
+  ACCESS_TOKEN_TTL_SECONDS,
+  EMAIL_VERIFICATION_TOKEN_TTL_MS,
+  PASSWORD_RESET_TOKEN_TTL_MS,
+} from './token.service';
 
 function createConfig(overrides: Partial<Env> = {}): ConfigService<Env, true> {
   const values: Partial<Env> = {
@@ -111,12 +116,12 @@ describe('TokenService', () => {
     });
 
     it('sets a 24 hour expiry', () => {
-      const before = Date.now();
+      const now = new Date('2026-01-01T00:00:00.000Z').getTime();
+      const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now);
       const token = service.generateEmailVerificationToken();
-      const hours = (token.expiresAt.getTime() - before) / (60 * 60 * 1000);
 
-      expect(hours).toBeGreaterThan(23.9);
-      expect(hours).toBeLessThanOrEqual(24);
+      expect(token.expiresAt.getTime()).toBe(now + EMAIL_VERIFICATION_TOKEN_TTL_MS);
+      dateNow.mockRestore();
     });
 
     it('hash does not depend on JWT_REFRESH_SECRET (plain SHA-256, not HMAC)', () => {
@@ -141,12 +146,12 @@ describe('TokenService', () => {
     });
 
     it('sets a 30 minute expiry', () => {
-      const before = Date.now();
+      const now = new Date('2026-01-01T00:00:00.000Z').getTime();
+      const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now);
       const token = service.generatePasswordResetToken();
-      const minutes = (token.expiresAt.getTime() - before) / (60 * 1000);
 
-      expect(minutes).toBeGreaterThan(29.9);
-      expect(minutes).toBeLessThanOrEqual(30);
+      expect(token.expiresAt.getTime()).toBe(now + PASSWORD_RESET_TOKEN_TTL_MS);
+      dateNow.mockRestore();
     });
 
     it('hash does not depend on JWT_REFRESH_SECRET (plain SHA-256, not HMAC)', () => {

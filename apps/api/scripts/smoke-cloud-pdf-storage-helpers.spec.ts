@@ -1,5 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { maskCredential, maskSecret, formatConfigSummary } from './smoke-cloud-pdf-storage-helpers';
+import {
+  createSmokeBookId,
+  formatConfigSummary,
+  maskCredential,
+  maskSecret,
+  sameBytes,
+} from './smoke-cloud-pdf-storage-helpers';
+
+describe('smoke namespace and bytes', () => {
+  it('creates a fresh traversal-safe UUID-scoped book id', () => {
+    const first = createSmokeBookId();
+    const second = createSmokeBookId();
+
+    expect(first).toMatch(/^smoke-[0-9a-f-]{36}$/);
+    expect(second).toMatch(/^smoke-[0-9a-f-]{36}$/);
+    expect(second).not.toBe(first);
+  });
+
+  it('compares exact bytes', () => {
+    expect(sameBytes(Buffer.from('same'), Buffer.from('same'))).toBe(true);
+    expect(sameBytes(Buffer.from('same'), Buffer.from('different'))).toBe(false);
+  });
+});
 
 describe('maskCredential', () => {
   it('returns "(not set)" for an empty value', () => {
@@ -41,6 +63,7 @@ describe('formatConfigSummary', () => {
     const lines = formatConfigSummary(baseConfig);
     expect(lines.some((line) => line.includes('AWS S3'))).toBe(true);
     expect(lines.some((line) => line.includes('PDF_STORAGE_DRIVER=s3'))).toBe(true);
+    expect(lines.some((line) => line.includes('IMAGE_STORAGE_DRIVER=s3'))).toBe(true);
   });
 
   it('labels r2 driver as Cloudflare R2', () => {

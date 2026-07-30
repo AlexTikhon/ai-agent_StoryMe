@@ -1013,9 +1013,10 @@ still pass unchanged.
   implementation, selected at DI time in `apps/api/src/books/books.module.ts`
   via `createPdfStorage(process.env.PDF_STORAGE_DRIVER)`. It is genuinely
   ready to use in production today — just set `PDF_STORAGE_DRIVER=r2` (or
-  `s3`) plus the credential vars above. It's exercised by a manual smoke
-  script (`pnpm --filter @book/api smoke:pdf-storage`), not by the normal
-  test suite (which stays offline/local).
+  `s3`) plus the credential vars above. It is exercised together with image
+  storage by the collision-safe manual smoke script
+  (`pnpm --filter @book/api smoke:cloud-storage`), not by the normal test
+  suite (which stays offline/local).
 - `ImageAssetStorage` (`apps/api/src/images/image-asset-storage.ts`) mirrors
   the same interface shape _intentionally_ so a cloud-backed implementation
   could be dropped in later. **Phase 5B added that implementation**:
@@ -1034,9 +1035,9 @@ still pass unchanged.
   new bucket/credential vars were needed. Generated images are written under
   an `images/` key prefix in that same bucket
   (`images/<bookId>/<slot>.<ext>`), distinct from the `previews/` prefix PDFs
-  use. Like `CloudPdfStorage`, it's covered by tests that mock the S3 client
-  (`apps/api/src/images/image-asset-storage.spec.ts`) — no real S3/R2 network
-  access in the normal test suite.
+  use. Like `CloudPdfStorage`, it is covered by offline tests that mock the S3
+  client and by the opt-in real-bucket `smoke:cloud-storage` command. No
+  normal test or CI job makes S3/R2 network calls.
 
 ## Auth limitation note {#auth-limitation}
 
