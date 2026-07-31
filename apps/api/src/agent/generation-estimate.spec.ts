@@ -41,7 +41,7 @@ describe('generation estimate and hard limits', () => {
     });
   });
 
-  it('reports zero external cost for an all-mock run', () => {
+  it('reports logical mock work while preserving zero external cost', () => {
     const estimate = buildGenerationEstimate({
       kind: 'initial',
       pageCount: 12,
@@ -49,8 +49,10 @@ describe('generation estimate and hard limits', () => {
       repairEnabled: true,
     });
 
-    expect(estimate.maximumProviderCalls).toBe(0);
-    expect(estimate.imageCalls).toBe(0);
+    expect(estimate.maximumProviderCalls).toBe(17);
+    expect(estimate.storyCalls).toBe(1);
+    expect(estimate.characterProfileCalls).toBe(1);
+    expect(estimate.imageCalls).toBe(15);
     expect(estimate.estimatedCostUsd).toEqual({
       minimum: 0,
       maximum: 0,

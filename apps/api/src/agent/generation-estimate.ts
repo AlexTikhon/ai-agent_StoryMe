@@ -41,9 +41,12 @@ export function buildGenerationEstimate(input: {
   configuration?: GenerationEstimateConfiguration;
 }): GenerationEstimateDto {
   const planned = {
-    storyCalls: input.providers.story === 'openai' ? 1 : 0,
-    characterProfileCalls: input.providers.characterProfile === 'openai' ? 1 : 0,
-    imageCalls: input.providers.image === 'openai' ? input.pageCount + 3 : 0,
+    // Logical provider-boundary work is useful operationally in both modes.
+    // Mock calls have zero external cost, but reporting them as zero work
+    // made estimates impossible to compare with an actual local run.
+    storyCalls: 1,
+    characterProfileCalls: 1,
+    imageCalls: input.pageCount + 3,
     repairAllowanceCalls: input.providers.story === 'openai' && input.repairEnabled ? 1 : 0,
   };
   const reused = {

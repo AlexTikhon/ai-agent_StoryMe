@@ -87,7 +87,7 @@ describe('Page image revision constraints (real Postgres)', () => {
     ).rejects.toThrow();
   });
 
-  it('allows multiple unconfirmed quotes but rejects non-positive cost and version values', async () => {
+  it('allows zero-credit home quotes and rejects negative cost or non-positive versions', async () => {
     const { user, book } = await createBook();
     await prisma.pageImageRevision.create({
       data: revisionData(user.id, book.id, book.updatedAt, PageImageRevisionStatus.quoted),
@@ -97,12 +97,20 @@ describe('Page image revision constraints (real Postgres)', () => {
         data: revisionData(user.id, book.id, book.updatedAt, PageImageRevisionStatus.quoted),
       }),
     ).resolves.toBeDefined();
-
     await expect(
       prisma.pageImageRevision.create({
         data: {
           ...revisionData(user.id, book.id, book.updatedAt, PageImageRevisionStatus.quoted),
           costCredits: 0,
+        },
+      }),
+    ).resolves.toBeDefined();
+
+    await expect(
+      prisma.pageImageRevision.create({
+        data: {
+          ...revisionData(user.id, book.id, book.updatedAt, PageImageRevisionStatus.quoted),
+          costCredits: -1,
         },
       }),
     ).rejects.toThrow();
