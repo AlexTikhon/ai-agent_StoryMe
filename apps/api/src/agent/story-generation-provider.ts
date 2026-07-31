@@ -14,6 +14,7 @@ import {
   type QualityReport,
   type StoryPlan,
 } from '@book/types';
+import { MockFailureController } from '../config/mock-failure';
 
 /** Literal instructions every page/cover/back-cover illustration prompt must include (item 6/7). */
 export const NO_TEXT_IN_IMAGE_INSTRUCTION = 'No text in image.';
@@ -910,7 +911,10 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
   readonly promptVersion = 'mock-story-v1';
   readonly providerName = 'mock' as const;
 
+  constructor(private readonly failures?: MockFailureController) {}
+
   async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
+    await this.failures?.before('story');
     const { bookId, childName, childAge, theme, language, educationalMessage, characterProfile } =
       input;
     const pageCount = resolveTargetPageCount(input.pageCount);

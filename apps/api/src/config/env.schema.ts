@@ -105,6 +105,12 @@ export const envSchema = z
     // invalid value is still caught at boot, just one layer down from here.
     STORY_GENERATION_PROVIDER: z.string().optional(),
     IMAGE_GENERATION_PROVIDER: z.string().optional(),
+    // Explicit local/test-only deterministic failure injection. The enable
+    // flag is required; production activation is rejected below.
+    MOCK_FAILURES_ENABLED: z.enum(['true', 'false']).default('false'),
+    MOCK_FAILURE_STAGE: z.enum(['story', 'character', 'image']).optional(),
+    MOCK_FAILURE_PAGE: z.coerce.number().int().positive().optional(),
+    MOCK_STAGE_DELAY_MS: z.coerce.number().int().nonnegative().max(60_000).default(0),
     // Phase 5B bounded repair. Disabled by default; when enabled the story
     // provider may make at most one additional typed call after deterministic
     // review fails, and the potential paid call is budgeted before scheduling.
@@ -283,6 +289,13 @@ export const envSchema = z
     GOOGLE_CALLBACK_URL: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
+    if (env.NODE_ENV === 'production' && env.MOCK_FAILURES_ENABLED === 'true') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Mock failure injection is forbidden when NODE_ENV=production',
+        path: ['MOCK_FAILURES_ENABLED'],
+      });
+    }
     if (env.PRODUCT_MODE !== env.NEXT_PUBLIC_PRODUCT_MODE) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

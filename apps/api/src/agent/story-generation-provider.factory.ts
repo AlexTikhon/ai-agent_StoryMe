@@ -5,6 +5,7 @@ import {
 } from './story-generation-provider';
 import { OpenAIStoryGenerationProvider } from './openai-story-generation-provider';
 import { readOpenAIRetryConfig } from '../common/openai-request';
+import { MockFailureController, readMockFailureConfig } from '../config/mock-failure';
 
 export type StoryGenerationProviderName = 'mock' | 'openai';
 
@@ -24,7 +25,7 @@ export function createStoryGenerationProvider(
 
   if (!raw || raw === 'mock') {
     logger.log('Story generation provider selected: mock');
-    return new MockStoryGenerationProvider();
+    return new MockStoryGenerationProvider(new MockFailureController(readMockFailureConfig(env)));
   }
 
   if (raw !== 'openai') {

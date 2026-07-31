@@ -53,10 +53,14 @@ export default defineConfig({
         NODE_ENV: 'test',
         PORT: String(apiPort),
         AUTH_MODE: 'jwt',
+        // The suite intentionally logs the same synthetic owner in for each
+        // isolated journey; keep the test-only budget above the test count.
+        AUTH_RATE_LIMIT_MAX_ATTEMPTS: '100',
         ENABLE_GENERATION_WORKER: 'true',
         ALLOWED_ORIGINS: webBaseUrl,
         WEB_APP_URL: webBaseUrl,
         STORY_GENERATION_PROVIDER: 'mock',
+        CHARACTER_PROFILE_PROVIDER: 'mock',
         IMAGE_GENERATION_PROVIDER: 'mock',
         EMAIL_PROVIDER: 'console',
         STRIPE_BILLING_ENABLED: 'false',
@@ -64,6 +68,10 @@ export default defineConfig({
         NEXT_PUBLIC_PRODUCT_MODE: 'home',
         PDF_STORAGE_DRIVER: 'local',
         IMAGE_STORAGE_DRIVER: 'local',
+        MOCK_FAILURES_ENABLED: 'true',
+        // Deterministic, bounded provider-stage delay makes the old-publication
+        // read window observable without sleeps or paid/network providers.
+        MOCK_STAGE_DELAY_MS: '125',
       },
     },
     {

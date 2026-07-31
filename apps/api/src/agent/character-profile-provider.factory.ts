@@ -5,6 +5,7 @@ import {
 } from './character-profile-provider';
 import { OpenAICharacterProfileProvider } from './openai-character-profile-provider';
 import { readOpenAIRetryConfig } from '../common/openai-request';
+import { MockFailureController, readMockFailureConfig } from '../config/mock-failure';
 
 export type CharacterProfileProviderName = 'mock' | 'openai';
 
@@ -26,7 +27,7 @@ export function createCharacterProfileProvider(
 
   if (!raw || raw === 'mock') {
     logger.log('Character profile provider selected: mock');
-    return new MockCharacterProfileProvider();
+    return new MockCharacterProfileProvider(new MockFailureController(readMockFailureConfig(env)));
   }
 
   if (raw !== 'openai') {

@@ -175,6 +175,26 @@ async function resetFixtures(seed: boolean): Promise<void> {
           errorMessage: 'Disposable initial failure',
         },
       });
+      for (const [index, language, theme, educationalMessage] of [
+        [21, 'en', 'A synthetic library adventure', 'Practice patient curiosity'],
+        [22, 'ru', 'Синтетическое путешествие по библиотеке', 'Учиться терпению'],
+        [23, 'pl', 'Syntetyczna przygoda w bibliotece', 'Ćwiczyć cierpliwość'],
+      ] as const) {
+        await prisma.book.create({
+          data: {
+            id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+            userId: user.id,
+            status: BookStatus.created,
+            title: `Synthetic ${language.toUpperCase()} request`,
+            childName: 'Sample Explorer',
+            childAge: 7,
+            language,
+            theme,
+            educationalMessage,
+            pageCount: 4,
+          },
+        });
+      }
     } else {
       // The API/worker webServer is still alive while Playwright runs global
       // teardown and may recreate a BullMQ metadata key after the initial

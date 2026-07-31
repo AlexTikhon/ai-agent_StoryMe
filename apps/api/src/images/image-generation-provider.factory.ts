@@ -9,6 +9,7 @@ import {
   OpenAIImageRateLimiter,
   readOpenAIImageRateLimiterConfig,
 } from './openai-image-rate-limiter';
+import { MockFailureController, readMockFailureConfig } from '../config/mock-failure';
 
 export type ImageGenerationProviderName = 'mock' | 'openai';
 
@@ -36,7 +37,7 @@ export function createImageGenerationProvider(
 
   if (!raw || raw === 'mock') {
     logger.log('Image generation provider selected: mock');
-    return new MockImageGenerationProvider();
+    return new MockImageGenerationProvider(new MockFailureController(readMockFailureConfig(env)));
   }
 
   if (raw !== 'openai') {

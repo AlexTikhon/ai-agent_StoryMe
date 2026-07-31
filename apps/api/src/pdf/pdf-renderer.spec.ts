@@ -471,35 +471,53 @@ describe('computeFittedFontSize', () => {
 // assert the embedded font is actually used and that non-Latin text renders
 // without crashing.
 
-describe('renderStorybookPdf Cyrillic / Unicode text', () => {
-  it('renders a Russian cover and page without throwing', async () => {
+describe('renderStorybookPdf EN/RU/PL Unicode release coverage', () => {
+  it.each([
+    {
+      language: 'English',
+      title: 'Morgan’s Bright Adventure',
+      pageText: 'Upper and lower case: ABC XYZ / abc xyz.\n“Ready?” — Yes!',
+    },
+    {
+      language: 'Russian',
+      title: 'Ёжик и Приключение МАЙИ',
+      pageText: 'АБВГД ЁЖЗ / абвгд ёжз.\n«Готова?» — Да!',
+    },
+    {
+      language: 'Polish',
+      title: 'ŻÓŁĆ i ĄĆĘŁŃÓŚŹŻ',
+      pageText: 'Ą Ć Ę Ł Ń Ó Ś Ź Ż / ą ć ę ł ń ó ś ź ż.\n„Gotowa?” — Tak!',
+    },
+  ])('renders a non-empty, correctly paged $language document', async ({ title, pageText }) => {
     const layout = makeLayout([
       makeCoverEntry({
         textBlock: {
-          box: { x: 180, y: 1620, width: 2040, height: 600 },
-          text: 'Приключение Майи',
-          fontFamily: 'Fraunces',
-          fontSize: 32,
-          lineHeight: 1.2,
-          align: 'center',
-          verticalAlign: 'bottom',
-          color: '#FFFFFF',
+          ...makeCoverEntry().textBlock!,
+          text: title,
         },
       }),
       {
         ...makePageEntry(1),
         textBlock: {
           ...makePageEntry(1).textBlock!,
-          text: 'Майя нашла волшебный лес и подружилась с лисой.',
+          text: pageText,
         },
       },
+      makeBackCoverEntry(),
     ]);
 
-    const buf = await renderStorybookPdf(layout);
+    expect(layout.entries[0]?.textBlock?.text).toBe(title);
+    expect(layout.entries[1]?.textBlock?.text).toBe(pageText);
+    expect(`${title}${pageText}`).not.toContain('�');
 
+    const buf = await renderStorybookPdf(layout);
+    const raw = buf.toString('latin1');
     expect(buf.slice(0, 5).toString('ascii')).toBe('%PDF-');
-    const tail = buf.slice(-10).toString('ascii');
-    expect(tail).toContain('%%EOF');
+    expect(buf.slice(-10).toString('ascii')).toContain('%%EOF');
+    expect(countPdfPages(buf)).toBe(layout.entries.length);
+    expect(buf.length).toBeGreaterThan(5_000);
+    expect(raw).toContain('FontFile2');
+    expect(raw).toContain('NotoSans');
   });
 
   it('embeds the Noto Sans Unicode font (not a built-in WinAnsi-only font)', async () => {
@@ -527,21 +545,6 @@ describe('renderStorybookPdf Cyrillic / Unicode text', () => {
     // ...and none of PDFKit's built-in WinAnsi-only fonts should be used anymore.
     expect(raw).not.toContain('/BaseFont /Helvetica');
     expect(raw).not.toContain('/BaseFont /Times-Roman');
-  });
-
-  it('does not crash on Polish diacritics either', async () => {
-    const layout = makeLayout([
-      {
-        ...makePageEntry(1),
-        textBlock: {
-          ...makePageEntry(1).textBlock!,
-          text: 'Zając and źrebię: ąćęłńóśźż ĄĆĘŁŃÓŚŹŻ',
-        },
-      },
-    ]);
-
-    const buf = await renderStorybookPdf(layout);
-    expect(buf.slice(0, 5).toString('ascii')).toBe('%PDF-');
   });
 });
 

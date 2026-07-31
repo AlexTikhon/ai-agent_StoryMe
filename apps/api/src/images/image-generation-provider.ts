@@ -6,6 +6,7 @@ import {
 } from '@book/types';
 import { generateMockImagePng } from './mock-image-producer';
 import type { ImageAssetContentType } from './image-asset-storage';
+import { MockFailureController } from '../config/mock-failure';
 
 /**
  * A generated, stylized character-sheet reference image (never the original
@@ -127,7 +128,10 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
   readonly providerName = 'mock' as const;
   readonly promptVersion = 'mock-image-v1';
 
+  constructor(private readonly failures?: MockFailureController) {}
+
   async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {
+    await this.failures?.before('image', input.entry.pageNumber);
     return {
       buffer: generateMockImagePng(input.entry.seed),
       contentType: 'image/png',
@@ -135,6 +139,7 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
   }
 
   async generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput> {
+    await this.failures?.before('image');
     return {
       buffer: generateMockImagePng(`${input.bookId}:character_sheet:0`),
       contentType: 'image/png',
