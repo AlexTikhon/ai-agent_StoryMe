@@ -16,6 +16,11 @@ export default defineConfig({
     include: ['test/integration/**/*.integration.spec.ts'],
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // Integration files share one disposable database, including the two
+    // singleton RecoveryLease rows. Running files concurrently lets one
+    // file's cleanup invalidate another file's persisted lease assertions.
+    // Keep concurrency inside each test where it is explicitly barrier-driven.
+    fileParallelism: false,
   },
   resolve: {
     alias: {

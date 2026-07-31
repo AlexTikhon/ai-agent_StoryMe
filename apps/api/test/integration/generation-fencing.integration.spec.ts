@@ -644,6 +644,24 @@ describe('Generation pipeline fencing (real Postgres)', () => {
       stillHoldsLease(generation: number): Promise<boolean>;
     };
 
+    type LeaseState = {
+      lease_generation: number;
+      has_owner: boolean;
+      is_live: boolean;
+    };
+
+    async function readPersistedLeaseState(): Promise<LeaseState> {
+      const [state] = await prisma.$queryRaw<LeaseState[]>`
+        SELECT lease_generation,
+               lease_owner IS NOT NULL AS has_owner,
+               lease_expires_at > NOW() AS is_live
+        FROM recovery_leases
+        WHERE id = 'generation_run_recovery'
+      `;
+      if (!state) throw new Error('generation_run_recovery singleton row is missing');
+      return state;
+    }
+
     let prismaA: PrismaService;
     let prismaB: PrismaService;
 
@@ -700,6 +718,14 @@ describe('Generation pipeline fencing (real Postgres)', () => {
 
       const generationA = await serviceA.acquireLease(60_000);
       expect(generationA).not.toBeNull();
+      expect(
+        await readPersistedLeaseState(),
+        'leader A must be durably live after acquire',
+      ).toEqual({
+        lease_generation: generationA,
+        has_owner: true,
+        is_live: true,
+      });
       expect(await serviceA.stillHoldsLease(generationA!)).toBe(true);
 
       // Deterministically force the lease to look expired — using
@@ -709,10 +735,26 @@ describe('Generation pipeline fencing (real Postgres)', () => {
         UPDATE recovery_leases SET lease_expires_at = NOW() - interval '1 second'
         WHERE id = 'generation_run_recovery'
       `;
+      expect(
+        await readPersistedLeaseState(),
+        'forced expiry must be visible in PostgreSQL before leader B acquires',
+      ).toEqual({
+        lease_generation: generationA,
+        has_owner: true,
+        is_live: false,
+      });
 
       const generationB = await serviceB.acquireLease(60_000);
 
       expect(generationB).toBe(generationA! + 1);
+      expect(
+        await readPersistedLeaseState(),
+        'leader B must durably own the next generation',
+      ).toEqual({
+        lease_generation: generationB,
+        has_owner: true,
+        is_live: true,
+      });
       // (d)/(e)-equivalent for recovery leadership: the former leader's
       // generation-fenced check now fails — it must never continue issuing
       // recovery writes, even though its own in-process wall-clock check
