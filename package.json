@@ -19,7 +19,10 @@
     "test:e2e": "pnpm --filter @book/web test:e2e",
     "migrate:deploy": "pnpm --filter @book/api prisma:migrate:deploy",
     "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,md}\" --ignore-path .gitignore",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,md}\" --ignore-path .gitignore"
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,md}\" --ignore-path .gitignore",
+    "format:changed": "node scripts/changed-files.mjs format",
+    "lint:changed": "node scripts/changed-files.mjs lint",
+    "quality:changed:test": "node --test scripts/changed-files.test.mjs"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.5.0",
