@@ -96,7 +96,7 @@ const config: Config = {
 
         // Background & surface tokens
         bg: {
-          base: '#FDFCFB', // Main page background (slightly warm white)
+          base: 'transparent', // Page shells reveal the shared application background
           surface: '#FFFFFF', // Cards, modals, elevated surfaces
           subtle: '#F5F4F1', // Inset panels, striped rows
           muted: '#ECEAE5', // Hover on subtle

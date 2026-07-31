@@ -14,7 +14,7 @@
   --color-secondary:      #F5A800;
 
   /* Backgrounds */
-  --color-bg-base:    #FDFCFB;
+  --color-bg-base:    #F7F4FF;
   --color-bg-surface: #FFFFFF;
   --color-bg-subtle:  #F5F4F1;
 
@@ -57,7 +57,13 @@
   }
 
   body {
-    @apply bg-bg-base text-text-primary font-body;
+    @apply text-text-primary font-body;
+    background-color: var(--color-bg-base);
+    background-image: url('/images/story-background.png');
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-attachment: fixed;
     min-height: 100dvh;
   }
 
@@ -95,6 +101,11 @@
       transition-duration: 0.01ms !important;
     }
   }
+}
+
+/* Page shells stay transparent so the shared application background remains visible. */
+.bg-bg-base {
+  background-color: transparent;
 }
 
 /* ── Component utility classes ───────────────────────────────────────────── */
