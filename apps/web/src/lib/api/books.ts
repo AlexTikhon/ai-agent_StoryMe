@@ -1,5 +1,6 @@
 import type {
   BookDto,
+  BookDeletionRequestDto,
   BooksPageDto,
   CancelGenerationResponse,
   CreatePageImageRegenerationQuoteInput,
@@ -97,7 +98,11 @@ export const booksApi = {
   cancelGeneration: (id: string): Promise<CancelGenerationResponse> =>
     apiFetch(`/books/${id}/cancel`, { method: 'POST' }),
 
-  remove: (id: string): Promise<void> => apiFetch(`/books/${id}`, { method: 'DELETE' }),
+  remove: (id: string): Promise<BookDeletionRequestDto> =>
+    apiFetch(`/books/${id}/hard-delete`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmation: id }),
+    }),
 
   getGenerationDiagnostics: (id: string): Promise<GenerationDiagnosticsDto> =>
     apiFetch(`/books/${id}/generation-diagnostics`),

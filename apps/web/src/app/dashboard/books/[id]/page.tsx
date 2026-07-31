@@ -123,7 +123,7 @@ export default function BookDetailPage() {
   };
 
   const handleDelete = async () => {
-    if (!window.confirm('Delete this book? This cannot be undone.')) return;
+    if (!window.confirm('Permanently delete this book? This cannot be undone.')) return;
     setDeleting(true);
     try {
       await booksApi.remove(id);

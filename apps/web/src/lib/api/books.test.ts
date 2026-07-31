@@ -260,16 +260,30 @@ describe('booksApi', () => {
   });
 
   describe('remove()', () => {
-    it('sends DELETE /books/:id and returns undefined on 204', async () => {
-      vi.mocked(fetch).mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+    it('requests permanent deletion with the exact book-id confirmation', async () => {
+      const deletion = {
+        id: '11111111-1111-4111-8111-111111111111',
+        bookId: 'book-1',
+        status: 'requested',
+        attemptCount: 0,
+        deletedArtifactCount: 0,
+        remainingArtifactCount: 0,
+        lastErrorCode: null,
+        requestedAt: '2026-07-31T00:00:00.000Z',
+        completedAt: null,
+      };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(deletion));
 
       const result = await booksApi.remove('book-1');
 
       expect(fetch).toHaveBeenCalledOnce();
       const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
-      expect(url).toBe('http://localhost:4000/api/books/book-1');
-      expect(init.method).toBe('DELETE');
-      expect(result).toBeUndefined();
+      expect(url).toBe('http://localhost:4000/api/books/book-1/hard-delete');
+      expect(init).toMatchObject({
+        method: 'POST',
+        body: JSON.stringify({ confirmation: 'book-1' }),
+      });
+      expect(result).toEqual(deletion);
     });
   });
 

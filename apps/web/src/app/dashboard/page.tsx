@@ -40,7 +40,7 @@ export default function DashboardPage() {
   }, [loadBooks]);
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Delete this book? This cannot be undone.')) return;
+    if (!window.confirm('Permanently delete this book? This cannot be undone.')) return;
     setDeletingId(id);
     try {
       await booksApi.remove(id);
