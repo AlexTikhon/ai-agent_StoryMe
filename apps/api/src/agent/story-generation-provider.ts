@@ -21,13 +21,23 @@ export const PRESERVE_APPEARANCE_INSTRUCTION = "Do not change the main character
 
 /** Builds the consistency block appended to every page/cover/back-cover illustration prompt from a book's CharacterProfile. */
 export function buildCharacterConsistencyBlock(characterProfile: CharacterProfile): string {
+  const lockedDescription =
+    characterProfile.lockedVisualDescription ??
+    [
+      characterProfile.consistencyPrompt,
+      `Hairstyle: ${characterProfile.hairDescription}.`,
+      `Face: ${characterProfile.faceDescription}.`,
+      `Outfit: ${characterProfile.outfitDescription}.`,
+      `Approximate age: ${characterProfile.age}.`,
+      `Illustration style: ${characterProfile.illustrationStyle}.`,
+    ].join(' ');
+  const negativeConstraints =
+    characterProfile.negativeConstraints && characterProfile.negativeConstraints.length > 0
+      ? `Avoid: ${characterProfile.negativeConstraints.join(', ')}.`
+      : '';
   return [
-    characterProfile.consistencyPrompt,
-    `Hairstyle: ${characterProfile.hairDescription}.`,
-    `Face: ${characterProfile.faceDescription}.`,
-    `Outfit: ${characterProfile.outfitDescription}.`,
-    `Approximate age: ${characterProfile.age}.`,
-    `Illustration style: ${characterProfile.illustrationStyle}.`,
+    lockedDescription,
+    negativeConstraints,
     NO_TEXT_IN_IMAGE_INSTRUCTION,
     PRESERVE_APPEARANCE_INSTRUCTION,
   ].join(' ');
@@ -121,16 +131,15 @@ const PAGES_PER_CHAPTER = 2;
 
 /**
  * Local/fallback generation currently ships full localized templates for
- * English and Russian only — the two languages this pipeline is required to
- * support correctly today. Any other `language` value (e.g. 'pl') falls back
- * to English rather than silently mixing in untranslated content; extend
+ * English, Russian, and Polish. Any other `language` value falls back to
+ * English rather than silently mixing in untranslated content; extend
  * CHAPTER_TEMPLATES_BY_LANGUAGE and STRINGS_BY_LANGUAGE together to add a
  * new language.
  */
-export type TemplateLanguage = 'en' | 'ru';
+export type TemplateLanguage = 'en' | 'ru' | 'pl';
 
 export function resolveTemplateLanguage(language: string): TemplateLanguage {
-  return language === 'ru' ? 'ru' : 'en';
+  return language === 'ru' || language === 'pl' ? language : 'en';
 }
 
 /**
@@ -146,7 +155,9 @@ export type ThemeCategory = 'sea_trip' | 'generic';
 const SEA_TRIP_THEME_PATTERN = /(море|пляж|побережь|\bsea\b|beach|ocean|coast)/i;
 
 export function resolveThemeCategory(theme: string): ThemeCategory {
-  return SEA_TRIP_THEME_PATTERN.test(theme) ? 'sea_trip' : 'generic';
+  return SEA_TRIP_THEME_PATTERN.test(theme) || /(morze|plaża|wybrzeże)/i.test(theme)
+    ? 'sea_trip'
+    : 'generic';
 }
 
 /**
@@ -213,6 +224,63 @@ const CHAPTER_TEMPLATES_EN: ChapterTemplateBuilder[] = [
     emotionalArc: 'gratitude and joy',
     keyEvents: [`${name} thanks new friends`, 'Everyone celebrates together'],
     illustrableScenes: [`${name} celebrating under twinkling stars with friends`],
+  }),
+];
+
+const CHAPTER_TEMPLATES_PL: ChapterTemplateBuilder[] = [
+  (name) => ({
+    chapterNumber: 1,
+    title: 'Magiczne odkrycie',
+    summary: `${name} znajduje coś niezwykłego i postanawia odkryć jego tajemnicę.`,
+    setting: 'Ogród za domem',
+    emotionalArc: 'od ciekawości do zachwytu',
+    keyEvents: [`${name} zauważa migoczące światło`, 'Pojawia się przyjazne stworzenie'],
+    illustrableScenes: [`${name} odkrywa migoczące światło w ogrodzie`],
+  }),
+  (name) => ({
+    chapterNumber: 2,
+    title: 'Początek wyprawy',
+    summary: `${name} wyrusza w drogę i odważnie pokonuje pierwszą przeszkodę.`,
+    setting: 'Zaczarowany las',
+    emotionalArc: 'od niepewności do odwagi',
+    keyEvents: [`${name} wraz z przyjacielem wchodzi do lasu`, 'Wspólnie rozwiązują problem'],
+    illustrableScenes: [`${name} i przyjaciel idą między kolorowymi grzybami`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 3,
+    title: 'Powrót do domu',
+    summary: `${name} wraca do domu z ważną lekcją, którą przyniosła przygoda: ${theme}.`,
+    setting: 'Przytulny dom',
+    emotionalArc: 'duma i szczęście',
+    keyEvents: [`${name} opowiada rodzinie o wyprawie`, 'Nadchodzi ostatnia magiczna chwila'],
+    illustrableScenes: [`${name} z uśmiechem przytula swoją rodzinę`],
+  }),
+  (name) => ({
+    chapterNumber: 4,
+    title: 'Nowa przyjaźń',
+    summary: `${name} poznaje kogoś nowego i uczy się współpracy.`,
+    setting: 'Słoneczna łąka',
+    emotionalArc: 'od nieśmiałości do przyjaźni',
+    keyEvents: [`${name} dzieli się czymś z dobroci serca`, 'Rodzi się wzajemne zaufanie'],
+    illustrableScenes: [`${name} dzieli się smakołykiem z nowym przyjacielem na łące`],
+  }),
+  (name, theme) => ({
+    chapterNumber: 5,
+    title: 'Wielkie wyzwanie',
+    summary: `${name} mierzy się z większym wyzwaniem związanym z tematem „${theme}” i nie poddaje się.`,
+    setting: 'Kręta rzeka',
+    emotionalArc: 'od zmartwienia do wytrwałości',
+    keyEvents: [`${name} napotyka przeszkodę`, `${name} próbuje ponownie i odnosi sukces`],
+    illustrableScenes: [`${name} z determinacją przeprawia się przez rzekę`],
+  }),
+  (name) => ({
+    chapterNumber: 6,
+    title: 'Radosne świętowanie',
+    summary: `${name} świętuje z wszystkimi, którzy pomogli podczas wyprawy.`,
+    setting: 'Święto pod gwiazdami',
+    emotionalArc: 'wdzięczność i radość',
+    keyEvents: [`${name} dziękuje nowym przyjaciołom`, 'Wszyscy razem świętują'],
+    illustrableScenes: [`${name} świętuje z przyjaciółmi pod migoczącymi gwiazdami`],
   }),
 ];
 
@@ -444,8 +512,10 @@ function chapterTemplatesFor(
   category: ThemeCategory,
 ): ChapterTemplateBuilder[] {
   if (category === 'sea_trip') {
+    if (lang === 'pl') return CHAPTER_TEMPLATES_PL;
     return lang === 'ru' ? CHAPTER_TEMPLATES_RU_SEA_TRIP : CHAPTER_TEMPLATES_EN_SEA_TRIP;
   }
+  if (lang === 'pl') return CHAPTER_TEMPLATES_PL;
   return lang === 'ru' ? CHAPTER_TEMPLATES_RU : CHAPTER_TEMPLATES_EN;
 }
 
@@ -486,6 +556,8 @@ interface LocalizedStrings {
   moralSentence: (name: string, learningGoal: string) => string;
   /** Cycled by page index for non-first, non-last pages so consecutive pages don't open with an identical filler sentence. */
   middleConnectors: Array<(name: string) => string>;
+  sceneFallback: (partNumber: number, chapterTitle: string) => string;
+  illustrationPrompt: (scene: string, setting: string) => string;
 }
 
 const STRINGS_BY_LANGUAGE: Record<TemplateLanguage, LocalizedStrings> = {
@@ -516,6 +588,9 @@ const STRINGS_BY_LANGUAGE: Record<TemplateLanguage, LocalizedStrings> = {
       (name) => `With a steady heart, ${name} kept going.`,
       () => `Step by step, the adventure kept unfolding.`,
     ],
+    sceneFallback: (partNumber, chapterTitle) => `Scene ${partNumber} of ${chapterTitle}`,
+    illustrationPrompt: (scene, setting) =>
+      `Children's book illustration: ${scene}, ${setting}, bright and colorful, watercolor style`,
   },
   ru: {
     title: (name, titleTheme) => `Приключение ${toGenitiveRuFemName(name)}: ${titleTheme}`,
@@ -546,6 +621,39 @@ const STRINGS_BY_LANGUAGE: Record<TemplateLanguage, LocalizedStrings> = {
       (name) => `Не теряя присутствия духа, ${name} продолжала путь.`,
       () => `Шаг за шагом приключение продолжало раскрываться.`,
     ],
+    sceneFallback: (partNumber, chapterTitle) => `Сцена ${partNumber} главы «${chapterTitle}»`,
+    illustrationPrompt: (scene, setting) =>
+      `Иллюстрация для детской книги: ${scene}, ${setting}, яркая и красочная, акварельный стиль`,
+  },
+  pl: {
+    title: (name, titleTheme) => `${name} i przygoda: ${titleTheme}`,
+    subtitle: (theme, name) => `Opowieść o „${theme}” dla ${name}`,
+    educationalMessageDefault: () =>
+      `Ta opowieść uczy nas odwagi, życzliwości i wiary we własne możliwości.`,
+    openingHook: (name) =>
+      `Pewnego słonecznego poranka ${name} odkrywa coś magicznego, co odmienia cały dzień.`,
+    resolution: (name) =>
+      `${name} wraca do domu z sercem pełnym radości i wie już, że każda przygoda zaczyna się od jednego odważnego kroku.`,
+    backCoverMessage: (name) =>
+      `Koniec! Mamy nadzieję, że ta przygoda sprawiła Ci radość, ${name}. Odkrywaj świat i nigdy nie przestawaj marzyć!`,
+    pageTitle: (chapterTitle, partNumber) => `${chapterTitle} — część ${partNumber}`,
+    chapterOpeners: [
+      (summary, scene) => `${summary} Wszystko zaczyna się właśnie tutaj: ${scene}.`,
+      (summary, scene) => `${summary} W tym miejscu rozpoczyna się kolejny rozdział: ${scene}.`,
+      (summary, scene) => `${summary} Nagle wszystko zaczyna się zmieniać: ${scene}.`,
+    ],
+    pageLeadOtherInChapter: (emotionalArc) =>
+      `Opowieść toczy się dalej, a w powietrzu czuć ${emotionalArc}.`,
+    moralSentence: (name, learningGoal) => `${name} dobrze już wie: ${learningGoal}`,
+    middleConnectors: [
+      (name) => `Po drodze ${name} czuje rosnącą ciekawość.`,
+      (name) => `Właśnie wtedy ${name} dostrzega coś nowego.`,
+      (name) => `Z odwagą w sercu ${name} rusza dalej.`,
+      () => `Krok po kroku przygoda rozwija się dalej.`,
+    ],
+    sceneFallback: (partNumber, chapterTitle) => `Scena ${partNumber} rozdziału „${chapterTitle}”`,
+    illustrationPrompt: (scene, setting) =>
+      `Ilustracja do książki dla dzieci: ${scene}, ${setting}, jasne i barwne kolory, styl akwarelowy`,
   },
 };
 
@@ -591,7 +699,7 @@ function buildPagePlan(
     for (let pageInChapter = 1; pageInChapter <= pagesInChapter; pageInChapter++) {
       const scene =
         chapter.illustrableScenes[pageInChapter - 1] ??
-        `Scene ${pageInChapter} of ${chapter.title}`;
+        strings.sceneFallback(pageInChapter, chapter.title);
       pages.push({
         pageNumber: pageNumber++,
         chapterIndex,
@@ -604,10 +712,7 @@ function buildPagePlan(
                 scene,
               )
             : strings.pageLeadOtherInChapter(chapter.emotionalArc),
-        // Illustration prompts stay in English regardless of story language —
-        // they are internal metadata for a future image-generation model, not
-        // reader-facing story text (see buildIllustrationPlan below).
-        illustrationPrompt: `Children's book illustration: ${scene}, ${chapter.setting}, bright and colorful, watercolor style`,
+        illustrationPrompt: strings.illustrationPrompt(scene, chapter.setting),
         learningGoal: storyPlan.educationalMessage,
       });
     }

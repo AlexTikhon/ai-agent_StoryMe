@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth/auth-context';
 import { authApi } from '@/lib/api/auth';
 import { creditsApi } from '@/lib/api/credits';
 import { CREDITS_UPDATED_EVENT } from '@/lib/credits-events';
+import { isHomeProductMode } from '@/lib/product-mode';
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -17,6 +18,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const { status, user, authMode, logout } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const homeMode = isHomeProductMode();
   const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
 
   const [balance, setBalance] = useState<number | null>(null);
@@ -34,18 +36,19 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   }, []);
 
   useEffect(() => {
-    if (status !== 'authed') return;
+    if (status !== 'authed' || homeMode) return;
     void loadBalance();
-  }, [status, loadBalance]);
+  }, [status, homeMode, loadBalance]);
 
   // Refreshes the header balance immediately once a checkout is confirmed
   // credited (see /billing/success), rather than waiting for an unrelated
   // re-render.
   useEffect(() => {
+    if (homeMode) return;
     const onCreditsUpdated = () => void loadBalance();
     window.addEventListener(CREDITS_UPDATED_EVENT, onCreditsUpdated);
     return () => window.removeEventListener(CREDITS_UPDATED_EVENT, onCreditsUpdated);
-  }, [loadBalance]);
+  }, [homeMode, loadBalance]);
 
   const handleResend = async () => {
     if (!user) return;
@@ -86,22 +89,28 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
     <div>
       <div className="flex items-center justify-end gap-4 border-b border-border-subtle bg-bg-surface px-4 py-2 text-sm">
-        <Link
-          href="/dashboard/credits"
-          className="font-medium text-text-secondary hover:text-violet-700"
-        >
-          {balanceFailed
-            ? 'Credits unavailable'
-            : balance !== null
-              ? `${balance} credit${balance === 1 ? '' : 's'}`
-              : 'Credits…'}
-        </Link>
-        <Link
-          href="/dashboard/credits"
-          className="font-medium text-violet-600 hover:text-violet-500"
-        >
-          Buy credits
-        </Link>
+        {homeMode ? (
+          <span className="font-medium text-text-secondary">Family library</span>
+        ) : (
+          <>
+            <Link
+              href="/dashboard/credits"
+              className="font-medium text-text-secondary hover:text-violet-700"
+            >
+              {balanceFailed
+                ? 'Credits unavailable'
+                : balance !== null
+                  ? `${balance} credit${balance === 1 ? '' : 's'}`
+                  : 'Credits…'}
+            </Link>
+            <Link
+              href="/dashboard/credits"
+              className="font-medium text-violet-600 hover:text-violet-500"
+            >
+              Buy credits
+            </Link>
+          </>
+        )}
         <span className="text-text-muted">
           Signed in as{' '}
           <span className="font-medium text-text-secondary">

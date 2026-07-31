@@ -60,7 +60,38 @@ describe('envSchema', () => {
       expect(result.data.PORT).toBe(4000);
       expect(result.data.MAX_PAID_PROVIDER_CALLS_PER_RUN).toBe(17);
       expect(result.data.STORY_REPAIR_ENABLED).toBe('false');
+      expect(result.data.PRODUCT_MODE).toBe('home');
+      expect(result.data.NEXT_PUBLIC_PRODUCT_MODE).toBe('home');
     }
+  });
+
+  it('accepts matching product modes and rejects API/web divergence', () => {
+    const required = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+
+    expect(
+      envSchema.safeParse({
+        ...required,
+        PRODUCT_MODE: 'demo',
+        NEXT_PUBLIC_PRODUCT_MODE: 'demo',
+      }).success,
+    ).toBe(true);
+    const mismatch = envSchema.safeParse({
+      ...required,
+      PRODUCT_MODE: 'demo',
+      NEXT_PUBLIC_PRODUCT_MODE: 'home',
+    });
+    expect(mismatch.success).toBe(false);
+    if (!mismatch.success) {
+      expect(
+        mismatch.error.errors.some((error) => error.path.join('.') === 'NEXT_PUBLIC_PRODUCT_MODE'),
+      ).toBe(true);
+    }
+    expect(envSchema.safeParse({ ...required, PRODUCT_MODE: 'commercial' }).success).toBe(false);
   });
 
   it('accepts only explicit boolean strings for bounded story repair', () => {

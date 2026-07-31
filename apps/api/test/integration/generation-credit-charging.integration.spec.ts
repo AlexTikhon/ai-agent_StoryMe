@@ -45,7 +45,7 @@ describe('Generation credit charging and refunds (Phase E2, real Postgres)', () 
   const snapshotBackfill = new GenerationInputSnapshotBackfillService(prisma, {} as never);
   const rateLimiter = new RateLimiterService();
   const generousConfig = {
-    get: (_key: string) => 1_000_000,
+    get: (key: string) => (key === 'PRODUCT_MODE' ? 'demo' : 1_000_000),
   } as never;
   const booksService = new BooksService(
     prisma,

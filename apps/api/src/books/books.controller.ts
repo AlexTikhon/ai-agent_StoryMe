@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   DefaultValuePipe,
@@ -27,6 +28,8 @@ import type {
   CancelGenerationResponse,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
+  GenerationEstimateDto,
+  GenerationEstimateKind,
   GenerationProgressDto,
   PageImageRegenerationQuote,
   PageImageRevisionDto,
@@ -256,6 +259,19 @@ export class BooksController {
   @HttpCode(204)
   remove(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
     return this.booksService.remove(id, user.id);
+  }
+
+  @Get(':id/generation-estimate')
+  @UseGuards(RequireVerifiedEmailGuard)
+  generationEstimate(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('kind') kind: string = 'initial',
+  ): Promise<GenerationEstimateDto> {
+    if (kind !== 'initial' && kind !== 'retry' && kind !== 'regenerate') {
+      throw new BadRequestException('kind must be initial, retry, or regenerate');
+    }
+    return this.booksService.estimateGeneration(user.id, id, kind as GenerationEstimateKind);
   }
 
   @Get(':id/generation-progress')

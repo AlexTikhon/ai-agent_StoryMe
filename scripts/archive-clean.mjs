@@ -13,13 +13,22 @@ const EXCLUDED_DIRECTORIES = new Set([
   '.turbo',
   '.vscode',
   '.vitest',
+  'blob-report',
+  'build',
   'coverage',
+  'database-data',
   'dist',
   'generated-images',
+  'logs',
   'minio-data',
   'node_modules',
   'out',
+  'playwright-report',
+  'postgres-data',
+  'redis-data',
+  'test-results',
   'tmp',
+  '.docker-data',
 ]);
 
 const PRIVATE_DIRECTORY_NAMES = new Set([
@@ -38,6 +47,8 @@ const EXCLUDED_EXTENSIONS = new Set([
   '.db3',
   '.dump',
   '.gif',
+  '.heic',
+  '.heif',
   '.jpeg',
   '.jpg',
   '.mov',
@@ -47,9 +58,12 @@ const EXCLUDED_EXTENSIONS = new Set([
   '.sqlite',
   '.sqlite3',
   '.tar',
+  '.tif',
+  '.tiff',
   '.tgz',
   '.webp',
   '.zip',
+  '.bmp',
 ]);
 
 const EXCLUDED_FILES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);

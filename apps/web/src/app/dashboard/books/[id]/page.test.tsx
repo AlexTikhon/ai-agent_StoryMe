@@ -300,6 +300,7 @@ describe('BookDetailPage', () => {
 
   beforeEach(() => {
     vi.stubEnv('NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS', 'true');
+    vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', 'demo');
     vi.mocked(useParams).mockReturnValue({ id: 'book-1' });
     vi.mocked(useRouter).mockReturnValue({ push: pushMock } as unknown as ReturnType<
       typeof useRouter

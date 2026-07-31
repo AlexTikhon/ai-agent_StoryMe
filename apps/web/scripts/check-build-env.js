@@ -24,3 +24,19 @@ if (!process.env.NEXT_PUBLIC_API_URL) {
   );
   process.exit(1);
 }
+
+const allowedProductModes = new Set(['home', 'demo']);
+const publicProductMode = process.env.NEXT_PUBLIC_PRODUCT_MODE || 'home';
+const serverProductMode = process.env.PRODUCT_MODE || 'home';
+
+if (!allowedProductModes.has(publicProductMode) || !allowedProductModes.has(serverProductMode)) {
+  console.error('✖ PRODUCT_MODE and NEXT_PUBLIC_PRODUCT_MODE must be either "home" or "demo".');
+  process.exit(1);
+}
+
+if (publicProductMode !== serverProductMode) {
+  console.error(
+    '✖ PRODUCT_MODE and NEXT_PUBLIC_PRODUCT_MODE must match; refusing to build divergent API/web product behavior.',
+  );
+  process.exit(1);
+}

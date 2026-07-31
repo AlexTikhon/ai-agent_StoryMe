@@ -7,6 +7,7 @@ import {
   type GenerationArtifactNamespace,
 } from './generation-artifact-namespace';
 import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generation-claim-artifacts';
+import { isCharacterFingerprintCompatible } from './character-appearance';
 
 export interface GenerationResumeBook {
   id: string;
@@ -56,14 +57,19 @@ export class GenerationResumeService {
     inputHash: string,
     runId: string,
     fencingVersion: number,
+    referenceAssetRevision?: string | null,
   ): Promise<GenerationResumePlan> {
     const currentNamespace = claimNamespace(runId, fencingVersion);
     // Resolve unconditionally so a malformed partial pointer always fails,
     // including on a fresh/non-resumable generation.
     const sourceNamespace = resolveLastGenerationNamespace(book);
     const resumable = this.isResumable(book, inputHash);
-    const copyForwardSourceNamespace = resumable ? sourceNamespace : null;
     const priorCharacterProfile = book.characterProfile as CharacterProfile | null;
+    const fingerprintCompatible =
+      priorCharacterProfile != null &&
+      (referenceAssetRevision === undefined ||
+        isCharacterFingerprintCompatible(priorCharacterProfile, referenceAssetRevision));
+    const copyForwardSourceNamespace = resumable && fingerprintCompatible ? sourceNamespace : null;
     const priorSheet = priorCharacterProfile
       ? await this.resolveCharacterSheet(
           book.id,
@@ -79,7 +85,7 @@ export class GenerationResumeService {
       copyForwardSourceNamespace,
       priorCharacterProfile,
       priorSheet,
-      canReuseCharacterProfile: resumable && priorCharacterProfile != null,
+      canReuseCharacterProfile: resumable && fingerprintCompatible,
     };
   }
 

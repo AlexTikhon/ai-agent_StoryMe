@@ -1,4 +1,5 @@
 import type { CharacterProfile } from '@book/types';
+import { DEFAULT_EYE_DESCRIPTION, finalizeCharacterProfile } from './character-appearance';
 
 export interface CharacterProfileInput {
   bookId: string;
@@ -14,6 +15,8 @@ export interface CharacterProfileInput {
    * this one request.
    */
   photo?: { base64: string; contentType: string } | undefined;
+  /** Immutable SHA-256/revision of the stored reference asset; never photo metadata. */
+  referenceAssetRevision?: string | undefined;
 }
 
 /**
@@ -86,6 +89,9 @@ export class MockCharacterProfileProvider implements CharacterProfileProvider {
       hasCharacterSheet: false,
     };
     profile.consistencyPrompt = buildConsistencyPrompt(profile);
-    return profile;
+    return finalizeCharacterProfile(profile, {
+      eyeDescription: DEFAULT_EYE_DESCRIPTION,
+      referenceAssetRevision: input.referenceAssetRevision ?? null,
+    });
   }
 }

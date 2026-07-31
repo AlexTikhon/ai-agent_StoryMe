@@ -6,6 +6,7 @@ import {
   type CharacterProfileInput,
   type CharacterProfileProvider,
 } from './character-profile-provider';
+import { DEFAULT_EYE_DESCRIPTION, finalizeCharacterProfile } from './character-appearance';
 import {
   DEFAULT_OPENAI_MAX_RETRIES,
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
@@ -30,6 +31,7 @@ const llmResponseSchema = z.object({
   visualDescription: z.string().trim().min(1),
   faceDescription: z.string().trim().min(1),
   hairDescription: z.string().trim().min(1),
+  eyeDescription: z.string().trim().min(1).default(DEFAULT_EYE_DESCRIPTION),
   outfitDescription: z.string().trim().min(1),
   personalitySummary: z.string().trim().min(1),
   illustrationStyle: z.string().trim().min(1),
@@ -78,6 +80,7 @@ export function buildCharacterProfileMessageContent(
     '  "visualDescription": string,',
     '  "faceDescription": string,',
     '  "hairDescription": string,',
+    '  "eyeDescription": string,',
     '  "outfitDescription": string,',
     '  "personalitySummary": string,',
     '  "illustrationStyle": string',
@@ -114,7 +117,10 @@ function mapLlmResponseToProfile(
     hasCharacterSheet: false,
   };
   profile.consistencyPrompt = buildConsistencyPrompt(profile);
-  return profile;
+  return finalizeCharacterProfile(profile, {
+    eyeDescription: data.eyeDescription,
+    referenceAssetRevision: input.referenceAssetRevision ?? null,
+  });
 }
 
 export interface OpenAICharacterProfileProviderOptions {

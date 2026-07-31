@@ -52,6 +52,7 @@ describe('CreditsPage', () => {
   let assignMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', 'demo');
     vi.stubGlobal('fetch', vi.fn());
     assignMock = vi.fn();
     Object.defineProperty(window, 'location', {
@@ -63,7 +64,19 @@ describe('CreditsPage', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
+  });
+
+  it('shows private-family wording without loading billing controls in home mode', () => {
+    vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', 'home');
+
+    render(<CreditsPage />);
+
+    expect(screen.getByRole('heading', { name: /family library/i })).toBeDefined();
+    expect(screen.getByText(/without buying credits/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /checkout/i })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   // ── Balance ────────────────────────────────────────────────────────────────

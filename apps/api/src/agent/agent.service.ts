@@ -206,7 +206,13 @@ export class AgentService {
       priorCharacterProfile,
       priorSheet,
       canReuseCharacterProfile,
-    } = await this.generationResumeService.plan(book, inputHash, ctx.runId, ctx.fencingVersion);
+    } = await this.generationResumeService.plan(
+      book,
+      inputHash,
+      ctx.runId,
+      ctx.fencingVersion,
+      snapshot.childPhoto?.sha256 ?? null,
+    );
     const priorSheetStatus = priorSheet.status;
 
     // char_build: build the CharacterProfile (+ character-sheet reference

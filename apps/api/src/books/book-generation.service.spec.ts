@@ -9,6 +9,8 @@ import type { GenerationInputSnapshotBackfillService } from '../agent/generation
 import type { ImageGenerationProvider } from '../images/image-generation-provider';
 import type { StoryGenerationProvider } from '../agent/story-generation-provider';
 import type { CharacterProfileProvider } from '../agent/character-profile-provider';
+import { GENERATION_HARD_BUDGET_EXCEEDED } from '../agent/generation-estimate';
+import { hashInputSnapshot } from '../agent/generation-input-snapshot';
 import type { BookCrudService } from './book-crud.service';
 import {
   BookGenerationService,
@@ -103,7 +105,10 @@ describe('BookGenerationService scheduling boundary', () => {
     MAX_GENERATIONS_PER_USER_PER_WINDOW: 20,
     MAX_GENERATED_IMAGES_PER_BOOK: 14,
     MAX_PAID_PROVIDER_CALLS_PER_RUN: 17,
+    REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN: 17,
+    REAL_GENERATION_MAX_IMAGES_PER_RUN: 15,
     STORY_REPAIR_ENABLED: 'false',
+    PRODUCT_MODE: 'demo',
   };
   const config = {
     get: vi.fn((key: string) => configValues[key]),
@@ -190,6 +195,19 @@ describe('BookGenerationService scheduling boundary', () => {
     });
   });
 
+  it('schedules without a credit purchase or debit in home mode', async () => {
+    config.get.mockImplementation((key: string) =>
+      key === 'PRODUCT_MODE' ? 'home' : configValues[key],
+    );
+
+    await service.startGeneration('user-1', 'book-1');
+
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(credits.deductInTransaction).not.toHaveBeenCalled();
+    expect(prisma.generationRun.create).toHaveBeenCalledOnce();
+    expect(prisma.outboxEvent.create).toHaveBeenCalledOnce();
+  });
+
   it('persists only the originating request ID as correlation metadata in the outbox payload', async () => {
     const requestId = '33333333-3333-4333-8333-333333333333';
 
@@ -218,15 +236,34 @@ describe('BookGenerationService scheduling boundary', () => {
     Object.assign(imageProvider, { providerName: 'openai' });
     Object.assign(storyProvider, { providerName: 'openai' });
     Object.assign(characterProvider, { providerName: 'openai' });
-    config.get.mockImplementation((key: string) =>
-      key === 'STORY_REPAIR_ENABLED' ? 'true' : configValues[key],
-    );
+    config.get.mockImplementation((key: string) => {
+      if (key === 'STORY_REPAIR_ENABLED') return 'true';
+      if (key === 'REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN') return 18;
+      return configValues[key];
+    });
 
     await expect(service.startGeneration('user-1', 'book-1')).rejects.toMatchObject({
       status: HttpStatus.SERVICE_UNAVAILABLE,
       response: expect.objectContaining({
         code: PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE,
       }),
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(credits.deductInTransaction).not.toHaveBeenCalled();
+  });
+
+  it('enforces the new hard provider-call limit before creating a run or charging', async () => {
+    crud.findOwnedOrThrow.mockResolvedValue(makeBook({ pageCount: 4 }));
+    Object.assign(imageProvider, { providerName: 'openai' });
+    Object.assign(storyProvider, { providerName: 'openai' });
+    Object.assign(characterProvider, { providerName: 'openai' });
+    config.get.mockImplementation((key: string) =>
+      key === 'REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN' ? 8 : configValues[key],
+    );
+
+    await expect(service.startGeneration('user-1', 'book-1')).rejects.toMatchObject({
+      status: HttpStatus.SERVICE_UNAVAILABLE,
+      response: expect.objectContaining({ code: GENERATION_HARD_BUDGET_EXCEEDED }),
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(credits.deductInTransaction).not.toHaveBeenCalled();
@@ -261,6 +298,41 @@ describe('BookGenerationService scheduling boundary', () => {
         retryOfRunId: 'prior-run',
         inputSnapshot: SNAPSHOT,
       }),
+    });
+  });
+
+  it('excludes successful reusable provider work from a same-input retry estimate', async () => {
+    Object.assign(imageProvider, { providerName: 'openai' });
+    Object.assign(storyProvider, { providerName: 'openai' });
+    Object.assign(characterProvider, { providerName: 'openai' });
+    const failed = makeBook({
+      status: 'failed',
+      lastGenerationInputHash: hashInputSnapshot(SNAPSHOT),
+      imageGenerationResult: {
+        providerUsage: {
+          calls: [
+            { operation: 'story', provider: 'openai', status: 'success' },
+            { operation: 'character_profile', provider: 'openai', status: 'success' },
+            { operation: 'character_sheet', provider: 'openai', status: 'success' },
+            { operation: 'illustration', provider: 'openai', status: 'success' },
+          ],
+        },
+      },
+    });
+    const prior = makeRun({ id: 'prior-run', inputSnapshot: SNAPSHOT });
+    crud.findOwnedOrThrow.mockResolvedValue(failed);
+    runs.findLatestForBook.mockResolvedValue(prior);
+    snapshots.normalize.mockResolvedValue({
+      snapshot: SNAPSHOT,
+      inputHash: hashInputSnapshot(SNAPSHOT),
+    });
+
+    await expect(service.estimateGeneration('user-1', 'book-1', 'retry')).resolves.toMatchObject({
+      storyCalls: 0,
+      characterProfileCalls: 0,
+      imageCalls: 7,
+      maximumProviderCalls: 7,
+      reusedProviderCalls: 4,
     });
   });
 });

@@ -11,6 +11,7 @@ import {
   InvalidGenerationArtifactPointerError,
 } from './generation-artifact-namespace';
 import { GenerationResumeService, type GenerationResumeBook } from './generation-resume.service';
+import { finalizeCharacterProfile } from './character-appearance';
 
 const currentNamespace = claimNamespace('run-current', 2);
 const sourceNamespace = claimNamespace('run-source', 1);
@@ -39,7 +40,7 @@ class FakeImageAssetStorage implements ImageAssetStorage {
   );
 }
 
-const profile: CharacterProfile = {
+const profile: CharacterProfile = finalizeCharacterProfile({
   childName: 'Mia',
   age: 7,
   visualDescription: 'Mia the explorer',
@@ -51,7 +52,7 @@ const profile: CharacterProfile = {
   consistencyPrompt: 'same explorer',
   hasReferencePhoto: false,
   hasCharacterSheet: true,
-};
+});
 
 function book(overrides: Partial<GenerationResumeBook> = {}): GenerationResumeBook {
   return {
@@ -123,6 +124,32 @@ describe('GenerationResumeService', () => {
     expect(plan.priorSheet.status).toBe('missing');
     expect(storage.getImageAsset).not.toHaveBeenCalledWith(sourceKey);
     expect(storage.copyImageAsset).not.toHaveBeenCalled();
+  });
+
+  it('reuses a compatible fingerprint and rejects a stale reference revision', async () => {
+    const storage = new FakeImageAssetStorage();
+    const service = new GenerationResumeService(storage);
+    const revisionedProfile = finalizeCharacterProfile(profile, {
+      referenceAssetRevision: 'photo-r1',
+    });
+
+    const compatible = await service.plan(
+      book({ characterProfile: revisionedProfile }),
+      'hash-1',
+      'run-current',
+      2,
+      'photo-r1',
+    );
+    const incompatible = await service.plan(
+      book({ characterProfile: revisionedProfile }),
+      'hash-1',
+      'run-current',
+      2,
+      'photo-r2',
+    );
+
+    expect(compatible.canReuseCharacterProfile).toBe(true);
+    expect(incompatible.canReuseCharacterProfile).toBe(false);
   });
 
   it('requires the complete persisted story/preview/image JSON set before resuming', async () => {

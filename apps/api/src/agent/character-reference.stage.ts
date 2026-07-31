@@ -133,6 +133,7 @@ export class CharacterReferenceStage implements GenerationStage<
             theme,
             language,
             photo,
+            referenceAssetRevision: input.childPhoto?.sha256,
           }),
       });
     } catch (err) {
@@ -153,6 +154,7 @@ export class CharacterReferenceStage implements GenerationStage<
             theme,
             language,
             photo,
+            referenceAssetRevision: input.childPhoto?.sha256,
           }),
       });
       resolvedProviderName = 'mock';

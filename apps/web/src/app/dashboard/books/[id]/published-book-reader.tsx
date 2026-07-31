@@ -23,9 +23,15 @@ interface PublishedBookReaderProps {
   bookId: string;
   preview: BookPreview;
   onBookUpdated?: (book: BookDto) => void;
+  allowRevisions?: boolean;
 }
 
-export function PublishedBookReader({ bookId, preview, onBookUpdated }: PublishedBookReaderProps) {
+export function PublishedBookReader({
+  bookId,
+  preview,
+  onBookUpdated,
+  allowRevisions = true,
+}: PublishedBookReaderProps) {
   const slides = useMemo<ReaderSlide[]>(
     () => [
       {
@@ -317,7 +323,7 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
               </div>
             </div>
           )}
-          {!editingText && slide.pageNumber && onBookUpdated && (
+          {!editingText && slide.pageNumber && onBookUpdated && allowRevisions && (
             <div className="mt-3 flex flex-wrap justify-center gap-2">
               <button
                 type="button"
@@ -343,15 +349,23 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
           )}
           {imageQuote && !imageRevisionActive && imageRevision?.status !== 'completed' && (
             <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-left">
-              <p className="text-sm font-semibold text-amber-900">Confirm paid regeneration</p>
+              <p className="text-sm font-semibold text-amber-900">
+                {imageQuote.costCredits > 0
+                  ? 'Confirm paid regeneration'
+                  : 'Confirm illustration regeneration'}
+              </p>
               <p className="mt-1 text-xs text-amber-800">
-                This regenerates only page {imageQuote.pageNumber} and costs{' '}
-                {imageQuote.costCredits} credit{imageQuote.costCredits === 1 ? '' : 's'}.
+                This regenerates only page {imageQuote.pageNumber}.
+                {imageQuote.costCredits > 0
+                  ? ` It costs ${imageQuote.costCredits} credit${
+                      imageQuote.costCredits === 1 ? '' : 's'
+                    }.`
+                  : ' No credit purchase is needed in family mode.'}
                 {imageQuote.estimatedCostUsd != null
                   ? ` Estimated provider cost: $${imageQuote.estimatedCostUsd.toFixed(2)}.`
                   : ''}{' '}
-                The previous published book stays available if the operation fails, and a failed
-                operation is refunded.
+                The previous published book stays available if the operation fails.
+                {imageQuote.costCredits > 0 ? ' A failed operation is refunded.' : ''}
               </p>
               <div className="mt-3 flex gap-2">
                 <button
@@ -362,7 +376,9 @@ export function PublishedBookReader({ bookId, preview, onBookUpdated }: Publishe
                 >
                   {confirmingImage
                     ? 'Confirming…'
-                    : `Confirm ${imageQuote.costCredits}-credit call`}
+                    : imageQuote.costCredits > 0
+                      ? `Confirm ${imageQuote.costCredits}-credit call`
+                      : 'Confirm regeneration'}
                 </button>
                 <button
                   type="button"

@@ -9,8 +9,12 @@ design; they are not implementation contracts.
 Users can register with email/password, verify email, log in, restore a session through a rotating
 HttpOnly refresh cookie, and reset a password. They can create and edit an owned book draft with
 title, child name/age, language (`en`, `ru`, `pl`), theme, page count, optional lesson, and an
-optional reference photo. Starting generation atomically creates a run/outbox event and charges a
-credit. A separate BullMQ worker generates the story, images, layout, and PDF. The detail screen
+optional reference photo. `PRODUCT_MODE=home` is the default private-family mode: generation keeps
+all provider and capacity guardrails but does not debit credits or expose purchasing. The opt-in
+`demo` mode retains credit debits and Stripe purchase UI. Starting generation atomically creates a
+run/outbox event and, in demo mode only, charges a credit. A separate BullMQ worker generates the
+story, images, layout, and PDF. Before generation, the API can return a server-owned provider-call,
+cost, and duration estimate and enforces configured hard limits before charging or scheduling. The detail screen
 polls status and supports cancellation, retry from a failed run's immutable snapshot,
 regeneration from current input, authenticated PDF download, version-checked text correction, and
 explicitly confirmed image regeneration for one page of a completed book. A page text correction
@@ -50,6 +54,7 @@ All routes have the `/api` prefix.
 | POST             | `/books/:id/retry-generation`                                      | Resume failed snapshot                   |
 | POST             | `/books/:id/regenerate`                                            | Generate from current input              |
 | POST             | `/books/:id/cancel`                                                | Fence/cancel active run and refund once  |
+| GET              | `/books/:id/generation-estimate`                                   | Server-owned provider-work estimate      |
 | GET              | `/books/:id/generation-progress`                                   | Minimal owned durable progress           |
 | GET              | `/books/:id/generation-diagnostics`                                | Owned run/artifact diagnostics           |
 | GET              | `/books/:id/pdf/preview`                                           | Ownership-checked PDF bytes              |
@@ -133,8 +138,8 @@ fenced, retriable hard deletion across PostgreSQL and configured artifact storag
 
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
 management, automatic retention scheduling, and role-based admin authorization for diagnostics.
-The reader is currently shown only for a book whose current status is `complete`; previous
-publications are not yet rendered while a regeneration is running, failed, or cancelled. The web
+The reader follows published artifact availability rather than current run status, so a previous
+complete publication remains readable while regeneration is running, failed, or cancelled. The web
 diagnostics UI is environment-gated and defaults off; the owned diagnostics API contract remains
 available.
 
@@ -143,10 +148,15 @@ Known limitations: `AgentService` remains larger than the individual stages it o
 and generation execution services; the legacy `GenerationJob` runtime and Prisma model have been
 removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts and
 must not be confused with the separate irreversible hard-delete workflow; local storage cannot
-serve separately deployed API/worker processes; console email does not deliver production mail;
-Polish mock story content currently falls back to English. Bounded story repair exists but is
+serve separately deployed API/worker processes; console email does not deliver production mail.
+English, Russian, and Polish mock stories are deterministic and localized. Character profiles now
+carry a canonical versioned appearance fingerprint and one locked illustration fragment. Bounded story repair exists but is
 disabled by default and requires an explicitly configured repair-capable story provider and
 paid-call budget.
+
+The code-derived model/enum retention decisions are documented in
+[PHASE_7_SCHEMA_AUDIT.md](PHASE_7_SCHEMA_AUDIT.md); Phase 7 intentionally includes no destructive
+schema migration.
 
 ## Local run and validation
 

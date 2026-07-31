@@ -52,6 +52,7 @@ describe('DashboardLayout', () => {
   const logoutMock = vi.fn();
 
   beforeEach(() => {
+    vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', 'demo');
     pushMock.mockReset();
     replaceMock.mockReset();
     logoutMock.mockReset();
@@ -68,6 +69,7 @@ describe('DashboardLayout', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('redirects to /login when unauthenticated in jwt mode', async () => {
@@ -269,6 +271,28 @@ describe('DashboardLayout', () => {
       'href',
       expect.stringContaining('/dashboard/credits'),
     );
+  });
+
+  it('uses family wording and does not fetch or render purchases in home mode', () => {
+    vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', 'home');
+    vi.mocked(useAuth).mockReturnValue({
+      user: MOCK_USER,
+      status: 'authed',
+      authMode: 'jwt',
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: logoutMock,
+    });
+
+    render(
+      <DashboardLayout>
+        <p>Protected content</p>
+      </DashboardLayout>,
+    );
+
+    expect(screen.getByText('Family library')).toBeDefined();
+    expect(screen.queryByRole('link', { name: /buy credits/i })).toBeNull();
+    expect(creditsApi.getBalance).not.toHaveBeenCalled();
   });
 
   it('does not hide protected children when the balance fetch fails', async () => {

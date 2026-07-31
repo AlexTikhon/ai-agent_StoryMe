@@ -72,6 +72,24 @@ export interface CharacterProfile {
   consistencyPrompt: string;
   hasReferencePhoto: boolean;
   hasCharacterSheet: boolean;
+  /** Versioned canonical appearance contract. Optional only for legacy persisted books. */
+  schemaVersion?: 1;
+  canonicalAppearance?: CanonicalCharacterAppearance;
+  /** SHA-256 of schemaVersion + canonicalAppearance + referenceAssetRevision. */
+  characterFingerprint?: string;
+  /** Immutable prompt fragment reused verbatim by every illustration in this book. */
+  lockedVisualDescription?: string;
+  /** Safe rendering exclusions, not identity or biometric constraints. */
+  negativeConstraints?: string[];
+}
+
+export interface CanonicalCharacterAppearance {
+  age: number;
+  hair: string;
+  eyes: string;
+  face: string;
+  clothing: string;
+  artStyle: string;
 }
 
 // ─── Story ───────────────────────────────────────────────────────────────────
@@ -571,6 +589,29 @@ export interface BooksPageDto {
 /** Response from POST /books/:id/generate */
 export interface GenerateBookResponse {
   book: BookDto;
+}
+
+export type GenerationEstimateKind = 'initial' | 'retry' | 'regenerate';
+
+/** Server-owned preflight estimate. Monetary values are estimates, never quotes. */
+export interface GenerationEstimateDto {
+  kind: GenerationEstimateKind;
+  providerMode: 'mock' | 'real';
+  storyCalls: number;
+  characterProfileCalls: number;
+  imageCalls: number;
+  repairAllowanceCalls: number;
+  maximumProviderCalls: number;
+  reusedProviderCalls: number;
+  estimatedCostUsd?: {
+    minimum: number;
+    maximum: number;
+    label: 'estimate';
+  };
+  expectedDurationSeconds?: {
+    minimum: number;
+    maximum: number;
+  };
 }
 
 /**

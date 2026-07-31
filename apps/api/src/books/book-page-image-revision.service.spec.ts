@@ -168,7 +168,7 @@ function makeRevision(status: PageImageRevisionStatus = PageImageRevisionStatus.
   };
 }
 
-function createHarness(book = makeBook()) {
+function createHarness(book = makeBook(), productMode: 'home' | 'demo' = 'demo') {
   const prisma = createMockPrisma();
   prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) =>
     callback(prisma),
@@ -207,6 +207,7 @@ function createHarness(book = makeBook()) {
     provider,
     imageStorage,
     pdfStorage,
+    { get: vi.fn().mockReturnValue(productMode) } as never,
   );
   return { service, prisma, credits, provider, imageStorage, pdfStorage };
 }
@@ -231,6 +232,29 @@ describe('BookPageImageRevisionService', () => {
     });
     expect(harness.credits.deductInTransaction).not.toHaveBeenCalled();
     expect(harness.provider.generateImage).not.toHaveBeenCalled();
+  });
+
+  it('keeps confirmation but quotes and schedules without credits in home mode', async () => {
+    const harness = createHarness(makeBook(), 'home');
+    const quoted = makeRevision();
+    quoted.costCredits = 0;
+    const queued = makeRevision(PageImageRevisionStatus.queued);
+    queued.costCredits = 0;
+    harness.prisma.pageImageRevision.create.mockResolvedValue(quoted);
+    harness.prisma.pageImageRevision.findFirst.mockResolvedValue(quoted);
+    harness.prisma.book.findFirst.mockResolvedValue(makeBook());
+    harness.prisma.pageImageRevision.findUniqueOrThrow.mockResolvedValue(queued);
+
+    const quote = await harness.service.createQuote('u-1', 'b-1', 1, {
+      expectedVersion: 2,
+    });
+    const result = await harness.service.confirm('u-1', 'b-1', 1, quoted.id);
+
+    expect(quote.costCredits).toBe(0);
+    expect(quote.confirmationRequired).toBe(true);
+    expect(result.status).toBe('queued');
+    expect(harness.credits.deductInTransaction).not.toHaveBeenCalled();
+    expect(harness.prisma.outboxEvent.create).toHaveBeenCalledOnce();
   });
 
   it('confirms once by reserving the book, charging, and creating an outbox event atomically', async () => {

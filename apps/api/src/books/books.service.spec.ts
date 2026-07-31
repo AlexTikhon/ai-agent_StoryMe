@@ -181,10 +181,11 @@ const GENERATION_GUARD_ENV = {
   MAX_GENERATIONS_PER_USER_PER_WINDOW: 20,
   MAX_GENERATED_IMAGES_PER_BOOK: 14,
   MAX_PAID_PROVIDER_CALLS_PER_RUN: 17,
+  PRODUCT_MODE: 'demo',
 } as const;
 
 function createMockConfig(overrides: Partial<typeof GENERATION_GUARD_ENV> = {}) {
-  const values: Record<string, number> = { ...GENERATION_GUARD_ENV, ...overrides };
+  const values: Record<string, number | string> = { ...GENERATION_GUARD_ENV, ...overrides };
   return { get: (key: string) => values[key] } as never;
 }
 

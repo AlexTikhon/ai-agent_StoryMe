@@ -54,6 +54,9 @@ desktop.ini
 
 # Docker volumes (local dev data)
 .docker-data/
+postgres-data/
+redis-data/
+database-data/
 *.db
 *.db3
 *.sqlite
@@ -75,8 +78,13 @@ blob-report/
 # MinIO data (local dev)
 minio-data/
 
-# Local PDF render output
+# Local/private runtime artifacts
 tmp/
+uploads/
+child-photos/
+generated-images/
+artifacts/
+private/
 
 # Clean review archives are local deliverables, not repository source
 storyme-clean-*.tar.gz

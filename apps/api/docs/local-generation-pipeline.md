@@ -22,11 +22,12 @@ calls, no external AI providers, no cloud dependency.
    - Requires no active (`queued`/`running`) `GenerationRun` already exists
      for the book — otherwise `ConflictException` (409, "Generation is
      already in progress for this book").
-   - Charges 1 credit the moment the run is durably scheduled, inside the
+   - In `PRODUCT_MODE=demo`, charges 1 credit the moment the run is durably scheduled, inside the
      same transaction as the `GenerationRun` create/`Book` transition/
      `OutboxEvent` write — an insufficient balance returns the stable `402
 { code: 'INSUFFICIENT_CREDITS' }` and rolls everything back. See
-     `apps/api/docs/credits.md`, "Phase E2".
+     `apps/api/docs/credits.md`, "Phase E2". In the default private-family
+     `home` mode the same transaction schedules the run without a credit debit.
    - Transitions `status` to `char_build` (the first pipeline step) and
      returns immediately — it does **not** wait for generation to finish.
      See "Durable generation queue (Phase 3K)" below.
@@ -261,6 +262,16 @@ interface StoryGenerationProvider {
   batch. `AgentService` orders these boundaries and retains fencing
   checkpoints; none changes retry, cancellation, credit or publication
   semantics.
+
+Character profiles use schema version 1 with a canonical, normalized
+appearance object ordered as age, hair, eyes, face, clothing, and art style.
+A SHA-256 fingerprint covers that object plus the immutable child-photo SHA
+revision. Every cover/page/back-cover prompt reuses one locked visual
+description verbatim and adds bounded, non-biometric negative constraints.
+Resume copy-forward requires both the immutable generation input and this
+fingerprint to remain compatible; a changed reference revision cannot reuse a
+stale character sheet or illustration namespace.
+
 - **Failure behavior**: if `generateStory` throws, `AgentService` catches it
   before Phase 1 runs. `GenerationResultCollector` returns a failed outcome
   (`failedStep: 'story_plan'`, `errorMessage` from the caught error) with the
@@ -524,6 +535,22 @@ To lower real-image cost, choose a shorter `pageCount`; do not set a budget
 that can fund only part of a book. This remains independent of
 `REAL_GENERATION_MAX_PAGES`, which limits the highest page number accepted by
 the real provider.
+
+### Estimate-first hard limits
+
+`GET /api/books/:id/generation-estimate?kind=initial|retry|regenerate` returns
+the server-owned expected story, character-profile, image, and optional repair
+calls. It optionally includes centrally configured cost and duration ranges;
+cost is always labeled as an estimate, never a quote. Mock-only work reports
+zero external calls and zero external cost. A same-input retry excludes
+successful reusable provider artifacts recorded by the prior run.
+
+`REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN`,
+`REAL_GENERATION_MAX_IMAGES_PER_RUN`, and optional
+`REAL_GENERATION_MAX_ESTIMATED_COST_USD` are enforced before the
+GenerationRun/credit/outbox transaction. The older complete-book and runtime
+telemetry caps remain defense in depth. Page-image regeneration continues to
+use its separate server-owned quote and explicit confirmation flow.
 
 ### Whole-run provider-call budget and safe cost metadata
 

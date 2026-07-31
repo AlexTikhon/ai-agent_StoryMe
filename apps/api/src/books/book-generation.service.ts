@@ -16,7 +16,14 @@ import {
   type GenerationRun,
   type GenerationRunKind,
 } from '@prisma/client';
-import { DEFAULT_BOOK_PAGE_COUNT, type GenerateBookResponse } from '@book/types';
+import {
+  DEFAULT_BOOK_PAGE_COUNT,
+  type GenerateBookResponse,
+  type GenerationEstimateDto,
+  type GenerationEstimateKind,
+  type GenerationProviderCallMetadata,
+  type GenerationProviderName,
+} from '@book/types';
 import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
 import {
@@ -37,6 +44,11 @@ import {
   assertPaidProviderCallBudget,
   requiredPaidProviderCallsForBook,
 } from '../agent/generation-provider-telemetry';
+import {
+  assertGenerationHardLimits,
+  buildGenerationEstimate,
+  GENERATION_HARD_BUDGET_EXCEEDED,
+} from '../agent/generation-estimate';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
   type StoryGenerationProvider,
@@ -61,6 +73,17 @@ const GENERATION_STARTED_STATUS = BookStatus.char_build;
 
 export const IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE = 'IMAGE_GENERATION_BUDGET_INSUFFICIENT';
 export const PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE = 'PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT';
+
+function priorProviderCalls(book: Book): GenerationProviderCallMetadata[] {
+  const result = book.imageGenerationResult as {
+    providerUsage?: { calls?: GenerationProviderCallMetadata[] };
+  } | null;
+  return Array.isArray(result?.providerUsage?.calls) ? result.providerUsage.calls : [];
+}
+
+function estimateProviderName(name: string | undefined): GenerationProviderName {
+  return name === 'openai' || name === 'mock' ? name : 'unknown';
+}
 
 function isOneActiveRunViolation(err: unknown): boolean {
   return (
@@ -211,6 +234,93 @@ export class BookGenerationService {
     return { book: toBookDto(updated) };
   }
 
+  async estimateGeneration(
+    userId: string,
+    bookId: string,
+    kind: GenerationEstimateKind,
+  ): Promise<GenerationEstimateDto> {
+    const book = await this.crud.findOwnedOrThrow(bookId, userId);
+    let inputSnapshot = buildInputSnapshot(book);
+    if (kind === 'retry') {
+      const priorRun = await this.generationRunService.findLatestForBook(bookId);
+      if (priorRun) inputSnapshot = (await this.snapshotBackfill.normalize(priorRun)).snapshot;
+    }
+    return this.buildEstimate(book, inputSnapshot, kind);
+  }
+
+  private buildEstimate(
+    book: Book,
+    inputSnapshot: GenerationInputSnapshot,
+    kind: GenerationEstimateKind,
+  ): GenerationEstimateDto {
+    const exactRetry =
+      kind === 'retry' &&
+      book.lastGenerationInputHash !== null &&
+      hashInputSnapshot(inputSnapshot) === book.lastGenerationInputHash;
+    const successfulCalls = exactRetry
+      ? priorProviderCalls(book).filter((call) => call.status === 'success')
+      : [];
+    const reuse = {
+      storyCalls: successfulCalls.some((call) => call.operation === 'story') ? 1 : 0,
+      characterProfileCalls: successfulCalls.some((call) => call.operation === 'character_profile')
+        ? 1
+        : 0,
+      imageCalls: successfulCalls.filter(
+        (call) => call.operation === 'character_sheet' || call.operation === 'illustration',
+      ).length,
+    };
+    const estimate = buildGenerationEstimate({
+      kind,
+      pageCount: inputSnapshot.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
+      providers: {
+        story: estimateProviderName(this.storyGenerationProvider.providerName),
+        characterProfile: estimateProviderName(this.characterProfileProvider.providerName),
+        image: estimateProviderName(this.imageGenerationProvider.providerName),
+      },
+      repairEnabled: this.config.get('STORY_REPAIR_ENABLED', { infer: true }) === 'true',
+      reuse,
+      configuration: {
+        storyCostUsd: this.config.get('OPENAI_STORY_ESTIMATED_COST_USD', { infer: true }),
+        characterProfileCostUsd: this.config.get('OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD', {
+          infer: true,
+        }),
+        imageCostUsd: this.config.get('OPENAI_IMAGE_ESTIMATED_COST_USD', { infer: true }),
+        durationMinSeconds: this.config.get('REAL_GENERATION_ESTIMATED_MIN_DURATION_SECONDS', {
+          infer: true,
+        }),
+        durationMaxSeconds: this.config.get('REAL_GENERATION_ESTIMATED_MAX_DURATION_SECONDS', {
+          infer: true,
+        }),
+      },
+    });
+    return estimate;
+  }
+
+  private assertGenerationEstimate(
+    book: Book,
+    inputSnapshot: GenerationInputSnapshot,
+    kind: GenerationEstimateKind,
+  ): void {
+    const estimate = this.buildEstimate(book, inputSnapshot, kind);
+    try {
+      assertGenerationHardLimits(estimate, {
+        maxProviderCalls: this.config.get('REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN', {
+          infer: true,
+        }),
+        maxImages: this.config.get('REAL_GENERATION_MAX_IMAGES_PER_RUN', { infer: true }),
+        maxEstimatedCostUsd: this.config.get('REAL_GENERATION_MAX_ESTIMATED_COST_USD', {
+          infer: true,
+        }),
+      });
+    } catch {
+      throw new ServiceUnavailableException({
+        error: 'Generation exceeds the configured hard budget',
+        message: 'Generation exceeds the configured hard budget',
+        code: GENERATION_HARD_BUDGET_EXCEEDED,
+      });
+    }
+  }
+
   private assertCompleteImageBudget(inputSnapshot: GenerationInputSnapshot): void {
     if (this.imageGenerationProvider.providerName !== 'openai') return;
     const requiredImages = requiredGeneratedImagesForBook(inputSnapshot.pageCount);
@@ -304,6 +414,7 @@ export class BookGenerationService {
     inputSnapshot: GenerationInputSnapshot;
     retryOfRunId?: string;
   }): Promise<Book> {
+    this.assertGenerationEstimate(params.book, params.inputSnapshot, params.kind);
     this.assertCompleteImageBudget(params.inputSnapshot);
     this.assertPaidProviderCallBudget(params.inputSnapshot);
     const inputHash = hashInputSnapshot(params.inputSnapshot);
@@ -322,13 +433,15 @@ export class BookGenerationService {
             ...(params.retryOfRunId && { retryOfRunId: params.retryOfRunId }),
           },
         });
-        await this.creditsService.deductInTransaction(tx, {
-          userId: params.book.userId,
-          amount: GENERATION_CREDIT_COST,
-          reason: 'book_creation',
-          bookId: params.book.id,
-          idempotencyKey: generationChargeIdempotencyKey(run.id),
-        });
+        if (this.config.get('PRODUCT_MODE', { infer: true }) === 'demo') {
+          await this.creditsService.deductInTransaction(tx, {
+            userId: params.book.userId,
+            amount: GENERATION_CREDIT_COST,
+            reason: 'book_creation',
+            bookId: params.book.id,
+            idempotencyKey: generationChargeIdempotencyKey(run.id),
+          });
+        }
         const updatedBook = await tx.book.update({
           where: {
             id: params.book.id,

@@ -1,4 +1,5 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type {
   BookDto,
   BookPreview,
@@ -48,12 +49,13 @@ import {
   imageGenerationResultSchema,
 } from './books.schemas';
 import { BookCrudService } from './book-crud.service';
+import type { Env } from '../config/env.schema';
 import type { CreatePageImageQuoteDto } from './dto/create-page-image-quote.dto';
 import { publishedImageKey } from './published-page-image-key';
 
 const PAGE_IMAGE_QUOTE_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_FAILURE_MESSAGE =
-  'The page illustration could not be regenerated. The previous book is unchanged and the credit was refunded.';
+  'The page illustration could not be regenerated. The previous book is unchanged.';
 
 function parseRequiredJson<T>(
   schema: { safeParse(value: unknown): { success: boolean; data?: unknown } },
@@ -81,6 +83,7 @@ export class BookPageImageRevisionService {
     private readonly imageStorage: ImageAssetStorage,
     @Inject(PDF_STORAGE_TOKEN)
     private readonly pdfStorage: PdfStorage,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
   async createQuote(
@@ -128,7 +131,10 @@ export class BookPageImageRevisionService {
         userId,
         pageNumber,
         expectedPageVersion: currentVersion,
-        costCredits: PAGE_IMAGE_REGENERATION_CREDIT_COST,
+        costCredits:
+          this.config.get('PRODUCT_MODE', { infer: true }) === 'demo'
+            ? PAGE_IMAGE_REGENERATION_CREDIT_COST
+            : 0,
         provider,
         ...(estimatedCostUsd !== undefined && { estimatedCostUsd }),
         quoteExpiresAt: new Date(Date.now() + PAGE_IMAGE_QUOTE_TTL_MS),
@@ -220,13 +226,15 @@ export class BookPageImageRevisionService {
       if (queued.count === 0) {
         throw new ConflictException('This quote was already confirmed by another request.');
       }
-      await this.credits.deductInTransaction(tx, {
-        userId,
-        amount: current.costCredits,
-        reason: 'regen_page',
-        bookId,
-        idempotencyKey: pageImageRevisionChargeIdempotencyKey(current.id),
-      });
+      if (current.costCredits > 0) {
+        await this.credits.deductInTransaction(tx, {
+          userId,
+          amount: current.costCredits,
+          reason: 'regen_page',
+          bookId,
+          idempotencyKey: pageImageRevisionChargeIdempotencyKey(current.id),
+        });
+      }
       await tx.outboxEvent.create({
         data: {
           aggregateType: 'page_image_revision',

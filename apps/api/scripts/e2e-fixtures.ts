@@ -8,6 +8,44 @@ export const E2E_EMAIL_SUFFIX = '@e2e.storyme.test';
 export const E2E_LOGIN_EMAIL = `verified-login${E2E_EMAIL_SUFFIX}`;
 export const E2E_LOGIN_PASSWORD = 'StoryMeE2E1!';
 export const E2E_RETRY_BOOK_ID = '00000000-0000-4000-8000-000000000006';
+export const E2E_PUBLICATION_COMPLETE_BOOK_ID = '00000000-0000-4000-8000-000000000011';
+export const E2E_PUBLICATION_RUNNING_BOOK_ID = '00000000-0000-4000-8000-000000000012';
+export const E2E_PUBLICATION_FAILED_BOOK_ID = '00000000-0000-4000-8000-000000000013';
+export const E2E_PUBLICATION_CANCELLED_BOOK_ID = '00000000-0000-4000-8000-000000000014';
+export const E2E_INITIAL_FAILED_BOOK_ID = '00000000-0000-4000-8000-000000000015';
+
+const publicationPreview = {
+  title: 'Published Family Story',
+  subtitle: 'A safe disposable E2E fixture',
+  cover: {
+    title: 'Published Family Story',
+    subtitle: 'A safe disposable E2E fixture',
+    childName: 'Reader',
+    illustrationPrompt: 'Disposable mock cover',
+  },
+  pages: [
+    {
+      pageNumber: 1,
+      title: 'The published page',
+      text: 'This disposable mock page remains readable.',
+      illustrationPrompt: 'Disposable mock page',
+      layout: 'image_top_text_bottom',
+      learningGoal: 'Reliability',
+      version: 1,
+    },
+  ],
+  backCover: {
+    message: 'The end',
+    educationalSummary: 'Published versions remain available.',
+  },
+  metadata: {
+    language: 'en',
+    theme: 'Reliability',
+    childAge: 7,
+    totalPages: 1,
+    generatedBy: 'LocalPipelineAgent',
+  },
+};
 
 function assertDedicatedE2eTargets(): void {
   const databaseUrl = process.env['DATABASE_URL'];
@@ -84,6 +122,57 @@ async function resetFixtures(seed: boolean): Promise<void> {
           theme: 'Trying again after a setback',
           pageCount: 4,
           errorMessage: 'Deterministic E2E fixture failure',
+        },
+      });
+      for (const fixture of [
+        {
+          id: E2E_PUBLICATION_COMPLETE_BOOK_ID,
+          status: BookStatus.complete,
+          title: 'Complete Publication Fixture',
+        },
+        {
+          id: E2E_PUBLICATION_RUNNING_BOOK_ID,
+          status: BookStatus.char_build,
+          title: 'Running Regeneration Fixture',
+        },
+        {
+          id: E2E_PUBLICATION_FAILED_BOOK_ID,
+          status: BookStatus.failed,
+          title: 'Failed Regeneration Fixture',
+          errorMessage: 'Disposable failed regeneration',
+        },
+        {
+          id: E2E_PUBLICATION_CANCELLED_BOOK_ID,
+          status: BookStatus.cancelled,
+          title: 'Cancelled Regeneration Fixture',
+        },
+      ]) {
+        await prisma.book.create({
+          data: {
+            ...fixture,
+            userId: user.id,
+            childName: 'Reader',
+            childAge: 7,
+            language: 'en',
+            theme: 'Reliability',
+            pageCount: 4,
+            previewPdfUrl: 'e2e/disposable-published.pdf',
+            bookPreview: publicationPreview,
+          },
+        });
+      }
+      await prisma.book.create({
+        data: {
+          id: E2E_INITIAL_FAILED_BOOK_ID,
+          userId: user.id,
+          status: BookStatus.failed,
+          title: 'Failed Initial Generation Fixture',
+          childName: 'Reader',
+          childAge: 7,
+          language: 'en',
+          theme: 'Reliability',
+          pageCount: 4,
+          errorMessage: 'Disposable initial failure',
         },
       });
     } else {

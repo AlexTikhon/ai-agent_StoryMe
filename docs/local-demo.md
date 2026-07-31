@@ -23,9 +23,9 @@ docker compose up -d
 ```
 
 Starts Postgres (`localhost:5433`), Redis (`localhost:6379`), and MinIO
-(`localhost:9000`). Only Postgres is required for the demo flow below — Redis
-and MinIO are reserved for future queue/cloud-storage work and aren't on the
-critical path yet.
+(`localhost:9000`). PostgreSQL and Redis are required: generation is scheduled
+through the transactional outbox and consumed by BullMQ. MinIO is needed only
+when the configured storage drivers use it.
 
 ## 3. Configure environment
 
@@ -38,6 +38,11 @@ and use mock story/image generation — no edits needed for a local demo. Leave
 `STORY_GENERATION_PROVIDER` and `IMAGE_GENERATION_PROVIDER` unset (or
 `"mock"`) unless you intend to spend real OpenAI credits (see
 [Troubleshooting](#troubleshooting)).
+
+The defaults also use `PRODUCT_MODE=home`, so family generation costs zero
+credits while every provider/capacity guard remains active. If you explicitly
+test the commercial demo, set API `PRODUCT_MODE=demo` and web
+`NEXT_PUBLIC_PRODUCT_MODE=demo`; startup checks reject mismatched values.
 
 The web app needs no `.env` — it defaults to `http://localhost:4000/api`. Set
 `NEXT_PUBLIC_API_URL` in `apps/web/.env.local` only if the API runs elsewhere.

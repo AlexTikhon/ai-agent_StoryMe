@@ -3,6 +3,11 @@ import { expect, test, type Page } from '@playwright/test';
 const loginEmail = 'verified-login@e2e.storyme.test';
 const password = 'StoryMeE2E1!';
 const retryBookId = '00000000-0000-4000-8000-000000000006';
+const publicationCompleteBookId = '00000000-0000-4000-8000-000000000011';
+const publicationRunningBookId = '00000000-0000-4000-8000-000000000012';
+const publicationFailedBookId = '00000000-0000-4000-8000-000000000013';
+const publicationCancelledBookId = '00000000-0000-4000-8000-000000000014';
+const initialFailedBookId = '00000000-0000-4000-8000-000000000015';
 
 async function login(page: Page): Promise<void> {
   await page.goto('/login');
@@ -52,7 +57,7 @@ test('logs in, generates a mock book, and downloads its PDF', async ({ page }) =
   expect((await download.createReadStream())?.readable).toBe(true);
 });
 
-test('cancels an active generation and shows the credit refund', async ({ page }) => {
+test('cancels an active family generation without requiring a credit charge', async ({ page }) => {
   await login(page);
   await createBook(page, 'Casey');
   await page.getByRole('button', { name: 'Generate Story' }).click();
@@ -62,9 +67,48 @@ test('cancels an active generation and shows the credit refund', async ({ page }
   page.once('dialog', (dialog) => dialog.accept());
   await cancelButton.click();
 
-  await expect(page.getByRole('status')).toHaveText('Generation cancelled. 1 credit refunded.');
+  await expect(page.getByRole('status')).toHaveText(
+    'Generation cancelled. No credit charge was found to refund.',
+  );
   await expect(page.getByRole('button', { name: 'Regenerate book' })).toBeVisible();
   await expect(cancelButton).toBeHidden();
+});
+
+test.describe('published version availability', () => {
+  test('renders a complete publication', async ({ page }) => {
+    await login(page);
+    await page.goto(`/dashboard/books/${publicationCompleteBookId}`);
+    await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your PDF is ready' })).toBeVisible();
+  });
+
+  test('keeps a publication readable during a running regeneration', async ({ page }) => {
+    await login(page);
+    await page.goto(`/dashboard/books/${publicationRunningBookId}`);
+    await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
+    await expect(page.getByText(/new version is being generated/i)).toBeVisible();
+  });
+
+  test('keeps a publication readable after a failed regeneration', async ({ page }) => {
+    await login(page);
+    await page.goto(`/dashboard/books/${publicationFailedBookId}`);
+    await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
+    await expect(page.getByText(/new version could not be generated/i)).toBeVisible();
+  });
+
+  test('keeps a publication readable after a cancelled regeneration', async ({ page }) => {
+    await login(page);
+    await page.goto(`/dashboard/books/${publicationCancelledBookId}`);
+    await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
+    await expect(page.getByText(/new version was cancelled/i)).toBeVisible();
+  });
+
+  test('does not invent a publication after a failed initial generation', async ({ page }) => {
+    await login(page);
+    await page.goto(`/dashboard/books/${initialFailedBookId}`);
+    await expect(page.getByText(/generation failed/i)).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Published book reader' })).toHaveCount(0);
+  });
 });
 
 test('retries a failed book through the worker and publishes its PDF', async ({ page }) => {

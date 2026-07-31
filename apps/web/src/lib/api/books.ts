@@ -6,6 +6,8 @@ import type {
   CreateBookInput,
   GenerateBookResponse,
   GenerationDiagnosticsDto,
+  GenerationEstimateDto,
+  GenerationEstimateKind,
   GenerationProgressDto,
   PageImageRegenerationQuote,
   PageImageRevisionDto,
@@ -76,6 +78,12 @@ export const booksApi = {
 
   generate: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/generate`, { method: 'POST' }),
+
+  getGenerationEstimate: (
+    id: string,
+    kind: GenerationEstimateKind,
+  ): Promise<GenerationEstimateDto> =>
+    apiFetch(`/books/${id}/generation-estimate?kind=${encodeURIComponent(kind)}`),
 
   /** Resumes a failed book using the exact input the failed run used. For a complete book, or to pick up edits made since a failure, use regenerateBook instead. */
   retryGeneration: (id: string): Promise<GenerateBookResponse> =>

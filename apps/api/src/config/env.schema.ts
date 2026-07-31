@@ -10,6 +10,11 @@ export const envSchema = z
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
     PORT: z.coerce.number().int().positive().default(4000),
     ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
+    // Private-family mode is the safe default. NEXT_PUBLIC_PRODUCT_MODE is
+    // also accepted by the API process so a shared environment cannot boot
+    // with API/web behavior that silently disagrees.
+    PRODUCT_MODE: z.enum(['home', 'demo']).default('home'),
+    NEXT_PUBLIC_PRODUCT_MODE: z.enum(['home', 'demo']).default('home'),
 
     // Process topology — read directly from process.env in main.ts/worker.ts
     // (before ConfigService exists) to decide whether GenerationQueueProcessor
@@ -112,6 +117,11 @@ export const envSchema = z
     // Logical paid-provider calls for a complete maximum-length run:
     // profile + story + optional repair + character sheet + 14 book illustrations.
     MAX_PAID_PROVIDER_CALLS_PER_RUN: z.coerce.number().int().positive().default(17),
+    REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN: z.coerce.number().int().positive().default(17),
+    REAL_GENERATION_MAX_IMAGES_PER_RUN: z.coerce.number().int().positive().default(15),
+    REAL_GENERATION_MAX_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
+    REAL_GENERATION_ESTIMATED_MIN_DURATION_SECONDS: z.coerce.number().nonnegative().optional(),
+    REAL_GENERATION_ESTIMATED_MAX_DURATION_SECONDS: z.coerce.number().nonnegative().optional(),
     // Operator-maintained estimates. Optional because silently hardcoding
     // vendor pricing would make historical cost diagnostics misleading.
     OPENAI_STORY_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
@@ -273,6 +283,15 @@ export const envSchema = z
     GOOGLE_CALLBACK_URL: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
+    if (env.PRODUCT_MODE !== env.NEXT_PUBLIC_PRODUCT_MODE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'PRODUCT_MODE and NEXT_PUBLIC_PRODUCT_MODE must match so API credit policy and web purchasing UX cannot diverge',
+        path: ['NEXT_PUBLIC_PRODUCT_MODE'],
+      });
+    }
+
     const isOpenAI = (value: string | undefined) => value?.trim().toLowerCase() === 'openai';
     if (
       !env.OPENAI_API_KEY &&

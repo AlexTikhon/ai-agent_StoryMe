@@ -42,6 +42,9 @@ generate a book → download the PDF).
 - Request a server-owned quote, explicitly confirm a one-credit charge, and regenerate exactly one
   page illustration while reusing the rest of the completed book.
 - Retry generation after a failure.
+- Keep the last published reader/PDF available during a running, failed, or cancelled regeneration.
+- Preview a server-owned provider-work estimate; hard call/image/cost limits are enforced before
+  charging or scheduling. Mock generation reports zero external cost.
 
 For the complete implemented/unimplemented boundary, use
 [CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md#implemented-and-unimplemented).
@@ -64,12 +67,16 @@ credential check. See `apps/api/src/auth/dev-auth.guard.ts` and
 `apps/api/src/auth/auth-mode.guard.ts`. **The two `AUTH_MODE` values must
 match between API and web** or every request 401s.
 
+The default `PRODUCT_MODE=home` is private-family mode: generation and page-image confirmation
+remain guarded but cost zero credits, and purchase UI is hidden. Set both API `PRODUCT_MODE` and
+web `NEXT_PUBLIC_PRODUCT_MODE` to `demo` to retain the commercial credit/purchase behavior.
+
 ## Historical completion notes
 
 The notes below preserve the sequence in which features landed. They are not
 the current product boundary; use `docs/CURRENT_PRODUCT.md` for that.
 
-- **Generation credit enforcement is implemented:** every
+- **Generation credit enforcement is implemented in opt-in demo mode:** every
   `POST /books/:id/generate`, `retry-generation`, or `regenerate` call
   charges 1 credit the moment the run is durably scheduled (not when
   generation completes), returns the stable `402 { code:

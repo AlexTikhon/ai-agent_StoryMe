@@ -6,6 +6,7 @@ import { CreditReason } from '@book/types';
 import type { CreditPackageCatalogDto, CreditPackageId, CreditTransactionDto } from '@book/types';
 import { billingApi } from '@/lib/api/billing';
 import { creditsApi } from '@/lib/api/credits';
+import { isHomeProductMode } from '@/lib/product-mode';
 
 const REASON_LABELS: Record<CreditReason, string> = {
   [CreditReason.BookCreation]: 'Book creation',
@@ -36,6 +37,32 @@ function isSafeCheckoutUrl(value: string): boolean {
 }
 
 export default function CreditsPage() {
+  return isHomeProductMode() ? <HomeFamilyMode /> : <DemoCreditsPage />;
+}
+
+function HomeFamilyMode() {
+  return (
+    <main className="min-h-dvh bg-bg-base px-4 py-10">
+      <div className="mx-auto max-w-lg">
+        <Link
+          href="/dashboard"
+          className="mb-8 inline-flex items-center gap-1 text-sm font-medium text-text-muted hover:text-text-primary"
+        >
+          ← My Book Drafts
+        </Link>
+        <section className="mt-4 rounded-2xl border border-border-default bg-bg-surface p-6 shadow-sm">
+          <h1 className="font-display text-3xl font-bold text-text-primary">Family library</h1>
+          <p className="mt-3 text-sm leading-6 text-text-secondary">
+            StoryMe is set up as a private family tool. You can create books without buying credits;
+            generation safety limits still apply.
+          </p>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function DemoCreditsPage() {
   // ── Balance ──────────────────────────────────────────────────────────────
   const [balance, setBalance] = useState<number | null>(null);
   const [balanceLoading, setBalanceLoading] = useState(true);

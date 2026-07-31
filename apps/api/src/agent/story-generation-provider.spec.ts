@@ -4,6 +4,7 @@ import {
   MockStoryGenerationProvider,
   type StoryGenerationInput,
 } from './story-generation-provider';
+import { finalizeCharacterProfile } from './character-appearance';
 
 const DEFAULT_CHARACTER_PROFILE: CharacterProfile = {
   childName: 'Mia',
@@ -42,6 +43,13 @@ describe('MockStoryGenerationProvider', () => {
       const second = await provider.generateStory(input);
 
       expect(second).toEqual(first);
+    });
+
+    it.each(['en', 'ru', 'pl'])('is deterministic for %s output', async (language) => {
+      const provider = new MockStoryGenerationProvider();
+      const input = makeInput({ language });
+
+      expect(await provider.generateStory(input)).toEqual(await provider.generateStory(input));
     });
 
     it('produces different output for a different bookId, childName, or theme', async () => {
@@ -158,6 +166,24 @@ describe('MockStoryGenerationProvider', () => {
       }
     });
 
+    it('includes the identical locked character fragment in every illustration prompt', async () => {
+      const provider = new MockStoryGenerationProvider();
+      const characterProfile = finalizeCharacterProfile(DEFAULT_CHARACTER_PROFILE, {
+        eyeDescription: 'bright brown eyes',
+        referenceAssetRevision: 'reference-r1',
+      });
+
+      const result = await provider.generateStory(makeInput({ characterProfile }));
+      const locked = characterProfile.lockedVisualDescription!;
+
+      for (const page of result.storyPlan.pages) {
+        expect(page.illustration.prompt).toContain(locked);
+      }
+      for (const image of result.imageGenerationResult.images) {
+        expect(image.prompt).toContain(locked);
+      }
+    });
+
     // ── QA: language must be respected (Book Output QA phase) ────────────────
 
     describe('language handling', () => {
@@ -185,6 +211,47 @@ describe('MockStoryGenerationProvider', () => {
         for (const page of result.storyPlan.pages) {
           expect(page.storyText).not.toMatch(CYRILLIC);
         }
+      });
+
+      it('generates complete Polish mock output with Polish illustration descriptions', async () => {
+        const provider = new MockStoryGenerationProvider();
+        const POLISH_DIACRITICS = /[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]/;
+
+        const result = await provider.generateStory(
+          makeInput({
+            childName: 'Łucja',
+            theme: 'przyjaźń nad morzem',
+            language: 'pl',
+            pageCount: 12,
+          }),
+        );
+
+        expect(result.storyPlan.title).toMatch(POLISH_DIACRITICS);
+        expect(result.storyPlan.educationalMessage).toMatch(POLISH_DIACRITICS);
+        expect(result.bookPreview.subtitle).toMatch(POLISH_DIACRITICS);
+        expect(result.bookPreview.backCover.message).toMatch(POLISH_DIACRITICS);
+        expect(result.storyPlan.chapters).toHaveLength(6);
+        for (const page of result.storyPlan.pages) {
+          expect(page.title).toMatch(POLISH_DIACRITICS);
+          expect(page.storyText).toMatch(POLISH_DIACRITICS);
+          expect(page.sceneDescription).toMatch(POLISH_DIACRITICS);
+          expect(page.illustrationPrompt).toContain('Ilustracja do książki dla dzieci');
+          expect(page.illustration.prompt).toContain('Ilustracja do książki dla dzieci');
+        }
+      });
+
+      it('carries a custom Polish lesson into the plan, back cover, pages, and final moral', async () => {
+        const provider = new MockStoryGenerationProvider();
+        const lesson = 'Warto prosić o pomoc i dzielić się życzliwością.';
+
+        const result = await provider.generateStory(
+          makeInput({ language: 'pl', educationalMessage: lesson }),
+        );
+
+        expect(result.storyPlan.educationalMessage).toBe(lesson);
+        expect(result.bookPreview.backCover.educationalSummary).toBe(lesson);
+        expect(result.storyPlan.pages.every((page) => page.learningGoal === lesson)).toBe(true);
+        expect(result.storyPlan.pages.at(-1)?.storyText).toContain(lesson);
       });
 
       it('falls back to English for an unrecognized language code rather than mixing languages', async () => {

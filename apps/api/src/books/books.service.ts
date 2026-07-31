@@ -154,6 +154,7 @@ export class BooksService {
         imageGenerationProvider,
         imageAssetStorage,
         pdfStorage,
+        config,
       );
   }
 
@@ -302,6 +303,14 @@ export class BooksService {
    */
   async regenerateBook(userId: string, bookId: string): Promise<GenerateBookResponse> {
     return this.generationService.regenerateBook(userId, bookId);
+  }
+
+  estimateGeneration(
+    userId: string,
+    bookId: string,
+    kind: import('@book/types').GenerationEstimateKind,
+  ): Promise<import('@book/types').GenerationEstimateDto> {
+    return this.generationService.estimateGeneration(userId, bookId, kind);
   }
 
   /**
