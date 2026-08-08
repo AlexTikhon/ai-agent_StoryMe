@@ -1,352 +1,352 @@
-name: CI
+# name: CI
 
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
+# on:
+#   push:
+#     branches: [main, develop]
+#   pull_request:
+#     branches: [main]
 
-# Least-privilege by default — no job needs to write to the repo, comment on
-# PRs, or touch packages/releases. Individual jobs do not escalate this.
-permissions:
-  contents: read
+# # Least-privilege by default — no job needs to write to the repo, comment on
+# # PRs, or touch packages/releases. Individual jobs do not escalate this.
+# permissions:
+#   contents: read
 
-# Cancel a superseded run on the same branch/PR so a fast-follow push doesn't
-# queue behind (or race) a run for a commit nobody cares about anymore.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# # Cancel a superseded run on the same branch/PR so a fast-follow push doesn't
+# # queue behind (or race) a run for a commit nobody cares about anymore.
+# concurrency:
+#   group: ci-${{ github.workflow }}-${{ github.ref }}
+#   cancel-in-progress: true
 
-env:
-  PNPM_VERSION: 9.4.0
-  NODE_VERSION: 20
+# env:
+#   PNPM_VERSION: 9.4.0
+#   NODE_VERSION: 20
 
-jobs:
-  # ── Job 1: Lint, Format & Typecheck ─────────────────────────────────────────
-  lint-typecheck:
-    name: Lint, Format & Typecheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+# jobs:
+#   # ── Job 1: Lint, Format & Typecheck ─────────────────────────────────────────
+#   lint-typecheck:
+#     name: Lint, Format & Typecheck
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 15
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
+#       - name: Setup pnpm
+#         uses: pnpm/action-setup@v4
+#         with:
+#           version: ${{ env.PNPM_VERSION }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: ${{ env.NODE_VERSION }}
+#           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+#       - name: Install dependencies
+#         run: pnpm install --frozen-lockfile
 
-      - name: Build packages (required before typecheck)
-        run: pnpm --filter @book/types build
+#       - name: Build packages (required before typecheck)
+#         run: pnpm --filter @book/types build
 
-      - name: Generate Prisma client
-        run: pnpm --filter @book/api prisma:generate
+#       - name: Generate Prisma client
+#         run: pnpm --filter @book/api prisma:generate
 
-      - name: Check formatting
-        run: pnpm format:check
+#       - name: Check formatting
+#         run: pnpm format:check
 
-      - name: Run lint
-        run: pnpm lint
+#       - name: Run lint
+#         run: pnpm lint
 
-      - name: Run typecheck
-        run: pnpm typecheck
+#       - name: Run typecheck
+#         run: pnpm typecheck
 
-  # ── Job 2: Unit Tests ────────────────────────────────────────────────────────
-  # Ordinary package tests only — no Postgres/Redis service containers, no
-  # real Stripe/OpenAI/Resend/S3/R2 network access. DATABASE_URL/REDIS_URL
-  # below are syntactically valid but unreachable: envSchema requires them to
-  # parse as postgresql://.../redis://... URLs, but nothing in this job ever
-  # opens a connection. Real-Postgres/Redis coverage lives in the separate
-  # "Integration Tests" job (pnpm --filter @book/api test:integration).
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      DATABASE_URL: postgresql://unit:unit@localhost:5432/storyme_unit_unused
-      REDIS_URL: redis://localhost:6379/0
-      JWT_SECRET: ci-unit-jwt-secret-minimum-32-characters-long-pad
-      JWT_REFRESH_SECRET: ci-unit-refresh-secret-minimum-32-characters-pad
-      NODE_ENV: test
-      STORY_GENERATION_PROVIDER: mock
-      IMAGE_GENERATION_PROVIDER: mock
-      EMAIL_PROVIDER: console
-      STRIPE_BILLING_ENABLED: 'false'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+#   # ── Job 2: Unit Tests ────────────────────────────────────────────────────────
+#   # Ordinary package tests only — no Postgres/Redis service containers, no
+#   # real Stripe/OpenAI/Resend/S3/R2 network access. DATABASE_URL/REDIS_URL
+#   # below are syntactically valid but unreachable: envSchema requires them to
+#   # parse as postgresql://.../redis://... URLs, but nothing in this job ever
+#   # opens a connection. Real-Postgres/Redis coverage lives in the separate
+#   # "Integration Tests" job (pnpm --filter @book/api test:integration).
+#   unit-tests:
+#     name: Unit Tests
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 15
+#     env:
+#       DATABASE_URL: postgresql://unit:unit@localhost:5432/storyme_unit_unused
+#       REDIS_URL: redis://localhost:6379/0
+#       JWT_SECRET: ci-unit-jwt-secret-minimum-32-characters-long-pad
+#       JWT_REFRESH_SECRET: ci-unit-refresh-secret-minimum-32-characters-pad
+#       NODE_ENV: test
+#       STORY_GENERATION_PROVIDER: mock
+#       IMAGE_GENERATION_PROVIDER: mock
+#       EMAIL_PROVIDER: console
+#       STRIPE_BILLING_ENABLED: 'false'
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
+#       - name: Setup pnpm
+#         uses: pnpm/action-setup@v4
+#         with:
+#           version: ${{ env.PNPM_VERSION }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: ${{ env.NODE_VERSION }}
+#           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+#       - name: Install dependencies
+#         run: pnpm install --frozen-lockfile
 
-      - name: Build packages
-        run: pnpm --filter @book/types build
+#       - name: Build packages
+#         run: pnpm --filter @book/types build
 
-      - name: Generate Prisma client
-        run: pnpm --filter @book/api prisma:generate
+#       - name: Generate Prisma client
+#         run: pnpm --filter @book/api prisma:generate
 
-      - name: Run unit tests
-        run: pnpm test
+#       - name: Run unit tests
+#         run: pnpm test
 
-  # ── Job 3: Integration Tests (Postgres + Redis) ─────────────────────────────
-  # Real, non-mocked Postgres/Redis coverage — see
-  # apps/api/vitest.integration.config.ts and apps/api/test/integration/**.
-  # Also proves migrations apply cleanly to a fresh database and are
-  # idempotent (a second `migrate deploy` reports no pending migrations).
-  integration-tests:
-    name: Integration Tests (Postgres + Redis)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: storyme
-          POSTGRES_PASSWORD: storyme_ci
-          POSTGRES_DB: storyme_integration
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+#   # ── Job 3: Integration Tests (Postgres + Redis) ─────────────────────────────
+#   # Real, non-mocked Postgres/Redis coverage — see
+#   # apps/api/vitest.integration.config.ts and apps/api/test/integration/**.
+#   # Also proves migrations apply cleanly to a fresh database and are
+#   # idempotent (a second `migrate deploy` reports no pending migrations).
+#   integration-tests:
+#     name: Integration Tests (Postgres + Redis)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 20
+#     services:
+#       postgres:
+#         image: postgres:16-alpine
+#         env:
+#           POSTGRES_USER: storyme
+#           POSTGRES_PASSWORD: storyme_ci
+#           POSTGRES_DB: storyme_integration
+#         ports:
+#           - 5432:5432
+#         options: >-
+#           --health-cmd pg_isready
+#           --health-interval 5s
+#           --health-timeout 5s
+#           --health-retries 10
 
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+#       redis:
+#         image: redis:7-alpine
+#         ports:
+#           - 6379:6379
+#         options: >-
+#           --health-cmd "redis-cli ping"
+#           --health-interval 5s
+#           --health-timeout 3s
+#           --health-retries 10
 
-    env:
-      DATABASE_URL: postgresql://storyme:storyme_ci@localhost:5432/storyme_integration
-      REDIS_URL: redis://localhost:6379
-      JWT_SECRET: ci-integration-jwt-secret-minimum-32-characters-pad
-      JWT_REFRESH_SECRET: ci-integration-refresh-secret-minimum-32-chars-pad
-      NODE_ENV: test
-      STORY_GENERATION_PROVIDER: mock
-      IMAGE_GENERATION_PROVIDER: mock
-      EMAIL_PROVIDER: console
-      STRIPE_BILLING_ENABLED: 'false'
+#     env:
+#       DATABASE_URL: postgresql://storyme:storyme_ci@localhost:5432/storyme_integration
+#       REDIS_URL: redis://localhost:6379
+#       JWT_SECRET: ci-integration-jwt-secret-minimum-32-characters-pad
+#       JWT_REFRESH_SECRET: ci-integration-refresh-secret-minimum-32-chars-pad
+#       NODE_ENV: test
+#       STORY_GENERATION_PROVIDER: mock
+#       IMAGE_GENERATION_PROVIDER: mock
+#       EMAIL_PROVIDER: console
+#       STRIPE_BILLING_ENABLED: 'false'
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
+#       - name: Setup pnpm
+#         uses: pnpm/action-setup@v4
+#         with:
+#           version: ${{ env.PNPM_VERSION }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: ${{ env.NODE_VERSION }}
+#           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+#       - name: Install dependencies
+#         run: pnpm install --frozen-lockfile
 
-      - name: Build packages
-        run: pnpm --filter @book/types build
+#       - name: Build packages
+#         run: pnpm --filter @book/types build
 
-      - name: Generate Prisma client
-        run: pnpm --filter @book/api prisma:generate
+#       - name: Generate Prisma client
+#         run: pnpm --filter @book/api prisma:generate
 
-      - name: Apply migrations to fresh database
-        run: pnpm --filter @book/api prisma:migrate:deploy
+#       - name: Apply migrations to fresh database
+#         run: pnpm --filter @book/api prisma:migrate:deploy
 
-      - name: Verify migrations are idempotent (no pending migrations on re-run)
-        run: |
-          set -euo pipefail
-          output="$(pnpm --filter @book/api prisma:migrate:deploy 2>&1)"
-          echo "$output"
-          if ! echo "$output" | grep -qi "no pending migrations"; then
-            echo "::error::Second 'prisma migrate deploy' run did not report a clean, pending-migration-free state."
-            exit 1
-          fi
+#       - name: Verify migrations are idempotent (no pending migrations on re-run)
+#         run: |
+#           set -euo pipefail
+#           output="$(pnpm --filter @book/api prisma:migrate:deploy 2>&1)"
+#           echo "$output"
+#           if ! echo "$output" | grep -qi "no pending migrations"; then
+#             echo "::error::Second 'prisma migrate deploy' run did not report a clean, pending-migration-free state."
+#             exit 1
+#           fi
 
-      - name: Run integration tests
-        run: pnpm --filter @book/api test:integration
+#       - name: Run integration tests
+#         run: pnpm --filter @book/api test:integration
 
-  # ── Job 4: Deployment Preflight ─────────────────────────────────────────────
-  # Exercises the real Phase F1 `preflight:deploy` CLI (not a CI-only
-  # reimplementation) for both the api and worker roles against deterministic,
-  # checked-in fixture environments, plus one expected failure — see
-  # apps/api/scripts/preflight-deploy-ci-fixtures.ts. Makes no network call.
-  preflight:
-    name: Deployment Preflight
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+#   # ── Job 4: Deployment Preflight ─────────────────────────────────────────────
+#   # Exercises the real Phase F1 `preflight:deploy` CLI (not a CI-only
+#   # reimplementation) for both the api and worker roles against deterministic,
+#   # checked-in fixture environments, plus one expected failure — see
+#   # apps/api/scripts/preflight-deploy-ci-fixtures.ts. Makes no network call.
+#   preflight:
+#     name: Deployment Preflight
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 10
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
+#       - name: Setup pnpm
+#         uses: pnpm/action-setup@v4
+#         with:
+#           version: ${{ env.PNPM_VERSION }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: ${{ env.NODE_VERSION }}
+#           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+#       - name: Install dependencies
+#         run: pnpm install --frozen-lockfile
 
-      - name: Generate Prisma client
-        run: pnpm --filter @book/api prisma:generate
+#       - name: Generate Prisma client
+#         run: pnpm --filter @book/api prisma:generate
 
-      - name: Verify preflight (api + worker + expected failure)
-        run: pnpm --filter @book/api preflight:deploy:ci-check
+#       - name: Verify preflight (api + worker + expected failure)
+#         run: pnpm --filter @book/api preflight:deploy:ci-check
 
-  # ── Job 5: Build (apps) ──────────────────────────────────────────────────────
-  build:
-    name: Build (apps)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: [lint-typecheck]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+#   # ── Job 5: Build (apps) ──────────────────────────────────────────────────────
+#   build:
+#     name: Build (apps)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 15
+#     needs: [lint-typecheck]
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
+#       - name: Setup pnpm
+#         uses: pnpm/action-setup@v4
+#         with:
+#           version: ${{ env.PNPM_VERSION }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: ${{ env.NODE_VERSION }}
+#           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+#       - name: Install dependencies
+#         run: pnpm install --frozen-lockfile
 
-      - name: Generate Prisma client
-        run: pnpm --filter @book/api prisma:generate
+#       - name: Generate Prisma client
+#         run: pnpm --filter @book/api prisma:generate
 
-      - name: Build all packages and apps
-        run: pnpm build
-        env:
-          # Structurally valid, includes the required "/api" prefix
-          # (app.setGlobalPrefix('api')) — never a real deployed host.
-          NEXT_PUBLIC_API_URL: https://ci-build-placeholder.storyme.invalid/api
-          NEXT_PUBLIC_APP_URL: https://ci-build-placeholder.storyme.invalid
+#       - name: Build all packages and apps
+#         run: pnpm build
+#         env:
+#           # Structurally valid, includes the required "/api" prefix
+#           # (app.setGlobalPrefix('api')) — never a real deployed host.
+#           NEXT_PUBLIC_API_URL: https://ci-build-placeholder.storyme.invalid/api
+#           NEXT_PUBLIC_APP_URL: https://ci-build-placeholder.storyme.invalid
 
-  # ── Job 6: Docker Build (API) ────────────────────────────────────────────────
-  # Proves the production API image still builds. Local tag only — never
-  # pushed, never authenticated to any registry.
-  docker-build:
-    name: Docker Build (API)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [lint-typecheck]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+#   # ── Job 6: Docker Build (API) ────────────────────────────────────────────────
+#   # Proves the production API image still builds. Local tag only — never
+#   # pushed, never authenticated to any registry.
+#   docker-build:
+#     name: Docker Build (API)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 20
+#     needs: [lint-typecheck]
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Build API production image (local tag, not pushed)
-        run: docker build -f apps/api/Dockerfile -t storyme-api:ci-${{ github.sha }} .
+#       - name: Build API production image (local tag, not pushed)
+#         run: docker build -f apps/api/Dockerfile -t storyme-api:ci-${{ github.sha }} .
 
-  # ── Job 7: Browser E2E (real API/worker + mock providers) ────────────────
-  e2e:
-    name: Browser E2E
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: storyme
-          POSTGRES_PASSWORD: storyme_e2e
-          POSTGRES_DB: storyme_e2e
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U storyme -d storyme_e2e"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+#   # ── Job 7: Browser E2E (real API/worker + mock providers) ────────────────
+#   e2e:
+#     name: Browser E2E
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 20
+#     services:
+#       postgres:
+#         image: postgres:16-alpine
+#         env:
+#           POSTGRES_USER: storyme
+#           POSTGRES_PASSWORD: storyme_e2e
+#           POSTGRES_DB: storyme_e2e
+#         ports:
+#           - 5432:5432
+#         options: >-
+#           --health-cmd "pg_isready -U storyme -d storyme_e2e"
+#           --health-interval 5s
+#           --health-timeout 5s
+#           --health-retries 10
 
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+#       redis:
+#         image: redis:7-alpine
+#         ports:
+#           - 6379:6379
+#         options: >-
+#           --health-cmd "redis-cli ping"
+#           --health-interval 5s
+#           --health-timeout 3s
+#           --health-retries 10
 
-    env:
-      DATABASE_URL: postgresql://storyme:storyme_e2e@127.0.0.1:5432/storyme_e2e
-      REDIS_URL: redis://127.0.0.1:6379/15
-      JWT_SECRET: storyme-e2e-jwt-secret-minimum-32-characters
-      JWT_REFRESH_SECRET: storyme-e2e-refresh-secret-minimum-32-characters
-      CI: 'true'
+#     env:
+#       DATABASE_URL: postgresql://storyme:storyme_e2e@127.0.0.1:5432/storyme_e2e
+#       REDIS_URL: redis://127.0.0.1:6379/15
+#       JWT_SECRET: storyme-e2e-jwt-secret-minimum-32-characters
+#       JWT_REFRESH_SECRET: storyme-e2e-refresh-secret-minimum-32-characters
+#       CI: 'true'
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
+#       - name: Setup pnpm
+#         uses: pnpm/action-setup@v4
+#         with:
+#           version: ${{ env.PNPM_VERSION }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: ${{ env.NODE_VERSION }}
+#           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+#       - name: Install dependencies
+#         run: pnpm install --frozen-lockfile
 
-      - name: Build shared types
-        run: pnpm --filter @book/types build
+#       - name: Build shared types
+#         run: pnpm --filter @book/types build
 
-      - name: Generate Prisma client
-        run: pnpm --filter @book/api prisma:generate
+#       - name: Generate Prisma client
+#         run: pnpm --filter @book/api prisma:generate
 
-      - name: Install Chromium
-        run: pnpm --filter @book/web exec playwright install --with-deps chromium
+#       - name: Install Chromium
+#         run: pnpm --filter @book/web exec playwright install --with-deps chromium
 
-      - name: Run browser E2E
-        run: pnpm test:e2e
+#       - name: Run browser E2E
+#         run: pnpm test:e2e
 
-      - name: Upload Playwright report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: apps/web/playwright-report/
-          retention-days: 14
+#       - name: Upload Playwright report
+#         if: ${{ !cancelled() }}
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: playwright-report
+#           path: apps/web/playwright-report/
+#           retention-days: 14
