@@ -143,7 +143,8 @@ complete publication remains readable while regeneration is running, failed, or 
 diagnostics UI is environment-gated and defaults off; the owned diagnostics API contract remains
 available.
 
-Known limitations: `AgentService` remains larger than the individual stages it orchestrates;
+Known limitations: `AgentService` is thinner after extracting immutable preparation and bounded
+story-quality/repair, but image/publication coordination still makes it larger than individual stages;
 `BooksService` is now a compatibility facade over CRUD, asset, diagnostics, generation scheduling,
 and generation execution services; the legacy `GenerationJob` runtime and Prisma model have been
 removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts and

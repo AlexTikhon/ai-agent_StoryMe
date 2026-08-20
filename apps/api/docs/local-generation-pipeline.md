@@ -48,6 +48,15 @@ the full design and its remaining limitations.
 
 ## What `AgentService.startBookGeneration` does, in order
 
+- `prepareGeneration` resolves the immutable snapshot, page target, provider/model
+  labels, paid-call budget, telemetry, and repair flag once. Generation code does
+  not reload mutable Book input after this boundary.
+- `GenerationResumeService.plan` resolves the claim/source namespaces and calls
+  `parsePersistedGenerationState`. Only a complete runtime-validated character/
+  story/preview/image bundle can be reused. Invalid product JSON safely selects
+  fresh generation; malformed namespace ownership pointers still throw.
+- `StoryQualityService.execute` owns story reuse/generation, deterministic review,
+  and the optional single bounded repair plus deterministic revalidation.
 - (a) `storyGenerationProvider.generateStory({ bookId, childName, childAge,
 theme, language })` — delegates all character/story/page/image-metadata
   planning to the injected `StoryGenerationProvider` (see "Story generation
@@ -131,13 +140,15 @@ below) never clears
 `errorMessage`/`retryCount`. So a retry against a book that previously made
 it past Phase 1 of a run (e.g. one that failed at `pdf_render`) hands
 `AgentService.startBookGeneration` a `Book` row that already carries a full
-prior generation result. `GenerationResumeService.plan` detects this
-(`storyPlan`/`characterCard`/`bookPreview`/`imageGenerationResult` all
-non-null) and the pipeline reuses as much of it as is still valid instead of
+prior generation result. `GenerationResumeService.plan` detects this only
+after `characterCard`, `storyPlan`, `bookPreview`, and `imageGenerationResult`
+all pass their explicit Zod schemas and the immutable input hash matches. A
+non-null malformed value is not reused; the run safely regenerates instead.
+The pipeline reuses as much valid state as is still available instead of
 regenerating from scratch:
 
-- **Story** — skipped entirely when resumable: `characterCard`/`storyPlan`/
-  `bookPreview`/`imageGenerationResult` are read straight off the book row,
+- **Story** — skipped entirely when resumable: validated `characterCard`/`storyPlan`/
+  `bookPreview`/`imageGenerationResult` come from the persisted-state parser,
   `StoryGenerationProvider.generateStory` is never called.
 - **Character profile** — skipped when `Book.characterProfile` is present;
   `CharacterProfileProvider.buildProfile` is never called.
@@ -206,10 +217,12 @@ storage reads happen on the happy path.
 
 ## Story generation provider boundary
 
-`apps/api/src/agent/story-generation-provider.ts` defines `StoryGenerationProvider`,
-the internal boundary `AgentService` depends on for all character/story/page/
-image-metadata planning, mirroring the `PdfStorage` / `ImageAssetStorage`
-pattern:
+`apps/api/src/agent/story-generation-provider.ts` is the stable compatibility
+facade for the internal boundary `AgentService` depends on. The implementation
+is split into `story-generation-contracts.ts` (interfaces, token, shared prompt
+contract helpers), `mock-story-generation-provider.ts` (the provider class),
+`mock-story-builders.ts` (deterministic builders), and
+`mock-story-templates.ts` (localized deterministic data):
 
 ```ts
 interface StoryGenerationInput {
@@ -237,13 +250,10 @@ interface StoryGenerationProvider {
 - Registered via `STORY_GENERATION_PROVIDER_TOKEN` in `books.module.ts`,
   injected into `AgentService`'s constructor exactly like `PDF_STORAGE_TOKEN`
   and `IMAGE_ASSET_STORAGE_TOKEN`.
-- `MockStoryGenerationProvider` is the only implementation today. It's a
-  straight extraction of the hand-written template logic that used to live
-  directly in `AgentService` (`buildCharacterCard`, `buildStoryPlan`,
-  `buildPagePlan`, `buildStoryDraft`, `buildIllustrationPlan`,
-  `buildBookPreview`, `buildImageGenerationResult` — now private functions in
-  `story-generation-provider.ts`) — same inputs still produce byte-identical
-  output; no behavior changed by the extraction.
+- `MockStoryGenerationProvider` remains deterministic. Its provider class,
+  localized templates, and builders now live in separate files while the
+  compatibility facade preserves existing imports. The same inputs still
+  produce byte-identical output.
 - Image _metadata_ (prompts, mock `imageUrl` placeholder paths,
   `GeneratedImageEntry` records) is built by the provider as part of
   `imageGenerationResult`. Actual image _bytes_ are not — that stays behind
@@ -259,7 +269,9 @@ interface StoryGenerationProvider {
   owns image resolution, validation, rendering and claim-scoped storage.
   `GenerationResultCollector` deterministically assembles persisted image
   telemetry, resume diagnostics, the terminal outcome, and its `AgentLog`
-  batch. `AgentService` orders these boundaries and retains fencing
+  batch. `prepareGeneration` owns immutable preparation and
+  `StoryQualityService` owns bounded review/repair. `AgentService` orders
+  these boundaries and retains fencing
   checkpoints; none changes retry, cancellation, credit or publication
   semantics.
 

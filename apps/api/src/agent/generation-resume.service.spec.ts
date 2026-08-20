@@ -12,6 +12,7 @@ import {
 } from './generation-artifact-namespace';
 import { GenerationResumeService, type GenerationResumeBook } from './generation-resume.service';
 import { finalizeCharacterProfile } from './character-appearance';
+import { Pronouns } from '@book/types';
 
 const currentNamespace = claimNamespace('run-current', 2);
 const sourceNamespace = claimNamespace('run-source', 1);
@@ -54,14 +55,72 @@ const profile: CharacterProfile = finalizeCharacterProfile({
   hasCharacterSheet: true,
 });
 
+const reusableStory = {
+  characterCard: {
+    name: 'Mia',
+    age: 7,
+    pronouns: Pronouns.SheHer,
+    appearance: {
+      hairColor: 'brown',
+      hairStyle: 'wavy',
+      eyeColor: 'green',
+      skinTone: 'warm',
+      distinctiveFeatures: [],
+    },
+    personality: {
+      traits: ['curious'],
+      favoriteAnimals: [],
+      favoriteColors: [],
+      favoriteToys: [],
+      hobbies: [],
+    },
+    visualAnchor: 'Mia the explorer',
+    narrativeDescription: 'Mia explores kindly.',
+  },
+  storyPlan: {
+    title: 'Story',
+    theme: 'adventure',
+    educationalMessage: 'Be curious',
+    chapters: [],
+    openingHook: 'Once upon a time',
+    resolution: 'Mia returned home.',
+    pages: [],
+  },
+  bookPreview: {
+    title: 'Story',
+    subtitle: '',
+    cover: {
+      title: 'Story',
+      subtitle: '',
+      childName: 'Mia',
+      illustrationPrompt: 'cover',
+    },
+    pages: [],
+    backCover: { message: 'The end', educationalSummary: 'Be curious' },
+    metadata: {
+      language: 'en',
+      theme: 'adventure',
+      childAge: 7,
+      totalPages: 0,
+      generatedBy: 'mock',
+    },
+  },
+  imageGenerationResult: {
+    provider: 'local_mock' as const,
+    status: 'complete' as const,
+    images: [],
+    createdAt: '2026-08-20T00:00:00.000Z',
+  },
+};
+
 function book(overrides: Partial<GenerationResumeBook> = {}): GenerationResumeBook {
   return {
     id: 'book-1',
     lastGenerationInputHash: 'hash-1',
-    storyPlan: { title: 'Story' },
-    characterCard: { name: 'Mia' },
-    bookPreview: { pages: [] },
-    imageGenerationResult: { images: [] },
+    storyPlan: reusableStory.storyPlan,
+    characterCard: reusableStory.characterCard,
+    bookPreview: reusableStory.bookPreview,
+    imageGenerationResult: reusableStory.imageGenerationResult,
     characterProfile: profile,
     lastGenerationRunId: sourceNamespace.runId,
     lastGenerationFencingVersion: sourceNamespace.fencingVersion,
@@ -104,6 +163,7 @@ describe('GenerationResumeService', () => {
       currentNamespace,
       copyForwardSourceNamespace: sourceNamespace,
       priorCharacterProfile: profile,
+      reusableStory,
       priorSheet: { status: 'valid', key: currentKey },
       canReuseCharacterProfile: true,
     });
@@ -166,6 +226,26 @@ describe('GenerationResumeService', () => {
     expect(plan.resumable).toBe(false);
     expect(plan.canReuseCharacterProfile).toBe(false);
     expect(plan.priorSheet).toEqual({ status: 'missing' });
+  });
+
+  it('starts from scratch when hash-matched reusable JSON is malformed', async () => {
+    const storage = new FakeImageAssetStorage();
+    const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
+    storage.seed(sourceKey, Buffer.from('prior-sheet'));
+    const service = new GenerationResumeService(storage);
+
+    const plan = await service.plan(
+      book({ storyPlan: { title: 'malformed story' } }),
+      'hash-1',
+      'run-current',
+      2,
+    );
+
+    expect(plan.resumable).toBe(false);
+    expect(plan.reusableStory).toBeNull();
+    expect(plan.canReuseCharacterProfile).toBe(false);
+    expect(plan.copyForwardSourceNamespace).toBeNull();
+    expect(storage.copyImageAsset).not.toHaveBeenCalled();
   });
 
   it('still reuses a valid current-claim sheet on non-resumable same-claim re-entry', async () => {

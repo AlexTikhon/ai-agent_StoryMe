@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { Pronouns } from '@book/types';
+import {
+  BookStatus,
+  Pronouns,
+  type CharacterProfile,
+  type GenerationProviderOperation,
+  type ImageGenerationResult,
+} from '@book/types';
 
 /**
  * Runtime shape validation for the Prisma `Json` columns on `Book`
@@ -39,6 +45,15 @@ export const characterCardSchema = z.object({
   narrativeDescription: z.string(),
 });
 
+const canonicalCharacterAppearanceSchema = z.object({
+  age: z.number(),
+  hair: z.string(),
+  eyes: z.string(),
+  face: z.string(),
+  clothing: z.string(),
+  artStyle: z.string(),
+});
+
 export const characterProfileSchema = z.object({
   childName: z.string(),
   age: z.number(),
@@ -51,6 +66,11 @@ export const characterProfileSchema = z.object({
   consistencyPrompt: z.string(),
   hasReferencePhoto: z.boolean(),
   hasCharacterSheet: z.boolean(),
+  schemaVersion: z.literal(1).optional(),
+  canonicalAppearance: canonicalCharacterAppearanceSchema.optional(),
+  characterFingerprint: z.string().optional(),
+  lockedVisualDescription: z.string().optional(),
+  negativeConstraints: z.array(z.string()).optional(),
 });
 
 const chapterOutlineSchema = z.object({
@@ -154,7 +174,13 @@ const generatedImageEntrySchema = z.object({
 
 const generationProviderCallMetadataSchema = z.object({
   callIndex: z.number().int().positive(),
-  operation: z.enum(['character_profile', 'character_sheet', 'story', 'illustration']),
+  operation: z.enum([
+    'character_profile',
+    'character_sheet',
+    'story',
+    'story_repair',
+    'illustration',
+  ]),
   assetLabel: z.string().optional(),
   provider: z.enum(['mock', 'openai', 'unknown']),
   model: z.string().optional(),
@@ -174,14 +200,76 @@ const generationProviderUsageSchema = z.object({
   calls: z.array(generationProviderCallMetadataSchema),
 });
 
+const resumeDiagnosticsSchema = z.object({
+  resumeMode: z.boolean(),
+  requiredAssets: z.array(z.string()),
+  validExistingAssets: z.array(z.string()),
+  missingAssetsBeforeRetry: z.array(z.string()),
+  invalidAssetsBeforeRetry: z.array(z.string()),
+  reusedImageCount: z.number().int().nonnegative(),
+  regeneratedImageCount: z.number().int().nonnegative(),
+  skippedStoryGeneration: z.boolean(),
+  skippedCharacterProfileGeneration: z.boolean(),
+  skippedCharacterSheetGeneration: z.boolean(),
+  skippedExistingImageGeneration: z.boolean(),
+  missingAssetsAfterRetry: z.array(z.string()),
+  pdfRenderAttempted: z.boolean(),
+  pdfRenderSucceeded: z.boolean(),
+  finalBookStatus: z.nativeEnum(BookStatus),
+});
+
+const imageGenerationFailureDetailSchema = z.object({
+  assetLabel: z.string(),
+  provider: z.enum(['mock', 'openai', 'unknown']),
+  model: z.string().optional(),
+  httpStatus: z.number().int().optional(),
+  errorType: z.string().optional(),
+  errorCode: z.string().optional(),
+  message: z.string(),
+  attempts: z.number().int().nonnegative(),
+  limiterRetries: z.number().int().nonnegative(),
+  limiterWaitMs: z.number().nonnegative(),
+  characterReferenceSupplied: z.boolean(),
+  requestMode: z.enum(['text-to-image', 'character-reference-edit']),
+  timeoutMs: z.number().nonnegative().optional(),
+  elapsedMs: z.number().nonnegative().optional(),
+  retryDecision: z.string().optional(),
+});
+
 export const imageGenerationResultSchema = z.object({
   provider: z.literal('local_mock'),
   status: z.literal('complete'),
   images: z.array(generatedImageEntrySchema),
   createdAt: z.string(),
   imageByteProvider: z.string().nullable().optional(),
+  generatedImageCount: z.number().int().nonnegative().optional(),
+  failedImageCount: z.number().int().nonnegative().optional(),
+  lastImageError: z.string().optional(),
+  characterReferenceAvailable: z.boolean().optional(),
+  characterReferenceUsedForImages: z.boolean().optional(),
+  imageGenerationMode: z.enum(['text-to-image', 'character-reference-edit', 'mixed']).optional(),
+  characterReferenceLoadError: z.string().optional(),
+  resume: resumeDiagnosticsSchema.optional(),
+  imageFailures: z.array(imageGenerationFailureDetailSchema).optional(),
   providerUsage: generationProviderUsageSchema.optional(),
 });
+
+// Bidirectional type assertions make future shared/runtime drift fail the API
+// typecheck while retaining ordinary inferred Zod schemas at call sites.
+type Assert<T extends true> = T;
+type EqualContract<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type _CharacterProfileContract = Assert<
+  EqualContract<keyof z.infer<typeof characterProfileSchema>, keyof CharacterProfile>
+>;
+type _ImageGenerationResultContract = Assert<
+  EqualContract<keyof z.infer<typeof imageGenerationResultSchema>, keyof ImageGenerationResult>
+>;
+type _GenerationProviderOperationContract = Assert<
+  EqualContract<
+    z.infer<typeof generationProviderCallMetadataSchema>['operation'],
+    GenerationProviderOperation
+  >
+>;
 
 const layoutBoxSchema = z.object({
   x: z.number(),

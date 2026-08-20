@@ -8,6 +8,9 @@ import {
 } from './generation-artifact-namespace';
 import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generation-claim-artifacts';
 import { isCharacterFingerprintCompatible } from './character-appearance';
+import type { StoryGenerationResult } from './story-generation-provider';
+import { parsePersistedGenerationState } from './persisted-generation-state';
+import { Logger } from '@nestjs/common';
 
 export interface GenerationResumeBook {
   id: string;
@@ -28,6 +31,7 @@ export interface GenerationResumePlan {
   currentNamespace: ClaimArtifactNamespace;
   copyForwardSourceNamespace: GenerationArtifactNamespace | null;
   priorCharacterProfile: CharacterProfile | null;
+  reusableStory: StoryGenerationResult | null;
   priorSheet: {
     status: ResumeAssetStatus;
     key?: string;
@@ -50,6 +54,8 @@ export interface ImageReuseClassification {
  * outside this service.
  */
 export class GenerationResumeService {
+  private readonly logger = new Logger(GenerationResumeService.name);
+
   constructor(private readonly storage: ImageAssetStorage) {}
 
   async plan(
@@ -63,8 +69,15 @@ export class GenerationResumeService {
     // Resolve unconditionally so a malformed partial pointer always fails,
     // including on a fresh/non-resumable generation.
     const sourceNamespace = resolveLastGenerationNamespace(book);
-    const resumable = this.isResumable(book, inputHash);
-    const priorCharacterProfile = book.characterProfile as CharacterProfile | null;
+    const persisted = parsePersistedGenerationState(book);
+    const resumable =
+      book.lastGenerationInputHash === inputHash && persisted.reusableStory !== null;
+    if (book.lastGenerationInputHash === inputHash && persisted.invalidFields.length > 0) {
+      this.logger.warn(
+        `Book ${book.id}: reusable persisted generation JSON failed validation (${persisted.invalidFields.join(', ')}); starting safely from scratch.`,
+      );
+    }
+    const priorCharacterProfile = persisted.characterProfile;
     const fingerprintCompatible =
       priorCharacterProfile != null &&
       (referenceAssetRevision === undefined ||
@@ -84,6 +97,7 @@ export class GenerationResumeService {
       currentNamespace,
       copyForwardSourceNamespace,
       priorCharacterProfile,
+      reusableStory: resumable ? persisted.reusableStory : null,
       priorSheet,
       canReuseCharacterProfile: resumable && fingerprintCompatible,
     };
@@ -120,16 +134,6 @@ export class GenerationResumeService {
     );
 
     return { reusable, toGenerate, missing, invalid };
-  }
-
-  private isResumable(book: GenerationResumeBook, inputHash: string): boolean {
-    return (
-      book.lastGenerationInputHash === inputHash &&
-      book.storyPlan != null &&
-      book.characterCard != null &&
-      book.bookPreview != null &&
-      book.imageGenerationResult != null
-    );
   }
 
   private async resolveCharacterSheet(

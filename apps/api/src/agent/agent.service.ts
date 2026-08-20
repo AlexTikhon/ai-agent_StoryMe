@@ -8,12 +8,9 @@ import {
 } from '../images/image-generation-provider';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
-import { type BookPreview, type ImageGenerationResult, type QualityReport } from '@book/types';
 import {
   STORY_GENERATION_PROVIDER_TOKEN,
-  resolveTargetPageCount,
   type StoryGenerationProvider,
-  type StoryGenerationResult,
 } from './story-generation-provider';
 import {
   CHARACTER_PROFILE_PROVIDER_TOKEN,
@@ -29,20 +26,15 @@ import { resolvePublishedPdfNamespace } from './generation-artifact-namespace';
 import { bookLayoutStage } from './book-layout.stage';
 import { pdfPublicationStage } from './pdf-publication.stage';
 import {
-  GenerationProviderTelemetry,
-  requiredPaidProviderCallsForBook,
-  resolveMaxPaidProviderCallsPerRun,
-} from './generation-provider-telemetry';
-import { StoryContentStage } from './story-content.stage';
-import {
   CharacterReferenceStage,
   type CharacterBuildStageOutput,
 } from './character-reference.stage';
 import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage';
 import { GenerationResumeService } from './generation-resume.service';
 import { GenerationResultCollector } from './generation-result.collector';
-import { evaluateStoryQuality } from './story-quality-gate';
-import { resolveStoryRepairEnabled, StoryQualityRepairStage } from './story-quality-repair.stage';
+import { prepareGeneration } from './generation-preparation';
+import { StoryQualityService } from './story-quality.service';
+import { GenerationImageService } from './generation-image.service';
 
 /**
  * Generation-relevant input resolved once at the top of startBookGeneration
@@ -50,23 +42,12 @@ import { resolveStoryRepairEnabled, StoryQualityRepairStage } from './story-qual
  * from the Book row's live columns, which may have been edited since this
  * run was created (see GenerationExecutionContext's doc comment).
  */
-interface ResolvedGenerationInput {
-  childName: string;
-  childAge: number;
-  theme: string;
-  language: string;
-  pageCount: number | undefined;
-  educationalMessage: string | undefined;
-  childPhoto?: { assetKey: string; contentType: string; sha256: string; sizeBytes: number };
-}
-
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
-  private readonly storyContentStage: StoryContentStage;
-  private readonly storyQualityRepairStage: StoryQualityRepairStage;
+  private readonly storyQualityService: StoryQualityService;
   private readonly characterReferenceStage: CharacterReferenceStage;
-  private readonly imageGenerationStage: ImageGenerationStage;
+  private readonly generationImageService: GenerationImageService;
   private readonly generationResumeService: GenerationResumeService;
   private readonly generationResultCollector = new GenerationResultCollector();
 
@@ -82,26 +63,20 @@ export class AgentService {
     private readonly characterProfileProvider: CharacterProfileProvider,
     private readonly generationExecutionService: GenerationExecutionService,
   ) {
-    this.storyContentStage = new StoryContentStage(storyGenerationProvider);
-    this.storyQualityRepairStage = new StoryQualityRepairStage(storyGenerationProvider);
+    this.storyQualityService = new StoryQualityService(storyGenerationProvider);
     this.characterReferenceStage = new CharacterReferenceStage(
       imageAssetStorage,
       characterProfileProvider,
       imageGenerationProvider,
     );
-    this.imageGenerationStage = new ImageGenerationStage(
-      imageAssetStorage,
+    this.generationResumeService = new GenerationResumeService(imageAssetStorage);
+    this.generationImageService = new GenerationImageService(
+      this.characterReferenceStage,
+      new ImageGenerationStage(imageAssetStorage, imageGenerationProvider),
+      this.generationResumeService,
+      this.generationResultCollector,
       imageGenerationProvider,
     );
-    this.generationResumeService = new GenerationResumeService(imageAssetStorage);
-  }
-
-  /** Safe label for Book.aiModelVersions — never empty, never a secret ('mock' when no real model applies). */
-  private modelLabel(provider: {
-    readonly providerName?: string;
-    readonly modelName?: string;
-  }): string {
-    return provider.modelName ?? provider.providerName ?? 'unknown';
   }
 
   /**
@@ -147,50 +122,23 @@ export class AgentService {
     const traceId = randomUUID();
     const startedAt = Date.now();
     const inputHash = ctx.inputHash;
-    const snapshot = ctx.inputSnapshot;
-    const childName = snapshot.childName ?? 'Alex';
-    const childAge = snapshot.childAge ?? 6;
-    const theme = snapshot.theme ?? 'adventure';
-    const language = snapshot.language ?? 'en';
-    const pageCount = snapshot.pageCount ?? undefined;
-    const educationalMessage = snapshot.educationalMessage ?? undefined;
-    const resolvedInput: ResolvedGenerationInput = {
-      childName,
-      childAge,
-      theme,
-      language,
-      pageCount,
-      educationalMessage,
-      ...(snapshot.childPhoto && {
-        childPhoto: {
-          assetKey: snapshot.childPhoto.assetKey,
-          contentType: snapshot.childPhoto.contentType,
-          sha256: snapshot.childPhoto.sha256,
-          sizeBytes: snapshot.childPhoto.sizeBytes,
-        },
-      }),
-    };
-
-    const storyProviderName = this.storyGenerationProvider.providerName ?? null;
-    const storyModelName = this.storyGenerationProvider.modelName ?? null;
-    const imageProviderName = this.imageGenerationProvider.providerName ?? null;
-    const imageModelName = this.imageGenerationProvider.modelName ?? null;
-    const targetPageCount = resolveTargetPageCount(pageCount);
-    const storyRepairEnabled = resolveStoryRepairEnabled();
-    const plannedPaidCalls = requiredPaidProviderCallsForBook(targetPageCount, {
-      storyProvider: this.storyGenerationProvider.providerName,
-      characterProfileProvider: this.characterProfileProvider.providerName,
-      imageProvider: this.imageGenerationProvider.providerName,
-      storyRepairEnabled,
+    const prepared = prepareGeneration(ctx, {
+      story: this.storyGenerationProvider,
+      image: this.imageGenerationProvider,
+      character: this.characterProfileProvider,
     });
-    const providerTelemetry = new GenerationProviderTelemetry(
-      resolveMaxPaidProviderCallsPerRun(),
-      plannedPaidCalls,
-    );
-    const aiModelVersions = {
-      story: this.modelLabel(this.storyGenerationProvider),
-      image: this.modelLabel(this.imageGenerationProvider),
-    };
+    const {
+      input: resolvedInput,
+      targetPageCount,
+      storyRepairEnabled,
+      providerTelemetry,
+      storyProviderName,
+      storyModelName,
+      imageProviderName,
+      imageModelName,
+      aiModelVersions,
+    } = prepared;
+    const { childName, childAge, theme, language, pageCount, educationalMessage } = resolvedInput;
 
     // Phase B, Slice B3: this attempt's own claim namespace — every new
     // character sheet/image this run writes lands here, never derived from
@@ -204,6 +152,7 @@ export class AgentService {
       currentNamespace,
       copyForwardSourceNamespace,
       priorCharacterProfile,
+      reusableStory,
       priorSheet,
       canReuseCharacterProfile,
     } = await this.generationResumeService.plan(
@@ -211,7 +160,7 @@ export class AgentService {
       inputHash,
       ctx.runId,
       ctx.fencingVersion,
-      snapshot.childPhoto?.sha256 ?? null,
+      resolvedInput.childPhoto?.sha256 ?? null,
     );
     const priorSheetStatus = priorSheet.status;
 
@@ -279,66 +228,49 @@ export class AgentService {
       `Character profile built for book ${book.id}: provider=${charBuildResult.providerName ?? 'unknown'} hasReferencePhoto=${characterProfile.hasReferencePhoto} hasCharacterSheet=${characterProfile.hasCharacterSheet}.`,
     );
 
-    let characterCard: StoryGenerationResult['characterCard'];
-    let storyPlanFinal: StoryGenerationResult['storyPlan'];
-    let bookPreview: BookPreview;
-    let imageGenerationResult: ImageGenerationResult;
-    let skippedStoryGeneration = false;
-    let storyDurationMs: number;
+    const storyPhase = await this.storyQualityService.execute({
+      generationInput: {
+        bookId: book.id,
+        childName,
+        childAge,
+        theme,
+        language,
+        pageCount,
+        educationalMessage,
+        characterProfile,
+      },
+      reusableStory: resumable ? reusableStory : null,
+      targetPageCount,
+      repairEnabled: storyRepairEnabled,
+      telemetry: providerTelemetry,
+      generationStartedAt: startedAt,
+      beforeStoryGeneration: () =>
+        this.generationExecutionService.markStep(ctx, AgentStep.story_plan),
+      beforeQualityReview: async () => {
+        this.assertNotSuperseded(ctx, AgentStep.qa_review);
+        await this.generationExecutionService.markStep(ctx, AgentStep.qa_review);
+      },
+    });
 
-    if (resumable) {
-      characterCard = book.characterCard as unknown as StoryGenerationResult['characterCard'];
-      storyPlanFinal = book.storyPlan as unknown as StoryGenerationResult['storyPlan'];
-      bookPreview = book.bookPreview as unknown as BookPreview;
-      imageGenerationResult = book.imageGenerationResult as unknown as ImageGenerationResult;
-      skippedStoryGeneration = true;
-      storyDurationMs = 0;
-      this.logger.log(
-        `Resuming book ${book.id}: reusing existing story plan/preview/image plan — skipping story generation.`,
-      );
-    } else {
-      try {
-        await this.generationExecutionService.markStep(ctx, AgentStep.story_plan);
-        const storyPromptInput = {
-          bookId: book.id,
-          childName,
-          childAge,
-          theme,
-          language,
-          pageCount,
-          educationalMessage,
-          characterProfile,
-        };
-        const result = await this.storyContentStage.execute({
-          prompt: storyPromptInput,
-          targetPageCount,
-          telemetry: providerTelemetry,
-        });
-        characterCard = result.characterCard;
-        storyPlanFinal = result.storyPlan;
-        bookPreview = result.bookPreview;
-        imageGenerationResult = result.imageGenerationResult;
-      } catch (err) {
-        // Cancellation/reclaim fencing is an expected control-flow signal,
-        // not a story-provider failure. Let BookGenerationExecutionService
-        // classify it as an abandoned attempt at warn severity.
-        if (err instanceof StaleGenerationRunError) throw err;
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`Story generation failed for book ${book.id}: ${message}`);
-        return this.generationResultCollector.collectStoryFailureOutcome({
-          bookId: book.id,
-          traceId,
-          generationTimeMs: Date.now() - startedAt,
-          aiModelVersions,
-          characterProfileUpdateData,
-          charBuildResult,
-          storyProviderName,
-          storyModelName,
-          errorMessage: message,
-        });
-      }
-      storyDurationMs = Date.now() - startedAt;
+    if (storyPhase.kind === 'story_failure') {
+      this.logger.error(`Story generation failed for book ${book.id}: ${storyPhase.errorMessage}`);
+      return this.generationResultCollector.collectStoryFailureOutcome({
+        bookId: book.id,
+        traceId,
+        generationTimeMs: Date.now() - startedAt,
+        aiModelVersions,
+        characterProfileUpdateData,
+        charBuildResult,
+        storyProviderName,
+        storyModelName,
+        errorMessage: storyPhase.errorMessage,
+      });
     }
+
+    const { story, qualityReport, skippedStoryGeneration, storyDurationMs, qualityDurationMs } =
+      storyPhase;
+    const { characterCard, storyPlan: storyPlanFinal, bookPreview } = story;
+    let { imageGenerationResult } = story;
 
     this.logger.log(
       skippedStoryGeneration
@@ -346,103 +278,7 @@ export class AgentService {
         : `Story generated for book ${book.id}: ${bookPreview.pages.length} pages, ${imageGenerationResult.images.length} illustrations planned (cover + pages + back cover).`,
     );
 
-    this.assertNotSuperseded(ctx, AgentStep.qa_review);
-    await this.generationExecutionService.markStep(ctx, AgentStep.qa_review);
-    const qualityStartedAt = Date.now();
-    let qualityReport: QualityReport = evaluateStoryQuality(
-      {
-        characterCard,
-        storyPlan: storyPlanFinal,
-        bookPreview,
-        imageGenerationResult,
-      },
-      {
-        childName,
-        childAge,
-        language,
-        theme,
-        ...(educationalMessage !== undefined && { educationalMessage }),
-      },
-    );
-
-    const repairableQualityFailure =
-      !qualityReport.overallPassed &&
-      qualityReport.issues
-        .filter((finding) => finding.severity === 'error')
-        .every((finding) => finding.repairable);
-    if (
-      storyRepairEnabled &&
-      repairableQualityFailure &&
-      this.storyGenerationProvider.repairStory
-    ) {
-      try {
-        const repaired = await this.storyQualityRepairStage.execute({
-          repairInput: {
-            generationInput: {
-              bookId: book.id,
-              childName,
-              childAge,
-              theme,
-              language,
-              pageCount,
-              educationalMessage,
-              characterProfile,
-            },
-            candidate: {
-              characterCard,
-              storyPlan: storyPlanFinal,
-              bookPreview,
-              imageGenerationResult,
-            },
-            qualityReport,
-          },
-          targetPageCount,
-          telemetry: providerTelemetry,
-        });
-        const repairedReport = evaluateStoryQuality(repaired, {
-          childName,
-          childAge,
-          language,
-          theme,
-          ...(educationalMessage !== undefined && { educationalMessage }),
-        });
-        const repairProviderCall = providerTelemetry
-          .snapshot()
-          .calls.filter((call) => call.operation === 'story_repair')
-          .at(-1);
-        qualityReport = {
-          ...repairedReport,
-          repair: {
-            attempted: true,
-            outcome: repairedReport.overallPassed ? 'passed' : 'failed_validation',
-            ...(repairProviderCall && { providerCall: repairProviderCall }),
-          },
-        };
-        if (qualityReport.overallPassed) {
-          characterCard = repaired.characterCard;
-          storyPlanFinal = repaired.storyPlan;
-          bookPreview = repaired.bookPreview;
-          imageGenerationResult = repaired.imageGenerationResult;
-        }
-      } catch {
-        const repairProviderCall = providerTelemetry
-          .snapshot()
-          .calls.filter((call) => call.operation === 'story_repair')
-          .at(-1);
-        qualityReport = {
-          ...qualityReport,
-          repair: {
-            attempted: true,
-            outcome: 'provider_error',
-            ...(repairProviderCall && { providerCall: repairProviderCall }),
-          },
-        };
-        this.logger.warn(`Book ${book.id}: bounded story repair failed.`);
-      }
-    }
-
-    const qualityDurationMs = Date.now() - qualityStartedAt;
-    if (!qualityReport.overallPassed) {
+    if (storyPhase.kind === 'quality_failure') {
       this.logger.warn(
         `Book ${book.id} failed deterministic quality review with ${qualityReport.issues.length} finding(s).`,
       );
@@ -469,73 +305,29 @@ export class AgentService {
     this.assertNotSuperseded(ctx, AgentStep.image_gen);
     await this.generationExecutionService.markStep(ctx, AgentStep.image_gen);
 
-    const imageStartedAt = Date.now();
-
-    const { reference: characterReference, loadError: characterReferenceLoadError } =
-      await this.characterReferenceStage.loadReference(book.id, charBuildResult.characterSheetKey);
-    const characterReferenceAvailable = characterReference !== undefined;
-
-    // Idempotent resume: only call the image provider for entries whose
-    // current-claim bytes are missing or invalid and no source copy-forward
-    // resolves them either; entries with a valid current-claim asset (or a
-    // valid, successfully copy-forwarded source one — see
-    // GenerationResumeService.classifyImages/generation-claim-artifacts.ts) are reused
-    // untouched. On a fresh book/claim nothing is saved yet and
-    // `copyForwardSourceNamespace` is `null` unless resumable, so every
-    // entry naturally lands in `imagesNeedingGeneration` on a from-scratch
-    // run — this is also the ordinary fresh-generation path, not just
-    // resume.
-    const {
-      reusable: reusableImages,
-      toGenerate: imagesNeedingGeneration,
-      missing: missingImagesBefore,
-      invalid: invalidImagesBefore,
-    } = await this.generationResumeService.classifyImages(
-      book.id,
-      imageGenerationResult.images,
-      currentNamespace,
-      copyForwardSourceNamespace,
-    );
-
-    if (reusableImages.length > 0) {
-      this.logger.log(
-        `Book ${book.id}: reusing ${reusableImages.length} already-generated illustration(s) (${reusableImages
-          .map(imageAssetLabel)
-          .join(', ')}); generating ${imagesNeedingGeneration.length} remaining.`,
-      );
-    }
-
-    const imageGeneration = await this.imageGenerationStage.execute({
+    const imagePhase = await this.generationImageService.execute({
       bookId: book.id,
+      ...(charBuildResult.characterSheetKey !== undefined && {
+        characterSheetKey: charBuildResult.characterSheetKey,
+      }),
       characterCard,
-      images: imagesNeedingGeneration,
-      ...(characterReference && { characterReference }),
-      namespace: currentNamespace,
+      result: imageGenerationResult,
+      currentNamespace,
+      sourceNamespace: copyForwardSourceNamespace,
+      imageProviderName,
       telemetry: providerTelemetry,
     });
-    const { generatedCount, failedCount, usedCharacterReference } = imageGeneration;
-
-    const rateLimitDiagnostics = this.imageGenerationProvider.getRateLimitDiagnostics?.();
-    const rateLimitSummary = rateLimitDiagnostics
-      ? ` rateLimit: requestsQueued=${rateLimitDiagnostics.requestsQueued} totalWaitMs=${rateLimitDiagnostics.totalWaitMs} rateLimitHits=${rateLimitDiagnostics.rateLimitHits} retriesUsed=${rateLimitDiagnostics.retriesUsed} retryAfterHonored=${rateLimitDiagnostics.retryAfterHonoredCount}.`
-      : '';
-    this.logger.log(
-      `Image generation for book ${book.id}: ${generatedCount} generated, ${reusableImages.length} reused, ${failedCount} failed, ${imageGenerationResult.images.length} planned, characterReferenceAvailable=${characterReferenceAvailable}, characterReferenceUsedForImages=${usedCharacterReference}.${rateLimitSummary}`,
-    );
-
-    imageGenerationResult = this.generationResultCollector.collectImageResult({
-      result: imageGenerationResult,
-      imageProviderName,
-      reusableImageCount: reusableImages.length,
-      attemptedImageCount: imagesNeedingGeneration.length,
-      generation: imageGeneration,
-      characterReferenceAvailable,
-      characterReferenceSupplied: characterReference !== undefined,
-      ...(characterReferenceLoadError !== undefined && { characterReferenceLoadError }),
-      providerUsage: providerTelemetry.snapshot(),
-    });
-
-    const imageDurationMs = Date.now() - imageStartedAt;
+    imageGenerationResult = imagePhase.imageGenerationResult;
+    const {
+      characterReference,
+      reusableImages,
+      missingImagesBefore,
+      invalidImagesBefore,
+      generatedCount,
+      failedCount,
+      attemptedImageCount,
+      imageDurationMs,
+    } = imagePhase;
     await this.generationExecutionService.markStep(ctx, bookLayoutStage.step);
     const layoutStartedAt = Date.now();
     const bookLayout = bookLayoutStage.execute({
@@ -695,7 +487,7 @@ export class AgentService {
       layoutDurationMs,
       pdfDurationMs,
       failedImageCount: failedCount,
-      attemptedImageCount: imagesNeedingGeneration.length,
+      attemptedImageCount,
       layoutStep: bookLayoutStage.step,
       pdfStep: pdfPublicationStage.step,
     });
