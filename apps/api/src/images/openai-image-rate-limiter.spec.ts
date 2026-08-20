@@ -8,6 +8,7 @@ import {
   DEFAULT_OPENAI_IMAGE_RETRY_BASE_MS,
   DEFAULT_OPENAI_IMAGE_RETRY_MAX_MS,
 } from './openai-image-rate-limiter';
+import { ProviderCancellationError } from '../common/provider-execution';
 
 /**
  * A fake clock/sleeper pair: sleep(ms) instantly advances the fake clock by
@@ -109,6 +110,61 @@ describe('parseRetryAfterMs', () => {
 });
 
 describe('OpenAIImageRateLimiter', () => {
+  it('aborts a queued request promptly, never dispatches it, and preserves following queue work', async () => {
+    const limiter = new OpenAIImageRateLimiter({ minIntervalMs: 0 });
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve));
+    const first = limiter.schedule('first', async () => {
+      await firstGate;
+      return okResponse();
+    });
+    const controller = new AbortController();
+    const cancelledDispatch = vi.fn().mockResolvedValue(okResponse());
+    const cancelled = limiter.schedule('cancelled', cancelledDispatch, {
+      signal: controller.signal,
+    });
+    const followingDispatch = vi.fn().mockResolvedValue(okResponse());
+    const following = limiter.schedule('following', followingDispatch);
+
+    controller.abort();
+    await expect(cancelled).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(cancelledDispatch).not.toHaveBeenCalled();
+    releaseFirst();
+    await first;
+    await following;
+    expect(cancelledDispatch).not.toHaveBeenCalled();
+    expect(followingDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts spacing wait before dispatch', async () => {
+    const sleep = vi.fn(() => new Promise<void>(() => undefined));
+    const limiter = new OpenAIImageRateLimiter({ minIntervalMs: 1000, now: () => 0, sleep });
+    await limiter.schedule('first', async () => okResponse());
+    const controller = new AbortController();
+    const dispatch = vi.fn().mockResolvedValue(okResponse());
+    const promise = limiter.schedule('second', dispatch, { signal: controller.signal });
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(promise).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('aborts Retry-After wait without another dispatch', async () => {
+    const sleep = vi.fn(() => new Promise<void>(() => undefined));
+    const limiter = new OpenAIImageRateLimiter({ minIntervalMs: 0, maxRetries: 2, sleep });
+    const controller = new AbortController();
+    const dispatch = vi.fn().mockResolvedValue(rateLimitedResponse('30'));
+    const promise = limiter.schedule('image', dispatch, { signal: controller.signal });
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(promise).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
   it('serializes requests: a second schedule() call does not dispatch until the first resolves', async () => {
     const clock = makeFakeClock();
     const limiter = new OpenAIImageRateLimiter({

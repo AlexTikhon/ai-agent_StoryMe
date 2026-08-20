@@ -7,6 +7,7 @@ import {
 import { generateMockImagePng } from './mock-image-producer';
 import type { ImageAssetContentType } from './image-asset-storage';
 import { MockFailureController } from '../config/mock-failure';
+import type { ProviderExecutionOptions } from '../common/provider-execution';
 
 /**
  * A generated, stylized character-sheet reference image (never the original
@@ -105,8 +106,14 @@ export interface ImageGenerationProvider {
   readonly modelName?: string;
   /** Version of the provider's image prompt contract. */
   readonly promptVersion?: string;
-  generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput>;
-  generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput>;
+  generateImage(
+    input: ImageGenerationInput,
+    options?: ProviderExecutionOptions,
+  ): Promise<ImageGenerationOutput>;
+  generateCharacterSheet(
+    input: CharacterSheetInput,
+    options?: ProviderExecutionOptions,
+  ): Promise<ImageGenerationOutput>;
   /** Safe (no secrets/prompts/bytes) rate-limiter diagnostics snapshot, if this provider is rate-limited. Only OpenAIImageGenerationProvider implements this. */
   getRateLimitDiagnostics?(): {
     requestsQueued: number;

@@ -2242,3 +2242,44 @@ R2 egress: **$0** (included in CDN).
 
 _This architecture document was designed to serve millions of users at production scale._
 _Version 1.0 — Ready for implementation by an engineering team of 3–5 engineers._
+
+---
+
+## Current AI generation invariants (Phase 10)
+
+Historical agent-oriented sections above are not the runtime orchestration
+contract. The current pipeline is a deterministic durable sequence backed by a
+PostgreSQL `GenerationRun`, transactional outbox, BullMQ worker, deterministic
+quality gate with at most one bounded repair, deterministic layout, PDF render,
+and fenced atomic publication.
+
+### Visual identity
+
+`CharacterProfile` is authoritative. `canonicalAppearance`,
+`characterFingerprint`, `lockedVisualDescription`, and `negativeConstraints`
+are finalized before story generation. A deterministic factory projects that
+profile into `CharacterCard`; the story v2 model cannot output or repair age,
+hair, eyes, face, clothing, art style, or other visual identity. Legacy
+`CharacterCard.appearance` JSON remains readable but is not generated or used in
+prompts. Every cover, page, back cover, character sheet, and page regeneration
+uses the same canonical identity block.
+
+### Cooperative cancellation and fencing
+
+Heartbeat loss aborts the execution signal, which is propagated through stages,
+provider interfaces, the OpenAI image queue, spacing/Retry-After/backoff waits,
+and HTTP fetch. A typed cancellation propagates out of broad provider-fallback
+and partial-failure catches. This reduces latency and paid work only; delivery
+tokens, fencing versions, `applyFencedBookWrite`, the run coordinator, stale
+write rejection, and transactional publication remain authoritative.
+
+### Prompt evaluation
+
+`pnpm --filter @book/api eval:story:mock` runs the free deterministic synthetic
+regression matrix and fails on structure, quality, page-count, or character
+consistency regressions. `eval:story:openai` is strictly guarded by
+`RUN_PAID_AI_EVALS=true`, a five-case hard cap, and existing paid-call budget;
+it is not referenced by normal CI, tests, builds, or e2e. Reports contain safe
+metadata, prompt version/hash, issue codes, repair status, latency, and optional
+configured cost estimates—never prompt text, raw provider responses, photos, or
+credentials.

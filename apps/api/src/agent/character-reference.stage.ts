@@ -12,6 +12,11 @@ import {
 import type { ClaimArtifactNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import type { GenerationStage } from './generation-stage';
+import {
+  isProviderCancellationError,
+  providerExecutionArgs,
+  throwIfAborted,
+} from '../common/provider-execution';
 
 export interface CharacterReferenceInput {
   childName: string;
@@ -31,6 +36,7 @@ export interface CharacterBuildStageInput {
   input: CharacterReferenceInput;
   namespace: ClaimArtifactNamespace;
   telemetry: GenerationProviderTelemetry;
+  signal?: AbortSignal | undefined;
 }
 
 export interface CharacterBuildStageOutput {
@@ -47,6 +53,7 @@ export interface CharacterSheetRegenerationInput {
   characterProfile: CharacterProfile;
   namespace: ClaimArtifactNamespace;
   telemetry: GenerationProviderTelemetry;
+  signal?: AbortSignal | undefined;
 }
 
 export interface CharacterSheetRegenerationOutput {
@@ -95,6 +102,7 @@ export class CharacterReferenceStage implements GenerationStage<
     input,
     namespace,
     telemetry,
+    signal,
   }: CharacterBuildStageInput): Promise<CharacterBuildStageOutput> {
     const startedAt = Date.now();
     const { childName, childAge, theme, language } = input;
@@ -126,17 +134,22 @@ export class CharacterReferenceStage implements GenerationStage<
         promptVersion: promptVersion(this.profileProvider, 'legacy-character-profile-v1'),
         promptInput: profilePromptInput,
         execute: () =>
-          this.profileProvider.buildProfile({
-            bookId,
-            childName,
-            childAge,
-            theme,
-            language,
-            photo,
-            referenceAssetRevision: input.childPhoto?.sha256,
-          }),
+          this.profileProvider.buildProfile(
+            {
+              bookId,
+              childName,
+              childAge,
+              theme,
+              language,
+              photo,
+              referenceAssetRevision: input.childPhoto?.sha256,
+            },
+            ...providerExecutionArgs(signal),
+          ),
       });
     } catch (err) {
+      throwIfAborted(signal);
+      if (isProviderCancellationError(err)) throw err;
       error = err instanceof Error ? err.message : String(err);
       this.logger.warn(
         `Character profile provider failed for book ${bookId}: ${error}. Falling back to a generic profile.`,
@@ -147,31 +160,39 @@ export class CharacterReferenceStage implements GenerationStage<
         promptVersion: promptVersion(this.fallbackProfileProvider, 'fallback-character-profile-v1'),
         promptInput: profilePromptInput,
         execute: () =>
-          this.fallbackProfileProvider.buildProfile({
-            bookId,
-            childName,
-            childAge,
-            theme,
-            language,
-            photo,
-            referenceAssetRevision: input.childPhoto?.sha256,
-          }),
+          this.fallbackProfileProvider.buildProfile(
+            {
+              bookId,
+              childName,
+              childAge,
+              theme,
+              language,
+              photo,
+              referenceAssetRevision: input.childPhoto?.sha256,
+            },
+            ...providerExecutionArgs(signal),
+          ),
       });
       resolvedProviderName = 'mock';
     }
 
     let characterSheetKey: string | undefined;
     try {
+      throwIfAborted(signal);
       const { buffer, contentType } = await this.generateCharacterSheet(
         bookId,
         characterProfile,
         telemetry,
+        signal,
       );
+      throwIfAborted(signal);
       const key = claimCharacterSheetAssetKey(bookId, namespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
       characterSheetKey = key;
       characterProfile = { ...characterProfile, hasCharacterSheet: true };
     } catch (err) {
+      throwIfAborted(signal);
+      if (isProviderCancellationError(err)) throw err;
       const sheetError = err instanceof Error ? err.message : String(err);
       this.logger.warn(
         `Character sheet generation/save failed for book ${bookId}: ${sheetError}. Continuing without a character sheet reference image.`,
@@ -193,14 +214,18 @@ export class CharacterReferenceStage implements GenerationStage<
     characterProfile,
     namespace,
     telemetry,
+    signal,
   }: CharacterSheetRegenerationInput): Promise<CharacterSheetRegenerationOutput> {
     const startedAt = Date.now();
     try {
+      throwIfAborted(signal);
       const { buffer, contentType } = await this.generateCharacterSheet(
         bookId,
         characterProfile,
         telemetry,
+        signal,
       );
+      throwIfAborted(signal);
       const key = claimCharacterSheetAssetKey(bookId, namespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
       return {
@@ -209,6 +234,8 @@ export class CharacterReferenceStage implements GenerationStage<
         durationMs: Date.now() - startedAt,
       };
     } catch (err) {
+      throwIfAborted(signal);
+      if (isProviderCancellationError(err)) throw err;
       const sheetError = err instanceof Error ? err.message : String(err);
       this.logger.warn(
         `Character sheet regeneration/save failed for book ${bookId} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
@@ -271,6 +298,7 @@ export class CharacterReferenceStage implements GenerationStage<
     bookId: string,
     characterProfile: CharacterProfile,
     telemetry: GenerationProviderTelemetry,
+    signal?: AbortSignal,
   ) {
     return telemetry.record({
       operation: 'character_sheet',
@@ -279,10 +307,13 @@ export class CharacterReferenceStage implements GenerationStage<
       promptVersion: promptVersion(this.imageProvider, 'legacy-image-v1'),
       promptInput: { bookId, characterProfile },
       execute: () =>
-        this.imageProvider.generateCharacterSheet({
-          bookId,
-          characterProfile,
-        }),
+        this.imageProvider.generateCharacterSheet(
+          {
+            bookId,
+            characterProfile,
+          },
+          ...providerExecutionArgs(signal),
+        ),
     });
   }
 }

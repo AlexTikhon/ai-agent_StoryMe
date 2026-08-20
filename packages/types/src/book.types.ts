@@ -33,20 +33,18 @@ export interface CharacterPersonality {
   hobbies: string[];
 }
 
-/**
- * The primary output of the CharacterBuilderAgent.
- * `visualAnchor` is the canonical single-sentence description prepended to every image prompt.
- */
+/** Deterministic story-facing projection of the canonical CharacterProfile. */
 export interface CharacterCard {
   name: string;
   nickname?: string;
   age: number;
   pronouns: Pronouns;
-  appearance: CharacterAppearance;
+  /** @deprecated Legacy persisted metadata. New generation does not fabricate unavailable traits. */
+  appearance?: CharacterAppearance;
   personality: CharacterPersonality;
-  /** Canonical image-prompt fragment; prepended to every illustration prompt. */
+  /** Canonical CharacterProfile.lockedVisualDescription projection. */
   visualAnchor: string;
-  /** Full prose description for LLM story context. */
+  /** Non-visual personality/story context derived from CharacterProfile. */
   narrativeDescription: string;
 }
 

@@ -39,7 +39,7 @@ export const characterCardSchema = z.object({
   nickname: z.string().optional(),
   age: z.number(),
   pronouns: z.nativeEnum(Pronouns),
-  appearance: characterAppearanceSchema,
+  appearance: characterAppearanceSchema.optional(),
   personality: characterPersonalitySchema,
   visualAnchor: z.string(),
   narrativeDescription: z.string(),

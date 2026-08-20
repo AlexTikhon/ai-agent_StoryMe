@@ -56,7 +56,15 @@ describe('MockStoryGenerationProvider', () => {
       const provider = new MockStoryGenerationProvider();
 
       const base = await provider.generateStory(makeInput());
-      const differentChild = await provider.generateStory(makeInput({ childName: 'Leo' }));
+      const differentChild = await provider.generateStory(
+        makeInput({
+          childName: 'Leo',
+          characterProfile: finalizeCharacterProfile({
+            ...DEFAULT_CHARACTER_PROFILE,
+            childName: 'Leo',
+          }),
+        }),
+      );
       const differentTheme = await provider.generateStory(makeInput({ theme: 'courage' }));
 
       expect(differentChild.characterCard.name).toBe('Leo');

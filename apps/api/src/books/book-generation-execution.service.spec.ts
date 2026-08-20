@@ -10,6 +10,7 @@ import {
   GenerationRunMirrorInvariantError,
 } from '../agent/generation-run-coordinator.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
+import { ProviderCancellationError } from '../common/provider-execution';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
 
 const SNAPSHOT = {
@@ -121,6 +122,13 @@ describe('BookGenerationExecutionService', () => {
 
     await expect(service.runGenerationPipeline(CTX)).resolves.toBeUndefined();
 
+    expect(coordinator.completeRun).not.toHaveBeenCalled();
+  });
+
+  it('quietly abandons cooperative provider cancellation without publication', async () => {
+    agent.startBookGeneration.mockRejectedValue(new ProviderCancellationError());
+
+    await expect(service.runGenerationPipeline(CTX)).resolves.toBeUndefined();
     expect(coordinator.completeRun).not.toHaveBeenCalled();
   });
 

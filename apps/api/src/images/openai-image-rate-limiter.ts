@@ -1,4 +1,10 @@
 import { Logger } from '@nestjs/common';
+import type { ProviderExecutionOptions } from '../common/provider-execution';
+import {
+  cancellableSleep,
+  ProviderCancellationError,
+  throwIfAborted,
+} from '../common/provider-execution';
 
 export const DEFAULT_OPENAI_IMAGE_MIN_INTERVAL_MS = 15_000;
 export const DEFAULT_OPENAI_IMAGE_MAX_RETRIES = 5;
@@ -68,14 +74,14 @@ export interface OpenAIImageRateLimiterOptions extends Partial<OpenAIImageRateLi
   /** Injectable clock for tests; defaults to Date.now. */
   now?: () => number;
   /** Injectable sleeper for tests; defaults to a real setTimeout-based delay. */
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Injectable jitter source (0-1) for tests; defaults to Math.random. */
   random?: () => number;
   logger?: Logger;
 }
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return cancellableSleep(ms, signal);
 }
 
 /**
@@ -123,7 +129,7 @@ export class OpenAIImageRateLimiter {
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
   private readonly now: () => number;
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly random: () => number;
   private readonly logger: Logger;
 
@@ -164,23 +170,33 @@ export class OpenAIImageRateLimiter {
    * non-2xx status, so 429s can be inspected here) — a thrown error (network/
    * timeout) propagates immediately without an extra retry at this layer.
    */
-  schedule(label: string, dispatch: () => Promise<Response>): Promise<Response> {
+  schedule(
+    label: string,
+    dispatch: () => Promise<Response>,
+    options: ProviderExecutionOptions = {},
+  ): Promise<Response> {
     this.diagnostics.requestsQueued++;
-    const run = this.queueTail.then(() => this.runSlot(label, dispatch));
+    const run = this.queueTail.then(() => this.runSlot(label, dispatch, options.signal));
     // Keep the chain alive regardless of this request's outcome so a failure
     // never wedges every subsequent queued request.
     this.queueTail = run.then(
       () => undefined,
       () => undefined,
     );
-    return run;
+    return this.raceWithCancellation(run, options.signal);
   }
 
-  private async runSlot(label: string, dispatch: () => Promise<Response>): Promise<Response> {
-    await this.waitForSpacing(label);
+  private async runSlot(
+    label: string,
+    dispatch: () => Promise<Response>,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    throwIfAborted(signal);
+    await this.waitForSpacing(label, signal);
 
     const maxAttempts = this.maxRetries + 1;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      throwIfAborted(signal);
       const response = await dispatch();
       if (response.status !== 429) return response;
 
@@ -194,23 +210,24 @@ export class OpenAIImageRateLimiter {
 
       this.diagnostics.retriesUsed++;
       const retryAfterMs = parseRetryAfterMs(response.headers?.get('retry-after'), this.now);
-      await this.waitBeforeRetry(label, attempt, retryAfterMs);
+      await this.waitBeforeRetry(label, attempt, retryAfterMs, signal);
     }
 
     /* istanbul ignore next -- loop above always returns */
     throw new Error('unreachable');
   }
 
-  private async waitForSpacing(label: string): Promise<void> {
+  private async waitForSpacing(label: string, signal?: AbortSignal): Promise<void> {
     const now = this.now();
     if (this.lastDispatchAt !== undefined) {
       const waitMs = this.minIntervalMs - (now - this.lastDispatchAt);
       if (waitMs > 0) {
         this.diagnostics.totalWaitMs += waitMs;
         this.logger.log(`${label}: waiting ${waitMs}ms for the OpenAI image rate limit`);
-        await this.sleep(waitMs);
+        await this.sleepWithCancellation(waitMs, signal);
       }
     }
+    throwIfAborted(signal);
     this.lastDispatchAt = this.now();
   }
 
@@ -218,6 +235,7 @@ export class OpenAIImageRateLimiter {
     label: string,
     attempt: number,
     retryAfterMs: number | undefined,
+    signal?: AbortSignal,
   ): Promise<void> {
     let waitMs: number;
     if (retryAfterMs !== undefined) {
@@ -230,7 +248,35 @@ export class OpenAIImageRateLimiter {
     this.logger.warn(
       `${label}: HTTP 429 (rate limited), waiting ${waitMs}ms before retry ${attempt + 1}/${this.maxRetries + 1} (retryAfterHonored=${retryAfterMs !== undefined})`,
     );
-    await this.sleep(waitMs);
+    await this.sleepWithCancellation(waitMs, signal);
+  }
+
+  private sleepWithCancellation(ms: number, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    return this.raceWithCancellation(this.sleep(ms, signal), signal);
+  }
+
+  private raceWithCancellation<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return promise;
+    throwIfAborted(signal);
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener('abort', onAbort);
+        reject(new ProviderCancellationError(signal.reason));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      promise.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
+    });
   }
 
   /** Exponential backoff bounded by retryMaxMs, plus up to 20% jitter (also bounded by retryMaxMs) so retries don't all land on the same instant. */

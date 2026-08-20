@@ -32,7 +32,9 @@
     "e2e:seed": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/e2e-fixtures.ts seed",
     "e2e:cleanup": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/e2e-fixtures.ts cleanup",
     "start:e2e": "prisma migrate deploy && pnpm e2e:seed && nest start",
-    "migrate:target-guard": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/migrate-target-guard.ts"
+    "migrate:target-guard": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/migrate-target-guard.ts",
+    "eval:story:mock": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts mock",
+    "eval:story:openai": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts openai"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.632.0",

@@ -321,8 +321,7 @@ still use `MockStoryGenerationProvider` with zero network calls.
   real network call ever happens in the suite.
 - **Validation** — the model's JSON content is parsed and validated with a
   `zod` schema (`zod` was already a dependency) requiring `title`,
-  `theme`, `educationalMessage`, `openingHook`, `resolution`, a
-  `characterCard` with `visualAnchor`/`narrativeDescription`, and 4–12
+  `theme`, `educationalMessage`, `openingHook`, `resolution`, and 4–12
   `pages` each with non-empty `title`/`sceneDescription`/`storyText`
   (max 1000 chars)/`illustrationPrompt`/`learningGoal`. Any parse failure or
   schema mismatch throws `StoryGenerationProviderError` with a clear message
@@ -337,11 +336,9 @@ still use `MockStoryGenerationProvider` with zero network calls.
   `imageGenerationResult` identically to the mock path — including
   `imageGenerationResult.provider: 'local_mock'`, since real image
   generation still doesn't exist (see "What's intentionally not real yet").
-  **Known limitation**: `characterCard.appearance`/`personality` are still
-  fixed placeholders, not LLM-generated — only `visualAnchor` and
-  `narrativeDescription` come from the model. This keeps the prompt/schema
-  focused on story content; a future phase could ask the model for full
-  appearance/personality too.
+  The v2 story contract contains story content only. A deterministic factory
+  projects `CharacterProfile.lockedVisualDescription` into `CharacterCard`;
+  new generation does not fabricate legacy structured appearance metadata.
 - **Failure path** — any thrown `StoryGenerationProviderError` (or provider
   construction error) is caught by `AgentService` exactly like a mock
   provider failure: book marked `failed`, `failedStep: 'story_plan'`, one
@@ -391,11 +388,10 @@ interface ImageGenerationProvider {
   (`b64_json`) per entry and decodes it directly to a `Buffer`; any
   fetch failure, non-ok response, invalid JSON, or missing `b64_json` throws
   `ImageGenerationProviderError` with a clear message.
-- **Prompt** — `buildImagePrompt(characterCard, entry)` is a pure function
+- **Prompt** — `buildImagePrompt(entry)` is a pure function
   (no network) that composes a child-safe personalized-storybook-style
-  prompt from the entry's own scene (`entry.prompt`) plus
-  `characterCard.visualAnchor`/`narrativeDescription` (so the protagonist
-  stays visually consistent across every illustration), ending with an
+  prompt from the entry's own scene and canonical character-profile block
+  (`entry.prompt`), ending with an
   explicit no-text/no-caption/no-watermark/no-logo instruction.
 - **Provider selection** — `apps/api/src/images/image-generation-provider.factory.ts`
   exports `createImageGenerationProvider(env = process.env)`, wired into
@@ -3353,3 +3349,55 @@ above), plus a manual smoke test
 - **Public image serving**: mock/real image bytes still live only in
   `ImageAssetStorage` for PDF embedding — nothing serves them over HTTP yet
   (see "What's intentionally not real yet" above).
+
+## Phase 10 AI correctness boundaries
+
+### Visual identity ownership
+
+`CharacterProfile` is the sole visual-identity source for new generation. Its
+versioned canonical appearance is finalized into `lockedVisualDescription`,
+fingerprinted, and projected deterministically into `CharacterCard`. The story
+v2 response owns title, narrative, page, and scene content only. Legacy
+`CharacterCard.appearance` remains accepted when old JSON is read, but it is
+optional for new cards and is never used in an image prompt.
+
+Planned cover/page/back-cover prompts contain one character-profile consistency
+block. Text-to-image uses that planned prompt directly. Reference edits use the
+generated character sheet as the authoritative visual reference and the same
+canonical text as reinforcement; pose, expression, action, environment,
+composition, and lighting remain scene-specific.
+
+### Cooperative cancellation
+
+The generation worker's heartbeat aborts `GenerationExecutionContext.signal`
+after ownership is lost. The signal flows through character, story/repair, and
+image stages into provider calls, the serialized OpenAI image limiter, retry and
+Retry-After sleeps, and the active fetch. Cancellation is typed control flow: it
+does not trigger character fallback, repair `provider_error`, or partial-image
+failure accounting. PostgreSQL fencing, delivery tokens, fenced writes, and
+transactional publication remain the final correctness authority if abort races.
+
+### AI evaluation
+
+Run the deterministic, free regression suite with:
+
+```bash
+pnpm --filter @book/api eval:story:mock
+```
+
+The optional paid suite is never part of test, build, CI, or e2e. It requires
+`RUN_PAID_AI_EVALS=true` and `OPENAI_API_KEY`:
+
+```bash
+pnpm --filter @book/api eval:story:openai
+```
+
+Paid evaluation defaults to three synthetic cases and caps configuration at
+five. `AI_EVAL_MAX_CASES`, the existing paid-call budget,
+`OPENAI_STORY_ESTIMATED_COST_USD`, and optional
+`AI_EVAL_MAX_ESTIMATED_COST_USD` provide cost guards. Set `AI_EVAL_JSON_PATH`
+for one JSON artifact. Reports contain safe metadata and hashes, never prompts,
+raw responses, photos, or API keys. Run the mock suite for every prompt/model
+change; run the guarded paid subset before intentionally shipping a new model
+or materially changed prompt contract. `promptVersion` must be bumped whenever
+those semantics change.

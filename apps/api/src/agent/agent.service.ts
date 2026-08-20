@@ -202,6 +202,7 @@ export class AgentService {
           characterProfile: priorCharacterProfile!,
           namespace: currentNamespace,
           telemetry: providerTelemetry,
+          signal: ctx.signal,
         });
         charBuildResult = {
           ...sheetResult,
@@ -215,6 +216,7 @@ export class AgentService {
         input: resolvedInput,
         namespace: currentNamespace,
         telemetry: providerTelemetry,
+        signal: ctx.signal,
       });
     }
     const { characterProfile } = charBuildResult;
@@ -243,7 +245,7 @@ export class AgentService {
       targetPageCount,
       repairEnabled: storyRepairEnabled,
       telemetry: providerTelemetry,
-      generationStartedAt: startedAt,
+      signal: ctx.signal,
       beforeStoryGeneration: () =>
         this.generationExecutionService.markStep(ctx, AgentStep.story_plan),
       beforeQualityReview: async () => {
@@ -316,6 +318,7 @@ export class AgentService {
       sourceNamespace: copyForwardSourceNamespace,
       imageProviderName,
       telemetry: providerTelemetry,
+      signal: ctx.signal,
     });
     imageGenerationResult = imagePhase.imageGenerationResult;
     const {

@@ -7,11 +7,13 @@ import type {
   StoryRepairInput,
 } from './story-generation-provider';
 import { validateStoryGenerationResult } from './story-generation-result-validator';
+import { providerExecutionArgs, throwIfAborted } from '../common/provider-execution';
 
 export interface StoryQualityRepairStageInput {
   repairInput: StoryRepairInput;
   targetPageCount: number;
   telemetry: GenerationProviderTelemetry;
+  signal?: AbortSignal | undefined;
 }
 
 export class StoryRepairUnavailableError extends Error {
@@ -56,6 +58,7 @@ export class StoryQualityRepairStage implements GenerationStage<
     if (!this.provider.repairStory) {
       throw new StoryRepairUnavailableError();
     }
+    throwIfAborted(input.signal);
 
     const immutableInput = deepFreeze(structuredClone(input.repairInput));
     const result = await input.telemetry.record({
@@ -64,8 +67,10 @@ export class StoryQualityRepairStage implements GenerationStage<
       ...(this.provider.modelName && { model: this.provider.modelName }),
       promptVersion: `${this.provider.promptVersion ?? 'legacy-story-v1'}-repair-v1`,
       promptInput: immutableInput,
-      execute: () => this.provider.repairStory!(immutableInput),
+      execute: () =>
+        this.provider.repairStory!(immutableInput, ...providerExecutionArgs(input.signal)),
     });
+    throwIfAborted(input.signal);
     validateStoryGenerationResult(result, input.targetPageCount);
     return result;
   }

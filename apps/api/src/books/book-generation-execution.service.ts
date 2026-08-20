@@ -4,6 +4,7 @@ import type { CancelGenerationResponse } from '@book/types';
 import { AgentService } from '../agent/agent.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
 import { StaleGenerationRunError } from '../agent/generation-execution.service';
+import { isProviderCancellationError } from '../common/provider-execution';
 import type { GenerationOutcome } from '../agent/generation-outcome';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import {
@@ -85,7 +86,7 @@ export class BookGenerationExecutionService {
       outcome = await this.agentService.startBookGeneration(ctx);
       this.logger.log(`Book ${bookId} pipeline outcome -> ${outcome.status} (run ${runId})`);
     } catch (err) {
-      if (err instanceof StaleGenerationRunError) {
+      if (err instanceof StaleGenerationRunError || isProviderCancellationError(err)) {
         this.logger.warn(
           `Run ${runId} (book ${bookId}) was superseded mid-pipeline — abandoning this attempt without touching Book/GenerationRun further: ${err.message}`,
         );

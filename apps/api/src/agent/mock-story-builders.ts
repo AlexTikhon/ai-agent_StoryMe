@@ -1,5 +1,4 @@
 import {
-  Pronouns,
   type BookPreview,
   type CharacterCard,
   type CharacterProfile,
@@ -10,6 +9,8 @@ import {
   type StoryPlan,
 } from '@book/types';
 import { buildCharacterConsistencyBlock } from './story-generation-contracts';
+import type { StoryGenerationInput, StoryGenerationResult } from './story-generation-contracts';
+import { createCharacterCard } from './character-card.factory';
 import {
   PAGES_PER_CHAPTER,
   STRINGS_BY_LANGUAGE,
@@ -18,30 +19,6 @@ import {
   resolveThemeCategory,
   type TemplateLanguage,
 } from './mock-story-templates';
-
-export function buildCharacterCard(name: string, age: number): CharacterCard {
-  return {
-    name,
-    age,
-    pronouns: Pronouns.SheHer,
-    appearance: {
-      hairColor: 'brown',
-      hairStyle: 'wavy',
-      eyeColor: 'brown',
-      skinTone: 'medium',
-      distinctiveFeatures: ['bright smile'],
-    },
-    personality: {
-      traits: ['curious', 'brave', 'kind'],
-      favoriteAnimals: ['rabbit', 'butterfly'],
-      favoriteColors: ['purple', 'yellow'],
-      favoriteToys: ['building blocks'],
-      hobbies: ['drawing', 'exploring'],
-    },
-    visualAnchor: `A ${age}-year-old child named ${name} with wavy brown hair, brown eyes, and a bright smile`,
-    narrativeDescription: `${name} is a ${age}-year-old child full of curiosity and wonder, always ready for a new adventure.`,
-  };
-}
 
 export function buildStoryPlan(
   name: string,
@@ -155,14 +132,14 @@ export function buildIllustrationPlan(
       const mood = chapter ? `${chapter.emotionalArc}, child-friendly` : 'joyful, child-friendly';
 
       const illustration: IllustrationPlan = {
-        prompt: `${characterCard.visualAnchor}, ${page.sceneDescription}. ${page.illustrationPrompt} ${consistencyBlock}`,
+        prompt: `${consistencyBlock} Scene: ${page.sceneDescription}. ${page.illustrationPrompt}`,
         negativePrompt: 'blurry, distorted face, extra limbs, scary, violent, text, watermark',
         style: characterProfile.illustrationStyle,
         aspectRatio: '4:3',
         characters: [characterCard.name],
         setting: page.sceneDescription,
         mood,
-        consistencyNotes: `Keep ${characterCard.name} visually consistent: ${characterCard.visualAnchor}. ${consistencyBlock}`,
+        consistencyNotes: consistencyBlock,
       };
 
       return { ...page, storyText: page.storyText as string, illustration };
@@ -208,7 +185,7 @@ export function buildBookPreview(
       // model to render title text produces broken/cropped text inside the
       // artwork. The PDF renderer overlays the real title as PDF text
       // separately (see pdf-renderer.ts).
-      illustrationPrompt: `${characterCard.visualAnchor}, standing on the cover of a children's picture book, warm and inviting, watercolor style. ${consistencyBlock}`,
+      illustrationPrompt: `${consistencyBlock} Scene: ${characterCard.name} standing on the cover of a children's picture book, warm and inviting.`,
     },
     pages,
     backCover: {
@@ -282,5 +259,30 @@ export function buildImageGenerationResult(
     status: 'complete',
     images,
     createdAt: '1970-01-01T00:00:00.000Z',
+  };
+}
+
+/** Reprojects legacy/resumed story content onto the current canonical profile. */
+export function bindCharacterProfileToStoryResult(
+  input: StoryGenerationInput,
+  result: StoryGenerationResult,
+): StoryGenerationResult {
+  const characterCard = createCharacterCard(input.characterProfile);
+  const storyPlan = buildIllustrationPlan(characterCard, input.characterProfile, result.storyPlan);
+  const bookPreview = buildBookPreview(
+    { childName: input.childName, childAge: input.childAge, language: input.language },
+    characterCard,
+    input.characterProfile,
+    storyPlan,
+  );
+  return {
+    characterCard,
+    storyPlan,
+    bookPreview,
+    imageGenerationResult: buildImageGenerationResult(
+      input.bookId,
+      bookPreview,
+      input.characterProfile,
+    ),
   };
 }

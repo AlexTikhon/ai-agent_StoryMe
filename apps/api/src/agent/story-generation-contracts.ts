@@ -11,6 +11,7 @@ import {
   type QualityReport,
   type StoryPlan,
 } from '@book/types';
+import type { ProviderExecutionOptions } from '../common/provider-execution';
 
 export const NO_TEXT_IN_IMAGE_INSTRUCTION = 'No text in image.';
 export const PRESERVE_APPEARANCE_INSTRUCTION = "Do not change the main character's appearance.";
@@ -78,8 +79,14 @@ export interface StoryGenerationProvider {
   readonly providerName?: string;
   readonly modelName?: string;
   readonly promptVersion?: string;
-  generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult>;
-  repairStory?(input: StoryRepairInput): Promise<StoryGenerationResult>;
+  generateStory(
+    input: StoryGenerationInput,
+    options?: ProviderExecutionOptions,
+  ): Promise<StoryGenerationResult>;
+  repairStory?(
+    input: StoryRepairInput,
+    options?: ProviderExecutionOptions,
+  ): Promise<StoryGenerationResult>;
 }
 
 export const STORY_GENERATION_PROVIDER_TOKEN = 'STORY_GENERATION_PROVIDER';

@@ -3,6 +3,7 @@ import { finalizeCharacterProfile } from './character-appearance';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import { MockStoryGenerationProvider } from './story-generation-provider';
 import { StoryQualityService } from './story-quality.service';
+import { ProviderCancellationError } from '../common/provider-execution';
 
 const characterProfile = finalizeCharacterProfile({
   childName: 'Mia',
@@ -49,7 +50,6 @@ describe('StoryQualityService', () => {
       targetPageCount: 4,
       repairEnabled: false,
       telemetry: new GenerationProviderTelemetry(20, 0),
-      generationStartedAt: Date.now(),
       ...hooks,
     });
 
@@ -83,7 +83,6 @@ describe('StoryQualityService', () => {
       targetPageCount: 4,
       repairEnabled: true,
       telemetry,
-      generationStartedAt: Date.now(),
       ...callbacks(),
     });
 
@@ -95,5 +94,55 @@ describe('StoryQualityService', () => {
       'story',
       'story_repair',
     ]);
+  });
+
+  it('measures story and quality from their own stage-local clocks', async () => {
+    const generated = await new MockStoryGenerationProvider().generateStory(generationInput);
+    const ticks = [100, 135, 140, 152];
+    const service = new StoryQualityService(
+      { providerName: 'mock', generateStory: vi.fn(async () => generated) },
+      () => ticks.shift()!,
+    );
+
+    const result = await service.execute({
+      generationInput,
+      reusableStory: null,
+      targetPageCount: 4,
+      repairEnabled: false,
+      telemetry: new GenerationProviderTelemetry(20, 0),
+      ...callbacks(),
+    });
+
+    expect(result.kind).toBe('success');
+    if (result.kind !== 'success') throw new Error('Expected success');
+    expect(result.storyDurationMs).toBe(35);
+    expect(result.qualityDurationMs).toBe(12);
+  });
+
+  it('propagates cancellation during repair instead of recording provider_error', async () => {
+    const valid = await new MockStoryGenerationProvider().generateStory(generationInput);
+    const invalid = {
+      ...valid,
+      bookPreview: {
+        ...valid.bookPreview,
+        metadata: { ...valid.bookPreview.metadata, theme: 'wrong-theme' },
+      },
+    };
+    const service = new StoryQualityService({
+      providerName: 'openai',
+      generateStory: vi.fn(async () => invalid),
+      repairStory: vi.fn().mockRejectedValue(new ProviderCancellationError()),
+    });
+
+    await expect(
+      service.execute({
+        generationInput,
+        reusableStory: null,
+        targetPageCount: 4,
+        repairEnabled: true,
+        telemetry: new GenerationProviderTelemetry(20, 0),
+        ...callbacks(),
+      }),
+    ).rejects.toBeInstanceOf(ProviderCancellationError);
   });
 });

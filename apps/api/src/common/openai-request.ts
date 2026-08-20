@@ -1,3 +1,5 @@
+import { cancellableSleep, ProviderCancellationError, throwIfAborted } from './provider-execution';
+
 export const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_OPENAI_MAX_RETRIES = 2;
 
@@ -142,6 +144,8 @@ export interface FetchWithRetryOptions {
    * function (one request at a time) cannot.
    */
   retryableStatusCodes?: ReadonlySet<number>;
+  /** External pipeline cancellation, distinct from the per-attempt timeout. */
+  signal?: AbortSignal | undefined;
 }
 
 /**
@@ -165,6 +169,7 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
     onAttempt,
     onRetry,
     retryableStatusCodes = RETRYABLE_STATUS_CODES,
+    signal,
   } = options;
   const maxAttemptsForDisplay = 1 + Math.max(maxRetries, timeoutMaxRetries);
 
@@ -172,9 +177,17 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
   let timeoutRetriesUsed = 0;
 
   for (let attempt = 1; ; attempt++) {
+    throwIfAborted(signal);
     onAttempt?.(attempt, maxAttemptsForDisplay);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let externallyAborted = false;
+    const onExternalAbort = () => {
+      externallyAborted = true;
+      controller.abort(new ProviderCancellationError(signal?.reason));
+    };
+    signal?.addEventListener('abort', onExternalAbort, { once: true });
+    if (signal?.aborted) onExternalAbort();
 
     try {
       const response = await fetchImpl(url, { ...init, signal: controller.signal });
@@ -185,11 +198,14 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
       ) {
         otherRetriesUsed++;
         onRetry?.(attempt, `http_${response.status}`);
-        await delay(backoffMs(attempt));
+        await cancellableSleep(backoffMs(attempt), signal);
         continue;
       }
       return response;
     } catch (err) {
+      if (externallyAborted || signal?.aborted) {
+        throw new ProviderCancellationError(signal?.reason ?? err);
+      }
       const isAbort = err instanceof Error && err.name === 'AbortError';
       const reason: OpenAIRequestFailureReason = isAbort ? 'timeout' : 'network';
       const canRetry = isAbort
@@ -199,7 +215,7 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
         if (isAbort) timeoutRetriesUsed++;
         else otherRetriesUsed++;
         onRetry?.(attempt, reason);
-        await delay(backoffMs(attempt));
+        await cancellableSleep(backoffMs(attempt), signal);
         continue;
       }
       const message = isAbort
@@ -208,14 +224,11 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
       throw new OpenAIRequestError(message, reason, err);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onExternalAbort);
     }
   }
 }
 
 function backoffMs(attempt: number): number {
   return Math.min(250 * 2 ** (attempt - 1), 2000);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

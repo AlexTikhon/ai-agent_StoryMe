@@ -1,6 +1,7 @@
 import type { CharacterProfile } from '@book/types';
 import { DEFAULT_EYE_DESCRIPTION, finalizeCharacterProfile } from './character-appearance';
 import { MockFailureController } from '../config/mock-failure';
+import type { ProviderExecutionOptions } from '../common/provider-execution';
 
 export interface CharacterProfileInput {
   bookId: string;
@@ -35,7 +36,10 @@ export interface CharacterProfileProvider {
   readonly modelName?: string;
   /** Version of the provider's prompt contract; bump whenever prompt semantics change. */
   readonly promptVersion?: string;
-  buildProfile(input: CharacterProfileInput): Promise<CharacterProfile>;
+  buildProfile(
+    input: CharacterProfileInput,
+    options?: ProviderExecutionOptions,
+  ): Promise<CharacterProfile>;
 }
 
 export const CHARACTER_PROFILE_PROVIDER_TOKEN = 'CHARACTER_PROFILE_PROVIDER';
@@ -72,7 +76,10 @@ export class MockCharacterProfileProvider implements CharacterProfileProvider {
 
   constructor(private readonly failures?: MockFailureController) {}
 
-  async buildProfile(input: CharacterProfileInput): Promise<CharacterProfile> {
+  async buildProfile(
+    input: CharacterProfileInput,
+    _options?: ProviderExecutionOptions,
+  ): Promise<CharacterProfile> {
     await this.failures?.before('character');
     const { childName, childAge } = input;
     const faceDescription = 'a round, friendly face with a warm smile';

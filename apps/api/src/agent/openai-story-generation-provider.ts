@@ -4,7 +4,6 @@ import {
   DEFAULT_BOOK_PAGE_COUNT,
   MAX_BOOK_PAGE_COUNT,
   MIN_BOOK_PAGE_COUNT,
-  Pronouns,
   type BookPreview,
   type CharacterCard,
   type ChapterOutline,
@@ -28,6 +27,11 @@ import {
   fetchWithRetry,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
+import {
+  isProviderCancellationError,
+  type ProviderExecutionOptions,
+} from '../common/provider-execution';
+import { createCharacterCard } from './character-card.factory';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -75,10 +79,6 @@ const llmResponseSchema = z.object({
   educationalMessage: z.string().trim().min(1),
   openingHook: z.string().trim().min(1),
   resolution: z.string().trim().min(1),
-  characterCard: z.object({
-    visualAnchor: z.string().trim().min(1),
-    narrativeDescription: z.string().trim().min(1),
-  }),
   pages: z.array(llmPageSchema).min(MIN_PAGE_COUNT).max(MAX_PAGE_COUNT),
 });
 
@@ -117,7 +117,6 @@ export function buildStoryGenerationPrompt(
     '  "educationalMessage": string,',
     '  "openingHook": string,',
     '  "resolution": string,',
-    '  "characterCard": { "visualAnchor": string, "narrativeDescription": string },',
     `  "pages": [ { "pageNumber": number, "title": string, "sceneDescription": string, "storyText": string, "illustrationPrompt": string, "learningGoal": string }, ... exactly ${targetPageCount} entries, pageNumber starting at 1 ]`,
     '}',
     '',
@@ -130,6 +129,7 @@ export function buildStoryGenerationPrompt(
     `Keep each page's "storyText" short (2-4 sentences), using vocabulary and sentence length a ${input.childAge}-year-old can follow when it's read aloud. Every sentence must add a concrete new detail (an action, a sound, an object, a feeling) — never pad a page with a vague, interchangeable filler line like "the adventure continued" or "and so the day went on". Vary sentence openings across pages so no two pages start the same way.`,
     `Give the story a clear five-part arc across its pages, in this order: (1) an inviting beginning that sets the scene, (2) a small age-appropriate challenge or problem, (3) an emotional turning point where the child character makes a choice or shows courage/kindness, (4) a satisfying resolution, and (5) a clear learning moment tied to "educationalMessage" — the moral belongs at the resolution, not repeated on every page. Every page's "storyText" and "sceneDescription" must clearly connect to the theme ("${input.theme}") through concrete, theme-specific nouns and actions — never generic or interchangeable with a different theme. Do not introduce magical, fantastical, or fairy-tale elements (glowing lights, talking animals, magic, enchanted places) unless the theme itself is about fantasy or magic — for a realistic theme, keep every scene grounded in the real world.`,
     'Each "illustrationPrompt" should describe a single illustration scene in concrete, visual terms: the setting/environment, the character\'s specific action, their emotion/expression, and the lighting and mood — suitable for a future image-generation model. Do not reference real people, brands, or copyrighted/trademarked characters, and keep every scene non-violent, non-scary, and free of romance.',
+    "Do not define or change the protagonist's age, hair, eyes, face, clothing, art style, or visual identity. Those constraints are injected deterministically after your response.",
   ].join('\n');
 
   return { system, user };
@@ -147,21 +147,19 @@ export function buildStoryRepairPrompt(
     educationalMessage: input.candidate.storyPlan.educationalMessage,
     openingHook: input.candidate.storyPlan.openingHook,
     resolution: input.candidate.storyPlan.resolution,
-    characterCard: {
-      visualAnchor: input.candidate.characterCard.visualAnchor,
-      narrativeDescription: input.candidate.characterCard.narrativeDescription,
-    },
-    pages: input.candidate.bookPreview.pages.map((page) => ({
-      pageNumber: page.pageNumber,
-      title: page.title,
-      sceneDescription:
-        input.candidate.storyPlan.pages.find(
-          (candidatePage) => candidatePage.pageNumber === page.pageNumber,
-        )?.sceneDescription ?? page.illustrationPrompt,
-      storyText: page.text,
-      illustrationPrompt: page.illustrationPrompt,
-      learningGoal: page.learningGoal,
-    })),
+    pages: input.candidate.bookPreview.pages.map((page) => {
+      const plannedPage = input.candidate.storyPlan.pages.find(
+        (candidatePage) => candidatePage.pageNumber === page.pageNumber,
+      );
+      return {
+        pageNumber: page.pageNumber,
+        title: page.title,
+        sceneDescription: plannedPage?.sceneDescription ?? '',
+        storyText: page.text,
+        illustrationPrompt: plannedPage?.illustrationPrompt ?? plannedPage?.sceneDescription ?? '',
+        learningGoal: page.learningGoal,
+      };
+    }),
   };
   const findings = input.qualityReport.issues.map(({ code, pageNumber }) => ({
     code,
@@ -173,7 +171,7 @@ export function buildStoryRepairPrompt(
     user: [
       base.user,
       '',
-      'Repair the following candidate exactly once. Preserve good content, page numbering, and the requested child identity. Return the entire corrected story, not a patch.',
+      'Repair the following candidate exactly once. Preserve good content and page numbering. Repair story/quality findings only; do not add or redefine visual identity. Return the entire corrected story, not a patch.',
       `Deterministic findings: ${JSON.stringify(findings)}`,
       `Candidate: ${JSON.stringify(candidate)}`,
     ].join('\n'),
@@ -184,27 +182,7 @@ function mapLlmResponseToResult(
   input: StoryGenerationInput,
   data: LlmStoryGenerationResponse,
 ): StoryGenerationResult {
-  const characterCard: CharacterCard = {
-    name: input.childName,
-    age: input.childAge,
-    pronouns: Pronouns.TheyThem,
-    appearance: {
-      hairColor: 'brown',
-      hairStyle: 'wavy',
-      eyeColor: 'brown',
-      skinTone: 'medium',
-      distinctiveFeatures: ['bright smile'],
-    },
-    personality: {
-      traits: ['curious', 'brave', 'kind'],
-      favoriteAnimals: ['rabbit', 'butterfly'],
-      favoriteColors: ['purple', 'yellow'],
-      favoriteToys: ['building blocks'],
-      hobbies: ['drawing', 'exploring'],
-    },
-    visualAnchor: data.characterCard.visualAnchor,
-    narrativeDescription: data.characterCard.narrativeDescription,
-  };
+  const characterCard: CharacterCard = createCharacterCard(input.characterProfile);
 
   const consistencyBlock = buildCharacterConsistencyBlock(input.characterProfile);
   const sortedPages = [...data.pages].sort((a, b) => a.pageNumber - b.pageNumber);
@@ -212,14 +190,14 @@ function mapLlmResponseToResult(
   const pages: ResolvedPagePlan[] = sortedPages.map((page) => {
     const chapterIndex = Math.floor((page.pageNumber - 1) / PAGES_PER_CHAPTER);
     const illustration: IllustrationPlan = {
-      prompt: `${characterCard.visualAnchor}, ${page.sceneDescription}. ${page.illustrationPrompt} ${consistencyBlock}`,
+      prompt: `${consistencyBlock} Scene: ${page.sceneDescription}. ${page.illustrationPrompt}`,
       negativePrompt: 'blurry, distorted face, extra limbs, scary, violent, text, watermark',
       style: input.characterProfile.illustrationStyle,
       aspectRatio: '4:3',
       characters: [characterCard.name],
       setting: page.sceneDescription,
       mood: 'joyful, child-friendly',
-      consistencyNotes: `Keep ${characterCard.name} visually consistent: ${characterCard.visualAnchor}. ${consistencyBlock}`,
+      consistencyNotes: consistencyBlock,
     };
 
     return {
@@ -299,7 +277,7 @@ export interface OpenAIStoryGenerationProviderOptions {
  */
 export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
   readonly providerName = 'openai' as const;
-  readonly promptVersion = 'openai-story-v1';
+  readonly promptVersion = 'openai-story-v2';
   private readonly logger = new Logger(OpenAIStoryGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;
@@ -326,24 +304,30 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     return this.model;
   }
 
-  async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
+  async generateStory(
+    input: StoryGenerationInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<StoryGenerationResult> {
     // Per-call pageCount (from the book's normalized input) takes priority
     // over this.targetPageCount, which only applies when a caller omits it.
     const targetPageCount =
       input.pageCount != null ? resolveTargetPageCount(input.pageCount) : this.targetPageCount;
     const { system, user } = buildStoryGenerationPrompt(input, targetPageCount);
-    const data = await this.requestStoryCompletion(system, user, 'generation');
+    const data = await this.requestStoryCompletion(system, user, 'generation', options.signal);
     return mapLlmResponseToResult(input, data);
   }
 
-  async repairStory(input: StoryRepairInput): Promise<StoryGenerationResult> {
+  async repairStory(
+    input: StoryRepairInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<StoryGenerationResult> {
     const generationInput = input.generationInput;
     const targetPageCount =
       generationInput.pageCount != null
         ? resolveTargetPageCount(generationInput.pageCount)
         : this.targetPageCount;
     const { system, user } = buildStoryRepairPrompt(input, targetPageCount);
-    const data = await this.requestStoryCompletion(system, user, 'repair');
+    const data = await this.requestStoryCompletion(system, user, 'repair', options.signal);
     return mapLlmResponseToResult(generationInput, data);
   }
 
@@ -351,6 +335,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     system: string,
     user: string,
     operation: 'generation' | 'repair',
+    signal?: AbortSignal,
   ): Promise<LlmStoryGenerationResponse> {
     let response: Response;
     try {
@@ -375,6 +360,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
         },
         timeoutMs: this.timeoutMs,
         maxRetries: this.maxRetries,
+        signal,
         onAttempt: (attempt, maxAttempts) => {
           this.logger.log(
             `Story ${operation} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
@@ -385,6 +371,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
         },
       });
     } catch (err) {
+      if (isProviderCancellationError(err)) throw err;
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `Story ${operation} failed: provider=openai model=${this.model} reason=${message}`,

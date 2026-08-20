@@ -10,6 +10,8 @@ import type {
 } from './story-generation-provider';
 import type { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import { StaleGenerationRunError } from './generation-execution.service';
+import { isProviderCancellationError, throwIfAborted } from '../common/provider-execution';
+import { bindCharacterProfileToStoryResult } from './mock-story-builders';
 
 export interface StoryQualityPhaseInput {
   generationInput: StoryGenerationInput;
@@ -17,7 +19,7 @@ export interface StoryQualityPhaseInput {
   targetPageCount: number;
   repairEnabled: boolean;
   telemetry: GenerationProviderTelemetry;
-  generationStartedAt: number;
+  signal?: AbortSignal | undefined;
   beforeStoryGeneration: () => Promise<void>;
   beforeQualityReview: () => Promise<void>;
 }
@@ -53,37 +55,46 @@ export class StoryQualityService {
   private readonly contentStage: StoryContentStage;
   private readonly repairStage: StoryQualityRepairStage;
 
-  constructor(private readonly provider: StoryGenerationProvider) {
+  constructor(
+    private readonly provider: StoryGenerationProvider,
+    private readonly now: () => number = Date.now,
+  ) {
     this.contentStage = new StoryContentStage(provider);
     this.repairStage = new StoryQualityRepairStage(provider);
   }
 
   async execute(input: StoryQualityPhaseInput): Promise<StoryQualityPhaseResult> {
     let story: StoryGenerationResult;
+    let storyDurationMs = 0;
     const skippedStoryGeneration = input.reusableStory !== null;
 
     if (input.reusableStory) {
-      story = input.reusableStory;
+      story = bindCharacterProfileToStoryResult(input.generationInput, input.reusableStory);
     } else {
       await input.beforeStoryGeneration();
+      const storyStartedAt = this.now();
       try {
         story = await this.contentStage.execute({
           prompt: input.generationInput,
           targetPageCount: input.targetPageCount,
           telemetry: input.telemetry,
+          signal: input.signal,
         });
       } catch (error) {
-        if (error instanceof StaleGenerationRunError) throw error;
+        throwIfAborted(input.signal);
+        if (error instanceof StaleGenerationRunError || isProviderCancellationError(error)) {
+          throw error;
+        }
         return {
           kind: 'story_failure',
           errorMessage: error instanceof Error ? error.message : String(error),
         };
       }
+      storyDurationMs = this.now() - storyStartedAt;
     }
 
-    const storyDurationMs = skippedStoryGeneration ? 0 : Date.now() - input.generationStartedAt;
     await input.beforeQualityReview();
-    const qualityStartedAt = Date.now();
+    const qualityStartedAt = this.now();
     const qualityInput = {
       childName: input.generationInput.childName,
       childAge: input.generationInput.childAge,
@@ -111,6 +122,7 @@ export class StoryQualityService {
           },
           targetPageCount: input.targetPageCount,
           telemetry: input.telemetry,
+          signal: input.signal,
         });
         const repairedReport = evaluateStoryQuality(repaired, qualityInput);
         const providerCall = input.telemetry
@@ -126,7 +138,9 @@ export class StoryQualityService {
           },
         };
         if (qualityReport.overallPassed) story = repaired;
-      } catch {
+      } catch (error) {
+        throwIfAborted(input.signal);
+        if (isProviderCancellationError(error)) throw error;
         const providerCall = input.telemetry
           .snapshot()
           .calls.filter((call) => call.operation === 'story_repair')
@@ -148,7 +162,7 @@ export class StoryQualityService {
       qualityReport,
       skippedStoryGeneration,
       storyDurationMs,
-      qualityDurationMs: Date.now() - qualityStartedAt,
+      qualityDurationMs: this.now() - qualityStartedAt,
     };
     return qualityReport.overallPassed
       ? { kind: 'success', ...common }

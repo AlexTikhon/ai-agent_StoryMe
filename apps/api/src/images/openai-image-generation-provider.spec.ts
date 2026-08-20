@@ -119,22 +119,18 @@ function makeFetchOk(b64Json = TINY_PNG_BASE64) {
 }
 
 describe('buildImagePrompt', () => {
-  it('includes visualAnchor, narrativeDescription, and the scene prompt', () => {
-    const prompt = buildImagePrompt(
-      { visualAnchor: 'A brave child named Leo', narrativeDescription: 'Leo loves space.' },
-      { prompt: 'Leo exploring a spaceship' },
-    );
+  it('uses the already-canonical entry prompt without adding CharacterCard identity', () => {
+    const prompt = buildImagePrompt({
+      prompt: 'LOCKED CHARACTER: Leo; hair: straight light-blonde. Scene: spaceship',
+    });
 
-    expect(prompt).toContain('A brave child named Leo');
-    expect(prompt).toContain('Leo loves space.');
-    expect(prompt).toContain('Leo exploring a spaceship');
+    expect(prompt).toContain('LOCKED CHARACTER: Leo; hair: straight light-blonde');
+    expect(prompt).toContain('Scene: spaceship');
+    expect(prompt).not.toContain('narrativeDescription');
   });
 
   it('instructs no text, letters, captions, or watermarks', () => {
-    const prompt = buildImagePrompt(
-      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
-      { prompt: 'scene' },
-    );
+    const prompt = buildImagePrompt({ prompt: 'scene' });
 
     expect(prompt).toMatch(/no text/i);
     expect(prompt).toMatch(/no letters/i);
@@ -143,10 +139,7 @@ describe('buildImagePrompt', () => {
   });
 
   it('asks for environment, action, emotion, lighting, and composition', () => {
-    const prompt = buildImagePrompt(
-      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
-      { prompt: 'scene' },
-    );
+    const prompt = buildImagePrompt({ prompt: 'scene' });
 
     expect(prompt).toMatch(/environment/i);
     expect(prompt).toMatch(/action/i);
@@ -155,24 +148,31 @@ describe('buildImagePrompt', () => {
     expect(prompt).toMatch(/composition/i);
   });
 
-  it("instructs the character's age/face/hairstyle/outfit to stay identical across illustrations", () => {
-    const prompt = buildImagePrompt(
-      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
-      { prompt: 'scene' },
-    );
+  it('locks identity while allowing scene-specific visual changes', () => {
+    const prompt = buildImagePrompt({ prompt: 'scene' });
 
-    expect(prompt).toMatch(/age/i);
-    expect(prompt).toMatch(/hairstyle/i);
-    expect(prompt).toMatch(/identical/i);
+    expect(prompt).toMatch(/identity constraints unchanged/i);
+    expect(prompt).toMatch(/pose/i);
+    expect(prompt).toMatch(/facial expression/i);
   });
 });
 
 describe('buildReferenceImagePrompt', () => {
+  it('uses the same canonical textual constraints as text-only generation', () => {
+    const locked =
+      'LOCKED CHARACTER: Nova; hair: straight light-blonde; eyes: green; clothing: blue jacket';
+    const entry = { prompt: `${locked} Scene: Nova opens a telescope.` };
+    const textPrompt = buildImagePrompt(entry);
+    const referencePrompt = buildReferenceImagePrompt(entry);
+
+    expect(textPrompt.match(/LOCKED CHARACTER: Nova/g)).toHaveLength(1);
+    expect(referencePrompt.match(/LOCKED CHARACTER: Nova/g)).toHaveLength(1);
+    expect(textPrompt).not.toMatch(/wavy brown hair|medium skin tone/i);
+    expect(referencePrompt).not.toMatch(/wavy brown hair|medium skin tone/i);
+  });
+
   it('instructs using the attached reference sheet as the authoritative visual identity source', () => {
-    const prompt = buildReferenceImagePrompt(
-      { visualAnchor: 'A brave child named Leo', narrativeDescription: 'Leo loves space.' },
-      { prompt: 'Leo exploring a spaceship' },
-    );
+    const prompt = buildReferenceImagePrompt({ prompt: 'Leo exploring a spaceship' });
 
     expect(prompt).toMatch(/attached character reference sheet/i);
     expect(prompt).toMatch(/authoritative visual reference/i);
@@ -180,10 +180,7 @@ describe('buildReferenceImagePrompt', () => {
   });
 
   it('preserves identity fields from the reference sheet: age, face shape, hairstyle, hair color, eyes, outfit, proportions, style', () => {
-    const prompt = buildReferenceImagePrompt(
-      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
-      { prompt: 'scene' },
-    );
+    const prompt = buildReferenceImagePrompt({ prompt: 'scene' });
 
     expect(prompt).toMatch(/age/i);
     expect(prompt).toMatch(/face shape/i);
@@ -196,10 +193,7 @@ describe('buildReferenceImagePrompt', () => {
   });
 
   it('instructs not to redraw the reference sheet itself and not to duplicate the protagonist', () => {
-    const prompt = buildReferenceImagePrompt(
-      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
-      { prompt: 'scene' },
-    );
+    const prompt = buildReferenceImagePrompt({ prompt: 'scene' });
 
     expect(prompt).toMatch(/do not redraw/i);
     expect(prompt).toMatch(/never a second copy/i);
@@ -207,20 +201,14 @@ describe('buildReferenceImagePrompt', () => {
   });
 
   it('allows pose and expression to change per scene instead of demanding an identical pose', () => {
-    const prompt = buildReferenceImagePrompt(
-      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
-      { prompt: 'scene' },
-    );
+    const prompt = buildReferenceImagePrompt({ prompt: 'scene' });
 
     expect(prompt).toMatch(/pose and facial expression should change naturally/i);
     expect(prompt).not.toMatch(/keep the protagonist visually identical/i);
   });
 
   it('still includes the scene environment/action/emotion/lighting/composition instructions', () => {
-    const prompt = buildReferenceImagePrompt(
-      { visualAnchor: 'anchor', narrativeDescription: 'desc' },
-      { prompt: 'scene' },
-    );
+    const prompt = buildReferenceImagePrompt({ prompt: 'scene' });
 
     expect(prompt).toMatch(/environment/i);
     expect(prompt).toMatch(/action/i);
@@ -231,6 +219,21 @@ describe('buildReferenceImagePrompt', () => {
 });
 
 describe('buildCharacterSheetPrompt', () => {
+  it('uses the locked CharacterProfile description exactly once for a non-default identity', () => {
+    const locked =
+      'LOCKED CHARACTER: Nova; age 8; hair: straight light-blonde hair; eyes: green expressive eyes; face: heart-shaped face; clothing: cobalt-blue jacket; art style: paper-cut';
+    const prompt = buildCharacterSheetPrompt(
+      makeCharacterProfile({
+        childName: 'Nova',
+        lockedVisualDescription: locked,
+        negativeConstraints: ['different hair', 'different clothing'],
+      }),
+    );
+    expect(prompt).toContain(locked);
+    expect(prompt.match(/LOCKED CHARACTER: Nova/g)).toHaveLength(1);
+    expect(prompt).not.toContain('short wavy brown hair');
+  });
+
   it('includes full-body/front-view framing, the outfit, and the illustration style', () => {
     const prompt = buildCharacterSheetPrompt(makeCharacterProfile());
 

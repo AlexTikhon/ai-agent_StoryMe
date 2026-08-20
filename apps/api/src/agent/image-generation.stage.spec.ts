@@ -9,6 +9,7 @@ import {
 import { claimNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import { ImageGenerationStage, imageAssetLabel } from './image-generation.stage';
+import { ProviderCancellationError } from '../common/provider-execution';
 
 const namespace = claimNamespace('run-1', 3);
 const characterCard = {
@@ -226,6 +227,25 @@ describe('ImageGenerationStage', () => {
     ).rejects.toBeInstanceOf(ImageGenerationBudgetError);
 
     expect(provider.generateImage).not.toHaveBeenCalled();
+    expect(storage.saveImageAsset).not.toHaveBeenCalled();
+  });
+
+  it('propagates cancellation without counting a partial image failure', async () => {
+    const storage = makeStorage();
+    const provider = makeProvider({
+      generateImage: vi.fn().mockRejectedValue(new ProviderCancellationError()),
+    });
+    const stage = new ImageGenerationStage(storage, provider);
+
+    await expect(
+      stage.execute({
+        bookId: 'book-1',
+        characterCard,
+        images: [image('cover', 'cover'), image('page-1', 'page', 1)],
+        namespace,
+        telemetry: new GenerationProviderTelemetry(10, 0),
+      }),
+    ).rejects.toBeInstanceOf(ProviderCancellationError);
     expect(storage.saveImageAsset).not.toHaveBeenCalled();
   });
 

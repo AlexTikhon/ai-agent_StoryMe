@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import type { CharacterCard, CharacterProfile, GeneratedImageEntry } from '@book/types';
+import type { CharacterProfile, GeneratedImageEntry } from '@book/types';
 import type {
   CharacterSheetInput,
   ImageGenerationFailureDetails,
@@ -16,6 +16,11 @@ import {
   OpenAIRequestError,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
+import {
+  isProviderCancellationError,
+  type ProviderExecutionOptions,
+} from '../common/provider-execution';
+import { buildCharacterConsistencyBlock } from '../agent/story-generation-contracts';
 import {
   OpenAIImageRateLimiter,
   type OpenAIImageRateLimiterDiagnostics,
@@ -94,20 +99,15 @@ function parseOpenAIErrorBody(bodyText: string): {
 /**
  * Builds a focused, deterministic image prompt for one story page/cover
  * entry: child-safe personalized storybook illustration style, the page's
- * own scene, and character info from characterCard so the protagonist stays
- * visually consistent across every illustration, ending with an explicit
- * no-text/no-watermark instruction.
+ * own scene plus the canonical CharacterProfile block already stored in the
+ * entry prompt, ending with an explicit no-text/no-watermark instruction.
  */
-export function buildImagePrompt(
-  characterCard: Pick<CharacterCard, 'visualAnchor' | 'narrativeDescription'>,
-  entry: Pick<GeneratedImageEntry, 'prompt'>,
-): string {
+export function buildImagePrompt(entry: Pick<GeneratedImageEntry, 'prompt'>): string {
   return [
     "Personalized children's storybook illustration, warm and child-safe, soft colors, friendly character design.",
-    `Protagonist: ${characterCard.visualAnchor}. ${characterCard.narrativeDescription}`,
-    `Scene: ${entry.prompt}`,
+    `Scene and identity constraints: ${entry.prompt}`,
     "The illustration must clearly depict: the environment/setting, the specific action the character is doing, the character's emotion/expression, and warm, storybook-appropriate lighting and composition (clear focal point, not cluttered).",
-    "Do not change the character's age, face shape, hairstyle, or outfit from the description above — keep the protagonist visually identical across every illustration in this book.",
+    "Keep the protagonist's identity constraints unchanged while allowing the pose, action, facial expression, environment, composition, and lighting required by this scene.",
     'No text, no letters, no captions, no watermarks, no logos.',
   ].join(' ');
 }
@@ -124,16 +124,12 @@ export function buildImagePrompt(
  * buildImagePrompt's "keep ... identical" framing, which would contradict
  * that.
  */
-export function buildReferenceImagePrompt(
-  characterCard: Pick<CharacterCard, 'visualAnchor' | 'narrativeDescription'>,
-  entry: Pick<GeneratedImageEntry, 'prompt'>,
-): string {
+export function buildReferenceImagePrompt(entry: Pick<GeneratedImageEntry, 'prompt'>): string {
   return [
     "Personalized children's storybook illustration, warm and child-safe, soft colors, friendly character design.",
     'Use the attached character reference sheet as the authoritative visual reference for the protagonist.',
-    `Protagonist: ${characterCard.visualAnchor}. ${characterCard.narrativeDescription}`,
     'Preserve the exact same child character shown in the reference sheet: the same approximate age, face shape, hairstyle, hair color, eye appearance, outfit, proportions, and illustration style. Do not redraw or reproduce the reference sheet itself — place this character naturally into the new scene described below.',
-    `Scene: ${entry.prompt}`,
+    `Canonical textual constraints and scene: ${entry.prompt}`,
     "The illustration must clearly depict: the environment/setting, the specific action the character is doing, the character's emotion/expression, and warm, storybook-appropriate lighting and composition (clear focal point, not cluttered).",
     'Pose and facial expression should change naturally to fit this scene — do not force the exact same pose or expression as the reference sheet.',
     'Depict only one copy of the protagonist in the scene — never a second copy of the character.',
@@ -151,9 +147,7 @@ export function buildReferenceImagePrompt(
 export function buildCharacterSheetPrompt(characterProfile: CharacterProfile): string {
   return [
     "Full-body, front-view children's book character reference sheet.",
-    `Character: ${characterProfile.consistencyPrompt}.`,
-    `Outfit: ${characterProfile.outfitDescription}. This exact outfit must be used consistently throughout the entire book.`,
-    `Illustration style: ${characterProfile.illustrationStyle}.`,
+    buildCharacterConsistencyBlock(characterProfile),
     'Clean plain background, neutral even lighting, character centered and fully visible head to toe.',
     'This is a stylized, warm, child-safe illustrated caricature — not a realistic photographic portrait.',
     'No text, no captions, no letters, no watermarks, no logos.',
@@ -202,7 +196,7 @@ export interface OpenAIImageGenerationProviderOptions {
  */
 export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
   readonly providerName = 'openai' as const;
-  readonly promptVersion = 'openai-image-v1';
+  readonly promptVersion = 'openai-image-v2';
   private readonly logger = new Logger(OpenAIImageGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;
@@ -238,7 +232,10 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     return this.rateLimiter.getDiagnostics();
   }
 
-  async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {
+  async generateImage(
+    input: ImageGenerationInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<ImageGenerationOutput> {
     if (
       input.entry.kind === 'page' &&
       typeof input.entry.pageNumber === 'number' &&
@@ -251,22 +248,31 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
 
     const size = sizeForEntry(input.entry);
     if (input.characterReference) {
-      const prompt = buildReferenceImagePrompt(input.characterCard, input.entry);
+      const prompt = buildReferenceImagePrompt(input.entry);
       return this.requestImageEdit(
         prompt,
         size,
         input.characterReference,
         'Image generation (character reference)',
+        options.signal,
       );
     }
 
-    const prompt = buildImagePrompt(input.characterCard, input.entry);
-    return this.requestImage(prompt, size, 'Image generation');
+    const prompt = buildImagePrompt(input.entry);
+    return this.requestImage(prompt, size, 'Image generation', options.signal);
   }
 
-  async generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput> {
+  async generateCharacterSheet(
+    input: CharacterSheetInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<ImageGenerationOutput> {
     const prompt = buildCharacterSheetPrompt(input.characterProfile);
-    return this.requestImage(prompt, CHARACTER_SHEET_SIZE, 'Character sheet generation');
+    return this.requestImage(
+      prompt,
+      CHARACTER_SHEET_SIZE,
+      'Character sheet generation',
+      options.signal,
+    );
   }
 
   /** gpt-image-1 (the default model) supports the `input_fidelity` edit parameter; a future non-gpt-image model may not. */
@@ -279,6 +285,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     prompt: string,
     size: string,
     logLabel: string,
+    signal?: AbortSignal,
   ): Promise<ImageGenerationOutput> {
     return this.sendAndParse(
       `${this.baseUrl}/images/generations`,
@@ -298,6 +305,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       logLabel,
       'text-to-image',
       false,
+      signal,
     );
   }
 
@@ -313,6 +321,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     size: string,
     reference: ImageReference,
     logLabel: string,
+    signal?: AbortSignal,
   ): Promise<ImageGenerationOutput> {
     const formData = new FormData();
     formData.append('model', this.model);
@@ -340,6 +349,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       logLabel,
       'character-reference-edit',
       true,
+      signal,
     );
     return { ...output, usedReference: true };
   }
@@ -351,6 +361,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     logLabel: string,
     requestMode: 'text-to-image' | 'character-reference-edit',
     characterReferenceSupplied: boolean,
+    signal?: AbortSignal,
   ): Promise<ImageGenerationOutput> {
     let attempts = 0;
     const limiterBefore = this.rateLimiter.getDiagnostics();
@@ -377,28 +388,34 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     let requestPhaseStartedAt = 0;
     let response: Response;
     try {
-      response = await this.rateLimiter.schedule(logLabel, () => {
-        requestPhaseStartedAt = Date.now();
-        return fetchWithRetry({
-          fetchImpl: this.fetchImpl,
-          url,
-          init,
-          timeoutMs: this.timeoutMs,
-          maxRetries: this.maxRetries,
-          timeoutMaxRetries: this.timeoutMaxRetries,
-          retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
-          onAttempt: (attempt, maxAttempts) => {
-            attempts++;
-            this.logger.log(
-              `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
-            );
-          },
-          onRetry: (attempt, reason) => {
-            this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
-          },
-        });
-      });
+      response = await this.rateLimiter.schedule(
+        logLabel,
+        () => {
+          requestPhaseStartedAt = Date.now();
+          return fetchWithRetry({
+            fetchImpl: this.fetchImpl,
+            url,
+            init,
+            timeoutMs: this.timeoutMs,
+            maxRetries: this.maxRetries,
+            timeoutMaxRetries: this.timeoutMaxRetries,
+            retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
+            signal,
+            onAttempt: (attempt, maxAttempts) => {
+              attempts++;
+              this.logger.log(
+                `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
+              );
+            },
+            onRetry: (attempt, reason) => {
+              this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
+            },
+          });
+        },
+        { signal },
+      );
     } catch (err) {
+      if (isProviderCancellationError(err)) throw err;
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `${logLabel} failed: provider=openai model=${this.model} reason=${message}`,

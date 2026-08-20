@@ -10,6 +10,7 @@ import {
   MockStoryGenerationProvider,
   type StoryGenerationInput,
 } from './story-generation-provider';
+import { finalizeCharacterProfile } from './character-appearance';
 
 const DEFAULT_CHARACTER_PROFILE: CharacterProfile = {
   childName: 'Mia',
@@ -148,6 +149,13 @@ describe('buildStoryGenerationPrompt', () => {
     expect(user).toMatch(/emotion/i);
     expect(user).toMatch(/lighting/i);
   });
+
+  it('uses the v2 story-only response contract and forbids visual identity output', () => {
+    const { user } = buildStoryGenerationPrompt(makeInput());
+    expect(user).not.toContain('"characterCard"');
+    expect(user).not.toContain('"visualAnchor"');
+    expect(user).toMatch(/do not define or change.*age, hair, eyes, face, clothing, art style/i);
+  });
 });
 
 describe('OpenAIStoryGenerationProvider', () => {
@@ -172,6 +180,47 @@ describe('OpenAIStoryGenerationProvider', () => {
     expect(result.imageGenerationResult.images).toHaveLength(8); // 6 pages + cover + back cover
   });
 
+  it('ignores conflicting model identity and preserves one non-default canonical profile across all prompts', async () => {
+    const profile = finalizeCharacterProfile(
+      {
+        childName: 'Nova',
+        age: 8,
+        visualDescription: 'Nova is a confident explorer',
+        faceDescription: 'heart-shaped face with a small dimple',
+        hairDescription: 'straight light-blonde hair in a low ponytail',
+        outfitDescription: 'a cobalt-blue jacket with silver buttons',
+        personalitySummary: 'patient and confident',
+        illustrationStyle: 'layered paper-cut storybook illustration',
+        consistencyPrompt: 'legacy consistency text must not win',
+        hasReferencePhoto: false,
+        hasCharacterSheet: false,
+      },
+      { eyeDescription: 'large expressive green eyes' },
+    );
+    const payload = {
+      ...makeValidLlmPayload(6),
+      characterCard: {
+        visualAnchor: 'wavy brown hair and medium skin tone',
+        narrativeDescription: 'conflicting model identity',
+      },
+    };
+    const provider = new OpenAIStoryGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl: makeFetchOk(JSON.stringify(payload)),
+    });
+    const result = await provider.generateStory(
+      makeInput({ childName: 'Nova', childAge: 8, characterProfile: profile }),
+    );
+
+    expect(result.characterCard.visualAnchor).toBe(profile.lockedVisualDescription);
+    expect(result.characterCard.appearance).toBeUndefined();
+    for (const image of result.imageGenerationResult.images) {
+      expect(image.prompt).toContain(profile.lockedVisualDescription);
+      expect(image.prompt.match(/LOCKED CHARACTER: Nova/g)).toHaveLength(1);
+      expect(image.prompt).not.toMatch(/wavy brown hair|medium skin tone/i);
+    }
+  });
+
   it('builds a typed one-attempt repair prompt from safe finding codes and the candidate', async () => {
     const baseProvider = new OpenAIStoryGenerationProvider({
       apiKey: 'sk-test',
@@ -189,6 +238,7 @@ describe('OpenAIStoryGenerationProvider', () => {
     expect(prompt.user).toContain('"pageNumber":2');
     expect(prompt.user).toContain("Mia's Friendship Adventure");
     expect(prompt.user).toMatch(/complete corrected story|entire corrected story/i);
+    expect(prompt.user).not.toContain('"characterCard"');
   });
 
   it('repairs a candidate with one OpenAI completion and maps the complete result', async () => {
@@ -206,6 +256,7 @@ describe('OpenAIStoryGenerationProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(result.storyPlan.pages).toHaveLength(6);
     expect(result.bookPreview.metadata.theme).toBe('friendship');
+    expect(result.characterCard.visualAnchor).toBe(candidate.characterCard.visualAnchor);
   });
 
   it('sends the model, auth header, and json_object response format', async () => {

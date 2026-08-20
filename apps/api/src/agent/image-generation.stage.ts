@@ -17,6 +17,11 @@ import {
 import type { ClaimArtifactNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import type { GenerationStage } from './generation-stage';
+import {
+  isProviderCancellationError,
+  providerExecutionArgs,
+  throwIfAborted,
+} from '../common/provider-execution';
 
 export interface ImageGenerationStageInput {
   bookId: string;
@@ -25,6 +30,7 @@ export interface ImageGenerationStageInput {
   characterReference?: ImageReference;
   namespace: ClaimArtifactNamespace;
   telemetry: GenerationProviderTelemetry;
+  signal?: AbortSignal | undefined;
 }
 
 export interface ImageGenerationStageOutput {
@@ -69,6 +75,7 @@ export class ImageGenerationStage implements GenerationStage<
     characterReference,
     namespace,
     telemetry,
+    signal,
   }: ImageGenerationStageInput): Promise<ImageGenerationStageOutput> {
     if (this.provider.providerName === 'openai') {
       assertCompleteBookImageBudget(images.length, resolveMaxGeneratedImagesPerBook());
@@ -89,6 +96,7 @@ export class ImageGenerationStage implements GenerationStage<
     await Promise.all(
       images.map(async (image) => {
         try {
+          throwIfAborted(signal);
           const { buffer, contentType, usedReference } = await telemetry.record({
             operation: 'illustration',
             assetLabel: imageAssetLabel(image),
@@ -108,18 +116,24 @@ export class ImageGenerationStage implements GenerationStage<
               characterReferenceSupplied: characterReference !== undefined,
             },
             execute: () =>
-              this.provider.generateImage({
-                bookId,
-                entry: image,
-                characterCard,
-                ...(characterReference && { characterReference }),
-              }),
+              this.provider.generateImage(
+                {
+                  bookId,
+                  entry: image,
+                  characterCard,
+                  ...(characterReference && { characterReference }),
+                },
+                ...providerExecutionArgs(signal),
+              ),
           });
+          throwIfAborted(signal);
           const key = claimImageAssetKey(bookId, namespace, image.kind, image.pageNumber);
           await this.storage.saveImageAsset(key, buffer, contentType);
           generatedCount++;
           if (usedReference) usedCharacterReference = true;
         } catch (err) {
+          throwIfAborted(signal);
+          if (isProviderCancellationError(err)) throw err;
           const message = err instanceof Error ? err.message : String(err);
           this.logger.warn(
             `Image generation/save failed for entry "${image.id}" (book ${bookId}): ${message}. Falling back to a placeholder for this entry.`,

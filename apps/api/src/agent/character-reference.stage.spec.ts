@@ -11,6 +11,7 @@ import {
 import { CharacterReferenceStage } from './character-reference.stage';
 import { claimNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
+import { ProviderCancellationError } from '../common/provider-execution';
 
 const namespace = claimNamespace('run-1', 2);
 const sheetKey = 'books/book-1/runs/run-1/claims/2/character-sheet';
@@ -152,6 +153,21 @@ describe('CharacterReferenceStage', () => {
     expect(result.error).toBe('vision unavailable');
     expect(result.characterProfile.consistencyPrompt).toBeTruthy();
     expect(imageProvider.generateCharacterSheet).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates cancellation without activating profile fallback or character-sheet work', async () => {
+    const storage = makeStorage();
+    const imageProvider = makeImageProvider();
+    const buildProfile = vi.fn().mockRejectedValue(new ProviderCancellationError());
+    const stage = new CharacterReferenceStage(
+      storage,
+      { providerName: 'openai', buildProfile },
+      imageProvider,
+    );
+
+    await expect(stage.execute(makeInput())).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(buildProfile).toHaveBeenCalledOnce();
+    expect(imageProvider.generateCharacterSheet).not.toHaveBeenCalled();
   });
 
   it('regenerates only the sheet for a reused profile and degrades truthfully on failure', async () => {

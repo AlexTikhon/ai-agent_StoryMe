@@ -11,6 +11,7 @@ import {
   MIN_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
   MAX_OPENAI_IMAGE_REQUEST_TIMEOUT_MS,
 } from './openai-request';
+import { ProviderCancellationError } from './provider-execution';
 
 function makeAbortableFetch() {
   return vi.fn((_url: string, init: RequestInit) => {
@@ -122,6 +123,59 @@ describe('readOpenAIImageTimeoutConfig', () => {
 });
 
 describe('fetchWithRetry', () => {
+  it('rejects an external abort before dispatch without calling fetch', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchImpl = vi.fn();
+
+    await expect(
+      fetchWithRetry({
+        fetchImpl,
+        url: 'https://example.test',
+        init: {},
+        timeoutMs: 1000,
+        maxRetries: 2,
+        signal: controller.signal,
+      }),
+    ).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('external abort cancels an active fetch and never becomes a timeout', async () => {
+    const controller = new AbortController();
+    const fetchImpl = makeAbortableFetch();
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 10_000,
+      maxRetries: 2,
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    await expect(promise).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('external abort interrupts retry backoff and prevents another attempt', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn().mockResolvedValue(statusResponse(500));
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 10_000,
+      maxRetries: 2,
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(promise).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the response on the first successful attempt', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse());
     const response = await fetchWithRetry({

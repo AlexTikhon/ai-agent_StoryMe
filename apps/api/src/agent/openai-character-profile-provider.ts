@@ -13,6 +13,10 @@ import {
   fetchWithRetry,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
+import {
+  isProviderCancellationError,
+  type ProviderExecutionOptions,
+} from '../common/provider-execution';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -168,7 +172,10 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
     return this.model;
   }
 
-  async buildProfile(input: CharacterProfileInput): Promise<CharacterProfile> {
+  async buildProfile(
+    input: CharacterProfileInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<CharacterProfile> {
     const content = buildCharacterProfileMessageContent(input);
 
     let response: Response;
@@ -194,6 +201,7 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
         },
         timeoutMs: this.timeoutMs,
         maxRetries: this.maxRetries,
+        signal: options.signal,
         onAttempt: (attempt, maxAttempts) => {
           this.logger.log(
             `Character profile request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
@@ -204,6 +212,7 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
         },
       });
     } catch (err) {
+      if (isProviderCancellationError(err)) throw err;
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `Character profile request failed: provider=openai model=${this.model} reason=${message}`,

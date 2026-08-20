@@ -7,7 +7,6 @@ import {
 } from './story-generation-contracts';
 import {
   buildBookPreview,
-  buildCharacterCard,
   buildIllustrationPlan,
   buildImageGenerationResult,
   buildPagePlan,
@@ -15,6 +14,7 @@ import {
   buildStoryPlan,
 } from './mock-story-builders';
 import { resolveTemplateLanguage } from './mock-story-templates';
+import { createCharacterCard } from './character-card.factory';
 
 /**
  * Deterministic local stand-in for a future real-LLM StoryGenerationProvider.
@@ -24,7 +24,7 @@ import { resolveTemplateLanguage } from './mock-story-templates';
  * hashing the book's own fields.
  */
 export class MockStoryGenerationProvider implements StoryGenerationProvider {
-  readonly promptVersion = 'mock-story-v1';
+  readonly promptVersion = 'mock-story-v2';
   readonly providerName = 'mock' as const;
 
   constructor(private readonly failures?: MockFailureController) {}
@@ -36,7 +36,7 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
     const pageCount = resolveTargetPageCount(input.pageCount);
     const lang = resolveTemplateLanguage(language);
 
-    const characterCard = buildCharacterCard(childName, childAge);
+    const characterCard = createCharacterCard(characterProfile);
     const storyPlan = buildStoryPlan(childName, theme, pageCount, lang, educationalMessage);
     const pages = buildPagePlan(storyPlan, pageCount, lang);
     const storyPlanWithDraft = buildStoryDraft(characterCard, { ...storyPlan, pages }, lang);

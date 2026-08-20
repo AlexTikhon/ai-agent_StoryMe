@@ -44,6 +44,7 @@ export class GenerationImageService {
     sourceNamespace: GenerationArtifactNamespace | null;
     imageProviderName: string | null;
     telemetry: GenerationProviderTelemetry;
+    signal?: AbortSignal | undefined;
   }): Promise<GenerationImagePhaseResult> {
     const startedAt = Date.now();
     const { reference: characterReference, loadError: characterReferenceLoadError } =
@@ -70,6 +71,7 @@ export class GenerationImageService {
       ...(characterReference && { characterReference }),
       namespace: input.currentNamespace,
       telemetry: input.telemetry,
+      signal: input.signal,
     });
     const rateLimit = this.provider.getRateLimitDiagnostics?.();
     const rateLimitSummary = rateLimit
