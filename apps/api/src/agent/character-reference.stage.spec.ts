@@ -154,7 +154,7 @@ describe('CharacterReferenceStage', () => {
     });
 
     expect(result.providerName).toBe('mock');
-    expect(result.error).toBe('vision unavailable');
+    expect(result.error).toBe('Provider request failed.');
     expect(result.characterProfile.consistencyPrompt).toBeTruthy();
     expect(imageProvider.generateCharacterSheet).toHaveBeenCalledTimes(1);
   });
@@ -197,7 +197,7 @@ describe('CharacterReferenceStage', () => {
 
     expect(result.characterProfile.hasCharacterSheet).toBe(false);
     expect(result.characterSheetKey).toBeUndefined();
-    expect(result.error).toBe('sheet unavailable');
+    expect(result.error).toBe('Provider request failed.');
     expect(storage.saveImageAsset).not.toHaveBeenCalled();
   });
 

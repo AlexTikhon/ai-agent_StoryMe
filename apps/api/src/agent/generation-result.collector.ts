@@ -3,6 +3,7 @@ import type {
   GenerationProviderUsage,
   GenerationProviderOperation,
   ImageGenerationResult,
+  ProviderFailureKind,
   QualityReport,
   ResumeDiagnostics,
 } from '@book/types';
@@ -79,6 +80,7 @@ export interface CollectStoryFailureOutcomeInput {
   storyProviderName: string | null;
   storyModelName: string | null;
   providerUsage?: GenerationProviderUsage;
+  failureKind?: ProviderFailureKind;
   errorMessage: string;
 }
 
@@ -138,13 +140,14 @@ export class GenerationResultCollector {
       storyProviderName,
       storyModelName,
       providerUsage,
+      failureKind,
       errorMessage,
     } = input;
 
     return {
       status: 'failed',
       completedStep: AgentStep.story_plan,
-      errorCode: 'GENERATION_FAILED',
+      errorCode: failureKind ? `PROVIDER_${failureKind.toUpperCase()}` : 'GENERATION_FAILED',
       errorMessage,
       failedStep: AgentStep.story_plan,
       bookUpdate: {

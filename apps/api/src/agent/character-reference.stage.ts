@@ -21,7 +21,11 @@ import {
 import type { ClaimArtifactNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import type { GenerationStage } from './generation-stage';
-import { isProviderCancellationError, throwIfAborted } from '../common/provider-execution';
+import {
+  isProviderCancellationError,
+  safeProviderFailureMessage,
+  throwIfAborted,
+} from '../common/provider-execution';
 
 export interface CharacterReferenceInput {
   childName: string;
@@ -159,7 +163,7 @@ export class CharacterReferenceStage implements GenerationStage<
     } catch (err) {
       throwIfAborted(signal);
       if (isProviderCancellationError(err)) throw err;
-      error = err instanceof Error ? err.message : String(err);
+      error = safeProviderFailureMessage(err);
       this.logger.warn(
         `Character profile provider failed for book ${bookId}: ${error}. Falling back to a generic profile.`,
       );
@@ -202,7 +206,7 @@ export class CharacterReferenceStage implements GenerationStage<
     } catch (err) {
       throwIfAborted(signal);
       if (isProviderCancellationError(err)) throw err;
-      const sheetError = err instanceof Error ? err.message : String(err);
+      const sheetError = safeProviderFailureMessage(err);
       this.logger.warn(
         `Character sheet generation/save failed for book ${bookId}: ${sheetError}. Continuing without a character sheet reference image.`,
       );
@@ -245,7 +249,7 @@ export class CharacterReferenceStage implements GenerationStage<
     } catch (err) {
       throwIfAborted(signal);
       if (isProviderCancellationError(err)) throw err;
-      const sheetError = err instanceof Error ? err.message : String(err);
+      const sheetError = safeProviderFailureMessage(err);
       this.logger.warn(
         `Character sheet regeneration/save failed for book ${bookId} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
       );

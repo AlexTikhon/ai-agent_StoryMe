@@ -25,6 +25,7 @@ import type { GenerationStage } from './generation-stage';
 import {
   classifyProviderFailure,
   isProviderCancellationError,
+  safeProviderFailureMessage,
   throwIfAborted,
 } from '../common/provider-execution';
 
@@ -101,6 +102,7 @@ export class ImageGenerationStage implements GenerationStage<
 
     const outcomes = await Promise.all(
       images.map(async (image) => {
+        let providerCompleted = false;
         try {
           throwIfAborted(signal);
           const { buffer, contentType, usedReference } = await telemetry.record({
@@ -132,6 +134,7 @@ export class ImageGenerationStage implements GenerationStage<
                 { ...options, ...(signal && { signal }) },
               ),
           });
+          providerCompleted = true;
           throwIfAborted(signal);
           const key = claimImageAssetKey(bookId, namespace, image.kind, image.pageNumber);
           await this.storage.saveImageAsset(key, buffer, contentType);
@@ -142,7 +145,11 @@ export class ImageGenerationStage implements GenerationStage<
         } catch (err) {
           throwIfAborted(signal);
           if (isProviderCancellationError(err)) throw err;
-          const message = err instanceof Error ? err.message : String(err);
+          const message = providerCompleted
+            ? err instanceof Error
+              ? err.message
+              : String(err)
+            : safeProviderFailureMessage(err);
           this.logger.warn(
             `Image generation/save failed for entry "${image.id}" (book ${bookId}): ${message}. Falling back to a placeholder for this entry.`,
           );

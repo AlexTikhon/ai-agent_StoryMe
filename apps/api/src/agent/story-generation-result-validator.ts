@@ -5,6 +5,8 @@ import {
 } from './story-generation-provider';
 
 export class StoryGenerationResultValidationError extends Error {
+  readonly failureKind = 'invalid_response' as const;
+
   constructor(readonly reason: string) {
     super(`Story generation result failed deterministic validation: ${reason}`);
     this.name = 'StoryGenerationResultValidationError';

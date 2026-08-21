@@ -163,7 +163,7 @@ describe('ImageGenerationStage', () => {
 
     expect(result.generatedCount).toBe(1);
     expect(result.failedCount).toBe(1);
-    expect(result.lastError).toBe('provider rejected image');
+    expect(result.lastError).toBe('Provider rate limit was reached.');
     expect(result.failures).toEqual([
       expect.objectContaining({
         assetLabel: 'cover',
@@ -245,7 +245,7 @@ describe('ImageGenerationStage', () => {
     expect(result.generatedCount).toBe(1);
     expect(result.failedCount).toBe(2);
     expect(result.failures.map((failure) => failure.assetLabel)).toEqual(['cover', 'page_2']);
-    expect(result.lastError).toBe('page two failed first');
+    expect(result.lastError).toBe('Provider request failed.');
   });
 
   it('rejects an undersized real-provider budget before starting any paid call', async () => {

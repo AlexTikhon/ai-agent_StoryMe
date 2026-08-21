@@ -52,6 +52,27 @@ export function classifyProviderFailure(error: unknown): ProviderFailureKind {
   return error instanceof Error ? 'provider_error' : 'unknown';
 }
 
+/** Stable persistence-safe message; never copies a provider/runtime payload. */
+export function safeProviderFailureMessage(error: unknown): string {
+  switch (classifyProviderFailure(error)) {
+    case 'cancelled':
+      return 'Provider operation was cancelled.';
+    case 'timeout':
+      return 'Provider request timed out.';
+    case 'rate_limit':
+      return 'Provider rate limit was reached.';
+    case 'network':
+      return 'Provider request failed due to a temporary network error.';
+    case 'authentication':
+      return 'Provider authentication failed.';
+    case 'invalid_response':
+      return 'Provider returned an invalid response.';
+    case 'provider_error':
+    case 'unknown':
+      return 'Provider request failed.';
+  }
+}
+
 /** Metrics must never be able to make provider work fail. */
 export function reportProviderMetrics(
   options: ProviderExecutionOptions,

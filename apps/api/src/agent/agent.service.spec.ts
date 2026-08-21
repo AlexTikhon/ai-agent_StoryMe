@@ -1033,7 +1033,7 @@ describe('AgentService', () => {
         const images = result.images as Array<Record<string, unknown>>;
         expect(result.failedImageCount).toBe(1);
         expect(result.generatedImageCount).toBe(images.length - 1);
-        expect(result.lastImageError).toContain('b-1-cover');
+        expect(result.lastImageError).toBe('Provider request failed.');
       });
 
       it('the image_gen AgentLog row is truthfully marked error (not success) with a safe summary error when every attempted image fails', async () => {
@@ -1104,7 +1104,7 @@ describe('AgentService', () => {
         const charBuildEntry = entries.find((e) => e.step === 'char_build');
         expect(charBuildEntry?.status).toBe('error');
         expect(charBuildEntry?.provider).toBe('mock');
-        expect(charBuildEntry?.error).toContain('vision request failed');
+        expect(charBuildEntry?.error).toBe('Provider request failed.');
         warnSpy.mockRestore();
       });
 
@@ -1972,14 +1972,15 @@ describe('AgentService', () => {
         );
       }
 
-      it('resolves a failed GenerationOutcome with the provider error message, without writing status/errorMessage/failedStep to Book itself', async () => {
+      it('resolves a failed GenerationOutcome with a safe provider message, without writing status/errorMessage/failedStep to Book itself', async () => {
         const book = makeBook();
         const failingService = makeFailingService('LLM provider unavailable');
 
         const result = await runGeneration(failingService, prisma, book);
 
         expect(result.status).toBe('failed');
-        expect(result.errorMessage).toBe('LLM provider unavailable');
+        expect(result.errorMessage).toBe('Provider request failed.');
+        expect(result.errorCode).toBe('PROVIDER_PROVIDER_ERROR');
         expect(result.failedStep).toBe('story_plan');
         expect(result.bookUpdate).toEqual({
           generationTimeMs: expect.any(Number),
@@ -2021,7 +2022,7 @@ describe('AgentService', () => {
         expect(charBuildEntry?.status).toBe('success');
         const storyPlanEntry = entries.find((e) => e.step === 'story_plan');
         expect(storyPlanEntry?.status).toBe('error');
-        expect(storyPlanEntry?.error).toBe('bad prompt');
+        expect(storyPlanEntry?.error).toBe('Provider request failed.');
       });
 
       it('rethrows a stale-run cancellation signal instead of logging it as a provider failure', async () => {
@@ -2551,9 +2552,9 @@ describe('AgentService', () => {
         expect(outcome).toMatchObject({
           status: 'failed',
           failedStep: 'story_plan',
-          errorCode: 'GENERATION_FAILED',
+          errorCode: 'PROVIDER_INVALID_RESPONSE',
         });
-        expect(outcome.errorMessage).toContain('image plan must contain exactly one cover');
+        expect(outcome.errorMessage).toBe('Provider returned an invalid response.');
         expect(prisma.book.update).not.toHaveBeenCalled();
       });
     });
@@ -3172,7 +3173,7 @@ describe('AgentService', () => {
       expect(failure.assetLabel).toBe('back_cover');
       expect(failure.provider).toBe('openai');
       expect(failure.model).toBe('gpt-image-1');
-      expect(failure.message).toContain('back_cover request failed again');
+      expect(failure.message).toBe('Provider request failed.');
       expect(failure.characterReferenceSupplied).toBe(true);
       expect(failure.requestMode).toBe('character-reference-edit');
       expect(failure.attempts).toBe(1);

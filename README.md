@@ -1,5 +1,22 @@
 # StoryMe
 
+## Durable integration tests
+
+The API integration suite owns a disposable PostgreSQL/Redis target and
+refuses the main development database. Docker Desktop/Engine must be running.
+
+```bash
+pnpm test:infra:up
+pnpm --filter @book/api test:integration
+pnpm test:infra:down
+```
+
+`test:infra:up` waits for Compose health checks. The API runner then verifies
+ports `5440`/`6380`, deploys Prisma migrations, removes paid-provider
+credentials, and runs the serial real-infrastructure suite. Always run
+`test:infra:down` when finished; it removes only the named disposable Compose
+project and volumes.
+
 A personalized children's-storybook generator: fill in a child's name, age,
 and a theme, and the pipeline produces a short illustrated story and a
 downloadable PDF.

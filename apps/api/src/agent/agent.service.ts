@@ -140,6 +140,7 @@ export class AgentService {
         storyProviderName: prepared.storyProviderName,
         storyModelName: prepared.storyModelName,
         providerUsage: prepared.providerTelemetry.snapshot(),
+        failureKind: storyPhase.failureKind,
         errorMessage: storyPhase.errorMessage,
       });
     }
