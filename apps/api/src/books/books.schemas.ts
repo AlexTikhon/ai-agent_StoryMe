@@ -188,7 +188,27 @@ const generationProviderCallMetadataSchema = z.object({
   promptHash: z.string().regex(/^[a-f0-9]{64}$/),
   attempt: z.number().int().positive(),
   durationMs: z.number().nonnegative(),
-  status: z.enum(['success', 'error']),
+  status: z.enum(['success', 'error', 'cancelled']),
+  failureKind: z
+    .enum([
+      'cancelled',
+      'timeout',
+      'rate_limit',
+      'network',
+      'authentication',
+      'invalid_response',
+      'provider_error',
+      'unknown',
+    ])
+    .optional(),
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  httpAttempts: z.number().int().nonnegative().optional(),
+  retries: z.number().int().nonnegative().optional(),
+  rateLimitHits: z.number().int().nonnegative().optional(),
+  rateLimitWaitMs: z.number().int().nonnegative().optional(),
+  retryAfterHonoredCount: z.number().int().nonnegative().optional(),
+  timeoutCount: z.number().int().nonnegative().optional(),
   estimatedCostUsd: z.number().nonnegative().optional(),
 });
 
@@ -222,6 +242,18 @@ const imageGenerationFailureDetailSchema = z.object({
   assetLabel: z.string(),
   provider: z.enum(['mock', 'openai', 'unknown']),
   model: z.string().optional(),
+  failureKind: z
+    .enum([
+      'cancelled',
+      'timeout',
+      'rate_limit',
+      'network',
+      'authentication',
+      'invalid_response',
+      'provider_error',
+      'unknown',
+    ])
+    .optional(),
   httpStatus: z.number().int().optional(),
   errorType: z.string().optional(),
   errorCode: z.string().optional(),

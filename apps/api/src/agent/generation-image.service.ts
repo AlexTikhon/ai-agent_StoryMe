@@ -1,6 +1,6 @@
-import { Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { CharacterCard, GeneratedImageEntry, ImageGenerationResult } from '@book/types';
-import type { ImageGenerationProvider, ImageReference } from '../images/image-generation-provider';
+import type { ImageReference } from '../images/image-generation-provider';
 import type {
   ClaimArtifactNamespace,
   GenerationArtifactNamespace,
@@ -24,6 +24,7 @@ export interface GenerationImagePhaseResult {
 }
 
 /** Claim-scoped image reference loading, reuse classification and generation. */
+@Injectable()
 export class GenerationImageService {
   private readonly logger = new Logger(GenerationImageService.name);
 
@@ -32,7 +33,6 @@ export class GenerationImageService {
     private readonly imageStage: ImageGenerationStage,
     private readonly resumeService: GenerationResumeService,
     private readonly resultCollector: GenerationResultCollector,
-    private readonly provider: ImageGenerationProvider,
   ) {}
 
   async execute(input: {
@@ -73,12 +73,8 @@ export class GenerationImageService {
       telemetry: input.telemetry,
       signal: input.signal,
     });
-    const rateLimit = this.provider.getRateLimitDiagnostics?.();
-    const rateLimitSummary = rateLimit
-      ? ` rateLimit: requestsQueued=${rateLimit.requestsQueued} totalWaitMs=${rateLimit.totalWaitMs} rateLimitHits=${rateLimit.rateLimitHits} retriesUsed=${rateLimit.retriesUsed} retryAfterHonored=${rateLimit.retryAfterHonoredCount}.`
-      : '';
     this.logger.log(
-      `Image generation for book ${input.bookId}: ${generation.generatedCount} generated, ${classified.reusable.length} reused, ${generation.failedCount} failed, ${input.result.images.length} planned, characterReferenceAvailable=${characterReference !== undefined}, characterReferenceUsedForImages=${generation.usedCharacterReference}.${rateLimitSummary}`,
+      `Image generation for book ${input.bookId}: ${generation.generatedCount} generated, ${classified.reusable.length} reused, ${generation.failedCount} failed, ${input.result.images.length} planned, characterReferenceAvailable=${characterReference !== undefined}, characterReferenceUsedForImages=${generation.usedCharacterReference}.`,
     );
 
     return {

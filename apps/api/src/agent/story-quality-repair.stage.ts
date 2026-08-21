@@ -1,3 +1,4 @@
+import { Inject, Injectable } from '@nestjs/common';
 import type { GenerationProviderName } from '@book/types';
 import type { GenerationStage } from './generation-stage';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
@@ -6,8 +7,9 @@ import type {
   StoryGenerationResult,
   StoryRepairInput,
 } from './story-generation-provider';
+import { STORY_GENERATION_PROVIDER_TOKEN } from './story-generation-provider';
 import { validateStoryGenerationResult } from './story-generation-result-validator';
-import { providerExecutionArgs, throwIfAborted } from '../common/provider-execution';
+import { throwIfAborted } from '../common/provider-execution';
 
 export interface StoryQualityRepairStageInput {
   repairInput: StoryRepairInput;
@@ -46,13 +48,17 @@ function deepFreeze<T>(value: T): T {
  * structural validation. It contains no retry/reflection loop; HTTP retry
  * policy remains bounded inside the selected provider.
  */
+@Injectable()
 export class StoryQualityRepairStage implements GenerationStage<
   StoryQualityRepairStageInput,
   StoryGenerationResult
 > {
   readonly step = 'qa_review' as const;
 
-  constructor(private readonly provider: StoryGenerationProvider) {}
+  constructor(
+    @Inject(STORY_GENERATION_PROVIDER_TOKEN)
+    private readonly provider: StoryGenerationProvider,
+  ) {}
 
   async execute(input: StoryQualityRepairStageInput): Promise<StoryGenerationResult> {
     if (!this.provider.repairStory) {
@@ -67,8 +73,11 @@ export class StoryQualityRepairStage implements GenerationStage<
       ...(this.provider.modelName && { model: this.provider.modelName }),
       promptVersion: `${this.provider.promptVersion ?? 'legacy-story-v1'}-repair-v1`,
       promptInput: immutableInput,
-      execute: () =>
-        this.provider.repairStory!(immutableInput, ...providerExecutionArgs(input.signal)),
+      execute: (options) =>
+        this.provider.repairStory!(immutableInput, {
+          ...options,
+          ...(input.signal && { signal: input.signal }),
+        }),
     });
     throwIfAborted(input.signal);
     validateStoryGenerationResult(result, input.targetPageCount);

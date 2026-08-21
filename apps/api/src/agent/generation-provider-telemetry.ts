@@ -4,7 +4,12 @@ import type {
   GenerationProviderName,
   GenerationProviderOperation,
   GenerationProviderUsage,
+  ProviderCallMetrics,
 } from '@book/types';
+import {
+  classifyProviderFailure,
+  type ProviderExecutionOptions,
+} from '../common/provider-execution';
 
 export const DEFAULT_MAX_PAID_PROVIDER_CALLS_PER_RUN = 17;
 
@@ -97,7 +102,29 @@ interface RecordProviderCallInput<T> {
   model?: string;
   promptVersion: string;
   promptInput: unknown;
-  execute: () => Promise<T>;
+  execute: (options: ProviderExecutionOptions) => Promise<T>;
+}
+
+const COUNT_METRICS: ReadonlyArray<keyof ProviderCallMetrics> = [
+  'inputTokens',
+  'outputTokens',
+  'httpAttempts',
+  'retries',
+  'rateLimitHits',
+  'rateLimitWaitMs',
+  'retryAfterHonoredCount',
+  'timeoutCount',
+];
+
+function safeMetrics(metrics: ProviderCallMetrics): ProviderCallMetrics {
+  const result: ProviderCallMetrics = {};
+  for (const key of COUNT_METRICS) {
+    const value = metrics[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      result[key] = Math.floor(value);
+    }
+  }
+  return result;
 }
 
 /**
@@ -130,6 +157,15 @@ export class GenerationProviderTelemetry {
     }
 
     const startedAt = Date.now();
+    let metrics: ProviderCallMetrics = {};
+    const executionOptions: ProviderExecutionOptions = {
+      onMetrics: (reported) => {
+        // Providers may report independent partial snapshots (for example,
+        // request attempts and limiter waits). Defined fields replace the
+        // prior value; providers report cumulative values for one call.
+        metrics = { ...metrics, ...safeMetrics(reported) };
+      },
+    };
     const estimatedCostUsd = readEstimatedCostUsd(input.operation, input.provider, this.env);
     const base = {
       callIndex,
@@ -147,18 +183,22 @@ export class GenerationProviderTelemetry {
     };
 
     try {
-      const result = await input.execute();
+      const result = await input.execute(executionOptions);
       this.calls.push({
         ...base,
+        ...metrics,
         durationMs: Date.now() - startedAt,
         status: 'success',
       });
       return result;
     } catch (error) {
+      const failureKind = classifyProviderFailure(error);
       this.calls.push({
         ...base,
+        ...metrics,
         durationMs: Date.now() - startedAt,
-        status: 'error',
+        status: failureKind === 'cancelled' ? 'cancelled' : 'error',
+        failureKind,
       });
       throw error;
     }

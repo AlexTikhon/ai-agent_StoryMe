@@ -1,12 +1,13 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { QualityReport } from '@book/types';
 import { StoryContentStage } from './story-content.stage';
 import { evaluateStoryQuality } from './story-quality-gate';
 import { StoryQualityRepairStage } from './story-quality-repair.stage';
-import type {
-  StoryGenerationInput,
-  StoryGenerationProvider,
-  StoryGenerationResult,
+import {
+  type StoryGenerationInput,
+  type StoryGenerationProvider,
+  STORY_GENERATION_PROVIDER_TOKEN,
+  type StoryGenerationResult,
 } from './story-generation-provider';
 import type { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import { StaleGenerationRunError } from './generation-execution.service';
@@ -50,18 +51,21 @@ export type StoryQualityPhaseResult =
  * Deterministic story boundary: reuse or one story generation, deterministic
  * review, and at most one optional repair followed by deterministic review.
  */
+export const STORY_QUALITY_CLOCK_TOKEN = 'STORY_QUALITY_CLOCK';
+
+@Injectable()
 export class StoryQualityService {
   private readonly logger = new Logger(StoryQualityService.name);
-  private readonly contentStage: StoryContentStage;
-  private readonly repairStage: StoryQualityRepairStage;
 
   constructor(
+    @Inject(STORY_GENERATION_PROVIDER_TOKEN)
     private readonly provider: StoryGenerationProvider,
+    private readonly contentStage: StoryContentStage,
+    private readonly repairStage: StoryQualityRepairStage,
+    @Optional()
+    @Inject(STORY_QUALITY_CLOCK_TOKEN)
     private readonly now: () => number = Date.now,
-  ) {
-    this.contentStage = new StoryContentStage(provider);
-    this.repairStage = new StoryQualityRepairStage(provider);
-  }
+  ) {}
 
   async execute(input: StoryQualityPhaseInput): Promise<StoryQualityPhaseResult> {
     let story: StoryGenerationResult;

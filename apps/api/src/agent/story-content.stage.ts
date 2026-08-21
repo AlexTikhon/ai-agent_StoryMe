@@ -1,9 +1,14 @@
+import { Inject, Injectable } from '@nestjs/common';
 import type { GenerationProviderName } from '@book/types';
 import type { GenerationStage } from './generation-stage';
-import type { StoryGenerationProvider, StoryGenerationResult } from './story-generation-provider';
+import {
+  STORY_GENERATION_PROVIDER_TOKEN,
+  type StoryGenerationProvider,
+  type StoryGenerationResult,
+} from './story-generation-provider';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import { validateStoryGenerationResult } from './story-generation-result-validator';
-import { providerExecutionArgs, throwIfAborted } from '../common/provider-execution';
+import { throwIfAborted } from '../common/provider-execution';
 
 type StoryPromptInput = Parameters<StoryGenerationProvider['generateStory']>[0];
 
@@ -23,13 +28,17 @@ function providerName(raw: string | undefined): GenerationProviderName {
  * deterministic result validator. Retry policy remains inside the selected
  * provider and telemetry budget; this stage never loops autonomously.
  */
+@Injectable()
 export class StoryContentStage implements GenerationStage<
   StoryContentStageInput,
   StoryGenerationResult
 > {
   readonly step = 'story_plan' as const;
 
-  constructor(private readonly provider: StoryGenerationProvider) {}
+  constructor(
+    @Inject(STORY_GENERATION_PROVIDER_TOKEN)
+    private readonly provider: StoryGenerationProvider,
+  ) {}
 
   async execute(input: StoryContentStageInput): Promise<StoryGenerationResult> {
     throwIfAborted(input.signal);
@@ -39,8 +48,11 @@ export class StoryContentStage implements GenerationStage<
       ...(this.provider.modelName && { model: this.provider.modelName }),
       promptVersion: this.provider.promptVersion ?? 'legacy-story-v1',
       promptInput: input.prompt,
-      execute: () =>
-        this.provider.generateStory(input.prompt, ...providerExecutionArgs(input.signal)),
+      execute: (options) =>
+        this.provider.generateStory(input.prompt, {
+          ...options,
+          ...(input.signal && { signal: input.signal }),
+        }),
     });
     throwIfAborted(input.signal);
     validateStoryGenerationResult(result, input.targetPageCount);

@@ -110,9 +110,11 @@ transactional terminal publication`.
 The content stages are character profile/sheet, one story-provider result containing story plan,
 page plan, story text, illustration plan and preview, deterministic quality review, an optional
 single bounded repair attempt for repairable findings, image generation/reuse, deterministic
-layout, and PDF publication. The current orchestrator primarily
-persists `Book` as `created`,
-then the scheduled `char_build` marker, `layout`, and finally `complete` or `failed`;
+layout, and PDF publication. The current orchestrator orders preparation, character,
+story/quality, image, and publication boundaries. Nest owns the stage/service composition.
+`GenerationPublicationService` owns deterministic layout, fenced intermediate persistence,
+claim-scoped PDF rendering, resume diagnostics, and outcome assembly; `GenerationRunCoordinator`
+still exclusively owns the transactional `complete`/`failed` transition;
 cancellation writes `cancelled`. The authoritative `GenerationRun.currentStep` separately records
 the major stages the worker actually enters: `char_build`, `story_plan`, `qa_review`, `image_gen`,
 `layout`, and `pdf_render`. Finer Book/step enum values remain diagnostic or historical and are
@@ -136,6 +138,11 @@ failure-safe PDF republication, a deterministic pre-image quality gate, privacy-
 correlation, Playwright coverage of the real local API/worker boundary, and explicit owned,
 fenced, retriable hard deletion across PostgreSQL and configured artifact storage.
 
+Provider diagnostics include request-local HTTP attempt/retry/rate-limit/timeout metrics and actual
+OpenAI text token counts when returned by the provider. Unknown metrics remain absent. Estimated
+cost stays separate from the existing actual-cost fields. The process-wide image limiter retains
+global operator counters, but book/run diagnostics use only metrics emitted by each logical call.
+
 Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
 management, automatic retention scheduling, and role-based admin authorization for diagnostics.
 The reader follows published artifact availability rather than current run status, so a previous
@@ -143,8 +150,9 @@ complete publication remains readable while regeneration is running, failed, or 
 diagnostics UI is environment-gated and defaults off; the owned diagnostics API contract remains
 available.
 
-Known limitations: `AgentService` is thinner after extracting immutable preparation and bounded
-story-quality/repair, but image/publication coordination still makes it larger than individual stages;
+Known limitations: provider cost remains an operator-configured estimate because responses do not
+supply an authoritative per-call currency amount, so `AgentLog.costUsd` remains null on this path.
+Token usage is absent for mocks and provider responses without usage metadata;
 `BooksService` is now a compatibility facade over CRUD, asset, diagnostics, generation scheduling,
 and generation execution services; the legacy `GenerationJob` runtime and Prisma model have been
 removed in favor of authoritative `GenerationRun`; Book soft-delete does not erase artifacts and

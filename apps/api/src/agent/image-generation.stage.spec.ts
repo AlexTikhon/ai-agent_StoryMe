@@ -210,6 +210,44 @@ describe('ImageGenerationStage', () => {
     );
   });
 
+  it('aggregates concurrent results in planned image order, not completion order', async () => {
+    const storage = makeStorage();
+    const pending = new Map<
+      string,
+      {
+        resolve: (value: { buffer: Buffer; contentType: 'image/png' }) => void;
+        reject: (error: Error) => void;
+      }
+    >();
+    const provider = makeProvider({
+      generateImage: vi.fn().mockImplementation(
+        ({ entry }) =>
+          new Promise((resolve, reject) => {
+            pending.set(entry.id, { resolve, reject });
+          }),
+      ),
+    });
+    const stage = new ImageGenerationStage(storage, provider);
+    const promise = stage.execute({
+      bookId: 'book-1',
+      characterCard,
+      images: [image('cover', 'cover'), image('page-1', 'page', 1), image('page-2', 'page', 2)],
+      namespace,
+      telemetry: new GenerationProviderTelemetry(10, 0),
+    });
+    await Promise.resolve();
+
+    pending.get('page-2')!.reject(new Error('page two failed first'));
+    pending.get('page-1')!.resolve({ buffer: Buffer.from('page-1'), contentType: 'image/png' });
+    pending.get('cover')!.reject(new Error('cover failed last'));
+
+    const result = await promise;
+    expect(result.generatedCount).toBe(1);
+    expect(result.failedCount).toBe(2);
+    expect(result.failures.map((failure) => failure.assetLabel)).toEqual(['cover', 'page_2']);
+    expect(result.lastError).toBe('page two failed first');
+  });
+
   it('rejects an undersized real-provider budget before starting any paid call', async () => {
     vi.stubEnv('MAX_GENERATED_IMAGES_PER_BOOK', '1');
     const provider = makeProvider({ providerName: 'openai' });

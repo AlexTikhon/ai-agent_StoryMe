@@ -380,6 +380,12 @@ describe('OpenAIImageGenerationProvider', () => {
           status: 200,
           json: async () => ({ data: [{ b64_json: TINY_PNG_BASE64 }] }),
           text: async () => '',
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ b64_json: TINY_PNG_BASE64 }] }),
+          text: async () => '',
         });
       const provider = new OpenAIImageGenerationProvider({
         apiKey: 'sk-test',
@@ -394,12 +400,31 @@ describe('OpenAIImageGenerationProvider', () => {
         }),
       });
 
-      const promise = provider.generateImage(makeInput());
+      const metricsA = vi.fn();
+      const metricsB = vi.fn();
+      const promise = provider.generateImage(makeInput(), { onMetrics: metricsA });
       await vi.advanceTimersByTimeAsync(1000);
       const result = await promise;
+      await provider.generateImage(makeInput(), { onMetrics: metricsB });
 
-      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
       expect(result.contentType).toBe('image/png');
+      expect(metricsA).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          httpAttempts: 2,
+          retries: 1,
+          rateLimitHits: 1,
+          rateLimitWaitMs: 10,
+        }),
+      );
+      expect(metricsB).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          httpAttempts: 1,
+          retries: 0,
+          rateLimitHits: 0,
+          rateLimitWaitMs: 0,
+        }),
+      );
     } finally {
       vi.useRealTimers();
     }

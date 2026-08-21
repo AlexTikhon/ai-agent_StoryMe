@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { z } from 'zod';
-import type { CharacterProfile } from '@book/types';
+import type { CharacterProfile, ProviderCallMetrics, ProviderFailureKind } from '@book/types';
 import {
   buildConsistencyPrompt,
   type CharacterProfileInput,
@@ -11,10 +11,13 @@ import {
   DEFAULT_OPENAI_MAX_RETRIES,
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   fetchWithRetry,
+  OpenAIRequestError,
+  readOpenAITextUsage,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
 import {
   isProviderCancellationError,
+  reportProviderMetrics,
   type ProviderExecutionOptions,
 } from '../common/provider-execution';
 
@@ -25,6 +28,7 @@ export class CharacterProfileProviderError extends Error {
   constructor(
     message: string,
     override readonly cause?: unknown,
+    readonly failureKind: ProviderFailureKind = 'provider_error',
   ) {
     super(message);
     this.name = 'CharacterProfileProviderError';
@@ -177,6 +181,12 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
     options: ProviderExecutionOptions = {},
   ): Promise<CharacterProfile> {
     const content = buildCharacterProfileMessageContent(input);
+    const metrics: ProviderCallMetrics = {
+      httpAttempts: 0,
+      retries: 0,
+      rateLimitHits: 0,
+      timeoutCount: 0,
+    };
 
     let response: Response;
     try {
@@ -203,29 +213,49 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
         maxRetries: this.maxRetries,
         signal: options.signal,
         onAttempt: (attempt, maxAttempts) => {
+          metrics.httpAttempts = (metrics.httpAttempts ?? 0) + 1;
           this.logger.log(
             `Character profile request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
           );
         },
         onRetry: (attempt, reason) => {
+          metrics.retries = (metrics.retries ?? 0) + 1;
+          if (reason === 'timeout') metrics.timeoutCount = (metrics.timeoutCount ?? 0) + 1;
+          if (reason === 'http_429') metrics.rateLimitHits = (metrics.rateLimitHits ?? 0) + 1;
           this.logger.warn(`Character profile attempt ${attempt} failed (${reason}); retrying`);
         },
       });
     } catch (err) {
+      if (err instanceof OpenAIRequestError && err.reason === 'timeout') {
+        metrics.timeoutCount = (metrics.timeoutCount ?? 0) + 1;
+      }
+      reportProviderMetrics(options, metrics);
       if (isProviderCancellationError(err)) throw err;
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `Character profile request failed: provider=openai model=${this.model} reason=${message}`,
       );
-      throw new CharacterProfileProviderError(`OpenAI request failed: ${message}`, err);
+      throw new CharacterProfileProviderError(
+        `OpenAI request failed: ${message}`,
+        err,
+        err instanceof OpenAIRequestError ? err.reason : 'provider_error',
+      );
     }
 
     if (!response.ok) {
+      if (response.status === 429) metrics.rateLimitHits = (metrics.rateLimitHits ?? 0) + 1;
+      reportProviderMetrics(options, metrics);
       this.logger.error(
         `Character profile request failed: provider=openai model=${this.model} status=${response.status}`,
       );
       throw new CharacterProfileProviderError(
         `OpenAI request failed with status ${response.status}`,
+        undefined,
+        response.status === 429
+          ? 'rate_limit'
+          : response.status === 401 || response.status === 403
+            ? 'authentication'
+            : 'provider_error',
       );
     }
 
@@ -233,13 +263,25 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
     try {
       payload = await response.json();
     } catch (err) {
-      throw new CharacterProfileProviderError('OpenAI response was not valid JSON', err);
+      reportProviderMetrics(options, metrics);
+      throw new CharacterProfileProviderError(
+        'OpenAI response was not valid JSON',
+        err,
+        'invalid_response',
+      );
     }
+
+    Object.assign(metrics, readOpenAITextUsage(payload));
+    reportProviderMetrics(options, metrics);
 
     const messageContent = (payload as { choices?: Array<{ message?: { content?: unknown } }> })
       ?.choices?.[0]?.message?.content;
     if (typeof messageContent !== 'string') {
-      throw new CharacterProfileProviderError('OpenAI response did not include message content');
+      throw new CharacterProfileProviderError(
+        'OpenAI response did not include message content',
+        undefined,
+        'invalid_response',
+      );
     }
 
     let raw: unknown;
@@ -249,6 +291,7 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
       throw new CharacterProfileProviderError(
         'OpenAI character profile content was not valid JSON',
         err,
+        'invalid_response',
       );
     }
 
@@ -256,6 +299,8 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
     if (!parsed.success) {
       throw new CharacterProfileProviderError(
         `OpenAI character profile content failed validation: ${parsed.error.message}`,
+        undefined,
+        'invalid_response',
       );
     }
 

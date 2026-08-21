@@ -8,6 +8,8 @@ import {
   type CharacterCard,
   type ChapterOutline,
   type IllustrationPlan,
+  type ProviderCallMetrics,
+  type ProviderFailureKind,
   type StoryPlan,
 } from '@book/types';
 import {
@@ -25,10 +27,13 @@ import {
   DEFAULT_OPENAI_MAX_RETRIES,
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   fetchWithRetry,
+  OpenAIRequestError,
+  readOpenAITextUsage,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
 import {
   isProviderCancellationError,
+  reportProviderMetrics,
   type ProviderExecutionOptions,
 } from '../common/provider-execution';
 import { createCharacterCard } from './character-card.factory';
@@ -57,6 +62,7 @@ export class StoryGenerationProviderError extends Error {
   constructor(
     message: string,
     override readonly cause?: unknown,
+    readonly failureKind: ProviderFailureKind = 'provider_error',
   ) {
     super(message);
     this.name = 'StoryGenerationProviderError';
@@ -313,7 +319,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     const targetPageCount =
       input.pageCount != null ? resolveTargetPageCount(input.pageCount) : this.targetPageCount;
     const { system, user } = buildStoryGenerationPrompt(input, targetPageCount);
-    const data = await this.requestStoryCompletion(system, user, 'generation', options.signal);
+    const data = await this.requestStoryCompletion(system, user, 'generation', options);
     return mapLlmResponseToResult(input, data);
   }
 
@@ -327,7 +333,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
         ? resolveTargetPageCount(generationInput.pageCount)
         : this.targetPageCount;
     const { system, user } = buildStoryRepairPrompt(input, targetPageCount);
-    const data = await this.requestStoryCompletion(system, user, 'repair', options.signal);
+    const data = await this.requestStoryCompletion(system, user, 'repair', options);
     return mapLlmResponseToResult(generationInput, data);
   }
 
@@ -335,8 +341,14 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     system: string,
     user: string,
     operation: 'generation' | 'repair',
-    signal?: AbortSignal,
+    options: ProviderExecutionOptions,
   ): Promise<LlmStoryGenerationResponse> {
+    const metrics: ProviderCallMetrics = {
+      httpAttempts: 0,
+      retries: 0,
+      rateLimitHits: 0,
+      timeoutCount: 0,
+    };
     let response: Response;
     try {
       response = await fetchWithRetry({
@@ -360,31 +372,51 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
         },
         timeoutMs: this.timeoutMs,
         maxRetries: this.maxRetries,
-        signal,
+        signal: options.signal,
         onAttempt: (attempt, maxAttempts) => {
+          metrics.httpAttempts = (metrics.httpAttempts ?? 0) + 1;
           this.logger.log(
             `Story ${operation} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
           );
         },
         onRetry: (attempt, reason) => {
+          metrics.retries = (metrics.retries ?? 0) + 1;
+          if (reason === 'timeout') metrics.timeoutCount = (metrics.timeoutCount ?? 0) + 1;
+          if (reason === 'http_429') metrics.rateLimitHits = (metrics.rateLimitHits ?? 0) + 1;
           this.logger.warn(`Story ${operation} attempt ${attempt} failed (${reason}); retrying`);
         },
       });
     } catch (err) {
+      if (err instanceof OpenAIRequestError && err.reason === 'timeout') {
+        metrics.timeoutCount = (metrics.timeoutCount ?? 0) + 1;
+      }
+      reportProviderMetrics(options, metrics);
       if (isProviderCancellationError(err)) throw err;
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `Story ${operation} failed: provider=openai model=${this.model} reason=${message}`,
       );
-      throw new StoryGenerationProviderError(`OpenAI request failed: ${message}`, err);
+      throw new StoryGenerationProviderError(
+        `OpenAI request failed: ${message}`,
+        err,
+        err instanceof OpenAIRequestError ? err.reason : 'provider_error',
+      );
     }
 
     if (!response.ok) {
+      if (response.status === 429) metrics.rateLimitHits = (metrics.rateLimitHits ?? 0) + 1;
+      reportProviderMetrics(options, metrics);
       this.logger.error(
         `Story ${operation} failed: provider=openai model=${this.model} status=${response.status}`,
       );
       throw new StoryGenerationProviderError(
         `OpenAI request failed with status ${response.status}`,
+        undefined,
+        response.status === 429
+          ? 'rate_limit'
+          : response.status === 401 || response.status === 403
+            ? 'authentication'
+            : 'provider_error',
       );
     }
 
@@ -392,26 +424,44 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     try {
       payload = await response.json();
     } catch (err) {
-      throw new StoryGenerationProviderError('OpenAI response was not valid JSON', err);
+      reportProviderMetrics(options, metrics);
+      throw new StoryGenerationProviderError(
+        'OpenAI response was not valid JSON',
+        err,
+        'invalid_response',
+      );
     }
+
+    Object.assign(metrics, readOpenAITextUsage(payload));
+    reportProviderMetrics(options, metrics);
 
     const content = (payload as { choices?: Array<{ message?: { content?: unknown } }> })
       ?.choices?.[0]?.message?.content;
     if (typeof content !== 'string') {
-      throw new StoryGenerationProviderError('OpenAI response did not include message content');
+      throw new StoryGenerationProviderError(
+        'OpenAI response did not include message content',
+        undefined,
+        'invalid_response',
+      );
     }
 
     let raw: unknown;
     try {
       raw = JSON.parse(content);
     } catch (err) {
-      throw new StoryGenerationProviderError('OpenAI story content was not valid JSON', err);
+      throw new StoryGenerationProviderError(
+        'OpenAI story content was not valid JSON',
+        err,
+        'invalid_response',
+      );
     }
 
     const parsed = llmResponseSchema.safeParse(raw);
     if (!parsed.success) {
       throw new StoryGenerationProviderError(
         `OpenAI story content failed validation: ${parsed.error.message}`,
+        undefined,
+        'invalid_response',
       );
     }
 

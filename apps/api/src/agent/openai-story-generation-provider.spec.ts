@@ -62,11 +62,11 @@ function makeValidLlmPayload(pageCount = 6) {
   };
 }
 
-function makeFetchOk(content: string) {
+function makeFetchOk(content: string, usage?: Record<string, number>) {
   return vi.fn().mockResolvedValue({
     ok: true,
     status: 200,
-    json: async () => ({ choices: [{ message: { content } }] }),
+    json: async () => ({ choices: [{ message: { content } }], ...(usage && { usage }) }),
     text: async () => '',
   });
 }
@@ -178,6 +178,30 @@ describe('OpenAIStoryGenerationProvider', () => {
     expect(result.bookPreview.pages).toHaveLength(6);
     expect(result.imageGenerationResult.provider).toBe('local_mock');
     expect(result.imageGenerationResult.images).toHaveLength(8); // 6 pages + cover + back cover
+  });
+
+  it('reports actual token usage when present and leaves it absent otherwise', async () => {
+    const withUsage = new OpenAIStoryGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl: makeFetchOk(JSON.stringify(makeValidLlmPayload(6)), {
+        prompt_tokens: 123,
+        completion_tokens: 45,
+      }),
+    });
+    const metrics = vi.fn();
+    await withUsage.generateStory(makeInput(), { onMetrics: metrics });
+    expect(metrics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ inputTokens: 123, outputTokens: 45, httpAttempts: 1 }),
+    );
+
+    const withoutUsage = new OpenAIStoryGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl: makeFetchOk(JSON.stringify(makeValidLlmPayload(6))),
+    });
+    const absentMetrics = vi.fn();
+    await withoutUsage.generateStory(makeInput(), { onMetrics: absentMetrics });
+    expect(absentMetrics.mock.calls.at(-1)?.[0]).not.toHaveProperty('inputTokens');
+    expect(absentMetrics.mock.calls.at(-1)?.[0]).not.toHaveProperty('outputTokens');
   });
 
   it('ignores conflicting model identity and preserves one non-default canonical profile across all prompts', async () => {

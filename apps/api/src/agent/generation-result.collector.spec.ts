@@ -288,6 +288,74 @@ describe('GenerationResultCollector', () => {
       step: AgentStep.pdf_render,
       status: AgentLogStatus.success,
     });
+    expect(outcome.agentLogs.every((log) => log.tokensInput === undefined)).toBe(true);
+    expect(outcome.agentLogs.every((log) => log.tokensOutput === undefined)).toBe(true);
+  });
+
+  it('maps supplied text token metrics to the appropriate AgentLog rows only', () => {
+    const usage: GenerationProviderUsage = {
+      maxPaidCalls: 17,
+      plannedPaidCalls: 3,
+      actualPaidCalls: 3,
+      calls: [
+        ['character_profile', 10, 4],
+        ['story', 100, 40],
+        ['story_repair', 80, 30],
+      ].map(([operation, inputTokens, outputTokens], index) => ({
+        callIndex: index + 1,
+        operation: operation as 'character_profile' | 'story' | 'story_repair',
+        provider: 'openai' as const,
+        promptVersion: 'v1',
+        promptHash: 'a'.repeat(64),
+        attempt: 1,
+        durationMs: 1,
+        status: 'success' as const,
+        inputTokens: inputTokens as number,
+        outputTokens: outputTokens as number,
+      })),
+    };
+    const outcome = collector.collectOutcome({
+      bookId: 'book-1',
+      traceId: 'trace-1',
+      generationTimeMs: 120,
+      aiModelVersions: { story: 'story-model', image: 'image-model' },
+      imageGenerationResult: { ...imageResult(), providerUsage: usage },
+      previewPdfUrl: '/preview.pdf',
+      finalStatus: BookStatus.complete,
+      charBuildResult: {
+        characterProfile: {} as never,
+        providerName: 'openai',
+        modelName: 'profile-model',
+        durationMs: 10,
+      },
+      storyProviderName: 'openai',
+      storyModelName: 'story-model',
+      imageProviderName: 'mock',
+      imageModelName: null,
+      storyDurationMs: 20,
+      qualityDurationMs: 5,
+      imageDurationMs: 30,
+      layoutDurationMs: 40,
+      pdfDurationMs: 50,
+      failedImageCount: 0,
+      attemptedImageCount: 1,
+      layoutStep: AgentStep.layout,
+      pdfStep: AgentStep.pdf_render,
+    });
+
+    expect(outcome.agentLogs.find(({ step }) => step === AgentStep.char_build)).toMatchObject({
+      tokensInput: 10,
+      tokensOutput: 4,
+    });
+    expect(outcome.agentLogs.find(({ step }) => step === AgentStep.story_plan)).toMatchObject({
+      tokensInput: 100,
+      tokensOutput: 40,
+    });
+    expect(outcome.agentLogs.find(({ step }) => step === AgentStep.qa_review)).toMatchObject({
+      tokensInput: 80,
+      tokensOutput: 30,
+    });
+    expect(outcome.agentLogs.every((log) => log.costUsd === undefined)).toBe(true);
   });
 
   it('collects truthful image and PDF errors in a failed outcome', () => {

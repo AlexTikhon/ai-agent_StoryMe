@@ -1,10 +1,67 @@
+import type { ProviderCallMetrics, ProviderFailureKind } from '@book/types';
+
 export interface ProviderExecutionOptions {
   signal?: AbortSignal | undefined;
+  /** Safe numeric metrics observer supplied by the generation boundary. */
+  onMetrics?: ((metrics: ProviderCallMetrics) => void) | undefined;
 }
 
-/** Keeps legacy/mock call assertions stable when no cancellation signal exists. */
-export function providerExecutionArgs(signal?: AbortSignal): [] | [ProviderExecutionOptions] {
-  return signal ? [{ signal }] : [];
+const FAILURE_KINDS = new Set<ProviderFailureKind>([
+  'cancelled',
+  'timeout',
+  'rate_limit',
+  'network',
+  'authentication',
+  'invalid_response',
+  'provider_error',
+  'unknown',
+]);
+
+function taggedFailureKind(error: unknown): ProviderFailureKind | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const direct = (error as { failureKind?: unknown }).failureKind;
+  if (typeof direct === 'string' && FAILURE_KINDS.has(direct as ProviderFailureKind)) {
+    return direct as ProviderFailureKind;
+  }
+  const details = (error as { details?: { failureKind?: unknown } }).details;
+  const nested = details?.failureKind;
+  return typeof nested === 'string' && FAILURE_KINDS.has(nested as ProviderFailureKind)
+    ? (nested as ProviderFailureKind)
+    : undefined;
+}
+
+/** Common safe classification at provider boundaries; never persists raw causes. */
+export function classifyProviderFailure(error: unknown): ProviderFailureKind {
+  if (isProviderCancellationError(error)) return 'cancelled';
+  const tagged = taggedFailureKind(error);
+  if (tagged) return tagged;
+
+  if (error && typeof error === 'object') {
+    const details = (
+      error as {
+        reason?: unknown;
+        details?: { httpStatus?: unknown; errorCode?: unknown };
+      }
+    ).details;
+    const reason = (error as { reason?: unknown }).reason;
+    if (reason === 'timeout' || details?.errorCode === 'request_timeout') return 'timeout';
+    if (reason === 'network') return 'network';
+    if (details?.httpStatus === 429) return 'rate_limit';
+    if (details?.httpStatus === 401 || details?.httpStatus === 403) return 'authentication';
+  }
+  return error instanceof Error ? 'provider_error' : 'unknown';
+}
+
+/** Metrics must never be able to make provider work fail. */
+export function reportProviderMetrics(
+  options: ProviderExecutionOptions,
+  metrics: ProviderCallMetrics,
+): void {
+  try {
+    options.onMetrics?.(metrics);
+  } catch {
+    // Observability is best-effort and cannot change generation correctness.
+  }
 }
 
 /** Typed control-flow error for cooperative pipeline cancellation. */

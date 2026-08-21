@@ -269,11 +269,14 @@ interface StoryGenerationProvider {
   owns image resolution, validation, rendering and claim-scoped storage.
   `GenerationResultCollector` deterministically assembles persisted image
   telemetry, resume diagnostics, the terminal outcome, and its `AgentLog`
-  batch. `prepareGeneration` owns immutable preparation and
+  batch. `GenerationPreparationService` owns immutable preparation and
   `StoryQualityService` owns bounded review/repair. `AgentService` orders
-  these boundaries and retains fencing
-  checkpoints; none changes retry, cancellation, credit or publication
-  semantics.
+  these boundaries and retains fencing checkpoints. `GenerationPublicationService`
+  owns layout, the fenced intermediate Book write, PDF publication/failure
+  handling, post-generation classification, resume diagnostics, and outcome
+  assembly. Terminal Book/GenerationRun publication remains in
+  `GenerationRunCoordinator`; none changes retry, cancellation, credit, or
+  publication semantics.
 
 Character profiles use schema version 1 with a canonical, normalized
 appearance object ordered as age, hair, eyes, face, clothing, and art style.
@@ -490,13 +493,14 @@ and injected into the provider, so it's effectively process-wide):
   fallback-to-placeholder behavior for that entry.
 - Testable without real waiting: `now`/`sleep`/`random` are all injectable
   (see `OpenAIImageRateLimiter`'s constructor options and its spec file).
-- `getRateLimitDiagnostics()` on the provider (surfaced via the optional
-  `ImageGenerationProvider.getRateLimitDiagnostics` interface member) returns
-  a safe, cumulative-since-process-start snapshot — requests queued, total
-  wait ms, 429 count, retries used, and how many retries honored
-  `Retry-After` — folded into `AgentService`'s existing
-  `Image generation for book ...` log line. `MockImageGenerationProvider`
-  has no rate limiter and never waits.
+- Every `schedule()` call accumulates its own spacing/backoff wait, 429 count,
+  limiter retries, and `Retry-After` count and emits that request-local snapshot
+  through `ProviderExecutionOptions.onMetrics`. Concurrent or previous books
+  cannot contaminate it.
+- `getGlobalRateLimitDiagnostics()` remains available as a safe
+  cumulative-since-process-start operator snapshot. It is explicitly global
+  and is never folded into one book/run's diagnostics. Mock providers have no
+  limiter and never wait.
 
 ### Logging
 
@@ -575,8 +579,19 @@ Each logical provider invocation is recorded by
 into `imageGenerationResult.providerUsage`, which generation diagnostics
 exposes: provider/model, operation and optional asset label, prompt contract
 version, SHA-256 prompt fingerprint, logical attempt number, duration,
-success/error status, and optional estimated cost. Raw prompts, photo/image
+success/error/cancelled status, safe failure kind, optional actual text-token
+usage, HTTP attempts/retries, rate-limit hits/wait, Retry-After usage, timeout
+count, and optional estimated cost. Providers report these optional numeric
+metrics through `ProviderExecutionOptions`; they do not depend on generation
+telemetry or persistence. Raw prompts, photo/image
 bytes, API keys, and provider response bodies are never persisted.
+
+When OpenAI chat responses contain usage metadata, story and character-profile
+input/output tokens flow to `GenerationProviderUsage` and the corresponding
+`AgentLog.tokensInput`/`tokensOutput` columns. Missing usage remains null; mocks
+do not fabricate it. Configured estimates remain only in
+`GenerationProviderUsage.estimatedCostUsd` and are never written to the
+semantically actual `AgentLog.costUsd` field.
 
 Provider prices are deliberately not hardcoded. Operators may configure
 `OPENAI_STORY_ESTIMATED_COST_USD`,

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { Book } from '@prisma/client';
-import { AgentService } from './agent.service';
+import { TestAgentService as AgentService } from '../common/test-utils/create-test-agent-service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import { LocalImageAssetStorage } from '../images/image-asset-storage';
 import type { PdfStorage } from '../pdf/pdf-storage';

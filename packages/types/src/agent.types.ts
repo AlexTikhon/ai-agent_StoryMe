@@ -112,6 +112,33 @@ export interface AgentLogEntry {
 /** Provider identifiers surfaced for generation diagnostics — never a secret, never a raw response. */
 export type GenerationProviderName = 'mock' | 'openai' | 'unknown';
 
+/** Safe, provider-neutral classification used only for operational diagnostics. */
+export type ProviderFailureKind =
+  | 'cancelled'
+  | 'timeout'
+  | 'rate_limit'
+  | 'network'
+  | 'authentication'
+  | 'invalid_response'
+  | 'provider_error'
+  | 'unknown';
+
+/**
+ * Optional numeric execution metadata reported by a provider. Providers do
+ * not fabricate unavailable values, and this contract deliberately has no
+ * prompt, response, credential, or image-data fields.
+ */
+export interface ProviderCallMetrics {
+  inputTokens?: number;
+  outputTokens?: number;
+  httpAttempts?: number;
+  retries?: number;
+  rateLimitHits?: number;
+  rateLimitWaitMs?: number;
+  retryAfterHonoredCount?: number;
+  timeoutCount?: number;
+}
+
 export type GenerationProviderOperation =
   'character_profile' | 'character_sheet' | 'story' | 'story_repair' | 'illustration';
 
@@ -120,7 +147,7 @@ export type GenerationProviderOperation =
  * responses are deliberately excluded; promptHash fingerprints the versioned
  * normalized input without making that input part of diagnostics.
  */
-export interface GenerationProviderCallMetadata {
+export interface GenerationProviderCallMetadata extends ProviderCallMetrics {
   callIndex: number;
   operation: GenerationProviderOperation;
   assetLabel?: string;
@@ -130,7 +157,8 @@ export interface GenerationProviderCallMetadata {
   promptHash: string;
   attempt: number;
   durationMs: number;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'cancelled';
+  failureKind?: ProviderFailureKind;
   estimatedCostUsd?: number;
 }
 
@@ -174,6 +202,10 @@ export interface AgentLogSummary {
   provider?: string | null;
   model?: string | null;
   durationMs?: number | null;
+  tokensInput?: number | null;
+  tokensOutput?: number | null;
+  /** Actual provider cost only; estimates remain in GenerationProviderUsage. */
+  costUsd?: number | null;
   attempt: number;
   error?: string | null;
   traceId?: string | null;
@@ -278,6 +310,7 @@ export interface ImageGenerationFailureDetail {
   assetLabel: string;
   provider: GenerationProviderName;
   model?: string;
+  failureKind?: ProviderFailureKind;
   /** HTTP status code from the provider response, if the failure was an HTTP-level error. */
   httpStatus?: number;
   /** OpenAI error `type` field (e.g. 'invalid_request_error'), if the provider returned one. */

@@ -213,7 +213,7 @@ describe('OpenAIImageRateLimiter', () => {
     await limiter.schedule('second', async () => okResponse());
 
     expect(clock.now()).toBe(15_000);
-    expect(limiter.getDiagnostics().totalWaitMs).toBe(15_000);
+    expect(limiter.getGlobalDiagnostics().totalWaitMs).toBe(15_000);
   });
 
   it('does not wait before the very first request', async () => {
@@ -247,7 +247,7 @@ describe('OpenAIImageRateLimiter', () => {
 
     expect(response.ok).toBe(true);
     expect(clock.now()).toBe(7000);
-    const diagnostics = limiter.getDiagnostics();
+    const diagnostics = limiter.getGlobalDiagnostics();
     expect(diagnostics.retryAfterHonoredCount).toBe(1);
     expect(diagnostics.rateLimitHits).toBe(1);
     expect(diagnostics.retriesUsed).toBe(1);
@@ -274,7 +274,7 @@ describe('OpenAIImageRateLimiter', () => {
 
     // attempt 1 backoff: base(1000) * 2^0 = 1000, + 20% jitter at random()=1 -> 1200
     expect(clock.now()).toBe(1200);
-    expect(limiter.getDiagnostics().retryAfterHonoredCount).toBe(0);
+    expect(limiter.getGlobalDiagnostics().retryAfterHonoredCount).toBe(0);
   });
 
   it('keeps jitter within the bounded range [exp, retryMaxMs]', async () => {
@@ -319,8 +319,8 @@ describe('OpenAIImageRateLimiter', () => {
 
     expect(response.status).toBe(429);
     expect(dispatch).toHaveBeenCalledTimes(3); // 1 initial attempt + 2 retries
-    expect(limiter.getDiagnostics().rateLimitHits).toBe(3);
-    expect(limiter.getDiagnostics().retriesUsed).toBe(2);
+    expect(limiter.getGlobalDiagnostics().rateLimitHits).toBe(3);
+    expect(limiter.getGlobalDiagnostics().retriesUsed).toBe(2);
   });
 
   it('a successful retry returns the successful response', async () => {
@@ -343,6 +343,44 @@ describe('OpenAIImageRateLimiter', () => {
 
     expect(response.ok).toBe(true);
     expect(dispatch).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports request-local metrics that do not inherit a previous call's 429", async () => {
+    const clock = makeFakeClock();
+    const limiter = new OpenAIImageRateLimiter({
+      minIntervalMs: 0,
+      maxRetries: 1,
+      retryBaseMs: 10,
+      retryMaxMs: 10,
+      now: clock.now,
+      sleep: clock.sleep,
+      random: () => 0,
+    });
+    const metricsA = vi.fn();
+    const metricsB = vi.fn();
+
+    await limiter.schedule(
+      'request-a',
+      vi.fn().mockResolvedValueOnce(rateLimitedResponse()).mockResolvedValueOnce(okResponse()),
+      { onMetrics: metricsA },
+    );
+    await limiter.schedule('request-b', vi.fn().mockResolvedValue(okResponse()), {
+      onMetrics: metricsB,
+    });
+
+    expect(metricsA).toHaveBeenLastCalledWith({
+      rateLimitHits: 1,
+      retries: 1,
+      rateLimitWaitMs: 10,
+      retryAfterHonoredCount: 0,
+    });
+    expect(metricsB).toHaveBeenLastCalledWith({
+      rateLimitHits: 0,
+      retries: 0,
+      rateLimitWaitMs: 0,
+      retryAfterHonoredCount: 0,
+    });
+    expect(limiter.getGlobalDiagnostics().rateLimitHits).toBe(1);
   });
 
   it('propagates a thrown error from dispatch immediately without retrying it', async () => {

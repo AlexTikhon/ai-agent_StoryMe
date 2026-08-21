@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import type { CharacterProfile, GeneratedImageEntry } from '@book/types';
+import type { CharacterProfile, GeneratedImageEntry, ProviderCallMetrics } from '@book/types';
 import type {
   CharacterSheetInput,
   ImageGenerationFailureDetails,
@@ -18,12 +18,13 @@ import {
 } from '../common/openai-request';
 import {
   isProviderCancellationError,
+  reportProviderMetrics,
   type ProviderExecutionOptions,
 } from '../common/provider-execution';
 import { buildCharacterConsistencyBlock } from '../agent/story-generation-contracts';
 import {
   OpenAIImageRateLimiter,
-  type OpenAIImageRateLimiterDiagnostics,
+  type OpenAIImageRateLimiterGlobalDiagnostics,
 } from './openai-image-rate-limiter';
 
 const DEFAULT_MODEL = 'gpt-image-1';
@@ -228,8 +229,8 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
   }
 
   /** Safe (no secrets/prompts/bytes) snapshot of this provider's shared rate limiter — see AgentService's image-generation log line. */
-  getRateLimitDiagnostics(): OpenAIImageRateLimiterDiagnostics {
-    return this.rateLimiter.getDiagnostics();
+  getGlobalRateLimitDiagnostics(): OpenAIImageRateLimiterGlobalDiagnostics {
+    return this.rateLimiter.getGlobalDiagnostics();
   }
 
   async generateImage(
@@ -254,12 +255,12 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
         size,
         input.characterReference,
         'Image generation (character reference)',
-        options.signal,
+        options,
       );
     }
 
     const prompt = buildImagePrompt(input.entry);
-    return this.requestImage(prompt, size, 'Image generation', options.signal);
+    return this.requestImage(prompt, size, 'Image generation', options);
   }
 
   async generateCharacterSheet(
@@ -267,12 +268,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     options: ProviderExecutionOptions = {},
   ): Promise<ImageGenerationOutput> {
     const prompt = buildCharacterSheetPrompt(input.characterProfile);
-    return this.requestImage(
-      prompt,
-      CHARACTER_SHEET_SIZE,
-      'Character sheet generation',
-      options.signal,
-    );
+    return this.requestImage(prompt, CHARACTER_SHEET_SIZE, 'Character sheet generation', options);
   }
 
   /** gpt-image-1 (the default model) supports the `input_fidelity` edit parameter; a future non-gpt-image model may not. */
@@ -285,7 +281,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     prompt: string,
     size: string,
     logLabel: string,
-    signal?: AbortSignal,
+    options: ProviderExecutionOptions,
   ): Promise<ImageGenerationOutput> {
     return this.sendAndParse(
       `${this.baseUrl}/images/generations`,
@@ -305,7 +301,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       logLabel,
       'text-to-image',
       false,
-      signal,
+      options,
     );
   }
 
@@ -321,7 +317,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     size: string,
     reference: ImageReference,
     logLabel: string,
-    signal?: AbortSignal,
+    options: ProviderExecutionOptions,
   ): Promise<ImageGenerationOutput> {
     const formData = new FormData();
     formData.append('model', this.model);
@@ -349,7 +345,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       logLabel,
       'character-reference-edit',
       true,
-      signal,
+      options,
     );
     return { ...output, usedReference: true };
   }
@@ -361,22 +357,40 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     logLabel: string,
     requestMode: 'text-to-image' | 'character-reference-edit',
     characterReferenceSupplied: boolean,
-    signal?: AbortSignal,
+    options: ProviderExecutionOptions,
   ): Promise<ImageGenerationOutput> {
     let attempts = 0;
-    const limiterBefore = this.rateLimiter.getDiagnostics();
+    let timeoutCount = 0;
+    let limiterMetrics: ProviderCallMetrics = {
+      rateLimitHits: 0,
+      retries: 0,
+      rateLimitWaitMs: 0,
+      retryAfterHonoredCount: 0,
+    };
+    const reportMetrics = () =>
+      reportProviderMetrics(options, {
+        ...limiterMetrics,
+        httpAttempts: attempts,
+        retries: Math.max(0, attempts - 1),
+        timeoutCount,
+      });
     const buildDetails = (
       extra: Pick<
         ImageGenerationFailureDetails,
-        'httpStatus' | 'errorType' | 'errorCode' | 'timeoutMs' | 'elapsedMs' | 'retryDecision'
+        | 'failureKind'
+        | 'httpStatus'
+        | 'errorType'
+        | 'errorCode'
+        | 'timeoutMs'
+        | 'elapsedMs'
+        | 'retryDecision'
       > = {},
     ): ImageGenerationFailureDetails => {
-      const limiterAfter = this.rateLimiter.getDiagnostics();
       return {
         ...extra,
         attempts,
-        limiterRetries: limiterAfter.retriesUsed - limiterBefore.retriesUsed,
-        limiterWaitMs: limiterAfter.totalWaitMs - limiterBefore.totalWaitMs,
+        limiterRetries: limiterMetrics.retries ?? 0,
+        limiterWaitMs: limiterMetrics.rateLimitWaitMs ?? 0,
         characterReferenceSupplied,
         requestMode,
       };
@@ -400,7 +414,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
             maxRetries: this.maxRetries,
             timeoutMaxRetries: this.timeoutMaxRetries,
             retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
-            signal,
+            signal: options.signal,
             onAttempt: (attempt, maxAttempts) => {
               attempts++;
               this.logger.log(
@@ -408,13 +422,21 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
               );
             },
             onRetry: (attempt, reason) => {
+              if (reason === 'timeout') timeoutCount++;
               this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
             },
           });
         },
-        { signal },
+        {
+          ...(options.signal && { signal: options.signal }),
+          onMetrics: (metrics) => {
+            limiterMetrics = { ...limiterMetrics, ...metrics };
+          },
+        },
       );
     } catch (err) {
+      if (err instanceof OpenAIRequestError && err.reason === 'timeout') timeoutCount++;
+      reportMetrics();
       if (isProviderCancellationError(err)) throw err;
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
@@ -424,6 +446,12 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       throw new OpenAIImageRequestError(
         `OpenAI image request failed: ${message}`,
         buildDetails({
+          failureKind:
+            err instanceof OpenAIRequestError
+              ? err.reason === 'timeout'
+                ? 'timeout'
+                : 'network'
+              : 'provider_error',
           ...(isTimeout && {
             errorCode: 'request_timeout',
             timeoutMs: this.timeoutMs,
@@ -438,6 +466,8 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       );
     }
 
+    reportMetrics();
+
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
       const parsed = parseOpenAIErrorBody(bodyText);
@@ -447,6 +477,12 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       throw new OpenAIImageRequestError(
         `OpenAI image request failed with status ${response.status}`,
         buildDetails({
+          failureKind:
+            response.status === 429
+              ? 'rate_limit'
+              : response.status === 401 || response.status === 403
+                ? 'authentication'
+                : 'provider_error',
           httpStatus: response.status,
           ...(parsed.type && { errorType: parsed.type }),
           ...(parsed.code && { errorCode: parsed.code }),
@@ -460,7 +496,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     } catch (err) {
       throw new OpenAIImageRequestError(
         'OpenAI image response was not valid JSON',
-        buildDetails({ httpStatus: response.status }),
+        buildDetails({ failureKind: 'invalid_response', httpStatus: response.status }),
         err,
       );
     }
@@ -469,7 +505,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     if (typeof b64 !== 'string' || !b64) {
       throw new OpenAIImageRequestError(
         'OpenAI image response did not include b64_json data',
-        buildDetails({ httpStatus: response.status }),
+        buildDetails({ failureKind: 'invalid_response', httpStatus: response.status }),
       );
     }
 

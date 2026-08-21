@@ -32,6 +32,16 @@ import { STORY_GENERATION_PROVIDER_TOKEN } from '../agent/story-generation-provi
 import { createStoryGenerationProvider } from '../agent/story-generation-provider.factory';
 import { CHARACTER_PROFILE_PROVIDER_TOKEN } from '../agent/character-profile-provider';
 import { createCharacterProfileProvider } from '../agent/character-profile-provider.factory';
+import { CharacterReferenceStage } from '../agent/character-reference.stage';
+import { GenerationImageService } from '../agent/generation-image.service';
+import { GenerationPreparationService } from '../agent/generation-preparation';
+import { GenerationPublicationService } from '../agent/generation-publication.service';
+import { GenerationResultCollector } from '../agent/generation-result.collector';
+import { GenerationResumeService } from '../agent/generation-resume.service';
+import { ImageGenerationStage } from '../agent/image-generation.stage';
+import { StoryQualityService } from '../agent/story-quality.service';
+import { StoryContentStage } from '../agent/story-content.stage';
+import { StoryQualityRepairStage } from '../agent/story-quality-repair.stage';
 
 export interface BooksModuleOptions {
   /** Whether to register GenerationQueueProcessor (see app.module.ts / worker.ts). */
@@ -71,6 +81,16 @@ export class BooksModule {
       BookPageChangeService,
       BookPageImageRevisionService,
       BookHardDeletionService,
+      GenerationPreparationService,
+      GenerationResumeService,
+      CharacterReferenceStage,
+      StoryContentStage,
+      StoryQualityRepairStage,
+      StoryQualityService,
+      ImageGenerationStage,
+      GenerationResultCollector,
+      GenerationImageService,
+      GenerationPublicationService,
       AgentService,
       GenerationQueueService,
       GenerationRunService,

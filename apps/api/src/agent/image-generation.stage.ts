@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentStep } from '@prisma/client';
 import type {
   CharacterCard,
@@ -6,9 +6,14 @@ import type {
   GenerationProviderName,
   ImageGenerationFailureDetail,
 } from '@book/types';
-import { claimImageAssetKey, type ImageAssetStorage } from '../images/image-asset-storage';
+import {
+  claimImageAssetKey,
+  IMAGE_ASSET_STORAGE_TOKEN,
+  type ImageAssetStorage,
+} from '../images/image-asset-storage';
 import {
   assertCompleteBookImageBudget,
+  IMAGE_GENERATION_PROVIDER_TOKEN,
   hasImageGenerationFailureDetails,
   resolveMaxGeneratedImagesPerBook,
   type ImageGenerationProvider,
@@ -18,8 +23,8 @@ import type { ClaimArtifactNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import type { GenerationStage } from './generation-stage';
 import {
+  classifyProviderFailure,
   isProviderCancellationError,
-  providerExecutionArgs,
   throwIfAborted,
 } from '../common/provider-execution';
 
@@ -41,6 +46,10 @@ export interface ImageGenerationStageOutput {
   failures: ImageGenerationFailureDetail[];
 }
 
+type ImageEntryGenerationOutcome =
+  | { kind: 'generated'; usedCharacterReference: boolean }
+  | { kind: 'failed'; message: string; failure: ImageGenerationFailureDetail };
+
 /** Stable diagnostics label for one planned image entry. */
 export function imageAssetLabel(entry: GeneratedImageEntry): string {
   return entry.kind === 'page' ? `page_${entry.pageNumber}` : entry.kind;
@@ -56,6 +65,7 @@ function providerName(raw: string | undefined): GenerationProviderName {
  * claim-scoped asset, and converts per-entry provider/storage failures into
  * safe diagnostics without aborting the remaining batch.
  */
+@Injectable()
 export class ImageGenerationStage implements GenerationStage<
   ImageGenerationStageInput,
   ImageGenerationStageOutput
@@ -64,7 +74,9 @@ export class ImageGenerationStage implements GenerationStage<
   private readonly logger = new Logger(ImageGenerationStage.name);
 
   constructor(
+    @Inject(IMAGE_ASSET_STORAGE_TOKEN)
     private readonly storage: ImageAssetStorage,
+    @Inject(IMAGE_GENERATION_PROVIDER_TOKEN)
     private readonly provider: ImageGenerationProvider,
   ) {}
 
@@ -87,13 +99,7 @@ export class ImageGenerationStage implements GenerationStage<
       ? 'character-reference-edit'
       : 'text-to-image';
 
-    let generatedCount = 0;
-    let failedCount = 0;
-    let lastError: string | undefined;
-    let usedCharacterReference = false;
-    const failures: ImageGenerationFailureDetail[] = [];
-
-    await Promise.all(
+    const outcomes = await Promise.all(
       images.map(async (image) => {
         try {
           throwIfAborted(signal);
@@ -115,7 +121,7 @@ export class ImageGenerationStage implements GenerationStage<
               characterCard,
               characterReferenceSupplied: characterReference !== undefined,
             },
-            execute: () =>
+            execute: (options) =>
               this.provider.generateImage(
                 {
                   bookId,
@@ -123,14 +129,16 @@ export class ImageGenerationStage implements GenerationStage<
                   characterCard,
                   ...(characterReference && { characterReference }),
                 },
-                ...providerExecutionArgs(signal),
+                { ...options, ...(signal && { signal }) },
               ),
           });
           throwIfAborted(signal);
           const key = claimImageAssetKey(bookId, namespace, image.kind, image.pageNumber);
           await this.storage.saveImageAsset(key, buffer, contentType);
-          generatedCount++;
-          if (usedReference) usedCharacterReference = true;
+          return {
+            kind: 'generated',
+            usedCharacterReference: usedReference === true,
+          } satisfies ImageEntryGenerationOutcome;
         } catch (err) {
           throwIfAborted(signal);
           if (isProviderCancellationError(err)) throw err;
@@ -138,30 +146,50 @@ export class ImageGenerationStage implements GenerationStage<
           this.logger.warn(
             `Image generation/save failed for entry "${image.id}" (book ${bookId}): ${message}. Falling back to a placeholder for this entry.`,
           );
-          failedCount++;
-          lastError = message;
           const details = hasImageGenerationFailureDetails(err) ? err.details : {};
-          failures.push({
-            assetLabel: imageAssetLabel(image),
-            provider: resolvedProviderName,
-            ...(modelName && { model: modelName }),
-            ...(details.httpStatus !== undefined && { httpStatus: details.httpStatus }),
-            ...(details.errorType !== undefined && { errorType: details.errorType }),
-            ...(details.errorCode !== undefined && { errorCode: details.errorCode }),
+          return {
+            kind: 'failed',
             message,
-            attempts: details.attempts ?? 1,
-            limiterRetries: details.limiterRetries ?? 0,
-            limiterWaitMs: details.limiterWaitMs ?? 0,
-            characterReferenceSupplied:
-              details.characterReferenceSupplied ?? characterReference !== undefined,
-            requestMode: details.requestMode ?? attemptedRequestMode,
-            ...(details.timeoutMs !== undefined && { timeoutMs: details.timeoutMs }),
-            ...(details.elapsedMs !== undefined && { elapsedMs: details.elapsedMs }),
-            ...(details.retryDecision !== undefined && { retryDecision: details.retryDecision }),
-          });
+            failure: {
+              assetLabel: imageAssetLabel(image),
+              provider: resolvedProviderName,
+              ...(modelName && { model: modelName }),
+              failureKind: details.failureKind ?? classifyProviderFailure(err),
+              ...(details.httpStatus !== undefined && { httpStatus: details.httpStatus }),
+              ...(details.errorType !== undefined && { errorType: details.errorType }),
+              ...(details.errorCode !== undefined && { errorCode: details.errorCode }),
+              message,
+              attempts: details.attempts ?? 1,
+              limiterRetries: details.limiterRetries ?? 0,
+              limiterWaitMs: details.limiterWaitMs ?? 0,
+              characterReferenceSupplied:
+                details.characterReferenceSupplied ?? characterReference !== undefined,
+              requestMode: details.requestMode ?? attemptedRequestMode,
+              ...(details.timeoutMs !== undefined && { timeoutMs: details.timeoutMs }),
+              ...(details.elapsedMs !== undefined && { elapsedMs: details.elapsedMs }),
+              ...(details.retryDecision !== undefined && {
+                retryDecision: details.retryDecision,
+              }),
+            },
+          } satisfies ImageEntryGenerationOutcome;
         }
       }),
     );
+
+    // Promise.all retains input order even when calls finish out of order.
+    // Aggregate only after completion so diagnostics never depend on timing.
+    const failures = outcomes.flatMap((outcome) =>
+      outcome.kind === 'failed' ? [outcome.failure] : [],
+    );
+    const failureMessages = outcomes.flatMap((outcome) =>
+      outcome.kind === 'failed' ? [outcome.message] : [],
+    );
+    const generatedCount = outcomes.filter((outcome) => outcome.kind === 'generated').length;
+    const failedCount = failures.length;
+    const usedCharacterReference = outcomes.some(
+      (outcome) => outcome.kind === 'generated' && outcome.usedCharacterReference,
+    );
+    const lastError = failureMessages.at(-1);
 
     return {
       generatedCount,

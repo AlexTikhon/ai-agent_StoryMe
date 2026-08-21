@@ -5,6 +5,7 @@ import {
   hashProviderPrompt,
   requiredPaidProviderCallsForBook,
 } from './generation-provider-telemetry';
+import { ProviderCancellationError } from '../common/provider-execution';
 
 describe('generation provider telemetry', () => {
   it('hashes normalized versioned inputs deterministically', () => {
@@ -127,5 +128,79 @@ describe('generation provider telemetry', () => {
     });
     expect(snapshot.calls.every((call) => /^[a-f0-9]{64}$/.test(call.promptHash))).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('safe fingerprint input');
+  });
+
+  it('captures optional metrics without fabricating absent values', async () => {
+    const telemetry = new GenerationProviderTelemetry(3, 1);
+    await telemetry.record({
+      operation: 'story',
+      provider: 'openai',
+      promptVersion: 'story-v1',
+      promptInput: {},
+      execute: async (options) => {
+        options.onMetrics?.({
+          inputTokens: 41,
+          outputTokens: 17,
+          httpAttempts: 2,
+          retries: 1,
+        });
+        return 'ok';
+      },
+    });
+    await telemetry.record({
+      operation: 'character_profile',
+      provider: 'mock',
+      promptVersion: 'mock-v1',
+      promptInput: {},
+      execute: async () => 'ok',
+    });
+
+    expect(telemetry.snapshot().calls[0]).toMatchObject({
+      inputTokens: 41,
+      outputTokens: 17,
+      httpAttempts: 2,
+      retries: 1,
+    });
+    expect(telemetry.snapshot().calls[1]).not.toHaveProperty('inputTokens');
+    expect(telemetry.snapshot().calls[1]).not.toHaveProperty('outputTokens');
+  });
+
+  it.each([
+    ['timeout', Object.assign(new Error('safe timeout'), { failureKind: 'timeout' })],
+    ['rate_limit', Object.assign(new Error('safe 429'), { failureKind: 'rate_limit' })],
+    ['provider_error', new Error('safe provider failure')],
+  ] as const)('classifies %s failures', async (failureKind, error) => {
+    const telemetry = new GenerationProviderTelemetry(2, 1);
+    await expect(
+      telemetry.record({
+        operation: 'story',
+        provider: 'openai',
+        promptVersion: 'story-v1',
+        promptInput: {},
+        execute: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toThrow();
+    expect(telemetry.snapshot().calls[0]).toMatchObject({ status: 'error', failureKind });
+  });
+
+  it('records cancellation as cancelled control flow, never an ordinary provider error', async () => {
+    const telemetry = new GenerationProviderTelemetry(2, 1);
+    await expect(
+      telemetry.record({
+        operation: 'story',
+        provider: 'openai',
+        promptVersion: 'story-v1',
+        promptInput: {},
+        execute: async () => {
+          throw new ProviderCancellationError();
+        },
+      }),
+    ).rejects.toBeInstanceOf(ProviderCancellationError);
+    expect(telemetry.snapshot().calls[0]).toMatchObject({
+      status: 'cancelled',
+      failureKind: 'cancelled',
+    });
   });
 });

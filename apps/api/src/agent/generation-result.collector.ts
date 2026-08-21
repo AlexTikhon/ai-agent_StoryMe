@@ -1,11 +1,13 @@
 import type {
   GeneratedImageEntry,
   GenerationProviderUsage,
+  GenerationProviderOperation,
   ImageGenerationResult,
   QualityReport,
   ResumeDiagnostics,
 } from '@book/types';
 import { AgentLogStatus, AgentStep, Prisma } from '@prisma/client';
+import { Injectable } from '@nestjs/common';
 import type { CharacterBuildStageOutput } from './character-reference.stage';
 import type { GenerationOutcome } from './generation-outcome';
 import type { ImageGenerationStageOutput } from './image-generation.stage';
@@ -76,6 +78,7 @@ export interface CollectStoryFailureOutcomeInput {
   charBuildResult: CharacterBuildStageOutput;
   storyProviderName: string | null;
   storyModelName: string | null;
+  providerUsage?: GenerationProviderUsage;
   errorMessage: string;
 }
 
@@ -91,6 +94,29 @@ export interface CollectQualityFailureOutcomeInput {
   storyDurationMs: number;
   qualityDurationMs: number;
   qualityReport: QualityReport;
+  providerUsage?: GenerationProviderUsage;
+}
+
+function tokenFields(
+  usage: GenerationProviderUsage | undefined,
+  operations: readonly GenerationProviderOperation[],
+): Pick<Prisma.AgentLogCreateManyInput, 'tokensInput' | 'tokensOutput'> {
+  if (!usage) return {};
+  const calls = usage.calls.filter((call) => operations.includes(call.operation));
+  const inputValues = calls.flatMap((call) =>
+    call.inputTokens === undefined ? [] : [call.inputTokens],
+  );
+  const outputValues = calls.flatMap((call) =>
+    call.outputTokens === undefined ? [] : [call.outputTokens],
+  );
+  return {
+    ...(inputValues.length > 0 && {
+      tokensInput: inputValues.reduce((total, value) => total + value, 0),
+    }),
+    ...(outputValues.length > 0 && {
+      tokensOutput: outputValues.reduce((total, value) => total + value, 0),
+    }),
+  };
 }
 
 /**
@@ -99,6 +125,7 @@ export interface CollectQualityFailureOutcomeInput {
  * diagnostics, and produces the terminal GenerationOutcome/AgentLog batch.
  * All provider, storage, and database work stays outside this collector.
  */
+@Injectable()
 export class GenerationResultCollector {
   collectStoryFailureOutcome(input: CollectStoryFailureOutcomeInput): GenerationOutcome {
     const {
@@ -110,6 +137,7 @@ export class GenerationResultCollector {
       charBuildResult,
       storyProviderName,
       storyModelName,
+      providerUsage,
       errorMessage,
     } = input;
 
@@ -135,6 +163,7 @@ export class GenerationResultCollector {
           provider: charBuildResult.providerName,
           model: charBuildResult.modelName,
           durationMs: charBuildResult.durationMs,
+          ...tokenFields(providerUsage, ['character_profile']),
           ...(charBuildResult.error && { error: charBuildResult.error }),
         },
         {
@@ -148,6 +177,7 @@ export class GenerationResultCollector {
           provider: storyProviderName,
           model: storyModelName,
           durationMs: generationTimeMs,
+          ...tokenFields(providerUsage, ['story']),
         },
       ],
     };
@@ -178,6 +208,7 @@ export class GenerationResultCollector {
           provider: input.charBuildResult.providerName,
           model: input.charBuildResult.modelName,
           durationMs: input.charBuildResult.durationMs,
+          ...tokenFields(input.providerUsage, ['character_profile']),
           ...(input.charBuildResult.error && { error: input.charBuildResult.error }),
         },
         {
@@ -190,6 +221,7 @@ export class GenerationResultCollector {
           provider: input.storyProviderName,
           model: input.storyModelName,
           durationMs: input.storyDurationMs,
+          ...tokenFields(input.providerUsage, ['story']),
         },
         {
           bookId: input.bookId,
@@ -199,6 +231,7 @@ export class GenerationResultCollector {
           attempt: 1,
           traceId: input.traceId,
           durationMs: input.qualityDurationMs,
+          ...tokenFields(input.providerUsage, ['story_repair']),
           error: errorMessage,
         },
       ],
@@ -325,6 +358,7 @@ export class GenerationResultCollector {
       layoutStep,
       pdfStep,
     } = input;
+    const providerUsage = imageGenerationResult.providerUsage;
 
     const bookUpdate: Prisma.BookUpdateInput = {
       generationTimeMs,
@@ -343,6 +377,7 @@ export class GenerationResultCollector {
         provider: charBuildResult.providerName,
         model: charBuildResult.modelName,
         durationMs: charBuildResult.durationMs,
+        ...(providerUsage && tokenFields(providerUsage, ['character_profile'])),
         ...(charBuildResult.error && { error: charBuildResult.error }),
       },
       {
@@ -355,6 +390,7 @@ export class GenerationResultCollector {
         provider: storyProviderName,
         model: storyModelName,
         durationMs: storyDurationMs,
+        ...(providerUsage && tokenFields(providerUsage, ['story'])),
       },
       ...[
         AgentStep.page_plan,
@@ -379,6 +415,7 @@ export class GenerationResultCollector {
         attempt: 1,
         traceId,
         durationMs: qualityDurationMs,
+        ...(providerUsage && tokenFields(providerUsage, ['story_repair'])),
       },
       {
         bookId,
@@ -390,6 +427,7 @@ export class GenerationResultCollector {
         provider: imageProviderName,
         model: imageModelName,
         durationMs: imageDurationMs,
+        ...(providerUsage && tokenFields(providerUsage, ['character_sheet', 'illustration'])),
         ...(failedImageCount > 0 && {
           error: `${failedImageCount} of ${attemptedImageCount} attempted image(s) failed to generate; PDF rendering will fail below unless every page's illustration is otherwise available.`,
         }),

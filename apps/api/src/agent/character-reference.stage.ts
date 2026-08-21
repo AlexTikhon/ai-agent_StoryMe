@@ -1,22 +1,27 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentStep } from '@prisma/client';
 import type { CharacterProfile, GenerationProviderName } from '@book/types';
 import { createHash } from 'node:crypto';
 import { CHILD_PHOTO_INTEGRITY_MISMATCH } from '../books/child-photo.constants';
-import { claimCharacterSheetAssetKey, type ImageAssetStorage } from '../images/image-asset-storage';
-import type { ImageGenerationProvider, ImageReference } from '../images/image-generation-provider';
+import {
+  claimCharacterSheetAssetKey,
+  IMAGE_ASSET_STORAGE_TOKEN,
+  type ImageAssetStorage,
+} from '../images/image-asset-storage';
+import {
+  IMAGE_GENERATION_PROVIDER_TOKEN,
+  type ImageGenerationProvider,
+  type ImageReference,
+} from '../images/image-generation-provider';
 import {
   MockCharacterProfileProvider,
+  CHARACTER_PROFILE_PROVIDER_TOKEN,
   type CharacterProfileProvider,
 } from './character-profile-provider';
 import type { ClaimArtifactNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import type { GenerationStage } from './generation-stage';
-import {
-  isProviderCancellationError,
-  providerExecutionArgs,
-  throwIfAborted,
-} from '../common/provider-execution';
+import { isProviderCancellationError, throwIfAborted } from '../common/provider-execution';
 
 export interface CharacterReferenceInput {
   childName: string;
@@ -83,6 +88,7 @@ function promptVersion(provider: { readonly promptVersion?: string }, fallback: 
  * reference. Book-level resume decisions and pipeline ordering stay in the
  * orchestrator.
  */
+@Injectable()
 export class CharacterReferenceStage implements GenerationStage<
   CharacterBuildStageInput,
   CharacterBuildStageOutput
@@ -92,8 +98,11 @@ export class CharacterReferenceStage implements GenerationStage<
   private readonly fallbackProfileProvider = new MockCharacterProfileProvider();
 
   constructor(
+    @Inject(IMAGE_ASSET_STORAGE_TOKEN)
     private readonly imageAssetStorage: ImageAssetStorage,
+    @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
     private readonly profileProvider: CharacterProfileProvider,
+    @Inject(IMAGE_GENERATION_PROVIDER_TOKEN)
     private readonly imageProvider: ImageGenerationProvider,
   ) {}
 
@@ -133,7 +142,7 @@ export class CharacterReferenceStage implements GenerationStage<
         ...(this.profileProvider.modelName && { model: this.profileProvider.modelName }),
         promptVersion: promptVersion(this.profileProvider, 'legacy-character-profile-v1'),
         promptInput: profilePromptInput,
-        execute: () =>
+        execute: (options) =>
           this.profileProvider.buildProfile(
             {
               bookId,
@@ -144,7 +153,7 @@ export class CharacterReferenceStage implements GenerationStage<
               photo,
               referenceAssetRevision: input.childPhoto?.sha256,
             },
-            ...providerExecutionArgs(signal),
+            { ...options, ...(signal && { signal }) },
           ),
       });
     } catch (err) {
@@ -159,7 +168,7 @@ export class CharacterReferenceStage implements GenerationStage<
         provider: providerName(this.fallbackProfileProvider.providerName),
         promptVersion: promptVersion(this.fallbackProfileProvider, 'fallback-character-profile-v1'),
         promptInput: profilePromptInput,
-        execute: () =>
+        execute: (options) =>
           this.fallbackProfileProvider.buildProfile(
             {
               bookId,
@@ -170,7 +179,7 @@ export class CharacterReferenceStage implements GenerationStage<
               photo,
               referenceAssetRevision: input.childPhoto?.sha256,
             },
-            ...providerExecutionArgs(signal),
+            { ...options, ...(signal && { signal }) },
           ),
       });
       resolvedProviderName = 'mock';
@@ -306,13 +315,13 @@ export class CharacterReferenceStage implements GenerationStage<
       ...(this.imageProvider.modelName && { model: this.imageProvider.modelName }),
       promptVersion: promptVersion(this.imageProvider, 'legacy-image-v1'),
       promptInput: { bookId, characterProfile },
-      execute: () =>
+      execute: (options) =>
         this.imageProvider.generateCharacterSheet(
           {
             bookId,
             characterProfile,
           },
-          ...providerExecutionArgs(signal),
+          { ...options, ...(signal && { signal }) },
         ),
     });
   }

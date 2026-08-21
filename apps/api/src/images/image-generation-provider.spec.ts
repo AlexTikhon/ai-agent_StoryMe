@@ -126,9 +126,9 @@ describe('MockImageGenerationProvider', () => {
     expect(result.usedReference).toBeUndefined();
   });
 
-  it('never waits on any rate limiter (no getRateLimitDiagnostics, resolves without delay)', async () => {
+  it('never waits on any rate limiter (no global diagnostics, resolves without delay)', async () => {
     const provider = new MockImageGenerationProvider();
-    expect(provider.getRateLimitDiagnostics).toBeUndefined();
+    expect(provider.getGlobalRateLimitDiagnostics).toBeUndefined();
 
     const startedAt = Date.now();
     await provider.generateImage(makeInput());

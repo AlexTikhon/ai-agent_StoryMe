@@ -3,6 +3,7 @@ import {
   type CharacterCard,
   type CharacterProfile,
   type GeneratedImageEntry,
+  type ProviderFailureKind,
 } from '@book/types';
 import { generateMockImagePng } from './mock-image-producer';
 import type { ImageAssetContentType } from './image-asset-storage';
@@ -45,6 +46,7 @@ export interface ImageGenerationOutput {
  * provider response body.
  */
 export interface ImageGenerationFailureDetails {
+  failureKind?: ProviderFailureKind;
   httpStatus?: number;
   errorType?: string;
   errorCode?: string;
@@ -114,8 +116,8 @@ export interface ImageGenerationProvider {
     input: CharacterSheetInput,
     options?: ProviderExecutionOptions,
   ): Promise<ImageGenerationOutput>;
-  /** Safe (no secrets/prompts/bytes) rate-limiter diagnostics snapshot, if this provider is rate-limited. Only OpenAIImageGenerationProvider implements this. */
-  getRateLimitDiagnostics?(): {
+  /** Process-lifetime operator snapshot. Never attribute these global counters to one book or provider call. */
+  getGlobalRateLimitDiagnostics?(): {
     requestsQueued: number;
     totalWaitMs: number;
     rateLimitHits: number;

@@ -258,6 +258,17 @@ describe('buildGenerationDiagnostics', () => {
     });
   });
 
+  it('exposes optional actual token counts from AgentLog rows', () => {
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [
+      makeAgentLog({ tokensInput: 123, tokensOutput: 45 }),
+      makeAgentLog({ id: 'log-2', tokensInput: null, tokensOutput: null }),
+    ]);
+
+    expect(diagnostics.recentLogs[0]).toMatchObject({ tokensInput: 123, tokensOutput: 45 });
+    expect(diagnostics.recentLogs[1]).not.toHaveProperty('tokensInput');
+    expect(diagnostics.recentLogs[1]).not.toHaveProperty('tokensOutput');
+  });
+
   it('never leaks OPENAI_API_KEY, prompts, image base64, or raw provider responses through recentLogs', () => {
     const logs = [makeAgentLog({ error: 'OpenAI request failed: 401 Unauthorized' })];
 

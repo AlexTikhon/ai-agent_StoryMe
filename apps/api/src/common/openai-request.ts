@@ -1,4 +1,5 @@
 import { cancellableSleep, ProviderCancellationError, throwIfAborted } from './provider-execution';
+import type { ProviderCallMetrics } from '@book/types';
 
 export const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_OPENAI_MAX_RETRIES = 2;
@@ -21,6 +22,30 @@ const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
 export interface OpenAIRetryConfig {
   timeoutMs: number;
   maxRetries: number;
+}
+
+/** Reads only safe numeric usage fields from OpenAI text responses. */
+export function readOpenAITextUsage(payload: unknown): ProviderCallMetrics {
+  const usage = (
+    payload as {
+      usage?: {
+        prompt_tokens?: unknown;
+        completion_tokens?: unknown;
+        input_tokens?: unknown;
+        output_tokens?: unknown;
+      };
+    } | null
+  )?.usage;
+  const inputTokens = usage?.input_tokens ?? usage?.prompt_tokens;
+  const outputTokens = usage?.output_tokens ?? usage?.completion_tokens;
+  return {
+    ...(typeof inputTokens === 'number' &&
+      Number.isInteger(inputTokens) &&
+      inputTokens >= 0 && { inputTokens }),
+    ...(typeof outputTokens === 'number' &&
+      Number.isInteger(outputTokens) &&
+      outputTokens >= 0 && { outputTokens }),
+  };
 }
 
 /**

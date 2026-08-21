@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { finalizeCharacterProfile } from './character-appearance';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
-import { MockStoryGenerationProvider } from './story-generation-provider';
+import {
+  MockStoryGenerationProvider,
+  type StoryGenerationProvider,
+} from './story-generation-provider';
+import { StoryContentStage } from './story-content.stage';
+import { StoryQualityRepairStage } from './story-quality-repair.stage';
 import { StoryQualityService } from './story-quality.service';
 import { ProviderCancellationError } from '../common/provider-execution';
 
@@ -37,11 +42,23 @@ function callbacks() {
   };
 }
 
+function makeService(
+  provider: StoryGenerationProvider,
+  now: () => number = Date.now,
+): StoryQualityService {
+  return new StoryQualityService(
+    provider,
+    new StoryContentStage(provider),
+    new StoryQualityRepairStage(provider),
+    now,
+  );
+}
+
 describe('StoryQualityService', () => {
   it('reuses validated story state without another story provider call', async () => {
     const generated = await new MockStoryGenerationProvider().generateStory(generationInput);
     const generateStory = vi.fn(async () => generated);
-    const service = new StoryQualityService({ providerName: 'mock', generateStory });
+    const service = makeService({ providerName: 'mock', generateStory });
     const hooks = callbacks();
 
     const result = await service.execute({
@@ -69,7 +86,7 @@ describe('StoryQualityService', () => {
       },
     };
     const repairStory = vi.fn(async () => valid);
-    const service = new StoryQualityService({
+    const service = makeService({
       providerName: 'mock',
       promptVersion: 'test-v1',
       generateStory: vi.fn(async () => invalid),
@@ -99,7 +116,7 @@ describe('StoryQualityService', () => {
   it('measures story and quality from their own stage-local clocks', async () => {
     const generated = await new MockStoryGenerationProvider().generateStory(generationInput);
     const ticks = [100, 135, 140, 152];
-    const service = new StoryQualityService(
+    const service = makeService(
       { providerName: 'mock', generateStory: vi.fn(async () => generated) },
       () => ticks.shift()!,
     );
@@ -128,7 +145,7 @@ describe('StoryQualityService', () => {
         metadata: { ...valid.bookPreview.metadata, theme: 'wrong-theme' },
       },
     };
-    const service = new StoryQualityService({
+    const service = makeService({
       providerName: 'openai',
       generateStory: vi.fn(async () => invalid),
       repairStory: vi.fn().mockRejectedValue(new ProviderCancellationError()),

@@ -2,7 +2,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { Book } from '@prisma/client';
-import { AgentService } from './agent.service';
+import { TestAgentService as AgentService } from '../common/test-utils/create-test-agent-service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
@@ -1191,6 +1191,7 @@ describe('AgentService', () => {
           expect.objectContaining({
             photo: { base64: CHILD_PHOTO_BYTES.toString('base64'), contentType: 'image/jpeg' },
           }),
+          expect.objectContaining({ onMetrics: expect.any(Function) }),
         );
       });
 
@@ -1222,6 +1223,7 @@ describe('AgentService', () => {
 
         expect(profileProvider.buildProfile).toHaveBeenCalledWith(
           expect.objectContaining({ photo: undefined }),
+          expect.objectContaining({ onMetrics: expect.any(Function) }),
         );
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),
@@ -1261,6 +1263,7 @@ describe('AgentService', () => {
 
         expect(profileProvider.buildProfile).toHaveBeenCalledWith(
           expect.objectContaining({ photo: undefined }),
+          expect.objectContaining({ onMetrics: expect.any(Function) }),
         );
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),
@@ -1296,6 +1299,7 @@ describe('AgentService', () => {
 
         expect(profileProvider.buildProfile).toHaveBeenCalledWith(
           expect.objectContaining({ photo: undefined }),
+          expect.objectContaining({ onMetrics: expect.any(Function) }),
         );
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no bytes were found'));
         expect(errorSpy).not.toHaveBeenCalledWith(
@@ -2352,14 +2356,17 @@ describe('AgentService', () => {
 
         await runGeneration(spyingService, prisma, book);
 
-        expect(generateStory).toHaveBeenCalledWith({
-          bookId: 'b-1',
-          childName: 'Mia',
-          childAge: 5,
-          theme: 'friendship',
-          language: 'en',
-          characterProfile: expect.any(Object),
-        });
+        expect(generateStory).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bookId: 'b-1',
+            childName: 'Mia',
+            childAge: 5,
+            theme: 'friendship',
+            language: 'en',
+            characterProfile: expect.any(Object),
+          }),
+          expect.objectContaining({ onMetrics: expect.any(Function) }),
+        );
       });
     });
 
@@ -2737,6 +2744,7 @@ describe('AgentService', () => {
       expect(imageProvider.generateImage).toHaveBeenCalledTimes(1);
       expect(imageProvider.generateImage).toHaveBeenCalledWith(
         expect.objectContaining({ entry: expect.objectContaining({ kind: 'back_cover' }) }),
+        expect.objectContaining({ onMetrics: expect.any(Function) }),
       );
       // The 7 reused images plus the character sheet are copy-forwarded from
       // RUN_1 (never through saveImageAsset); only the regenerated
@@ -2955,6 +2963,7 @@ describe('AgentService', () => {
         expect.objectContaining({
           entry: expect.objectContaining({ kind: 'page', pageNumber: 3 }),
         }),
+        expect.objectContaining({ onMetrics: expect.any(Function) }),
       );
     });
 
@@ -2984,6 +2993,7 @@ describe('AgentService', () => {
         expect.objectContaining({
           entry: expect.objectContaining({ kind: 'page', pageNumber: 5 }),
         }),
+        expect.objectContaining({ onMetrics: expect.any(Function) }),
       );
     });
 

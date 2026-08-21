@@ -52,7 +52,7 @@ describe('createImageGenerationProvider', () => {
       OPENAI_API_KEY: 'sk-test-key',
     } as unknown as NodeJS.ProcessEnv) as OpenAIImageGenerationProvider;
 
-    expect(provider.getRateLimitDiagnostics()).toEqual({
+    expect(provider.getGlobalRateLimitDiagnostics()).toEqual({
       requestsQueued: 0,
       totalWaitMs: 0,
       rateLimitHits: 0,

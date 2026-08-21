@@ -1,5 +1,5 @@
 import type { CharacterProfile, GeneratedImageEntry } from '@book/types';
-import type { ImageAssetStorage } from '../images/image-asset-storage';
+import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import {
   claimNamespace,
   resolveLastGenerationNamespace,
@@ -10,7 +10,7 @@ import { resolveCharacterSheetArtifact, resolveImageArtifact } from './generatio
 import { isCharacterFingerprintCompatible } from './character-appearance';
 import type { StoryGenerationResult } from './story-generation-provider';
 import { parsePersistedGenerationState } from './persisted-generation-state';
-import { Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 export interface GenerationResumeBook {
   id: string;
@@ -53,10 +53,11 @@ export interface ImageReuseClassification {
  * reusable vs. regenerate sets. Provider calls and orchestration remain
  * outside this service.
  */
+@Injectable()
 export class GenerationResumeService {
   private readonly logger = new Logger(GenerationResumeService.name);
 
-  constructor(private readonly storage: ImageAssetStorage) {}
+  constructor(@Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly storage: ImageAssetStorage) {}
 
   async plan(
     book: GenerationResumeBook,
@@ -109,12 +110,7 @@ export class GenerationResumeService {
     currentNamespace: ClaimArtifactNamespace,
     sourceNamespace: GenerationArtifactNamespace | null,
   ): Promise<ImageReuseClassification> {
-    const reusable: GeneratedImageEntry[] = [];
-    const toGenerate: GeneratedImageEntry[] = [];
-    const missing: GeneratedImageEntry[] = [];
-    const invalid: GeneratedImageEntry[] = [];
-
-    await Promise.all(
+    const resolutions = await Promise.all(
       images.map(async (image) => {
         const resolution = await resolveImageArtifact({
           storage: this.storage,
@@ -124,14 +120,22 @@ export class GenerationResumeService {
           kind: image.kind,
           pageNumber: image.pageNumber,
         });
-        if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
-          reusable.push(image);
-        } else {
-          toGenerate.push(image);
-          (resolution.sourceStatus === 'invalid' ? invalid : missing).push(image);
-        }
+        return { image, resolution };
       }),
     );
+
+    const reusable: GeneratedImageEntry[] = [];
+    const toGenerate: GeneratedImageEntry[] = [];
+    const missing: GeneratedImageEntry[] = [];
+    const invalid: GeneratedImageEntry[] = [];
+    for (const { image, resolution } of resolutions) {
+      if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
+        reusable.push(image);
+      } else {
+        toGenerate.push(image);
+        (resolution.sourceStatus === 'invalid' ? invalid : missing).push(image);
+      }
+    }
 
     return { reusable, toGenerate, missing, invalid };
   }

@@ -94,6 +94,7 @@ describe('CharacterReferenceStage', () => {
       expect.objectContaining({
         photo: { base64: photo.toString('base64'), contentType: 'image/jpeg' },
       }),
+      expect.objectContaining({ onMetrics: expect.any(Function) }),
     );
     expect(storage.saveImageAsset).toHaveBeenCalledWith(
       sheetKey,
@@ -124,7 +125,10 @@ describe('CharacterReferenceStage', () => {
 
     const result = await stage.execute(makeInput(expectedPhoto));
 
-    expect(buildProfile).toHaveBeenCalledWith(expect.objectContaining({ photo: undefined }));
+    expect(buildProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ photo: undefined }),
+      expect.objectContaining({ onMetrics: expect.any(Function) }),
+    );
     expect(result.error).toContain('CHILD_PHOTO_INTEGRITY_MISMATCH');
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),

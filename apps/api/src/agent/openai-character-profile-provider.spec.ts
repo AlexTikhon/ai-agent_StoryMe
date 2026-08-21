@@ -28,11 +28,11 @@ function makeValidLlmPayload() {
   };
 }
 
-function makeFetchOk(content: string) {
+function makeFetchOk(content: string, usage?: Record<string, number>) {
   return vi.fn().mockResolvedValue({
     ok: true,
     status: 200,
-    json: async () => ({ choices: [{ message: { content } }] }),
+    json: async () => ({ choices: [{ message: { content } }], ...(usage && { usage }) }),
     text: async () => '',
   });
 }
@@ -99,6 +99,21 @@ describe('OpenAICharacterProfileProvider', () => {
     expect(result.consistencyPrompt).toContain('Mia');
     expect(result.hasReferencePhoto).toBe(false);
     expect(result.hasCharacterSheet).toBe(false);
+  });
+
+  it('reports actual token usage when the response supplies it', async () => {
+    const provider = new OpenAICharacterProfileProvider({
+      apiKey: 'sk-test',
+      fetchImpl: makeFetchOk(JSON.stringify(makeValidLlmPayload()), {
+        prompt_tokens: 88,
+        completion_tokens: 21,
+      }),
+    });
+    const metrics = vi.fn();
+    await provider.buildProfile(makeInput(), { onMetrics: metrics });
+    expect(metrics).toHaveBeenLastCalledWith(
+      expect.objectContaining({ inputTokens: 88, outputTokens: 21, httpAttempts: 1 }),
+    );
   });
 
   it('sets hasReferencePhoto true when a photo was supplied', async () => {
