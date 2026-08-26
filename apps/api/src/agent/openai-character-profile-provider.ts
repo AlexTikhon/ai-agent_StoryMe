@@ -20,6 +20,7 @@ import {
   reportProviderMetrics,
   type ProviderExecutionOptions,
 } from '../common/provider-execution';
+import { PROMPT_VERSIONS } from './prompt-versions';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -151,7 +152,7 @@ export interface OpenAICharacterProfileProviderOptions {
  */
 export class OpenAICharacterProfileProvider implements CharacterProfileProvider {
   readonly providerName = 'openai' as const;
-  readonly promptVersion = 'openai-character-profile-v1';
+  readonly promptVersion = PROMPT_VERSIONS.characterProfile;
   private readonly logger = new Logger(OpenAICharacterProfileProvider.name);
   private readonly apiKey: string;
   private readonly model: string;

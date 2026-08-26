@@ -2077,12 +2077,12 @@ describe('AgentService', () => {
           bookUpdate: {
             qualityReport: {
               overallPassed: false,
-              issues: [
+              issues: expect.arrayContaining([
                 expect.objectContaining({
                   code: 'metadata_theme_mismatch',
                   category: 'alignment',
                 }),
-              ],
+              ]),
             },
           },
         });

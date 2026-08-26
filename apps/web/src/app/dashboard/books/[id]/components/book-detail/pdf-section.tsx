@@ -120,10 +120,10 @@ export function PdfSection({ book }: { book: BookDto }) {
     return (
       <div className="mb-6 rounded-xl border border-violet-100 bg-violet-50 p-4">
         <h2 className="mb-1 font-display text-base font-semibold text-violet-800">
-          Rendering PDF…
+          Finishing your book…
         </h2>
         <p className="text-sm text-violet-700">
-          Your storybook PDF is being assembled. This usually takes a few seconds.
+          Your storybook is being assembled. This usually takes a few seconds.
         </p>
       </div>
     );

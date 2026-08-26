@@ -317,7 +317,9 @@ export class CharacterReferenceStage implements GenerationStage<
       operation: 'character_sheet',
       provider: providerName(this.imageProvider.providerName),
       ...(this.imageProvider.modelName && { model: this.imageProvider.modelName }),
-      promptVersion: promptVersion(this.imageProvider, 'legacy-image-v1'),
+      promptVersion:
+        this.imageProvider.characterReferencePromptVersion ??
+        promptVersion(this.imageProvider, 'legacy-character-reference-v1'),
       promptInput: { bookId, characterProfile },
       execute: (options) =>
         this.imageProvider.generateCharacterSheet(

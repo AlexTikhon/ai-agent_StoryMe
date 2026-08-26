@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CanonicalCharacterAppearance, CharacterProfile } from '@book/types';
+import { createCharacterVisualBible } from './character-visual-bible';
 
 export const CHARACTER_PROFILE_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_EYE_DESCRIPTION = 'bright, expressive eyes';
@@ -76,7 +77,7 @@ export function finalizeCharacterProfile(
     clothing: profile.outfitDescription,
     artStyle: profile.illustrationStyle,
   });
-  return {
+  const finalized: CharacterProfile = {
     ...profile,
     schemaVersion: CHARACTER_PROFILE_SCHEMA_VERSION,
     canonicalAppearance,
@@ -87,6 +88,7 @@ export function finalizeCharacterProfile(
     lockedVisualDescription: lockedVisualDescription(profile.childName, canonicalAppearance),
     negativeConstraints: [...CHARACTER_NEGATIVE_CONSTRAINTS],
   };
+  return { ...finalized, visualBible: createCharacterVisualBible(finalized) };
 }
 
 export function isCharacterFingerprintCompatible(

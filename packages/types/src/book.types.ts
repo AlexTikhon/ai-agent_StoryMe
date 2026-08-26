@@ -79,6 +79,8 @@ export interface CharacterProfile {
   lockedVisualDescription?: string;
   /** Safe rendering exclusions, not identity or biometric constraints. */
   negativeConstraints?: string[];
+  /** Canonical stable visual identity used by every reference and page prompt. */
+  visualBible?: CharacterVisualBible;
 }
 
 export interface CanonicalCharacterAppearance {
@@ -88,6 +90,27 @@ export interface CanonicalCharacterAppearance {
   face: string;
   clothing: string;
   artStyle: string;
+}
+
+/**
+ * Provider-neutral visual identity contract. Identity traits stay stable while
+ * pose, expression, setting, and story-required wardrobe changes remain scene
+ * concerns. Optional on CharacterProfile only for legacy persisted books.
+ */
+export interface CharacterVisualBible {
+  schemaVersion: 1;
+  protagonistName: string;
+  approximateAge: number;
+  appearance: {
+    hair: string;
+    eyes: string;
+    face: string;
+  };
+  defaultWardrobe: string;
+  visualStyle: string;
+  identityRules: readonly string[];
+  sceneFlexibilityRules: readonly string[];
+  fingerprint: string;
 }
 
 // ─── Story ───────────────────────────────────────────────────────────────────
@@ -212,7 +235,16 @@ export interface Chapter {
 // ─── QA / Layout ─────────────────────────────────────────────────────────────
 
 export type QualityIssueCategory =
-  'structure' | 'consistency' | 'alignment' | 'age_appropriateness' | 'safety';
+  | 'structure'
+  | 'consistency'
+  | 'alignment'
+  | 'personalization'
+  | 'continuity'
+  | 'repetition'
+  | 'progression'
+  | 'ending'
+  | 'age_appropriateness'
+  | 'safety';
 
 export type QualityIssueCode =
   | 'metadata_language_mismatch'
@@ -226,6 +258,23 @@ export type QualityIssueCode =
   | 'page_text_too_short'
   | 'page_text_too_long'
   | 'duplicate_page_text'
+  | 'page_count_mismatch'
+  | 'page_title_missing'
+  | 'page_text_missing'
+  | 'story_title_missing'
+  | 'character_card_name_mismatch'
+  | 'protagonist_missing_from_opening'
+  | 'protagonist_missing_from_ending'
+  | 'protagonist_coverage_too_low'
+  | 'personalization_insufficient'
+  | 'near_duplicate_page_text'
+  | 'repeated_sentence'
+  | 'repeated_page_opening'
+  | 'repeated_page_closing'
+  | 'page_scene_missing'
+  | 'page_progression_insufficient'
+  | 'ending_missing'
+  | 'ending_not_reflected_in_final_page'
   | 'unsafe_control_characters'
   | 'unexpected_markup_or_url';
 
@@ -245,6 +294,7 @@ export interface QualityIssue {
 export interface QualityReport {
   version: 1;
   overallPassed: boolean;
+  dimensions: StoryQualityDimensions;
   issues: QualityIssue[];
   flaggedPages: number[];
   repair?: {
@@ -253,6 +303,18 @@ export interface QualityReport {
     /** Privacy-safe telemetry only; prompt content and provider response are never persisted. */
     providerCall?: GenerationProviderCallMetadata;
   };
+}
+
+/** Explicit pass/fail quality contract; no fabricated model score. */
+export interface StoryQualityDimensions {
+  structuralValidity: boolean;
+  personalization: boolean;
+  protagonistConsistency: boolean;
+  ageAppropriateness: boolean;
+  continuity: boolean;
+  repetitionAcceptable: boolean;
+  pageProgression: boolean;
+  endingQuality: boolean;
 }
 
 export interface PageRegion {

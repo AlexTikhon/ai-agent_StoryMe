@@ -34,6 +34,7 @@
     "start:e2e": "prisma migrate deploy && pnpm e2e:seed && nest start",
     "migrate:target-guard": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/migrate-target-guard.ts",
     "eval:story:mock": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts mock",
+    "eval:story:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-offline.ts",
     "eval:story:openai": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts openai"
   },
   "dependencies": {

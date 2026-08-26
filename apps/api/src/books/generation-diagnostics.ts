@@ -14,6 +14,7 @@ import type {
   ResumeDiagnostics,
 } from '@book/types';
 import { PRESERVE_APPEARANCE_INSTRUCTION } from '../agent/story-generation-provider';
+import type { QualityReport } from '@book/types';
 
 function toProviderName(raw: string | null | undefined): GenerationProviderName {
   return raw === 'mock' || raw === 'openai' ? raw : 'unknown';
@@ -119,6 +120,10 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
   const generatedPages = generatedPageCount(book.bookPreview);
   const { generatedImageCount, failedImageCount } = imageCounts(book.imageGenerationResult);
   const providerUsage = buildProviderUsage(book.imageGenerationResult);
+  const quality = book.qualityReport as unknown as QualityReport | null;
+  const promptVersions = providerUsage
+    ? [...new Set(providerUsage.calls.map((call) => call.promptVersion))]
+    : [];
 
   return {
     storyProvider: toProviderName(storyLog?.provider),
@@ -130,6 +135,16 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
     ...(generatedImageCount !== undefined && { generatedImageCount }),
     ...(failedImageCount !== undefined && { failedImageCount }),
     ...(providerUsage && { providerUsage }),
+    ...(quality && {
+      quality: {
+        passed: quality.overallPassed,
+        ...(quality.dimensions && { dimensions: quality.dimensions }),
+        issueCodes: quality.issues.map((issue) => issue.code),
+        repairAttempted: quality.repair?.attempted === true,
+        repairSuccessful: quality.repair?.outcome === 'passed',
+      },
+    }),
+    ...(promptVersions.length > 0 && { promptVersions }),
     ...(startedAt && { startedAt }),
     ...(book.status === 'complete' && terminalAt && { completedAt: terminalAt }),
     ...(book.status === 'failed' && terminalAt && { failedAt: terminalAt }),

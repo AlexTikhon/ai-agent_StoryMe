@@ -26,6 +26,7 @@ import {
   OpenAIImageRateLimiter,
   type OpenAIImageRateLimiterGlobalDiagnostics,
 } from './openai-image-rate-limiter';
+import { PROMPT_VERSIONS } from '../agent/prompt-versions';
 
 const DEFAULT_MODEL = 'gpt-image-1';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -197,7 +198,9 @@ export interface OpenAIImageGenerationProviderOptions {
  */
 export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
   readonly providerName = 'openai' as const;
-  readonly promptVersion = 'openai-image-v2';
+  readonly promptVersion = PROMPT_VERSIONS.pageImage;
+  readonly pageImagePromptVersion = PROMPT_VERSIONS.pageImage;
+  readonly characterReferencePromptVersion = PROMPT_VERSIONS.characterReference;
   private readonly logger = new Logger(OpenAIImageGenerationProvider.name);
   private readonly apiKey: string;
   private readonly model: string;

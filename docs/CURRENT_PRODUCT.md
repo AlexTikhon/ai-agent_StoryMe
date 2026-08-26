@@ -134,7 +134,8 @@ retry/resume, idempotent charges/refunds, one-time credit purchases, provider li
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
 published cover thumbnails in the library, durable user-facing generation progress, and
 versioned one-page text correction and explicitly confirmed one-page image regeneration with
-failure-safe PDF republication, a deterministic pre-image quality gate, privacy-safe request/run
+failure-safe PDF republication, an explicit deterministic story-quality contract with bounded
+one-pass repair, privacy-safe request/run
 correlation, Playwright coverage of the real local API/worker boundary, and explicit owned,
 fenced, retriable hard deletion across PostgreSQL and configured artifact storage.
 
@@ -159,7 +160,10 @@ removed in favor of authoritative `GenerationRun`; Book soft-delete does not era
 must not be confused with the separate irreversible hard-delete workflow; local storage cannot
 serve separately deployed API/worker processes; console email does not deliver production mail.
 English, Russian, and Polish mock stories are deterministic and localized. Character profiles now
-carry a canonical versioned appearance fingerprint and one locked illustration fragment. Bounded story repair exists but is
+carry a canonical versioned appearance fingerprint and immutable visual bible shared by the
+character reference and every scene-separated illustration prompt. Structured layout quality is
+validated before PDF rendering, and `pnpm eval:story:offline` runs the synthetic good/malformed
+quality corpus without API keys or external traffic. Bounded story repair exists but is
 disabled by default and requires an explicitly configured repair-capable story provider and
 paid-call budget.
 

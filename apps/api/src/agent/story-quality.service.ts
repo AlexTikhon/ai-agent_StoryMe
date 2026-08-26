@@ -111,6 +111,7 @@ export class StoryQualityService {
       childAge: input.generationInput.childAge,
       language: input.generationInput.language,
       theme: input.generationInput.theme,
+      pageCount: input.targetPageCount,
       ...(input.generationInput.educationalMessage !== undefined && {
         educationalMessage: input.generationInput.educationalMessage,
       }),

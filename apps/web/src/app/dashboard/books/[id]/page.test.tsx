@@ -966,7 +966,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/planning your story/i)).toBeDefined();
+      expect(screen.getByText(/writing your story/i)).toBeDefined();
     });
   });
 
@@ -1122,7 +1122,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/generating images/i)).toBeDefined();
+      expect(screen.getByText(/creating illustrations/i)).toBeDefined();
     });
   });
 
@@ -1274,7 +1274,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/designing book pages/i)).toBeDefined();
+      expect(screen.getByText(/building your book/i)).toBeDefined();
     });
   });
 
@@ -1294,7 +1294,7 @@ describe('BookDetailPage', () => {
     expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
   });
 
-  it('shows "Planning your story…" message when status is story_plan', async () => {
+  it('shows "Writing your story…" message when status is story_plan', async () => {
     const inProgress = { ...MOCK_BOOK, status: BookStatus.StoryPlan };
     vi.mocked(fetch).mockResolvedValueOnce(mockOk(inProgress));
     queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
@@ -1302,7 +1302,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/planning your story/i)).toBeDefined();
+      expect(screen.getByText(/writing your story/i)).toBeDefined();
     });
   });
 
@@ -1367,7 +1367,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/planning your story/i)).toBeDefined();
+      expect(screen.getByText(/writing your story/i)).toBeDefined();
     });
   });
 
@@ -1803,7 +1803,7 @@ describe('BookDetailPage', () => {
     expect(screen.queryByRole('button', { name: /download pdf/i })).toBeNull();
   });
 
-  it('shows "Rendering PDF…" heading when status is pdf_render', async () => {
+  it('shows "Finishing your book…" heading when status is pdf_render', async () => {
     const pdfRenderBook: BookDto = {
       ...MOCK_BOOK,
       status: BookStatus.PdfRender,
@@ -1813,11 +1813,11 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: /rendering pdf/i })).toBeDefined();
+      expect(screen.getByRole('heading', { name: /finishing your book/i })).toBeDefined();
     });
   });
 
-  it('shows "Your storybook PDF is being assembled" description when status is pdf_render', async () => {
+  it('shows "Your storybook is being assembled" description when status is pdf_render', async () => {
     const pdfRenderBook: BookDto = {
       ...MOCK_BOOK,
       status: BookStatus.PdfRender,
@@ -1827,7 +1827,7 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/your storybook pdf is being assembled/i)).toBeDefined();
+      expect(screen.getByText(/your storybook is being assembled/i)).toBeDefined();
     });
   });
 
@@ -1892,7 +1892,7 @@ describe('BookDetailPage', () => {
 
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: /your pdf is ready/i })).toBeNull();
-      expect(screen.queryByRole('heading', { name: /rendering pdf/i })).toBeNull();
+      expect(screen.queryByRole('heading', { name: /finishing your book/i })).toBeNull();
     });
   });
 
@@ -1921,7 +1921,7 @@ describe('BookDetailPage', () => {
 
       render(<BookDetailPage />);
       await waitFor(() =>
-        expect(screen.getByRole('heading', { name: /rendering pdf/i })).toBeDefined(),
+        expect(screen.getByRole('heading', { name: /finishing your book/i })).toBeDefined(),
       );
 
       await act(async () => {
@@ -1978,7 +1978,7 @@ describe('BookDetailPage', () => {
       queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
 
       render(<BookDetailPage />);
-      await waitFor(() => expect(screen.getByText(/planning your story/i)).toBeDefined());
+      await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
 
       await act(async () => {
         await act(async () => {
@@ -2057,7 +2057,7 @@ describe('BookDetailPage', () => {
 
     render(<BookDetailPage />);
     await waitFor(() =>
-      expect(screen.getByRole('heading', { name: /rendering pdf/i })).toBeDefined(),
+      expect(screen.getByRole('heading', { name: /finishing your book/i })).toBeDefined(),
     );
 
     await user.click(screen.getByRole('button', { name: /refresh status/i }));
@@ -2895,7 +2895,9 @@ describe('BookDetailPage', () => {
     render(<BookDetailPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/rendering pdf.*this draft can no longer be edited/i)).toBeDefined();
+      expect(
+        screen.getByText(/finishing your book.*this draft can no longer be edited/i),
+      ).toBeDefined();
     });
   });
 
@@ -2908,7 +2910,7 @@ describe('BookDetailPage', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/reviewing story quality.*this draft can no longer be edited/i),
+        screen.getByText(/polishing your story.*this draft can no longer be edited/i),
       ).toBeDefined();
     });
   });
@@ -2922,7 +2924,7 @@ describe('BookDetailPage', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/generating images.*this draft can no longer be edited/i),
+        screen.getByText(/creating illustrations.*this draft can no longer be edited/i),
       ).toBeDefined();
     });
     expect(screen.queryByText(/building character profile/i)).toBeNull();
@@ -2937,7 +2939,7 @@ describe('BookDetailPage', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/waiting for a generation worker.*this draft can no longer be edited/i),
+        screen.getByText(/preparing your story.*this draft can no longer be edited/i),
       ).toBeDefined();
     });
   });
@@ -3201,7 +3203,7 @@ describe('BookDetailPage', () => {
         queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
 
         render(<BookDetailPage />);
-        await waitFor(() => expect(screen.getByText(/planning your story/i)).toBeDefined());
+        await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
 
         await act(async () => {
           await act(async () => {

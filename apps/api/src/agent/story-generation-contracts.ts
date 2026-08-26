@@ -12,21 +12,24 @@ import {
   type StoryPlan,
 } from '@book/types';
 import type { ProviderExecutionOptions } from '../common/provider-execution';
+import { buildVisualIdentityBlock, resolveCharacterVisualBible } from './character-visual-bible';
 
 export const NO_TEXT_IN_IMAGE_INSTRUCTION = 'No text in image.';
 export const PRESERVE_APPEARANCE_INSTRUCTION = "Do not change the main character's appearance.";
 
 export function buildCharacterConsistencyBlock(characterProfile: CharacterProfile): string {
   const lockedDescription =
-    characterProfile.lockedVisualDescription ??
-    [
-      characterProfile.consistencyPrompt,
-      `Hairstyle: ${characterProfile.hairDescription}.`,
-      `Face: ${characterProfile.faceDescription}.`,
-      `Outfit: ${characterProfile.outfitDescription}.`,
-      `Approximate age: ${characterProfile.age}.`,
-      `Illustration style: ${characterProfile.illustrationStyle}.`,
-    ].join(' ');
+    characterProfile.visualBible || characterProfile.canonicalAppearance
+      ? buildVisualIdentityBlock(resolveCharacterVisualBible(characterProfile))
+      : (characterProfile.lockedVisualDescription ??
+        [
+          characterProfile.consistencyPrompt,
+          `Hairstyle: ${characterProfile.hairDescription}.`,
+          `Face: ${characterProfile.faceDescription}.`,
+          `Outfit: ${characterProfile.outfitDescription}.`,
+          `Approximate age: ${characterProfile.age}.`,
+          `Illustration style: ${characterProfile.illustrationStyle}.`,
+        ].join(' '));
   const negativeConstraints =
     characterProfile.negativeConstraints && characterProfile.negativeConstraints.length > 0
       ? `Avoid: ${characterProfile.negativeConstraints.join(', ')}.`
@@ -79,6 +82,7 @@ export interface StoryGenerationProvider {
   readonly providerName?: string;
   readonly modelName?: string;
   readonly promptVersion?: string;
+  readonly repairPromptVersion?: string;
   generateStory(
     input: StoryGenerationInput,
     options?: ProviderExecutionOptions,

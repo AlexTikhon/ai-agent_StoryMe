@@ -15,6 +15,7 @@ import {
 } from './mock-story-builders';
 import { resolveTemplateLanguage } from './mock-story-templates';
 import { createCharacterCard } from './character-card.factory';
+import { PROMPT_VERSIONS } from './prompt-versions';
 
 /**
  * Deterministic local stand-in for a future real-LLM StoryGenerationProvider.
@@ -24,7 +25,7 @@ import { createCharacterCard } from './character-card.factory';
  * hashing the book's own fields.
  */
 export class MockStoryGenerationProvider implements StoryGenerationProvider {
-  readonly promptVersion = 'mock-story-v2';
+  readonly promptVersion = PROMPT_VERSIONS.story;
   readonly providerName = 'mock' as const;
 
   constructor(private readonly failures?: MockFailureController) {}

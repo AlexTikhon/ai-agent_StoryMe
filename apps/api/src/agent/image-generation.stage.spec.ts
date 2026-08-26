@@ -62,6 +62,7 @@ function makeProvider(
     providerName: 'mock',
     modelName: 'image-model',
     promptVersion: 'image-test-v1',
+    pageImagePromptVersion: 'page-image-v3',
     generateCharacterSheet: vi.fn(),
     generateImage: vi.fn().mockImplementation(async ({ entry }) => ({
       buffer: Buffer.from(`bytes-${entry.id}`),
@@ -125,6 +126,10 @@ describe('ImageGenerationStage', () => {
       'image/png',
     );
     expect(telemetry.snapshot().calls.map((call) => call.assetLabel)).toEqual(['cover', 'page_1']);
+    expect(telemetry.snapshot().calls.map((call) => call.promptVersion)).toEqual([
+      'page-image-v3',
+      'page-image-v3',
+    ]);
   });
 
   it('continues the batch and exposes safe structured diagnostics for one failed entry', async () => {

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Book } from '@prisma/client';
+import { MAX_BOOK_PAGE_COUNT, MIN_BOOK_PAGE_COUNT } from '@book/types';
 import {
   ALLOWED_CHILD_PHOTO_MIME_TYPES,
   type AllowedChildPhotoMimeType,
@@ -55,12 +56,12 @@ export const CURRENT_SNAPSHOT_VERSION = 2 as const;
  */
 export const generationInputSnapshotSchema = z.object({
   snapshotVersion: z.literal(CURRENT_SNAPSHOT_VERSION).optional(),
-  childName: z.string().nullable(),
-  childAge: z.number().int().nullable(),
-  language: z.string().nullable(),
-  theme: z.string().nullable(),
-  educationalMessage: z.string().nullable(),
-  pageCount: z.number().int().nullable(),
+  childName: z.string().trim().min(1).max(80).nullable(),
+  childAge: z.number().int().min(1).max(12).nullable(),
+  language: z.string().trim().min(2).max(10).nullable(),
+  theme: z.string().trim().min(1).max(120).nullable(),
+  educationalMessage: z.string().trim().min(1).max(300).nullable(),
+  pageCount: z.number().int().min(MIN_BOOK_PAGE_COUNT).max(MAX_BOOK_PAGE_COUNT).nullable(),
   childPhoto: childPhotoIdentitySchema.nullable(),
 });
 

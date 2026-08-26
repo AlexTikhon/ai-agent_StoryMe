@@ -9,6 +9,7 @@ import { generateMockImagePng } from './mock-image-producer';
 import type { ImageAssetContentType } from './image-asset-storage';
 import { MockFailureController } from '../config/mock-failure';
 import type { ProviderExecutionOptions } from '../common/provider-execution';
+import { PROMPT_VERSIONS } from '../agent/prompt-versions';
 
 /**
  * A generated, stylized character-sheet reference image (never the original
@@ -108,6 +109,10 @@ export interface ImageGenerationProvider {
   readonly modelName?: string;
   /** Version of the provider's image prompt contract. */
   readonly promptVersion?: string;
+  /** Version of the standalone reference-sheet prompt contract. */
+  readonly characterReferencePromptVersion?: string;
+  /** Version of the cover/page/back-cover prompt contract. */
+  readonly pageImagePromptVersion?: string;
   generateImage(
     input: ImageGenerationInput,
     options?: ProviderExecutionOptions,
@@ -135,7 +140,9 @@ export const IMAGE_GENERATION_PROVIDER_TOKEN = 'IMAGE_GENERATION_PROVIDER';
  */
 export class MockImageGenerationProvider implements ImageGenerationProvider {
   readonly providerName = 'mock' as const;
-  readonly promptVersion = 'mock-image-v1';
+  readonly promptVersion = PROMPT_VERSIONS.pageImage;
+  readonly pageImagePromptVersion = PROMPT_VERSIONS.pageImage;
+  readonly characterReferencePromptVersion = PROMPT_VERSIONS.characterReference;
 
   constructor(private readonly failures?: MockFailureController) {}
 
