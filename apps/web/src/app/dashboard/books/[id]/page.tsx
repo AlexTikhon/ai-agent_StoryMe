@@ -108,6 +108,9 @@ export default function BookDetailPage() {
         language: editForm.language,
         theme: editForm.theme,
         pageCount: editForm.pageCount,
+        ...(editForm.childProfileSelectionChanged && {
+          childProfileId: editForm.childProfileId,
+        }),
         ...(educationalMessage && { educationalMessage }),
       });
       setBook(updated);

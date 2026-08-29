@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 import NewBookPage from './page';
+import { childProfilesApi } from '@/lib/api/child-profiles';
 import { SupportedLanguage, BookStatus } from '@book/types';
 import type { BookDto } from '@book/types';
 
@@ -19,6 +20,10 @@ vi.mock('next/link', () => ({
       {children}
     </a>
   ),
+}));
+
+vi.mock('@/lib/api/child-profiles', () => ({
+  childProfilesApi: { list: vi.fn() },
 }));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -56,6 +61,12 @@ describe('NewBookPage wizard', () => {
       typeof useRouter
     >);
     vi.stubGlobal('fetch', vi.fn());
+    vi.mocked(childProfilesApi.list).mockResolvedValue({
+      items: [],
+      page: 1,
+      limit: 20,
+      total: 0,
+    });
     pushMock.mockReset();
   });
 
@@ -187,6 +198,43 @@ describe('NewBookPage wizard', () => {
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.childName).toBe('Oliver');
     expect(body.theme).toBe('Space adventure');
+  });
+
+  it('selects a saved profile, populates name/age, and sends its id with the book', async () => {
+    const user = userEvent.setup();
+    vi.mocked(childProfilesApi.list).mockResolvedValue({
+      items: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'Saved Mia',
+          age: 7,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          updatedAt: '2026-08-01T00:00:00.000Z',
+        },
+      ],
+      page: 1,
+      limit: 20,
+      total: 1,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_BOOK, 201));
+    render(<NewBookPage />);
+
+    const selector = await screen.findByLabelText('Saved child profile');
+    await user.selectOptions(selector, '11111111-1111-4111-8111-111111111111');
+    expect(screen.getByLabelText(/Child's name/)).toHaveValue('Saved Mia');
+    expect(screen.getByRole('spinbutton')).toHaveValue(7);
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.type(screen.getByPlaceholderText(/friendship/i), 'Space adventure');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Create Book' }));
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalled());
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      childProfileId: '11111111-1111-4111-8111-111111111111',
+      childName: 'Saved Mia',
+      childAge: 7,
+    });
   });
 
   // ── Phase 4A: pageCount + educationalMessage ───────────────────────────────

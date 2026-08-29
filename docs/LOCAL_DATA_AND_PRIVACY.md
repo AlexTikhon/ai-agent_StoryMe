@@ -16,6 +16,18 @@ live below `apps/api/tmp/books/`; cloud PDFs use claim/PDF bucket keys. PostgreS
 account/book input, generated JSON, artifact pointers, run diagnostics, and credit records.
 Docker PostgreSQL, Redis, and optional MinIO volumes are private local data outside the repository.
 
+Reusable child profiles store only name and age through the Phase 14A API. Applying one copies
+those values into the Book, and generation then copies the Book fields into an immutable
+`GenerationRun.inputSnapshot`. Updating the profile does not update existing Books/runs. Deleting
+a profile is a soft deletion: it hides the profile from normal reads and future selection but
+does not erase or mutate child details already copied into Books or run snapshots. Permanent
+profile erasure/export policy is not yet automated and must account for those independent Book
+records.
+
+Phase 14A deliberately does not reuse `ChildProfile.photoAssetId`: the Upload lifecycle lacks the
+versioned key/digest/reference-retention guarantees of per-book child photos. Reusable profile
+photos remain deferred. The existing per-book photo path and its provider boundary are unchanged.
+
 `pnpm archive:clean` excludes these locations without reading excluded file contents.
 
 ## Data leaving the machine

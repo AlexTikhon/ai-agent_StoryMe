@@ -3,6 +3,7 @@ import { render, screen, waitFor, within, fireEvent, act } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { useRouter, useParams } from 'next/navigation';
 import BookDetailPage from './page';
+import { childProfilesApi } from '@/lib/api/child-profiles';
 import { CREDITS_UPDATED_EVENT } from '@/lib/credits-events';
 import { SupportedLanguage, BookStatus, AgentStep } from '@book/types';
 import type {
@@ -30,6 +31,10 @@ vi.mock('next/link', () => ({
       {children}
     </a>
   ),
+}));
+
+vi.mock('@/lib/api/child-profiles', () => ({
+  childProfilesApi: { list: vi.fn() },
 }));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -310,6 +315,12 @@ describe('BookDetailPage', () => {
     pushMock.mockReset();
     global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
     global.URL.revokeObjectURL = vi.fn();
+    vi.mocked(childProfilesApi.list).mockResolvedValue({
+      items: [],
+      page: 1,
+      limit: 20,
+      total: 0,
+    });
   });
 
   afterEach(() => {
@@ -338,6 +349,55 @@ describe('BookDetailPage', () => {
       expect(screen.getByRole('heading', { level: 1, name: "Emma's Story" })).toBeDefined();
       expect(screen.getByText('Emma, age 5')).toBeDefined();
       expect(screen.getByText('Friendship')).toBeDefined();
+    });
+  });
+
+  it('explicitly reapplies a selected profile when saving an edited book', async () => {
+    const user = userEvent.setup();
+    const profile = {
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'Saved Mila',
+      age: 7,
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+    };
+    vi.mocked(childProfilesApi.list).mockResolvedValue({
+      items: [profile],
+      page: 1,
+      limit: 20,
+      total: 1,
+    });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK))
+      .mockResolvedValueOnce(
+        mockOk({
+          ...MOCK_BOOK,
+          childProfileId: profile.id,
+          childName: profile.name,
+          childAge: profile.age,
+        }),
+      );
+
+    render(<BookDetailPage />);
+    await screen.findByRole('heading', { level: 1, name: "Emma's Story" });
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await user.selectOptions(await screen.findByLabelText('Saved child profile'), profile.id);
+    expect(screen.getByLabelText(/Child's name/)).toHaveValue(profile.name);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(`${profile.name}, age ${profile.age}`)).toBeDefined(),
+    );
+    const patchCall = fetchMock.fetchFn.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith('/books/book-1') &&
+        (init as RequestInit | undefined)?.method === 'PATCH',
+    ) as [string, RequestInit] | undefined;
+    expect(patchCall).toBeDefined();
+    expect(JSON.parse(patchCall?.[1].body as string)).toMatchObject({
+      childProfileId: profile.id,
+      childName: profile.name,
+      childAge: profile.age,
     });
   });
 

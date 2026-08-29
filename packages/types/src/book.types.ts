@@ -549,6 +549,8 @@ export const DEFAULT_BOOK_PAGE_COUNT = 6;
 export interface BookDto {
   id: string;
   userId: string;
+  /** Reusable profile explicitly applied to this draft. The Book name/age remain the generation snapshot. */
+  childProfileId?: string | null;
   title: string | null;
   childName: string | null;
   childAge: number | null;
@@ -634,6 +636,8 @@ export interface CreateBookInput {
   educationalMessage?: string;
   /** Optional — bounded by MIN_BOOK_PAGE_COUNT/MAX_BOOK_PAGE_COUNT; defaults to DEFAULT_BOOK_PAGE_COUNT when omitted. */
   pageCount?: number;
+  /** Optional reusable profile. When set, the server copies its current name/age into the Book. */
+  childProfileId?: string | null;
 }
 
 export type UpdateBookInput = Partial<CreateBookInput>;

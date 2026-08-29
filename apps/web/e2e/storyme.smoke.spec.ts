@@ -16,6 +16,9 @@ interface E2eBook {
   id: string;
   status: string;
   title: string | null;
+  childProfileId?: string | null;
+  childName?: string | null;
+  childAge?: number | null;
   previewPdfUrl?: string | null;
   bookPreview?: {
     title: string;
@@ -97,6 +100,61 @@ test('persists a JWT session across refresh, logs out, and protects the dashboar
   await expect(page).toHaveURL(/\/login\?next=%2Fdashboard$/);
   await page.goto('/dashboard');
   await expect(page).toHaveURL(/\/login\?next=%2Fdashboard$/);
+});
+
+test('manages a saved child profile and snapshots it into a one-off draft without provider calls', async ({
+  page,
+}) => {
+  const token = await login(page);
+  const profileName = `Mia ${Date.now()}`;
+  await page.getByRole('link', { name: 'Child profiles' }).click();
+  await page.getByLabel("Child's name").fill(profileName);
+  await page.getByLabel('Age').fill('7');
+  const createProfileResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${apiBaseUrl}/child-profiles` && response.request().method() === 'POST',
+  );
+  await page.getByRole('button', { name: 'Add profile' }).click();
+  const profile = (await (await createProfileResponse).json()) as { id: string };
+
+  await page.getByRole('link', { name: 'My Book Drafts' }).click();
+  await page.getByRole('link', { name: 'New Book' }).click();
+  await page.getByLabel('Saved child profile').selectOption(profile.id);
+  await expect(page.getByLabel(/Child's name/)).toHaveValue(profileName);
+  await expect(page.getByRole('spinbutton')).toHaveValue('7');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByLabel('Theme').fill('Friendship and courage');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'Create Book' }).click();
+  await expect(page).toHaveURL(/\/dashboard\/books\/[0-9a-f-]+$/);
+  const bookId = new URL(page.url()).pathname.split('/').at(-1)!;
+
+  const book = await apiBook(page, token, bookId);
+  expect(book).toMatchObject({
+    childProfileId: profile.id,
+    childName: profileName,
+    childAge: 7,
+  });
+
+  await page.request.patch(`${apiBaseUrl}/child-profiles/${profile.id}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { name: `${profileName} edited`, age: 8 },
+  });
+  expect(await apiBook(page, token, bookId)).toMatchObject({
+    childName: profileName,
+    childAge: 7,
+  });
+  await page.request.delete(`${apiBaseUrl}/child-profiles/${profile.id}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(await apiBook(page, token, bookId)).toMatchObject({
+    childProfileId: profile.id,
+    childName: profileName,
+    childAge: 7,
+  });
+  await page.request.delete(`${apiBaseUrl}/books/${bookId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 });
 
 test('logs in, generates a mock book, and downloads its PDF', async ({ page }) => {

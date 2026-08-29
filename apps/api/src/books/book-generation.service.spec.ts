@@ -195,6 +195,26 @@ describe('BookGenerationService scheduling boundary', () => {
     });
   });
 
+  it('snapshots copied Book values and never consults a mutable child profile after scheduling', async () => {
+    const selectedBook = makeBook({
+      childProfileId: '11111111-1111-4111-8111-111111111111',
+      childName: 'Snapshot Mia',
+      childAge: 7,
+    });
+    crud.findOwnedOrThrow.mockResolvedValue(selectedBook);
+
+    await service.startGeneration('user-1', 'book-1');
+    selectedBook.childName = 'Profile changed later';
+    selectedBook.childAge = 8;
+
+    expect(prisma.generationRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        inputSnapshot: expect.objectContaining({ childName: 'Snapshot Mia', childAge: 7 }),
+      }),
+    });
+    expect(prisma.childProfile.findFirst).not.toHaveBeenCalled();
+  });
+
   it('schedules without a credit purchase or debit in home mode', async () => {
     config.get.mockImplementation((key: string) =>
       key === 'PRODUCT_MODE' ? 'home' : configValues[key],

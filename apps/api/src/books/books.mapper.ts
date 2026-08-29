@@ -47,6 +47,7 @@ export function toBookDto(book: Book): BookDto {
   return {
     id: book.id,
     userId: book.userId,
+    childProfileId: book.childProfileId,
     title: book.title,
     childName: book.childName,
     childAge: book.childAge,

@@ -5,8 +5,11 @@ import {
   MIN_BOOK_PAGE_COUNT,
 } from '@book/types';
 import type { BookDto } from '@book/types';
+import { ChildProfileSelector } from '../child-profile-selector';
 
 export interface EditForm {
+  childProfileId: string | null;
+  childProfileSelectionChanged: boolean;
   title: string;
   childName: string;
   childAge: number;
@@ -18,6 +21,8 @@ export interface EditForm {
 
 export function defaultEditForm(): EditForm {
   return {
+    childProfileId: null,
+    childProfileSelectionChanged: false,
     title: '',
     childName: '',
     childAge: 4,
@@ -30,6 +35,8 @@ export function defaultEditForm(): EditForm {
 
 export function formFromBook(book: BookDto): EditForm {
   return {
+    childProfileId: book.childProfileId ?? null,
+    childProfileSelectionChanged: false,
     title: book.title ?? '',
     childName: book.childName ?? '',
     childAge: book.childAge ?? 4,
@@ -75,6 +82,21 @@ export function EditFormFields({ values, onChange, submitting, onCancel }: EditF
   return (
     <>
       <div className="grid gap-4 sm:grid-cols-2">
+        <ChildProfileSelector
+          childProfileId={values.childProfileId}
+          onSelect={(profile) =>
+            set(
+              profile
+                ? {
+                    childProfileId: profile.id,
+                    childProfileSelectionChanged: true,
+                    childName: profile.name,
+                    childAge: profile.age,
+                  }
+                : { childProfileId: null, childProfileSelectionChanged: true },
+            )
+          }
+        />
         <label className="flex flex-col gap-1.5 sm:col-span-2">
           <span className="text-sm font-medium text-text-secondary">
             Title{' '}
@@ -100,7 +122,13 @@ export function EditFormFields({ values, onChange, submitting, onCancel }: EditF
           </span>
           <input
             value={values.childName}
-            onChange={(e) => set({ childName: e.target.value })}
+            onChange={(e) =>
+              set({
+                childProfileId: null,
+                childProfileSelectionChanged: true,
+                childName: e.target.value,
+              })
+            }
             placeholder="e.g. Emma"
             maxLength={80}
             className={inputCls}
@@ -119,7 +147,13 @@ export function EditFormFields({ values, onChange, submitting, onCancel }: EditF
             min={1}
             max={12}
             value={values.childAge}
-            onChange={(e) => set({ childAge: Number(e.target.value) })}
+            onChange={(e) =>
+              set({
+                childProfileId: null,
+                childProfileSelectionChanged: true,
+                childAge: Number(e.target.value),
+              })
+            }
             className={inputCls}
           />
         </label>
