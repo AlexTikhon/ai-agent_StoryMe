@@ -46,6 +46,7 @@ export class AgentService {
     const resumePlan = await this.resume.plan(
       book,
       ctx.inputHash,
+      prepared.compatibilityFingerprint,
       ctx.runId,
       ctx.fencingVersion,
       resolvedInput.childPhoto?.sha256 ?? null,

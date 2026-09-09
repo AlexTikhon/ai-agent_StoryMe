@@ -13,9 +13,17 @@ import {
 import { GenerationResumeService, type GenerationResumeBook } from './generation-resume.service';
 import { finalizeCharacterProfile } from './character-appearance';
 import { Pronouns } from '@book/types';
+import { buildGenerationCompatibilityFingerprint } from './generation-compatibility-fingerprint';
+import { PROMPT_VERSIONS } from './prompt-versions';
 
 const currentNamespace = claimNamespace('run-current', 2);
 const sourceNamespace = claimNamespace('run-source', 1);
+const providers = {
+  story: { providerName: 'mock', modelName: 'story-model' },
+  image: { providerName: 'mock', modelName: 'image-model' },
+  character: { providerName: 'mock', modelName: 'character-model' },
+};
+const compatibilityFingerprint = buildGenerationCompatibilityFingerprint(providers);
 
 class FakeImageAssetStorage implements ImageAssetStorage {
   private readonly data = new Map<string, Buffer>();
@@ -117,6 +125,7 @@ function book(overrides: Partial<GenerationResumeBook> = {}): GenerationResumeBo
   return {
     id: 'book-1',
     lastGenerationInputHash: 'hash-1',
+    lastGenerationCompatibilityFingerprint: compatibilityFingerprint,
     storyPlan: reusableStory.storyPlan,
     characterCard: reusableStory.characterCard,
     bookPreview: reusableStory.bookPreview,
@@ -156,7 +165,7 @@ describe('GenerationResumeService', () => {
     storage.seed(sourceKey, Buffer.from('prior-sheet'));
     const service = new GenerationResumeService(storage);
 
-    const plan = await service.plan(book(), 'hash-1', 'run-current', 2);
+    const plan = await service.plan(book(), 'hash-1', compatibilityFingerprint, 'run-current', 2);
 
     expect(plan).toEqual({
       resumable: true,
@@ -176,7 +185,7 @@ describe('GenerationResumeService', () => {
     storage.seed(sourceKey, Buffer.from('stale-sheet'));
     const service = new GenerationResumeService(storage);
 
-    const plan = await service.plan(book(), 'new-hash', 'run-current', 2);
+    const plan = await service.plan(book(), 'new-hash', compatibilityFingerprint, 'run-current', 2);
 
     expect(plan.resumable).toBe(false);
     expect(plan.copyForwardSourceNamespace).toBeNull();
@@ -184,6 +193,65 @@ describe('GenerationResumeService', () => {
     expect(plan.priorSheet.status).toBe('missing');
     expect(storage.getImageAsset).not.toHaveBeenCalledWith(sourceKey);
     expect(storage.copyImageAsset).not.toHaveBeenCalled();
+  });
+
+  it('disables reuse when a prompt version changes', async () => {
+    const storage = new FakeImageAssetStorage();
+    const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
+    storage.seed(sourceKey, Buffer.from('prior-sheet'));
+    const service = new GenerationResumeService(storage);
+    const changedPromptFingerprint = buildGenerationCompatibilityFingerprint(providers, {
+      ...PROMPT_VERSIONS,
+      story: `${PROMPT_VERSIONS.story}-changed`,
+    });
+
+    const plan = await service.plan(book(), 'hash-1', changedPromptFingerprint, 'run-current', 2);
+
+    expect(plan.resumable).toBe(false);
+    expect(plan.copyForwardSourceNamespace).toBeNull();
+    expect(plan.canReuseCharacterProfile).toBe(false);
+    expect(storage.copyImageAsset).not.toHaveBeenCalled();
+    expect(await storage.getImageAsset(sourceKey)).toEqual(Buffer.from('prior-sheet'));
+  });
+
+  it('disables reuse when a selected model changes', async () => {
+    const storage = new FakeImageAssetStorage();
+    const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
+    storage.seed(sourceKey, Buffer.from('prior-sheet'));
+    const service = new GenerationResumeService(storage);
+    const changedModelFingerprint = buildGenerationCompatibilityFingerprint({
+      ...providers,
+      image: { ...providers.image, modelName: 'new-image-model' },
+    });
+
+    const plan = await service.plan(book(), 'hash-1', changedModelFingerprint, 'run-current', 2);
+
+    expect(plan.resumable).toBe(false);
+    expect(plan.copyForwardSourceNamespace).toBeNull();
+    expect(plan.canReuseCharacterProfile).toBe(false);
+    expect(storage.copyImageAsset).not.toHaveBeenCalled();
+    expect(await storage.getImageAsset(sourceKey)).toEqual(Buffer.from('prior-sheet'));
+  });
+
+  it('treats a legacy book with missing compatibility metadata as non-resumable', async () => {
+    const storage = new FakeImageAssetStorage();
+    const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
+    storage.seed(sourceKey, Buffer.from('legacy-sheet'));
+    const service = new GenerationResumeService(storage);
+
+    const plan = await service.plan(
+      book({ lastGenerationCompatibilityFingerprint: null }),
+      'hash-1',
+      compatibilityFingerprint,
+      'run-current',
+      2,
+    );
+
+    expect(plan.resumable).toBe(false);
+    expect(plan.copyForwardSourceNamespace).toBeNull();
+    expect(plan.canReuseCharacterProfile).toBe(false);
+    expect(storage.copyImageAsset).not.toHaveBeenCalled();
+    expect(await storage.getImageAsset(sourceKey)).toEqual(Buffer.from('legacy-sheet'));
   });
 
   it('reuses a compatible fingerprint and rejects a stale reference revision', async () => {
@@ -196,6 +264,7 @@ describe('GenerationResumeService', () => {
     const compatible = await service.plan(
       book({ characterProfile: revisionedProfile }),
       'hash-1',
+      compatibilityFingerprint,
       'run-current',
       2,
       'photo-r1',
@@ -203,6 +272,7 @@ describe('GenerationResumeService', () => {
     const incompatible = await service.plan(
       book({ characterProfile: revisionedProfile }),
       'hash-1',
+      compatibilityFingerprint,
       'run-current',
       2,
       'photo-r2',
@@ -219,6 +289,7 @@ describe('GenerationResumeService', () => {
     const plan = await service.plan(
       book({ imageGenerationResult: null, characterProfile: null }),
       'hash-1',
+      compatibilityFingerprint,
       'run-current',
       2,
     );
@@ -237,6 +308,7 @@ describe('GenerationResumeService', () => {
     const plan = await service.plan(
       book({ storyPlan: { title: 'malformed story' } }),
       'hash-1',
+      compatibilityFingerprint,
       'run-current',
       2,
     );
@@ -254,7 +326,13 @@ describe('GenerationResumeService', () => {
     storage.seed(currentKey, Buffer.from('current-sheet'));
     const service = new GenerationResumeService(storage);
 
-    const plan = await service.plan(book(), 'changed-hash', 'run-current', 2);
+    const plan = await service.plan(
+      book(),
+      'changed-hash',
+      compatibilityFingerprint,
+      'run-current',
+      2,
+    );
 
     expect(plan.resumable).toBe(false);
     expect(plan.priorSheet).toEqual({ status: 'valid', key: currentKey });
@@ -310,6 +388,7 @@ describe('GenerationResumeService', () => {
           lastGenerationFencingVersion: null,
         }),
         'new-hash',
+        compatibilityFingerprint,
         'run-current',
         2,
       ),

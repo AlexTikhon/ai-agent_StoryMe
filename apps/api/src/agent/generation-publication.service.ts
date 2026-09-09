@@ -100,6 +100,7 @@ export class GenerationPublicationService {
         imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
         bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
         lastGenerationInputHash: ctx.inputHash,
+        lastGenerationCompatibilityFingerprint: prepared.compatibilityFingerprint,
         lastGenerationRunId: ctx.runId,
         lastGenerationFencingVersion: ctx.fencingVersion,
         ...characterProfileUpdateData,

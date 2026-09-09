@@ -120,6 +120,7 @@ function makeBook(overrides: Partial<Book> = {}): Book {
     activeRunId: null,
     publishedRunId: null,
     lastGenerationInputHash: null,
+    lastGenerationCompatibilityFingerprint: null,
     deletedAt: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
@@ -2583,6 +2584,7 @@ describe('AgentService', () => {
             lastGenerationRunId: 'run-42',
             lastGenerationFencingVersion: 7,
             lastGenerationInputHash: 'the-run-inputhash',
+            lastGenerationCompatibilityFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
           }),
         }),
       );
@@ -2643,8 +2645,20 @@ describe('AgentService', () => {
       };
     }
 
+    function makeOpenAiIdentityMockImageProvider(): ImageGenerationProvider {
+      const mock = new MockImageGenerationProvider();
+      return {
+        providerName: 'openai',
+        modelName: 'gpt-image-1',
+        generateImage: (input) => mock.generateImage(input),
+        generateCharacterSheet: (input) => mock.generateCharacterSheet(input),
+      };
+    }
+
     /** Runs one full fresh generation with spy-wrapped providers and returns the Phase 1 persisted payload (storyPlan/characterCard/bookPreview/imageGenerationResult/characterProfile/characterSheetAssetKey) — a realistic prior-run state to resume from. */
-    async function generateFreshBook(): Promise<Record<string, unknown>> {
+    async function generateFreshBook(
+      imageProvider: ImageGenerationProvider = makeSpyImageProvider(),
+    ): Promise<Record<string, unknown>> {
       const book = makeBook();
       const layoutBook = makeBook({ status: 'layout' as Book['status'] });
       const completedBook = makeBook({
@@ -2659,7 +2673,7 @@ describe('AgentService', () => {
         mockPdfStorage as unknown as PdfStorage,
         mockImageAssetStorage as unknown as ImageAssetStorage,
         makeSpyStoryProvider(),
-        makeSpyImageProvider(),
+        imageProvider,
         makeSpyCharacterProfileProvider(),
         generationExecutionService as never,
       );
@@ -2683,6 +2697,8 @@ describe('AgentService', () => {
         characterProfile: persisted.characterProfile as Book['characterProfile'],
         characterSheetAssetKey: (persisted.characterSheetAssetKey as string | undefined) ?? null,
         lastGenerationInputHash: (persisted.lastGenerationInputHash as string | undefined) ?? null,
+        lastGenerationCompatibilityFingerprint:
+          (persisted.lastGenerationCompatibilityFingerprint as string | undefined) ?? null,
         // The Book pointer Phase 1 now persists atomically alongside the
         // resumable JSON (Phase B, Slice B3) — this is what lets a resumed
         // attempt (a different claim, RUN_2 below) resolve RUN_1's claim as
@@ -3092,7 +3108,7 @@ describe('AgentService', () => {
     // ── Diagnose and fix a failed resumed back_cover generation ────────────
 
     it('passes the stored character-reference bytes to the resumed back_cover request and reports character-reference-edit mode even though the request failed', async () => {
-      const persisted = await generateFreshBook();
+      const persisted = await generateFreshBook(makeOpenAiIdentityMockImageProvider());
       savedAssets.delete(imgKey(RUN_1, 'back_cover'));
       setupResumeMocks();
 
@@ -3139,7 +3155,7 @@ describe('AgentService', () => {
     });
 
     it('records a safe per-asset imageFailures diagnostic for the failed resumed back_cover request', async () => {
-      const persisted = await generateFreshBook();
+      const persisted = await generateFreshBook(makeOpenAiIdentityMockImageProvider());
       savedAssets.delete(imgKey(RUN_1, 'back_cover'));
       setupResumeMocks();
 
