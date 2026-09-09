@@ -14,6 +14,7 @@ import {
   DEFAULT_OPENAI_MAX_RETRIES,
   fetchWithRetry,
   OpenAIRequestError,
+  OpenAIResponseBodyError,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
 import {
@@ -403,7 +404,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     // actually leaves the spacing queue — so elapsedMs below never includes
     // limiterWaitMs (see OpenAIImageRateLimiter.schedule/runSlot).
     let requestPhaseStartedAt = 0;
-    let response: Response;
+    let response;
     try {
       response = await this.rateLimiter.schedule(
         logLabel,
@@ -428,6 +429,17 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
               if (reason === 'timeout') timeoutCount++;
               this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
             },
+            consumeResponse: async (attemptResponse, attemptSignal) => {
+              if (attemptResponse.ok) {
+                return { payload: await attemptResponse.json() };
+              }
+              try {
+                return { bodyText: await attemptResponse.text() };
+              } catch (err) {
+                if (attemptSignal.aborted) throw err;
+                return { bodyText: '' };
+              }
+            },
           });
         },
         {
@@ -441,6 +453,16 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       if (err instanceof OpenAIRequestError && err.reason === 'timeout') timeoutCount++;
       reportMetrics();
       if (isProviderCancellationError(err)) throw err;
+      if (err instanceof OpenAIResponseBodyError) {
+        throw new OpenAIImageRequestError(
+          'OpenAI image response was not valid JSON',
+          buildDetails({
+            failureKind: 'invalid_response',
+            ...(err.httpStatus !== undefined && { httpStatus: err.httpStatus }),
+          }),
+          err.cause,
+        );
+      }
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `${logLabel} failed: provider=openai model=${this.model} reason=${message}`,
@@ -472,8 +494,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     reportMetrics();
 
     if (!response.ok) {
-      const bodyText = await response.text().catch(() => '');
-      const parsed = parseOpenAIErrorBody(bodyText);
+      const parsed = parseOpenAIErrorBody(response.body.bodyText ?? '');
       this.logger.error(
         `${logLabel} failed: provider=openai model=${this.model} status=${response.status}${parsed.type ? ` type=${parsed.type}` : ''}${parsed.code ? ` code=${parsed.code}` : ''}`,
       );
@@ -493,16 +514,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       );
     }
 
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch (err) {
-      throw new OpenAIImageRequestError(
-        'OpenAI image response was not valid JSON',
-        buildDetails({ failureKind: 'invalid_response', httpStatus: response.status }),
-        err,
-      );
-    }
+    const payload = response.body.payload;
 
     const b64 = (payload as { data?: Array<{ b64_json?: unknown }> })?.data?.[0]?.b64_json;
     if (typeof b64 !== 'string' || !b64) {

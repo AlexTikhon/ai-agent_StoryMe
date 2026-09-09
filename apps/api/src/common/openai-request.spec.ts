@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   fetchWithRetry,
   OpenAIRequestError,
+  OpenAIResponseBodyError,
   readOpenAIRetryConfig,
   readOpenAIImageTimeoutConfig,
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
@@ -176,6 +177,130 @@ describe('fetchWithRetry', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the attempt timeout active after headers arrive and bounds stalled-body retries', async () => {
+    vi.useFakeTimers();
+    const cancelBody = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: { cancel: cancelBody },
+        json: () => new Promise<never>(() => undefined),
+      } as unknown as Response;
+    });
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 50,
+      maxRetries: 5,
+      timeoutMaxRetries: 1,
+      consumeResponse: (response) => response.json(),
+    });
+    const assertion = expect(promise).rejects.toMatchObject({
+      name: 'OpenAIRequestError',
+      reason: 'timeout',
+    });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(cancelBody).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels during response-body reading and never dispatches another request', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const removeExternalListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const cancelBody = vi.fn().mockResolvedValue(undefined);
+    const json = vi.fn(() => new Promise<never>(() => undefined));
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: { cancel: cancelBody },
+      json,
+    } as unknown as Response);
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 10_000,
+      maxRetries: 2,
+      signal: controller.signal,
+      consumeResponse: (response) => response.json(),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(json).toHaveBeenCalledTimes(1);
+    controller.abort('cancelled by test');
+
+    await expect(promise).rejects.toBeInstanceOf(ProviderCancellationError);
+    await vi.runAllTicks();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(cancelBody).toHaveBeenCalledTimes(1);
+    expect(removeExternalListener).toHaveBeenCalledWith('abort', expect.any(Function));
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns successfully consumed JSON and releases the attempt timer', async () => {
+    vi.useFakeTimers();
+    const payload = { choices: [{ message: { content: '{}' } }] };
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'x-request-id': 'req-1' }),
+      json: async () => payload,
+    } as Response);
+
+    const response = await fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 1000,
+      maxRetries: 2,
+      consumeResponse: (attemptResponse) => attemptResponse.json(),
+    });
+
+    expect(response.body).toEqual(payload);
+    expect(response.headers.get('x-request-id')).toBe('req-1');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not retry malformed JSON and identifies it as a response-body failure', async () => {
+    const parseError = new SyntaxError('malformed JSON');
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => Promise.reject(parseError),
+    } as Response);
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 1000,
+      maxRetries: 2,
+      consumeResponse: (response) => response.json(),
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      name: 'OpenAIResponseBodyError',
+      cause: parseError,
+      httpStatus: 200,
+    } satisfies Partial<OpenAIResponseBodyError>);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the response on the first successful attempt', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse());
     const response = await fetchWithRetry({
@@ -255,6 +380,34 @@ describe('fetchWithRetry', () => {
 
     expect(response.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels the discarded response body before retrying an HTTP status', async () => {
+    vi.useFakeTimers();
+    const cancelBody = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        body: { cancel: cancelBody },
+      } as unknown as Response)
+      .mockResolvedValueOnce(okResponse());
+
+    const promise = fetchWithRetry({
+      fetchImpl,
+      url: 'https://example.test',
+      init: {},
+      timeoutMs: 1000,
+      maxRetries: 1,
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(promise).resolves.toMatchObject({ ok: true, status: 200 });
+
+    expect(cancelBody).toHaveBeenCalledTimes(1);
+    expect(cancelBody.mock.invocationCallOrder[0]).toBeLessThan(
+      fetchImpl.mock.invocationCallOrder[1]!,
+    );
   });
 
   it('stops retrying once maxRetries is exhausted and returns the last failing response', async () => {

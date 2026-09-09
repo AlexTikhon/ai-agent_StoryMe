@@ -127,6 +127,21 @@ export class OpenAIRequestError extends Error {
 }
 
 /**
+ * A response arrived, but its body consumer failed for a reason other than
+ * timeout or pipeline cancellation. Provider callers keep classifying this as
+ * an invalid response, matching their previous response.json() handling.
+ */
+export class OpenAIResponseBodyError extends Error {
+  constructor(
+    override readonly cause?: unknown,
+    readonly httpStatus?: number,
+  ) {
+    super('OpenAI response body could not be consumed');
+    this.name = 'OpenAIResponseBodyError';
+  }
+}
+
+/**
  * Stable message safe to persist in Book/AgentLog diagnostics. The original
  * network error remains available through `cause` for in-process debugging,
  * but its provider/runtime-defined text is never copied into user-visible
@@ -141,7 +156,7 @@ export function safeOpenAIRequestFailureMessage(err: unknown): string {
   return 'OpenAI request failed unexpectedly';
 }
 
-export interface FetchWithRetryOptions {
+export interface FetchWithRetryOptions<T = never> {
   fetchImpl: typeof fetch;
   url: string;
   init: RequestInit;
@@ -171,6 +186,19 @@ export interface FetchWithRetryOptions {
   retryableStatusCodes?: ReadonlySet<number>;
   /** External pipeline cancellation, distinct from the per-attempt timeout. */
   signal?: AbortSignal | undefined;
+  /**
+   * Consumes the response before the attempt timeout/listener are released.
+   * Callers that inspect a response body must use this hook rather than read it
+   * after fetchWithRetry resolves.
+   */
+  consumeResponse?: ((response: Response, attemptSignal: AbortSignal) => Promise<T>) | undefined;
+}
+
+export interface ConsumedOpenAIResponse<T> {
+  ok: boolean;
+  status: number;
+  headers: Headers;
+  body: T;
 }
 
 /**
@@ -183,7 +211,15 @@ export interface FetchWithRetryOptions {
  * (timeoutMaxRetries), separate from the budget used by network errors and
  * retryable HTTP statuses (maxRetries) — see FetchWithRetryOptions.
  */
-export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Response> {
+export function fetchWithRetry<T>(
+  options: FetchWithRetryOptions<T> & {
+    consumeResponse: (response: Response, attemptSignal: AbortSignal) => Promise<T>;
+  },
+): Promise<ConsumedOpenAIResponse<T>>;
+export function fetchWithRetry(options: FetchWithRetryOptions): Promise<Response>;
+export async function fetchWithRetry<T>(
+  options: FetchWithRetryOptions<T>,
+): Promise<Response | ConsumedOpenAIResponse<T>> {
   const {
     fetchImpl,
     url,
@@ -205,7 +241,11 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
     throwIfAborted(signal);
     onAttempt?.(attempt, maxAttemptsForDisplay);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     let externallyAborted = false;
     const onExternalAbort = () => {
       externallyAborted = true;
@@ -214,24 +254,46 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
     signal?.addEventListener('abort', onExternalAbort, { once: true });
     if (signal?.aborted) onExternalAbort();
 
+    let response: Response | undefined;
+    let consumingResponse = false;
+    let retryReason: string | undefined;
+
     try {
-      const response = await fetchImpl(url, { ...init, signal: controller.signal });
+      response = await fetchImpl(url, { ...init, signal: controller.signal });
       if (
         !response.ok &&
         retryableStatusCodes.has(response.status) &&
         otherRetriesUsed < maxRetries
       ) {
         otherRetriesUsed++;
-        onRetry?.(attempt, `http_${response.status}`);
-        await cancellableSleep(backoffMs(attempt), signal);
-        continue;
+        retryReason = `http_${response.status}`;
+        await raceWithAbort(cancelResponseBody(response), controller.signal);
+      } else if (options.consumeResponse) {
+        consumingResponse = true;
+        const body = await raceWithAbort(
+          options.consumeResponse(response, controller.signal),
+          controller.signal,
+        );
+        return {
+          ok: response.ok,
+          status: response.status,
+          headers: response.headers,
+          body,
+        };
+      } else {
+        return response;
       }
-      return response;
     } catch (err) {
       if (externallyAborted || signal?.aborted) {
+        if (response) void cancelResponseBody(response);
         throw new ProviderCancellationError(signal?.reason ?? err);
       }
-      const isAbort = err instanceof Error && err.name === 'AbortError';
+      const isAbort =
+        timedOut || (!consumingResponse && err instanceof Error && err.name === 'AbortError');
+      if (consumingResponse && !isAbort) {
+        if (response) void cancelResponseBody(response);
+        throw new OpenAIResponseBodyError(err, response?.status);
+      }
       const reason: OpenAIRequestFailureReason = isAbort ? 'timeout' : 'network';
       const canRetry = isAbort
         ? timeoutRetriesUsed < timeoutMaxRetries
@@ -239,19 +301,63 @@ export async function fetchWithRetry(options: FetchWithRetryOptions): Promise<Re
       if (canRetry) {
         if (isAbort) timeoutRetriesUsed++;
         else otherRetriesUsed++;
-        onRetry?.(attempt, reason);
-        await cancellableSleep(backoffMs(attempt), signal);
-        continue;
+        retryReason = reason;
+        if (response) void cancelResponseBody(response);
+      } else {
+        const message = isAbort
+          ? `request timed out after ${timeoutMs}ms`
+          : `request failed: ${err instanceof Error ? err.message : String(err)}`;
+        if (response) void cancelResponseBody(response);
+        throw new OpenAIRequestError(message, reason, err);
       }
-      const message = isAbort
-        ? `request timed out after ${timeoutMs}ms`
-        : `request failed: ${err instanceof Error ? err.message : String(err)}`;
-      throw new OpenAIRequestError(message, reason, err);
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onExternalAbort);
     }
+
+    if (retryReason) {
+      onRetry?.(attempt, retryReason);
+      await cancellableSleep(backoffMs(attempt), signal);
+    }
   }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The request signal is also aborted on timeout/cancellation. A locked or
+    // already-failed body can reject cancel(), but it is still safe to discard.
+  }
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? abortError());
+
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason ?? abortError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (err) => {
+        cleanup();
+        reject(err);
+      },
+    );
+  });
+}
+
+function abortError(): Error {
+  const err = new Error('The operation was aborted');
+  err.name = 'AbortError';
+  return err;
 }
 
 function backoffMs(attempt: number): number {

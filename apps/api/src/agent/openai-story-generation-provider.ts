@@ -27,6 +27,7 @@ import {
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   fetchWithRetry,
   OpenAIRequestError,
+  OpenAIResponseBodyError,
   readOpenAITextUsage,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
@@ -396,7 +397,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
       rateLimitHits: 0,
       timeoutCount: 0,
     };
-    let response: Response;
+    let response;
     try {
       response = await fetchWithRetry({
         fetchImpl: this.fetchImpl,
@@ -432,6 +433,15 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
           if (reason === 'http_429') metrics.rateLimitHits = (metrics.rateLimitHits ?? 0) + 1;
           this.logger.warn(`Story ${operation} attempt ${attempt} failed (${reason}); retrying`);
         },
+        consumeResponse: async (attemptResponse, attemptSignal) => {
+          if (attemptResponse.ok) return attemptResponse.json();
+          try {
+            await attemptResponse.body?.cancel();
+          } catch (err) {
+            if (attemptSignal.aborted) throw err;
+          }
+          return undefined;
+        },
       });
     } catch (err) {
       if (err instanceof OpenAIRequestError && err.reason === 'timeout') {
@@ -439,6 +449,13 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
       }
       reportProviderMetrics(options, metrics);
       if (isProviderCancellationError(err)) throw err;
+      if (err instanceof OpenAIResponseBodyError) {
+        throw new StoryGenerationProviderError(
+          'OpenAI response was not valid JSON',
+          err.cause,
+          'invalid_response',
+        );
+      }
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `Story ${operation} failed: provider=openai model=${this.model} reason=${message}`,
@@ -467,17 +484,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
       );
     }
 
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch (err) {
-      reportProviderMetrics(options, metrics);
-      throw new StoryGenerationProviderError(
-        'OpenAI response was not valid JSON',
-        err,
-        'invalid_response',
-      );
-    }
+    const payload = response.body;
 
     Object.assign(metrics, readOpenAITextUsage(payload));
     reportProviderMetrics(options, metrics);
