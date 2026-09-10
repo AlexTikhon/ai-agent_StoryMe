@@ -419,11 +419,17 @@ model Book {
   // image JSON currently stored on this row, if any. AgentService.
   // isResumableBook compares this against the run it's currently executing:
   // only an exact hash match means the input hasn't changed since these
-  // artifacts were generated, and only then may they be reused. This is what
-  // stops a retry/regenerate from silently reusing stale content after the
-  // book was edited (previously any prior JSON was reused unconditionally —
-  // see AgentService's old isResumableBook doc comment).
+  // artifacts were generated. Reuse also requires the separate pipeline
+  // compatibility fingerprint below. This hash is what stops a retry/
+  // regenerate from silently reusing stale content after the book was edited
+  // (previously any prior JSON was reused unconditionally — see AgentService's
+  // old isResumableBook doc comment).
   lastGenerationInputHash String? @map("last_generation_input_hash")
+
+  // Conservative whole-pipeline compatibility fingerprint for the generated
+  // JSON and claim-scoped artifacts above. Null permanently identifies legacy
+  // artifacts whose prompt/provider/model compatibility cannot be proven.
+  lastGenerationCompatibilityFingerprint String? @map("last_generation_compatibility_fingerprint")
 
   // Phase B, Slice B1 (schema/typed-namespace foundations only — see
   // docs/local-generation-pipeline.md "Phase B" section). Identifies the

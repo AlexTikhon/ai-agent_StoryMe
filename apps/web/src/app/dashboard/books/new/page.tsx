@@ -11,12 +11,14 @@ import {
   SupportedLanguage,
 } from '@book/types';
 import { booksApi } from '@/lib/api/books';
+import { ChildProfileSelector } from '../child-profile-selector';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type WizardStep = 1 | 2 | 3;
 
 interface WizardValues {
+  childProfileId: string | null;
   childName: string;
   childAge: number;
   language: SupportedLanguage;
@@ -28,6 +30,7 @@ interface WizardValues {
 }
 
 const DEFAULT_VALUES: WizardValues = {
+  childProfileId: null,
   childName: '',
   childAge: 4,
   language: SupportedLanguage.English,
@@ -87,6 +90,7 @@ export default function NewBookPage() {
         theme,
         ...(educationalMessage && { educationalMessage }),
         pageCount: values.pageCount,
+        ...(values.childProfileId && { childProfileId: values.childProfileId }),
       });
       if (values.childPhoto) {
         // Best-effort: the book itself was created successfully, so a photo
@@ -237,6 +241,16 @@ function StepChild({ values, onChange, onNext }: StepChildProps) {
     <form onSubmit={handleSubmit}>
       <h2 className="mb-5 font-display text-xl font-semibold text-text-primary">About the child</h2>
       <div className="grid gap-4 sm:grid-cols-2">
+        <ChildProfileSelector
+          childProfileId={values.childProfileId}
+          onSelect={(profile) =>
+            onChange(
+              profile
+                ? { childProfileId: profile.id, childName: profile.name, childAge: profile.age }
+                : { childProfileId: null },
+            )
+          }
+        />
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-text-secondary">
             Child&apos;s name{' '}
@@ -247,7 +261,7 @@ function StepChild({ values, onChange, onNext }: StepChildProps) {
           <input
             required
             value={values.childName}
-            onChange={(e) => onChange({ childName: e.target.value })}
+            onChange={(e) => onChange({ childProfileId: null, childName: e.target.value })}
             placeholder="e.g. Emma"
             maxLength={80}
             className={inputCls}
@@ -266,7 +280,7 @@ function StepChild({ values, onChange, onNext }: StepChildProps) {
             min={1}
             max={12}
             value={values.childAge}
-            onChange={(e) => onChange({ childAge: Number(e.target.value) })}
+            onChange={(e) => onChange({ childProfileId: null, childAge: Number(e.target.value) })}
             className={inputCls}
           />
         </label>

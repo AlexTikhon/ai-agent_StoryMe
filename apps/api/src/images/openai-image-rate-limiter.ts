@@ -176,15 +176,16 @@ export class OpenAIImageRateLimiter {
    * Runs `dispatch` under the shared limiter: serialized against every other
    * schedule() call on this instance, spaced at least minIntervalMs apart,
    * and retried on HTTP 429 up to maxRetries. `dispatch` must perform exactly
-   * one request attempt and resolve with its Response (never throw for a
-   * non-2xx status, so 429s can be inspected here) — a thrown error (network/
-   * timeout) propagates immediately without an extra retry at this layer.
+   * one request attempt and resolve with a response-like value exposing status
+   * and headers (never throw for a non-2xx status, so 429s can be inspected
+   * here) — a thrown error (network/timeout) propagates immediately without an
+   * extra retry at this layer.
    */
-  schedule(
+  schedule<T extends Pick<Response, 'status'> & { headers?: Headers | undefined }>(
     label: string,
-    dispatch: () => Promise<Response>,
+    dispatch: () => Promise<T>,
     options: ProviderExecutionOptions = {},
-  ): Promise<Response> {
+  ): Promise<T> {
     this.diagnostics.requestsQueued++;
     const callMetrics: MutableCallMetrics = {
       rateLimitHits: 0,
@@ -206,12 +207,12 @@ export class OpenAIImageRateLimiter {
     });
   }
 
-  private async runSlot(
+  private async runSlot<T extends Pick<Response, 'status'> & { headers?: Headers | undefined }>(
     label: string,
-    dispatch: () => Promise<Response>,
+    dispatch: () => Promise<T>,
     metrics: MutableCallMetrics,
     signal?: AbortSignal,
-  ): Promise<Response> {
+  ): Promise<T> {
     throwIfAborted(signal);
     await this.waitForSpacing(label, metrics, signal);
 

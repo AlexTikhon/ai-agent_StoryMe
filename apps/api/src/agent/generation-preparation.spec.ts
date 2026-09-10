@@ -39,6 +39,7 @@ describe('prepareGeneration', () => {
     expect(prepared.targetPageCount).toBe(4);
     expect(prepared.storyRepairEnabled).toBe(false);
     expect(prepared.aiModelVersions).toEqual({ story: 'mock', image: 'mock' });
+    expect(prepared.compatibilityFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(prepared.providerTelemetry.snapshot()).toMatchObject({ maxPaidCalls: 20 });
   });
 });

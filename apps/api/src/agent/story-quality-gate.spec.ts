@@ -29,6 +29,16 @@ describe('evaluateStoryQuality', () => {
     expect(evaluateStoryQuality(result, input)).toEqual({
       version: 1,
       overallPassed: true,
+      dimensions: {
+        structuralValidity: true,
+        personalization: true,
+        protagonistConsistency: true,
+        ageAppropriateness: true,
+        continuity: true,
+        repetitionAcceptable: true,
+        pageProgression: true,
+        endingQuality: true,
+      },
       issues: [],
       flaggedPages: [],
     });
@@ -65,6 +75,64 @@ describe('evaluateStoryQuality', () => {
       ]),
     );
     expect(report.flaggedPages).toContain(2);
+  });
+
+  it('detects the wrong page count as structural failure', async () => {
+    const { input, result } = await candidate();
+    result.bookPreview.pages.pop();
+    result.storyPlan.pages.pop();
+    const report = evaluateStoryQuality(result, input);
+    expect(report.dimensions.structuralValidity).toBe(false);
+    expect(report.issues).toContainEqual(expect.objectContaining({ code: 'page_count_mismatch' }));
+  });
+
+  it('detects when the personalized protagonist disappears', async () => {
+    const { input, result } = await candidate();
+    for (const page of result.bookPreview.pages) page.text = page.text.replaceAll('Mia', 'Riley');
+    for (const page of result.storyPlan.pages) {
+      page.storyText = page.storyText.replaceAll('Mia', 'Riley');
+    }
+    const report = evaluateStoryQuality(result, input);
+    expect(report.dimensions.protagonistConsistency).toBe(false);
+    expect(report.issues).toContainEqual(
+      expect.objectContaining({ code: 'child_name_missing_from_story' }),
+    );
+  });
+
+  it('accepts natural name/theme/age personalization without requiring metadata dumping', async () => {
+    const { input, result } = await candidate();
+    const report = evaluateStoryQuality(result, input);
+    expect(report.dimensions.personalization).toBe(true);
+    expect(report.issues).not.toContainEqual(
+      expect.objectContaining({ code: 'personalization_insufficient' }),
+    );
+  });
+
+  it('accepts a distinct resolved ending and rejects an empty ending', async () => {
+    const { input, result } = await candidate();
+    expect(evaluateStoryQuality(result, input).dimensions.endingQuality).toBe(true);
+
+    result.storyPlan.resolution = '';
+    result.bookPreview.pages.at(-1)!.text = '';
+    result.storyPlan.pages.at(-1)!.storyText = '';
+    const broken = evaluateStoryQuality(result, input);
+    expect(broken.dimensions.endingQuality).toBe(false);
+    expect(broken.issues).toContainEqual(expect.objectContaining({ code: 'ending_missing' }));
+  });
+
+  it('detects conservative near-duplicate narration', async () => {
+    const { input, result } = await candidate();
+    const first = 'Mia found a silver key beside the quiet green gate and carefully held it up.';
+    const second = 'Mia found a silver key beside the quiet green gate and carefully lifted it up.';
+    result.bookPreview.pages[0]!.text = first;
+    result.storyPlan.pages[0]!.storyText = first;
+    result.bookPreview.pages[1]!.text = second;
+    result.storyPlan.pages[1]!.storyText = second;
+    const report = evaluateStoryQuality(result, input);
+    expect(report.dimensions.repetitionAcceptable).toBe(false);
+    expect(report.issues).toContainEqual(
+      expect.objectContaining({ code: 'near_duplicate_page_text', pageNumber: 2 }),
+    );
   });
 
   it('uses explicit age-banded page limits', () => {

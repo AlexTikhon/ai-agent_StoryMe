@@ -12,6 +12,7 @@ import { QueueModule } from './queue/queue.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { RedisModule } from './redis/redis.module';
 import { UsersModule } from './users/users.module';
+import { ChildProfilesModule } from './child-profiles/child-profiles.module';
 
 export type AppModuleOptions = BooksModuleOptions;
 
@@ -44,6 +45,7 @@ export class AppModule {
         HealthModule,
         UsersModule,
         AuthModule,
+        ChildProfilesModule,
         BooksModule.register(options),
         CreditsModule,
         BillingModule,

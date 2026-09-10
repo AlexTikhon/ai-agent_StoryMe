@@ -38,6 +38,16 @@ const generationInput: StoryGenerationInput = {
 const qualityReport: QualityReport = {
   version: 1,
   overallPassed: false,
+  dimensions: {
+    structuralValidity: true,
+    personalization: false,
+    protagonistConsistency: true,
+    ageAppropriateness: true,
+    continuity: true,
+    repetitionAcceptable: true,
+    pageProgression: true,
+    endingQuality: true,
+  },
   issues: [
     {
       code: 'metadata_theme_mismatch',
@@ -68,6 +78,7 @@ describe('StoryQualityRepairStage', () => {
     const provider: StoryGenerationProvider = {
       providerName: 'mock',
       promptVersion: 'test-story-v1',
+      repairPromptVersion: 'story-repair-v2',
       generateStory: vi.fn(),
       repairStory,
     };
@@ -86,7 +97,7 @@ describe('StoryQualityRepairStage', () => {
       expect.objectContaining({
         operation: 'story_repair',
         provider: 'mock',
-        promptVersion: 'test-story-v1-repair-v1',
+        promptVersion: 'story-repair-v2',
         status: 'success',
       }),
     ]);

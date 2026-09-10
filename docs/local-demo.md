@@ -126,6 +126,12 @@ email for <email>: http://localhost:3000/reset-password?token=...`);
 
 ## 8. Create a book
 
+Optional: open **Child profiles** in the dashboard header, save a child's name and age, and return
+to the library. Photos remain per-book and are not saved on reusable profiles. In the book wizard,
+choose that saved profile or **Enter child details manually**. Applying a profile copies its
+current name and age into the Book. Editing/deleting the profile later does not rewrite the draft;
+use Edit and explicitly select the profile again to reapply its current values.
+
 1. From the dashboard, click **Create Your First Book** (or **+ New Book**
    if you already have drafts).
 2. Fill in the 3-step wizard (child's name/age → story theme/pages → review)

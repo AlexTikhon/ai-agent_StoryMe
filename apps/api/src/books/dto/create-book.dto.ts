@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, Length, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
 import { MAX_BOOK_PAGE_COUNT, MIN_BOOK_PAGE_COUNT, SupportedLanguage } from '@book/types';
 
 /** Trims strings before validation so whitespace-only input fails Length's min bound. Non-strings pass through for class-validator's @IsString to reject. */
@@ -10,6 +10,11 @@ function trim(): PropertyDecorator {
 }
 
 export class CreateBookDto {
+  /** Omitted/null keeps the one-off manual child-details flow. */
+  @IsOptional()
+  @IsUUID()
+  childProfileId?: string | null;
+
   @trim()
   @IsString()
   @Length(1, 120)

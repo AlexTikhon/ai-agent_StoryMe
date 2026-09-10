@@ -71,7 +71,9 @@ export class StoryQualityRepairStage implements GenerationStage<
       operation: 'story_repair',
       provider: providerName(this.provider.providerName),
       ...(this.provider.modelName && { model: this.provider.modelName }),
-      promptVersion: `${this.provider.promptVersion ?? 'legacy-story-v1'}-repair-v1`,
+      promptVersion:
+        this.provider.repairPromptVersion ??
+        `${this.provider.promptVersion ?? 'legacy-story-v1'}-repair-v1`,
       promptInput: immutableInput,
       execute: (options) =>
         this.provider.repairStory!(immutableInput, {

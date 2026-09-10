@@ -13,6 +13,7 @@ import {
 } from './generation-provider-telemetry';
 import { resolveTargetPageCount } from './story-generation-provider';
 import { resolveStoryRepairEnabled } from './story-quality-repair.stage';
+import { buildGenerationCompatibilityFingerprint } from './generation-compatibility-fingerprint';
 
 export interface ResolvedGenerationInput {
   childName: string;
@@ -35,6 +36,7 @@ export interface PreparedGenerationContext {
   imageModelName: string | null;
   characterProviderName: string | null;
   characterModelName: string | null;
+  compatibilityFingerprint: string;
   aiModelVersions: { story: string; image: string };
 }
 
@@ -96,6 +98,7 @@ export function prepareGeneration(
     imageModelName: providers.image.modelName ?? null,
     characterProviderName: providers.character.providerName ?? null,
     characterModelName: providers.character.modelName ?? null,
+    compatibilityFingerprint: buildGenerationCompatibilityFingerprint(providers),
     aiModelVersions: {
       story: modelLabel(providers.story),
       image: modelLabel(providers.image),

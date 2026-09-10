@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { BookStatus, type Book } from '@prisma/client';
+import { BookStatus, Prisma, type Book } from '@prisma/client';
 import {
   DEFAULT_BOOK_PAGE_COUNT,
   SupportedLanguage,
@@ -24,6 +24,30 @@ export class BookCrudService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(userId: string, dto: CreateBookDto): Promise<BookDto> {
+    const selectedProfileId = dto.childProfileId;
+    if (selectedProfileId) {
+      return this.prisma.$transaction(async (tx) => {
+        const profile = await tx.childProfile.findFirst({
+          where: { id: selectedProfileId, userId, deletedAt: null },
+        });
+        if (!profile) throw new NotFoundException('Child profile not found');
+        return toBookDto(
+          await tx.book.create({
+            data: {
+              userId,
+              childProfileId: profile.id,
+              title: dto.title,
+              childName: profile.name,
+              childAge: profile.age,
+              language: dto.language ?? SupportedLanguage.English,
+              theme: dto.theme,
+              educationalMessage: dto.educationalMessage ?? null,
+              pageCount: dto.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
+            },
+          }),
+        );
+      });
+    }
     return toBookDto(
       await this.prisma.book.create({
         data: {
@@ -64,10 +88,37 @@ export class BookCrudService {
     if (!EDITABLE_BOOK_STATUSES.has(book.status)) {
       throw new ConflictException('Book cannot be edited while generation is in progress');
     }
-    const result = await this.prisma.book.updateMany({
-      where: { id, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
-      data: dto,
-    });
+    const selectedProfileId = dto.childProfileId;
+    const result =
+      selectedProfileId === undefined
+        ? await this.prisma.book.updateMany({
+            where: { id, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
+            data: dto,
+          })
+        : await this.prisma.$transaction(async (tx) => {
+            const { childProfileId: _ignored, ...draftChanges } = dto;
+            const data: Prisma.BookUncheckedUpdateManyInput = {
+              ...draftChanges,
+              childProfileId: selectedProfileId,
+            };
+            if (selectedProfileId) {
+              const profile = await tx.childProfile.findFirst({
+                where: { id: selectedProfileId, userId, deletedAt: null },
+              });
+              if (!profile) throw new NotFoundException('Child profile not found');
+              data.childName = profile.name;
+              data.childAge = profile.age;
+            }
+            return tx.book.updateMany({
+              where: {
+                id,
+                userId,
+                deletedAt: null,
+                status: { in: [...EDITABLE_BOOK_STATUSES] },
+              },
+              data,
+            });
+          });
     if (result.count === 0) {
       throw new ConflictException('Book cannot be edited while generation is in progress');
     }

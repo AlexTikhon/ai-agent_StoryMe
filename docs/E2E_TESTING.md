@@ -8,7 +8,15 @@ pnpm test:e2e:home
 
 The runner owns disposable infrastructure cleanup. Playwright itself uses web `3100`, API `4100`, PostgreSQL `5440`, and Redis `6380/15`, JWT auth, home mode, deterministic story/character/image mocks, console email, disabled Stripe, and local storage. Do not set OpenAI provider variables or credentials.
 
-The committed browser suite covers registration, login, refresh-cookie session restoration, logout/protected-route behavior, server estimate visibility, home-mode generation/PDF download, cancellation without credits, page-text correction persistence/PDF republication, explicit page-image quote confirmation and republication, retained publications across running/failed/cancelled regeneration states, absence of stale publication after initial failure, and successful retry. Database integration suites cover atomic publication, page text/image revision invariants, fencing/redelivery, demo credit debit/refund/idempotency, and hard deletion.
+The committed browser suite covers registration, login, refresh-cookie session restoration,
+logout/protected-route behavior, reusable child-profile creation/selection and immutable Book
+copying without a provider call, server estimate visibility, home-mode generation/PDF download,
+cancellation without credits, page-text correction persistence/PDF republication, explicit
+page-image quote confirmation and republication, retained publications across
+running/failed/cancelled regeneration states, absence of stale publication after initial failure,
+and successful retry. Database integration suites additionally cover profile ownership isolation,
+soft deletion, Book/run/retry snapshot preservation, atomic publication, page text/image revision
+invariants, fencing/redelivery, demo credit debit/refund/idempotency, and hard deletion.
 
 To inspect a failure, use `apps/web/test-results` traces/screenshots/videos and the API/worker console correlation fields. Re-run a single test with:
 

@@ -15,6 +15,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 export interface GenerationResumeBook {
   id: string;
   lastGenerationInputHash: string | null;
+  lastGenerationCompatibilityFingerprint: string | null;
   storyPlan: unknown;
   characterCard: unknown;
   bookPreview: unknown;
@@ -48,10 +49,10 @@ export interface ImageReuseClassification {
 
 /**
  * Central resume/reuse boundary. It decides whether persisted JSON belongs
- * to the exact immutable input, gates copy-forward accordingly, resolves the
- * character sheet for the current claim, and classifies planned images into
- * reusable vs. regenerate sets. Provider calls and orchestration remain
- * outside this service.
+ * to the exact immutable input and a compatible AI pipeline, gates
+ * copy-forward accordingly, resolves the character sheet for the current
+ * claim, and classifies planned images into reusable vs. regenerate sets.
+ * Provider calls and orchestration remain outside this service.
  */
 @Injectable()
 export class GenerationResumeService {
@@ -62,6 +63,7 @@ export class GenerationResumeService {
   async plan(
     book: GenerationResumeBook,
     inputHash: string,
+    compatibilityFingerprint: string,
     runId: string,
     fencingVersion: number,
     referenceAssetRevision?: string | null,
@@ -71,9 +73,11 @@ export class GenerationResumeService {
     // including on a fresh/non-resumable generation.
     const sourceNamespace = resolveLastGenerationNamespace(book);
     const persisted = parsePersistedGenerationState(book);
-    const resumable =
-      book.lastGenerationInputHash === inputHash && persisted.reusableStory !== null;
-    if (book.lastGenerationInputHash === inputHash && persisted.invalidFields.length > 0) {
+    const inputCompatible = book.lastGenerationInputHash === inputHash;
+    const pipelineCompatible =
+      book.lastGenerationCompatibilityFingerprint === compatibilityFingerprint;
+    const resumable = inputCompatible && pipelineCompatible && persisted.reusableStory !== null;
+    if (inputCompatible && pipelineCompatible && persisted.invalidFields.length > 0) {
       this.logger.warn(
         `Book ${book.id}: reusable persisted generation JSON failed validation (${persisted.invalidFields.join(', ')}); starting safely from scratch.`,
       );

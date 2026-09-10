@@ -1,4 +1,5 @@
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import type { ProviderCallMetrics, StoryQualityDimensions } from '@book/types';
 import { finalizeCharacterProfile } from '../src/agent/character-appearance';
 import {
   MockStoryGenerationProvider,
@@ -43,11 +44,16 @@ export interface StoryEvalCaseResult {
   structuralValid: boolean;
   pageCountValid: boolean;
   qualityPassed: boolean;
+  qualityDimensions: StoryQualityDimensions;
   characterConsistencyPassed: boolean;
   issueCodes: string[];
   repairRequired: boolean;
   repairAttempted: boolean;
   durationMs: number;
+  logicalProviderCalls: number;
+  httpAttempts: number;
+  inputTokens?: number;
+  outputTokens?: number;
   estimatedCostUsd?: number;
 }
 
@@ -164,8 +170,19 @@ export async function evaluateStoryCases(
     const input = syntheticInput(testCase);
     const promptVersion = provider.promptVersion ?? 'legacy-story-v1';
     const promptHash = hashProviderPrompt(promptVersion, input);
+    const metrics: Required<Pick<ProviderCallMetrics, 'httpAttempts'>> &
+      Pick<ProviderCallMetrics, 'inputTokens' | 'outputTokens'> = { httpAttempts: 0 };
+    const onMetrics = (reported: ProviderCallMetrics) => {
+      metrics.httpAttempts += reported.httpAttempts ?? 0;
+      if (reported.inputTokens !== undefined) {
+        metrics.inputTokens = (metrics.inputTokens ?? 0) + reported.inputTokens;
+      }
+      if (reported.outputTokens !== undefined) {
+        metrics.outputTokens = (metrics.outputTokens ?? 0) + reported.outputTokens;
+      }
+    };
     let repairAttempted = false;
-    let story = await provider.generateStory(input);
+    let story = await provider.generateStory(input, { onMetrics });
     let structuralValid = true;
     try {
       validateStoryGenerationResult(story, testCase.pageCount);
@@ -183,11 +200,10 @@ export async function evaluateStoryCases(
         .every((issue) => issue.repairable)
     ) {
       repairAttempted = true;
-      story = await provider.repairStory({
-        generationInput: input,
-        candidate: story,
-        qualityReport: quality,
-      });
+      story = await provider.repairStory(
+        { generationInput: input, candidate: story, qualityReport: quality },
+        { onMetrics },
+      );
       try {
         validateStoryGenerationResult(story, testCase.pageCount);
       } catch {
@@ -215,17 +231,65 @@ export async function evaluateStoryCases(
       structuralValid,
       pageCountValid,
       qualityPassed: quality.overallPassed,
+      qualityDimensions: quality.dimensions,
       characterConsistencyPassed: consistencyPassed,
       issueCodes: quality.issues.map((issue) => issue.code),
       repairRequired,
       repairAttempted,
       durationMs: Date.now() - startedAt,
+      logicalProviderCalls: calls,
+      httpAttempts: metrics.httpAttempts,
+      ...(metrics.inputTokens !== undefined && { inputTokens: metrics.inputTokens }),
+      ...(metrics.outputTokens !== undefined && { outputTokens: metrics.outputTokens }),
       ...(estimatedCostPerCallUsd !== undefined && {
         estimatedCostUsd: calls * estimatedCostPerCallUsd,
       }),
     });
   }
   return results;
+}
+
+function average(values: number[]): number {
+  return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+export function renderStoryEvalComparison(
+  baseline: readonly StoryEvalCaseResult[],
+  candidate: readonly StoryEvalCaseResult[],
+  labels: { baseline: string; candidate: string } = {
+    baseline: 'baseline',
+    candidate: 'candidate',
+  },
+): string {
+  const row = (label: string, read: (results: readonly StoryEvalCaseResult[]) => string) =>
+    `| ${label} | ${read(baseline)} | ${read(candidate)} |`;
+  const valid = (results: readonly StoryEvalCaseResult[]) =>
+    `${results.filter((result) => result.passed).length}/${results.length}`;
+  const count = (
+    results: readonly StoryEvalCaseResult[],
+    key: 'repairRequired' | 'repairAttempted',
+  ) => String(results.filter((result) => result[key]).length);
+  const avg = (
+    results: readonly StoryEvalCaseResult[],
+    key: 'inputTokens' | 'outputTokens' | 'durationMs' | 'estimatedCostUsd',
+  ) =>
+    average(results.map((result) => result[key] ?? 0)).toFixed(key === 'estimatedCostUsd' ? 4 : 1);
+  return [
+    '# Story evaluation comparison',
+    '',
+    `| Metric | ${labels.baseline} | ${labels.candidate} |`,
+    '| --- | ---: | ---: |',
+    row('valid generations', valid),
+    row('repair required', (results) => count(results, 'repairRequired')),
+    row('repair attempted', (results) => count(results, 'repairAttempted')),
+    row('avg input tokens', (results) => avg(results, 'inputTokens')),
+    row('avg output tokens', (results) => avg(results, 'outputTokens')),
+    row('avg estimated cost USD', (results) => avg(results, 'estimatedCostUsd')),
+    row('avg latency ms', (results) => avg(results, 'durationMs')),
+    '',
+    'Quality remains a pass/fail issue contract; this comparison does not invent a subjective score.',
+    '',
+  ].join('\n');
 }
 
 function readPositiveInt(raw: string | undefined, fallback: number): number {
@@ -271,6 +335,17 @@ async function main(): Promise<void> {
   const artifactPath = process.env['AI_EVAL_JSON_PATH'];
   if (artifactPath) {
     await writeFile(artifactPath, `${JSON.stringify(results, null, 2)}\n`, 'utf8');
+  }
+  const baselinePath = process.env['AI_EVAL_BASELINE_JSON_PATH'];
+  if (baselinePath) {
+    const baseline = JSON.parse(await readFile(baselinePath, 'utf8')) as StoryEvalCaseResult[];
+    const comparison = renderStoryEvalComparison(baseline, results, {
+      baseline: process.env['AI_EVAL_BASELINE_LABEL'] ?? 'baseline',
+      candidate: process.env['AI_EVAL_CANDIDATE_LABEL'] ?? provider.promptVersion ?? 'candidate',
+    });
+    console.log(comparison);
+    const comparisonPath = process.env['AI_EVAL_COMPARISON_PATH'];
+    if (comparisonPath) await writeFile(comparisonPath, comparison, 'utf8');
   }
   if (results.some((result) => !result.passed)) process.exitCode = 1;
 }

@@ -2,6 +2,7 @@ import type { CharacterProfile } from '@book/types';
 import { DEFAULT_EYE_DESCRIPTION, finalizeCharacterProfile } from './character-appearance';
 import { MockFailureController } from '../config/mock-failure';
 import type { ProviderExecutionOptions } from '../common/provider-execution';
+import { PROMPT_VERSIONS } from './prompt-versions';
 
 export interface CharacterProfileInput {
   bookId: string;
@@ -72,7 +73,7 @@ export function buildConsistencyPrompt(
  */
 export class MockCharacterProfileProvider implements CharacterProfileProvider {
   readonly providerName = 'mock' as const;
-  readonly promptVersion = 'mock-character-profile-v1';
+  readonly promptVersion = PROMPT_VERSIONS.characterProfile;
 
   constructor(private readonly failures?: MockFailureController) {}
 

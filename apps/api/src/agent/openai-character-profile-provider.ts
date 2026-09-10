@@ -12,6 +12,7 @@ import {
   DEFAULT_OPENAI_REQUEST_TIMEOUT_MS,
   fetchWithRetry,
   OpenAIRequestError,
+  OpenAIResponseBodyError,
   readOpenAITextUsage,
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
@@ -20,6 +21,7 @@ import {
   reportProviderMetrics,
   type ProviderExecutionOptions,
 } from '../common/provider-execution';
+import { PROMPT_VERSIONS } from './prompt-versions';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -151,7 +153,7 @@ export interface OpenAICharacterProfileProviderOptions {
  */
 export class OpenAICharacterProfileProvider implements CharacterProfileProvider {
   readonly providerName = 'openai' as const;
-  readonly promptVersion = 'openai-character-profile-v1';
+  readonly promptVersion = PROMPT_VERSIONS.characterProfile;
   private readonly logger = new Logger(OpenAICharacterProfileProvider.name);
   private readonly apiKey: string;
   private readonly model: string;
@@ -188,7 +190,7 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
       timeoutCount: 0,
     };
 
-    let response: Response;
+    let response;
     try {
       response = await fetchWithRetry({
         fetchImpl: this.fetchImpl,
@@ -224,6 +226,15 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
           if (reason === 'http_429') metrics.rateLimitHits = (metrics.rateLimitHits ?? 0) + 1;
           this.logger.warn(`Character profile attempt ${attempt} failed (${reason}); retrying`);
         },
+        consumeResponse: async (attemptResponse, attemptSignal) => {
+          if (attemptResponse.ok) return attemptResponse.json();
+          try {
+            await attemptResponse.body?.cancel();
+          } catch (err) {
+            if (attemptSignal.aborted) throw err;
+          }
+          return undefined;
+        },
       });
     } catch (err) {
       if (err instanceof OpenAIRequestError && err.reason === 'timeout') {
@@ -231,6 +242,13 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
       }
       reportProviderMetrics(options, metrics);
       if (isProviderCancellationError(err)) throw err;
+      if (err instanceof OpenAIResponseBodyError) {
+        throw new CharacterProfileProviderError(
+          'OpenAI response was not valid JSON',
+          err.cause,
+          'invalid_response',
+        );
+      }
       const message = safeOpenAIRequestFailureMessage(err);
       this.logger.error(
         `Character profile request failed: provider=openai model=${this.model} reason=${message}`,
@@ -259,17 +277,7 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
       );
     }
 
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch (err) {
-      reportProviderMetrics(options, metrics);
-      throw new CharacterProfileProviderError(
-        'OpenAI response was not valid JSON',
-        err,
-        'invalid_response',
-      );
-    }
+    const payload = response.body;
 
     Object.assign(metrics, readOpenAITextUsage(payload));
     reportProviderMetrics(options, metrics);

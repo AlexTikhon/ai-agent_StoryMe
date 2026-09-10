@@ -22,6 +22,7 @@ import { GenerationResumeService, type ResumeAssetStatus } from './generation-re
 import { imageAssetLabel } from './image-generation.stage';
 import { pdfPublicationStage } from './pdf-publication.stage';
 import type { StoryGenerationResult } from './story-generation-provider';
+import { assertBookLayoutQuality } from './book-layout-quality';
 
 export interface GenerationPublicationInput {
   book: Book;
@@ -84,6 +85,7 @@ export class GenerationPublicationService {
       bookPreview,
       imageGenerationResult,
     });
+    assertBookLayoutQuality(bookLayout, bookPreview.pages.length);
     const layoutDurationMs = Date.now() - layoutStartedAt;
 
     await this.execution.applyFencedBookWrite(
@@ -98,6 +100,7 @@ export class GenerationPublicationService {
         imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
         bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
         lastGenerationInputHash: ctx.inputHash,
+        lastGenerationCompatibilityFingerprint: prepared.compatibilityFingerprint,
         lastGenerationRunId: ctx.runId,
         lastGenerationFencingVersion: ctx.fencingVersion,
         ...characterProfileUpdateData,

@@ -19,24 +19,24 @@ import { StoryDiagnostics } from './book-detail/story-diagnostics';
 import { PdfSection } from './book-detail/pdf-section';
 
 function generationStatusMessage(progress: GenerationProgressDto | null): string {
-  if (progress?.status === 'queued') return 'Waiting for a generation worker…';
-  if (progress?.status !== 'running') return 'Generation in progress…';
+  if (progress?.status === 'queued') return 'Preparing your story…';
+  if (progress?.status !== 'running') return 'Preparing your story…';
 
   switch (progress.step) {
     case AgentStep.CharBuild:
-      return 'Building character profile…';
+      return 'Creating your character…';
     case AgentStep.StoryPlan:
-      return 'Planning your story…';
+      return 'Writing your story…';
     case AgentStep.QaReview:
-      return 'Reviewing story quality…';
+      return 'Polishing your story…';
     case AgentStep.ImageGen:
-      return 'Generating images…';
+      return 'Creating illustrations…';
     case AgentStep.Layout:
-      return 'Designing book pages…';
+      return 'Building your book…';
     case AgentStep.PdfRender:
-      return 'Rendering PDF…';
+      return 'Finishing your book…';
     default:
-      return 'Starting generation…';
+      return 'Preparing your story…';
   }
 }
 

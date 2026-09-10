@@ -34,6 +34,7 @@ function makeImageProvider() {
   return {
     providerName: 'mock',
     promptVersion: 'test-image-v1',
+    characterReferencePromptVersion: 'character-reference-v3',
     generateImage: vi.fn(),
     generateCharacterSheet: vi.fn().mockResolvedValue({
       buffer: Buffer.from('sheet-bytes'),
@@ -106,6 +107,10 @@ describe('CharacterReferenceStage', () => {
     expect(telemetry.snapshot().calls.map((call) => call.operation)).toEqual([
       'character_profile',
       'character_sheet',
+    ]);
+    expect(telemetry.snapshot().calls.map((call) => call.promptVersion)).toEqual([
+      'test-profile-v1',
+      'character-reference-v3',
     ]);
   });
 

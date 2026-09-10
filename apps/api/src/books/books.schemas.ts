@@ -54,6 +54,18 @@ const canonicalCharacterAppearanceSchema = z.object({
   artStyle: z.string(),
 });
 
+const characterVisualBibleSchema = z.object({
+  schemaVersion: z.literal(1),
+  protagonistName: z.string(),
+  approximateAge: z.number(),
+  appearance: z.object({ hair: z.string(), eyes: z.string(), face: z.string() }),
+  defaultWardrobe: z.string(),
+  visualStyle: z.string(),
+  identityRules: z.array(z.string()),
+  sceneFlexibilityRules: z.array(z.string()),
+  fingerprint: z.string(),
+});
+
 export const characterProfileSchema = z.object({
   childName: z.string(),
   age: z.number(),
@@ -71,6 +83,7 @@ export const characterProfileSchema = z.object({
   characterFingerprint: z.string().optional(),
   lockedVisualDescription: z.string().optional(),
   negativeConstraints: z.array(z.string()).optional(),
+  visualBible: characterVisualBibleSchema.optional(),
 });
 
 const chapterOutlineSchema = z.object({

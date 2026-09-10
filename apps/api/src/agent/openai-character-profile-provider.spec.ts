@@ -149,10 +149,21 @@ describe('OpenAICharacterProfileProvider', () => {
   });
 
   it('throws a clear error when the response is not valid JSON', async () => {
-    const fetchImpl = makeFetchOk('not json');
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => Promise.reject(new SyntaxError('malformed JSON')),
+    } as Response);
     const provider = new OpenAICharacterProfileProvider({ apiKey: 'sk-test', fetchImpl });
 
-    await expect(provider.buildProfile(makeInput())).rejects.toThrow(/not valid JSON/);
+    const err = await provider
+      .buildProfile(makeInput())
+      .catch((error) => error as CharacterProfileProviderError);
+    expect(err).toBeInstanceOf(CharacterProfileProviderError);
+    expect(err.message).toMatch(/not valid JSON/);
+    expect(err.failureKind).toBe('invalid_response');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('does not leak the API key in a thrown error message', async () => {

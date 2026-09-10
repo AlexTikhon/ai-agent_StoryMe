@@ -7,7 +7,10 @@ design; they are not implementation contracts.
 ## Supported flow
 
 Users can register with email/password, verify email, log in, restore a session through a rotating
-HttpOnly refresh cookie, and reset a password. They can create and edit an owned book draft with
+HttpOnly refresh cookie, and reset a password. They can create, edit, and soft-delete reusable
+child profiles containing name and age, then explicitly apply one to a new or existing draft.
+Applying a profile copies its current values into the Book; later profile edits/deletion never
+rewrite a Book or GenerationRun. They can also create and edit an owned one-off book draft with
 title, child name/age, language (`en`, `ru`, `pl`), theme, page count, optional lesson, and an
 optional reference photo. `PRODUCT_MODE=home` is the default private-family mode: generation keeps
 all provider and capacity guardrails but does not debit credits or expose purchasing. The opt-in
@@ -47,6 +50,8 @@ All routes have the `/api` prefix.
 | POST             | `/auth/resend-verification`                                        | Request verification message             |
 | POST             | `/auth/request-password-reset`                                     | Request reset without enumeration        |
 | POST             | `/auth/reset-password`                                             | Consume reset token                      |
+| GET/POST         | `/child-profiles`                                                  | List active owned profiles / create one  |
+| GET/PATCH/DELETE | `/child-profiles/:id`                                              | Read, edit, or soft-delete owned profile |
 | GET/POST         | `/books`                                                           | List owned books / create draft          |
 | GET/PATCH/DELETE | `/books/:id`                                                       | Read, edit, or soft-delete an owned book |
 | POST             | `/books/:id/child-photo`                                           | Validate, re-encode, and store photo     |
@@ -76,7 +81,8 @@ and ownership comes from the authenticated user rather than client-supplied user
 ## Frontend routes
 
 `/`, `/register`, `/login`, `/verify-email`, `/forgot-password`, `/reset-password`, `/dashboard`,
-`/dashboard/books/new`, `/dashboard/books/[id]`, `/dashboard/credits`, `/billing/success`, and
+`/dashboard/child-profiles`, `/dashboard/books/new`, `/dashboard/books/[id]`,
+`/dashboard/credits`, `/billing/success`, and
 `/billing/cancel`.
 
 The completed-book detail screen has an authenticated in-browser reader for the published cover,
@@ -128,13 +134,16 @@ a later failed/cancelled regeneration preserves the previous publication.
 
 ## Implemented and unimplemented
 
-Implemented: JWT auth/recovery, ownership enforcement, safe child-photo processing, draft CRUD
+Implemented: JWT auth/recovery, ownership enforcement, owner-scoped reusable child-profile CRUD,
+explicit profile-to-Book name/age snapshotting with manual one-off compatibility, safe
+child-photo processing, draft CRUD
 and soft-delete, durable queued generation, fencing/heartbeat/recovery, cancellation,
 retry/resume, idempotent charges/refunds, one-time credit purchases, provider limits, local/S3/R2
 artifacts, authenticated PDF and published-image access, an authenticated completed-book reader,
 published cover thumbnails in the library, durable user-facing generation progress, and
 versioned one-page text correction and explicitly confirmed one-page image regeneration with
-failure-safe PDF republication, a deterministic pre-image quality gate, privacy-safe request/run
+failure-safe PDF republication, an explicit deterministic story-quality contract with bounded
+one-pass repair, privacy-safe request/run
 correlation, Playwright coverage of the real local API/worker boundary, and explicit owned,
 fenced, retriable hard deletion across PostgreSQL and configured artifact storage.
 
@@ -143,8 +152,8 @@ OpenAI text token counts when returned by the provider. Unknown metrics remain a
 cost stays separate from the existing actual-cost fields. The process-wide image limiter retains
 global operator counters, but book/run diagnostics use only metrics emitted by each logical call.
 
-Not implemented: OAuth flow, subscriptions/customer portal, public sharing, child-profile
-management, automatic retention scheduling, and role-based admin authorization for diagnostics.
+Not implemented: OAuth flow, subscriptions/customer portal, public sharing, reusable child-profile
+photos, automatic retention scheduling, and role-based admin authorization for diagnostics.
 The reader follows published artifact availability rather than current run status, so a previous
 complete publication remains readable while regeneration is running, failed, or cancelled. The web
 diagnostics UI is environment-gated and defaults off; the owned diagnostics API contract remains
@@ -159,11 +168,16 @@ removed in favor of authoritative `GenerationRun`; Book soft-delete does not era
 must not be confused with the separate irreversible hard-delete workflow; local storage cannot
 serve separately deployed API/worker processes; console email does not deliver production mail.
 English, Russian, and Polish mock stories are deterministic and localized. Character profiles now
-carry a canonical versioned appearance fingerprint and one locked illustration fragment. Bounded story repair exists but is
+carry a canonical versioned appearance fingerprint and immutable visual bible shared by the
+character reference and every scene-separated illustration prompt. Structured layout quality is
+validated before PDF rendering, and `pnpm eval:story:offline` runs the synthetic good/malformed
+quality corpus without API keys or external traffic. Bounded story repair exists but is
 disabled by default and requires an explicitly configured repair-capable story provider and
 paid-call budget.
 
-The code-derived model/enum retention decisions are documented in
+The Phase 14A schema/runtime/privacy decision is documented in
+[PHASE_14_CHILD_PROFILE_AUDIT.md](PHASE_14_CHILD_PROFILE_AUDIT.md), and the route contract is in
+[CHILD_PROFILES_API.md](CHILD_PROFILES_API.md). The code-derived model/enum retention decisions are documented in
 [PHASE_7_SCHEMA_AUDIT.md](PHASE_7_SCHEMA_AUDIT.md); Phase 7 intentionally includes no destructive
 schema migration.
 

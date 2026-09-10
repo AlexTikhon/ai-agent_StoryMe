@@ -186,6 +186,24 @@ export interface GenerationMetadata {
   generatedPages?: number;
   generatedImageCount?: number;
   failedImageCount?: number;
+  quality?: {
+    passed: boolean;
+    dimensions?: {
+      structuralValidity: boolean;
+      personalization: boolean;
+      protagonistConsistency: boolean;
+      ageAppropriateness: boolean;
+      continuity: boolean;
+      repetitionAcceptable: boolean;
+      pageProgression: boolean;
+      endingQuality: boolean;
+    };
+    issueCodes: string[];
+    repairAttempted: boolean;
+    repairSuccessful: boolean;
+  };
+  /** Distinct source-controlled prompt versions observed in provider telemetry. */
+  promptVersions?: string[];
   providerUsage?: GenerationProviderUsage;
   startedAt?: string;
   completedAt?: string;

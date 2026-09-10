@@ -8,9 +8,10 @@ import {
   type PagePlan,
   type StoryPlan,
 } from '@book/types';
-import { buildCharacterConsistencyBlock } from './story-generation-contracts';
 import type { StoryGenerationInput, StoryGenerationResult } from './story-generation-contracts';
 import { createCharacterCard } from './character-card.factory';
+import { resolveCharacterVisualBible } from './character-visual-bible';
+import { buildBookImagePrompt } from './image-prompt.builder';
 import {
   PAGES_PER_CHAPTER,
   STRINGS_BY_LANGUAGE,
@@ -111,7 +112,8 @@ export function buildStoryDraft(
       // verbatim on every page) plus this page's own plot-advancing narration.
       const connector =
         strings.middleConnectors[pageIndex % strings.middleConnectors.length]!(name);
-      storyText = `${connector} ${page.narration}`;
+      const sceneSpecificConnector = connector.replace(/[.!?。！？]\s*$/u, '');
+      storyText = `${sceneSpecificConnector}: ${page.sceneDescription}. ${page.narration}`;
     }
     return { ...page, storyText };
   });
@@ -124,7 +126,7 @@ export function buildIllustrationPlan(
   characterProfile: CharacterProfile,
   storyPlanWithDraft: StoryPlan & { pages: Array<PagePlan & { storyText: string }> },
 ): StoryPlan & { pages: Array<PagePlan & { storyText: string; illustration: IllustrationPlan }> } {
-  const consistencyBlock = buildCharacterConsistencyBlock(characterProfile);
+  const visualBible = resolveCharacterVisualBible(characterProfile);
 
   const pages = storyPlanWithDraft.pages.map(
     (page): PagePlan & { storyText: string; illustration: IllustrationPlan } => {
@@ -132,14 +134,24 @@ export function buildIllustrationPlan(
       const mood = chapter ? `${chapter.emotionalArc}, child-friendly` : 'joyful, child-friendly';
 
       const illustration: IllustrationPlan = {
-        prompt: `${consistencyBlock} Scene: ${page.sceneDescription}. ${page.illustrationPrompt}`,
+        prompt: buildBookImagePrompt({
+          bible: visualBible,
+          scene: {
+            kind: 'page',
+            theme: storyPlanWithDraft.theme,
+            summary: page.sceneDescription,
+            action: page.illustrationPrompt,
+            ...(chapter?.setting && { location: chapter.setting }),
+            mood,
+          },
+        }),
         negativePrompt: 'blurry, distorted face, extra limbs, scary, violent, text, watermark',
         style: characterProfile.illustrationStyle,
         aspectRatio: '4:3',
         characters: [characterCard.name],
         setting: page.sceneDescription,
         mood,
-        consistencyNotes: consistencyBlock,
+        consistencyNotes: visualBible.fingerprint,
       };
 
       return { ...page, storyText: page.storyText as string, illustration };
@@ -163,7 +175,7 @@ export function buildBookPreview(
   const strings = STRINGS_BY_LANGUAGE[resolveTemplateLanguage(language)];
   const { title, theme, educationalMessage } = storyPlanFinal;
   const subtitle = storyPlanFinal.subtitle ?? strings.subtitle(theme, childName);
-  const consistencyBlock = buildCharacterConsistencyBlock(characterProfile);
+  const visualBible = resolveCharacterVisualBible(characterProfile);
 
   const pages = storyPlanFinal.pages.map((page, index) => ({
     pageNumber: page.pageNumber,
@@ -185,7 +197,15 @@ export function buildBookPreview(
       // model to render title text produces broken/cropped text inside the
       // artwork. The PDF renderer overlays the real title as PDF text
       // separately (see pdf-renderer.ts).
-      illustrationPrompt: `${consistencyBlock} Scene: ${characterCard.name} standing on the cover of a children's picture book, warm and inviting.`,
+      illustrationPrompt: buildBookImagePrompt({
+        bible: visualBible,
+        scene: {
+          kind: 'cover',
+          theme,
+          summary: `${characterCard.name} standing in the story's main setting`,
+          mood: 'warm, inviting, confident',
+        },
+      }),
     },
     pages,
     backCover: {
@@ -244,7 +264,15 @@ export function buildImageGenerationResult(
     // Deliberately never quotes the book title — see the cover prompt
     // comment in buildBookPreview above; the PDF renderer overlays real text
     // separately.
-    prompt: `Decorative back-cover illustration for a children's picture book, warm and inviting themed background, no title or text. ${buildCharacterConsistencyBlock(characterProfile)}`,
+    prompt: buildBookImagePrompt({
+      bible: resolveCharacterVisualBible(characterProfile),
+      scene: {
+        kind: 'back_cover',
+        theme: bookPreview.metadata.theme,
+        summary: 'decorative themed background with the protagonist in a calm resolved moment',
+        mood: 'warm, peaceful, satisfying',
+      },
+    }),
     provider: 'local_mock',
     status: 'complete',
     imageUrl: `/mock-images/${bookId}/back-cover.svg`,

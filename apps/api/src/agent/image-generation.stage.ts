@@ -110,7 +110,10 @@ export class ImageGenerationStage implements GenerationStage<
             assetLabel: imageAssetLabel(image),
             provider: resolvedProviderName,
             ...(modelName && { model: modelName }),
-            promptVersion: this.provider.promptVersion ?? 'legacy-image-v1',
+            promptVersion:
+              this.provider.pageImagePromptVersion ??
+              this.provider.promptVersion ??
+              'legacy-page-image-v1',
             promptInput: {
               bookId,
               entry: {

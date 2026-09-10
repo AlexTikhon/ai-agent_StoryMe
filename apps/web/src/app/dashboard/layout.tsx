@@ -89,6 +89,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
     <div>
       <div className="flex items-center justify-end gap-4 border-b border-border-subtle bg-bg-surface px-4 py-2 text-sm">
+        <Link
+          href="/dashboard/child-profiles"
+          className="font-medium text-text-secondary hover:text-violet-700"
+        >
+          Child profiles
+        </Link>
         {homeMode ? (
           <span className="font-medium text-text-secondary">Family library</span>
         ) : (
