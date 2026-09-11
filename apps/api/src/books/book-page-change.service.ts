@@ -1,3 +1,4 @@
+import { validateImage } from '../images/validated-image';
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { BookDto, BookPreview, ImageGenerationResult, StoryPlan } from '@book/types';
@@ -132,7 +133,7 @@ export class BookPageChangeService {
             imageOverrides,
           );
           const buffer = await this.imageStorage.getImageAsset(key);
-          if (!buffer) {
+          if (!buffer || !(await validateImage(buffer))) {
             throw new ConflictException(
               `Published illustration for ${entry.kind === 'page' ? `page ${entry.pageNumber}` : entry.kind} is missing`,
             );
@@ -142,6 +143,7 @@ export class BookPageChangeService {
     );
 
     const pdfBuffer = await renderStorybookPdf(nextLayout, {
+      strict: true,
       resolveImageBuffer: (_imageBlock, entry) => imageBuffers.get(entry.id),
     });
     const candidateNamespace = claimNamespace(randomUUID(), PAGE_EDIT_FENCING_VERSION);

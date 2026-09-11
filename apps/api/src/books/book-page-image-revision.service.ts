@@ -1,3 +1,6 @@
+import { validateImage } from '../images/validated-image';
+import { hashProviderPrompt } from '../agent/generation-provider-telemetry';
+import { PROMPT_VERSIONS } from '../agent/prompt-versions';
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
@@ -73,6 +76,23 @@ function providerName(provider: ImageGenerationProvider): string {
 
 @Injectable()
 export class BookPageImageRevisionService {
+  private executionFingerprint(): string {
+    return hashProviderPrompt('page-revision-execution-v1', {
+      provider: this.imageProvider.providerName ?? 'unknown',
+      model: this.imageProvider.modelName ?? null,
+      prompt:
+        this.imageProvider.pageImagePromptVersion ??
+        this.imageProvider.promptVersion ??
+        PROMPT_VERSIONS.pageImage,
+      fallbackPolicy: process.env['CHARACTER_FALLBACK_POLICY'] ?? 'required',
+      estimatedCostUsd:
+        readEstimatedCostUsd(
+          'illustration',
+          this.imageProvider.providerName === 'openai' ? 'openai' : 'mock',
+          process.env,
+        ) ?? null,
+    });
+  }
   constructor(
     private readonly crud: BookCrudService,
     private readonly prisma: PrismaService,
@@ -136,6 +156,7 @@ export class BookPageImageRevisionService {
             ? PAGE_IMAGE_REGENERATION_CREDIT_COST
             : 0,
         provider,
+        executionFingerprint: this.executionFingerprint(),
         ...(estimatedCostUsd !== undefined && { estimatedCostUsd }),
         quoteExpiresAt: new Date(Date.now() + PAGE_IMAGE_QUOTE_TTL_MS),
         sourceBookUpdatedAt: book.updatedAt,
@@ -305,6 +326,19 @@ export class BookPageImageRevisionService {
     }
 
     const book = revision.book;
+    if (
+      revision.provider !== providerName(this.imageProvider) ||
+      (revision.executionFingerprint &&
+        revision.executionFingerprint !== this.executionFingerprint()) ||
+      (!revision.executionFingerprint && this.imageProvider.providerName === 'openai')
+    ) {
+      await this.failAndRefund(
+        revisionId,
+        'PAGE_IMAGE_EXECUTION_CONFIG_DRIFT',
+        PUBLIC_FAILURE_MESSAGE,
+      );
+      return;
+    }
     const preview = parseRequiredJson<BookPreview>(
       bookPreviewSchema,
       book.bookPreview,
@@ -345,12 +379,25 @@ export class BookPageImageRevisionService {
       seed: `${originalImage.seed}:revision:${revision.id}`,
     };
     const characterReference = await this.loadCharacterReference(book.characterSheetAssetKey);
-    const generated = await this.imageProvider.generateImage({
-      bookId: book.id,
-      entry: candidateImage,
-      characterCard,
-      ...(characterReference && { characterReference }),
-    });
+    const beforeDispatch = async () => {
+      const reserved = await this.prisma.pageImageRevision.updateMany({
+        where: { id: revisionId, status: 'running', fencingVersion, providerDispatches: 0 },
+        data: { providerDispatches: { increment: 1 }, providerOutcome: 'unknown' },
+      });
+      if (!reserved.count) throw new Error('PAGE_IMAGE_DISPATCH_BUDGET_OR_FENCE_REJECTED');
+    };
+    if (this.imageProvider.providerName !== 'openai') await beforeDispatch();
+    const generated = await this.imageProvider.generateImage(
+      {
+        bookId: book.id,
+        entry: candidateImage,
+        characterCard,
+        ...(characterReference && { characterReference }),
+      },
+      { beforeDispatch },
+    );
+    const generatedManifest = await validateImage(generated.buffer);
+    if (!generatedManifest) throw new Error('INVALID_GENERATED_IMAGE');
     const candidateImageKey = claimImageAssetKey(book.id, namespace, 'page', revision.pageNumber);
     await this.imageStorage.saveImageAsset(
       candidateImageKey,
@@ -358,6 +405,10 @@ export class BookPageImageRevisionService {
       generated.contentType,
     );
 
+    await this.prisma.pageImageRevision.updateMany({
+      where: { id: revisionId, status: 'running', fencingVersion },
+      data: { providerOutcome: 'stored' },
+    });
     const nextImageResult: ImageGenerationResult = {
       ...imageResult,
       images: imageResult.images.map((entry) =>
@@ -405,11 +456,13 @@ export class BookPageImageRevisionService {
             overrides,
           );
           const buffer = await this.imageStorage.getImageAsset(key);
-          if (!buffer) throw new Error(`Published illustration "${entry.id}" is missing`);
+          if (!buffer || !(await validateImage(buffer)))
+            throw new Error(`Published illustration "${entry.id}" is missing`);
           buffers.set(entry.id, buffer);
         }),
     );
     const pdf = await renderStorybookPdf(nextLayout, {
+      strict: true,
       resolveImageBuffer: (_block, entry) => buffers.get(entry.id),
     });
     const savedPdf = await this.pdfStorage.saveClaimPreviewPdf(book.id, namespace, pdf);
@@ -430,6 +483,10 @@ export class BookPageImageRevisionService {
         },
         data: {
           bookPreview: nextPreview as unknown as Prisma.InputJsonValue,
+          publishedArtifactManifest: {
+            ...((book.publishedArtifactManifest ?? {}) as Prisma.JsonObject),
+            [`page_${revision.pageNumber}`]: { ...generatedManifest, key: candidateImageKey },
+          },
           imageGenerationResult: nextImageResult as unknown as Prisma.InputJsonValue,
           bookLayout: nextLayout as unknown as Prisma.InputJsonValue,
           previewPdfUrl: savedPdf.url,
@@ -563,9 +620,17 @@ export class BookPageImageRevisionService {
   }
 
   private async loadCharacterReference(key: string | null): Promise<ImageReference | undefined> {
-    if (!key) return undefined;
-    const buffer = await this.imageStorage.getImageAsset(key);
-    return buffer ? { buffer, contentType: 'image/png' } : undefined;
+    const buffer = key ? await this.imageStorage.getImageAsset(key) : undefined;
+    const validated = await validateImage(buffer);
+    if (!buffer || !validated) {
+      if (
+        this.imageProvider.providerName === 'openai' &&
+        process.env['CHARACTER_FALLBACK_POLICY'] !== 'allow_degraded'
+      )
+        throw new Error('REQUIRED_CHARACTER_REFERENCE_UNAVAILABLE');
+      return undefined;
+    }
+    return { buffer, contentType: validated.format === 'jpeg' ? 'image/jpeg' : 'image/png' };
   }
 
   private versionConflict(currentVersion: number): ConflictException {

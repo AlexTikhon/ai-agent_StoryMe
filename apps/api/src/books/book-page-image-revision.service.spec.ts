@@ -1,4 +1,5 @@
 import { BookStatus, PageImageRevisionStatus, Prisma, type Book } from '@prisma/client';
+import { generateMockImagePng } from '../images/mock-image-producer';
 import {
   Pronouns,
   type BookPreview,
@@ -189,12 +190,12 @@ function createHarness(book = makeBook(), productMode: 'home' | 'demo' = 'demo')
     providerName: 'mock',
     promptVersion: 'mock-v1',
     generateImage: vi.fn().mockResolvedValue({
-      buffer: Buffer.from('new-image'),
+      buffer: generateMockImagePng('new-image'),
       contentType: 'image/png',
     }),
   } as unknown as jest.Mocked<ImageGenerationProvider>;
   const imageStorage = {
-    getImageAsset: vi.fn().mockResolvedValue(Buffer.from('old-image')),
+    getImageAsset: vi.fn().mockResolvedValue(generateMockImagePng('old-image')),
     saveImageAsset: vi.fn().mockResolvedValue(undefined),
   } as unknown as jest.Mocked<ImageAssetStorage>;
   const pdfStorage = {
@@ -312,7 +313,7 @@ describe('BookPageImageRevisionService', () => {
     expect(harness.provider.generateImage).toHaveBeenCalledOnce();
     expect(harness.imageStorage.saveImageAsset).toHaveBeenCalledWith(
       expect.stringContaining(`/runs/${running.id}/claims/1/page-1`),
-      Buffer.from('new-image'),
+      generateMockImagePng('new-image'),
       'image/png',
     );
     expect(harness.prisma.bookPage.upsert).toHaveBeenCalledWith(
@@ -330,6 +331,26 @@ describe('BookPageImageRevisionService', () => {
           activePageImageRevisionId: null,
           publishedPdfRunId: running.id,
           publishedPdfFencingVersion: 1,
+        }),
+      }),
+    );
+  });
+
+  it('rejects changed execution identity before a page-image dispatch', async () => {
+    const running = makeRevision(PageImageRevisionStatus.running);
+    const harness = createHarness(makeBook({ activePageImageRevisionId: running.id }));
+    harness.prisma.pageImageRevision.findUnique.mockResolvedValue({
+      ...running,
+      executionFingerprint: 'older-model-and-prompt',
+      book: makeBook({ activePageImageRevisionId: running.id }),
+    });
+    await harness.service.executeClaimed(running.id, 1);
+    expect(harness.provider.generateImage).not.toHaveBeenCalled();
+    expect(harness.prisma.pageImageRevision.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          errorCode: 'PAGE_IMAGE_EXECUTION_CONFIG_DRIFT',
+          status: 'failed',
         }),
       }),
     );

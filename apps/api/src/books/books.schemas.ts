@@ -210,6 +210,9 @@ const generationProviderCallMetadataSchema = z.object({
       'network',
       'authentication',
       'invalid_response',
+      'refusal',
+      'truncated',
+      'schema_error',
       'provider_error',
       'unknown',
     ])
@@ -263,6 +266,9 @@ const imageGenerationFailureDetailSchema = z.object({
       'network',
       'authentication',
       'invalid_response',
+      'refusal',
+      'truncated',
+      'schema_error',
       'provider_error',
       'unknown',
     ])

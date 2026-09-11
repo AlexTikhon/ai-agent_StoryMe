@@ -1,4 +1,5 @@
 import { ConflictException } from '@nestjs/common';
+import { generateMockImagePng } from '../images/mock-image-producer';
 import { BookStatus, type Book } from '@prisma/client';
 import type { BookPreview, ImageGenerationResult } from '@book/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -131,7 +132,7 @@ function createHarness(book = makeBook()) {
     saveClaimPreviewPdf: vi.fn().mockResolvedValue({ url: '/new.pdf' }),
   } as unknown as PdfStorage;
   const imageStorage = {
-    getImageAsset: vi.fn().mockResolvedValue(Buffer.from('image')),
+    getImageAsset: vi.fn().mockResolvedValue(generateMockImagePng('published')),
   } as unknown as ImageAssetStorage;
   const service = new BookPageChangeService(crud, prisma, pdfStorage, imageStorage);
   return {
