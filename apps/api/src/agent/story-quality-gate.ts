@@ -1,3 +1,4 @@
+import { detectStoryLanguage, resolveLesson } from './story-language';
 import type {
   QualityIssue,
   QualityIssueCode,
@@ -24,6 +25,7 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const MARKUP_OR_URL = /(?:https?:\/\/|www\.|<\s*\/?\s*[a-z][^>]*>)/iu;
 
 const SAFE_MESSAGES: Record<QualityIssueCode, string> = {
+  actual_language_mismatch: 'The story prose is confidently detected in a different language.',
   metadata_language_mismatch: 'Generated language metadata does not match the requested language.',
   metadata_theme_mismatch: 'Generated theme metadata does not match the requested theme.',
   metadata_age_mismatch: 'Generated age metadata does not match the requested age.',
@@ -77,7 +79,16 @@ function wordCount(value: string): number {
 
 function nameAppears(value: string, name: string): boolean {
   const needle = normalize(name);
-  return needle !== '' && ` ${normalize(value)} `.includes(` ${needle} `);
+  if (needle === '') return false;
+  if (` ${normalize(value)} `.includes(` ${needle} `)) return true;
+  // Conservative suffix handling for common Russian and Polish given-name inflections.
+  if (needle.length < 3 || needle.includes(' ')) return false;
+  const stem = needle.replace(/[aаяь]$/u, '');
+  return words(value).some(
+    (word) =>
+      word.startsWith(stem) &&
+      /^(?:a|y|i|ę|ą|ie|owi|em|а|я|ы|и|у|ю|е|ой|ей|ом|ем)$/u.test(word.slice(stem.length)),
+  );
 }
 
 function sentences(value: string): string[] {
@@ -230,6 +241,9 @@ export function evaluateStoryQuality(
   }
 
   const storyTexts = previewPages.map((page) => page.text);
+  const detectedLanguage = detectStoryLanguage(storyTexts.join(' '));
+  if (detectedLanguage !== 'unknown' && detectedLanguage !== input.language)
+    issues.push(issue('actual_language_mismatch', 'alignment'));
   const namePages = previewPages.filter((page) => nameAppears(page.text, input.childName));
   if (namePages.length === 0) {
     issues.push(issue('child_name_missing_from_story', 'personalization'));
@@ -264,7 +278,21 @@ export function evaluateStoryQuality(
     input.educationalMessage !== undefined &&
     normalize(result.storyPlan.educationalMessage) !== normalize(input.educationalMessage)
   ) {
-    issues.push(issue('educational_message_mismatch', 'personalization'));
+    const expected = resolveLesson(input.educationalMessage);
+    const actual = resolveLesson(result.storyPlan.educationalMessage);
+    if (!(
+      expected.kind === 'predefined' &&
+      actual.kind === 'predefined' &&
+      expected.id === actual.id
+    )) {
+      // Equivalence of arbitrary translations is semantic, not a structural guarantee.
+      issues.push(
+        issue('educational_message_mismatch', 'personalization', {
+          severity: 'warning',
+          repairable: false,
+        }),
+      );
+    }
   }
 
   const maxWords = maximumWordsPerPage(input.childAge);

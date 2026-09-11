@@ -1,3 +1,4 @@
+import { CHARACTER_RESPONSE_FORMAT, assertStructuredCompletion } from '../common/structured-output';
 import { Logger } from '@nestjs/common';
 import { z } from 'zod';
 import type { CharacterProfile, ProviderCallMetrics, ProviderFailureKind } from '@book/types';
@@ -203,7 +204,8 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
           },
           body: JSON.stringify({
             model: this.model,
-            response_format: { type: 'json_object' },
+            response_format: CHARACTER_RESPONSE_FORMAT,
+            max_completion_tokens: 2000,
             temperature: 0.7,
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
@@ -214,6 +216,7 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
         timeoutMs: this.timeoutMs,
         maxRetries: this.maxRetries,
         signal: options.signal,
+        beforeDispatch: options.beforeDispatch,
         onAttempt: (attempt, maxAttempts) => {
           metrics.httpAttempts = (metrics.httpAttempts ?? 0) + 1;
           this.logger.log(
@@ -278,9 +281,9 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
     }
 
     const payload = response.body;
-
     Object.assign(metrics, readOpenAITextUsage(payload));
     reportProviderMetrics(options, metrics);
+    assertStructuredCompletion(payload);
 
     const messageContent = (payload as { choices?: Array<{ message?: { content?: unknown } }> })
       ?.choices?.[0]?.message?.content;
@@ -306,9 +309,9 @@ export class OpenAICharacterProfileProvider implements CharacterProfileProvider 
     const parsed = llmResponseSchema.safeParse(raw);
     if (!parsed.success) {
       throw new CharacterProfileProviderError(
-        `OpenAI character profile content failed validation: ${parsed.error.message}`,
+        'OpenAI character profile content failed schema validation',
         undefined,
-        'invalid_response',
+        'schema_error',
       );
     }
 

@@ -145,7 +145,7 @@ describe('OpenAICharacterProfileProvider', () => {
     const fetchImpl = makeFetchOk(JSON.stringify({ visualDescription: 'only one field' }));
     const provider = new OpenAICharacterProfileProvider({ apiKey: 'sk-test', fetchImpl });
 
-    await expect(provider.buildProfile(makeInput())).rejects.toThrow(/failed validation/);
+    await expect(provider.buildProfile(makeInput())).rejects.toThrow(/failed schema validation/);
   });
 
   it('throws a clear error when the response is not valid JSON', async () => {

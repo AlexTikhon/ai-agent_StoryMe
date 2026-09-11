@@ -318,7 +318,11 @@ describe('OpenAIStoryGenerationProvider', () => {
     );
     const body = JSON.parse(fetchImpl.mock.calls[0]![1].body as string);
     expect(body.model).toBe('gpt-test-model');
-    expect(body.response_format).toEqual({ type: 'json_object' });
+    expect(body.response_format).toMatchObject({
+      type: 'json_schema',
+      json_schema: { strict: true },
+    });
+    expect(body.max_completion_tokens).toBeGreaterThan(0);
   });
 
   it('uses the per-call input.pageCount over the constructor default (Phase 4A)', async () => {
@@ -374,7 +378,7 @@ describe('OpenAIStoryGenerationProvider', () => {
     const fetchImpl = makeFetchOk(JSON.stringify(invalidPayload));
     const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-test', fetchImpl });
 
-    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed validation/);
+    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed schema validation/);
   });
 
   it('throws a clear error when the HTTP response is not ok', async () => {
@@ -549,7 +553,7 @@ describe('OpenAIStoryGenerationProvider', () => {
       maxRetries: 2,
     });
 
-    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed validation/);
+    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed schema validation/);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

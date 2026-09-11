@@ -114,6 +114,9 @@ export type GenerationProviderName = 'mock' | 'openai' | 'unknown';
 
 /** Safe, provider-neutral classification used only for operational diagnostics. */
 export type ProviderFailureKind =
+  | 'refusal'
+  | 'truncated'
+  | 'schema_error'
   | 'cancelled'
   | 'timeout'
   | 'rate_limit'

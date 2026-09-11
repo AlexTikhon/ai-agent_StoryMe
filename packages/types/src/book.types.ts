@@ -247,6 +247,7 @@ export type QualityIssueCategory =
   | 'safety';
 
 export type QualityIssueCode =
+  | 'actual_language_mismatch'
   | 'metadata_language_mismatch'
   | 'metadata_theme_mismatch'
   | 'metadata_age_mismatch'
@@ -547,6 +548,7 @@ export const DEFAULT_BOOK_PAGE_COUNT = 6;
 
 /** API-facing shape of a Book in the Phase 1A simple draft flow. */
 export interface BookDto {
+  publishedEdition?: string | null;
   id: string;
   userId: string;
   /** Reusable profile explicitly applied to this draft. The Book name/age remain the generation snapshot. */
@@ -643,8 +645,23 @@ export interface CreateBookInput {
 export type UpdateBookInput = Partial<CreateBookInput>;
 
 /** Paginated response for GET /books */
+export type BookSummaryDto = Pick<
+  BookDto,
+  | 'id'
+  | 'title'
+  | 'childName'
+  | 'childAge'
+  | 'language'
+  | 'theme'
+  | 'status'
+  | 'previewPdfUrl'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'publishedEdition'
+>;
+
 export interface BooksPageDto {
-  items: BookDto[];
+  items: BookSummaryDto[];
   page: number;
   limit: number;
   total: number;
