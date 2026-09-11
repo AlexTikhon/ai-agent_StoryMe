@@ -114,6 +114,9 @@ export const envSchema = z
     // Phase 5B bounded repair. Disabled by default; when enabled the story
     // provider may make at most one additional typed call after deterministic
     // review fails, and the potential paid call is budgeted before scheduling.
+    CHARACTER_FALLBACK_POLICY: z.enum(['required', 'allow_degraded']).default('required'),
+    GENERATION_HEARTBEAT_MS: z.coerce.number().int().min(250).max(30000).default(5000),
+    GENERATION_RUN_DEADLINE_MS: z.coerce.number().int().positive().max(7200000).default(2700000),
     STORY_REPAIR_ENABLED: z.enum(['true', 'false']).default('false'),
     // A real book needs one illustration per story page plus cover and back
     // cover. The default covers the current 12-page product maximum; runtime

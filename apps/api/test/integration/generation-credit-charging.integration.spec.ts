@@ -15,7 +15,7 @@ import { GenerationInputSnapshotBackfillService } from '../../src/agent/generati
 import type { GenerationOutcome } from '../../src/agent/generation-outcome';
 import { buildInputSnapshot, hashInputSnapshot } from '../../src/agent/generation-input-snapshot';
 import { RateLimiterService } from '../../src/rate-limit/rate-limiter.service';
-import { BooksService } from '../../src/books/books.service';
+import { BooksService } from '../../src/common/test-utils/create-test-books-service';
 
 /**
  * Durable integration coverage against a real Postgres (see

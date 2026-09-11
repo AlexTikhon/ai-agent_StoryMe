@@ -1,3 +1,4 @@
+import { validateImage } from '../images/validated-image';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
 import {
   characterSheetKeyForNamespace,
@@ -44,9 +45,11 @@ async function resolveArtifact(
   storage: ImageAssetStorage,
   currentKey: string,
   sourceKey: string | null,
+  expectedSha256?: string,
 ): Promise<ClaimArtifactResolution> {
   const currentBuffer = await storage.getImageAsset(currentKey);
-  if (currentBuffer != null && currentBuffer.length > 0) {
+  const current = await validateImage(currentBuffer);
+  if (current && (!expectedSha256 || current.sha256 === expectedSha256)) {
     return { key: currentKey, outcome: 'reused', sourceStatus: 'not-checked' };
   }
   if (!sourceKey) {
@@ -57,7 +60,8 @@ async function resolveArtifact(
   if (sourceBuffer == null) {
     return { key: currentKey, outcome: 'regenerate', sourceStatus: 'missing' };
   }
-  if (sourceBuffer.length === 0) {
+  const source = await validateImage(sourceBuffer);
+  if (!source || (expectedSha256 && source.sha256 !== expectedSha256)) {
     return { key: currentKey, outcome: 'regenerate', sourceStatus: 'invalid' };
   }
 
@@ -72,7 +76,7 @@ async function resolveArtifact(
   }
 
   const verifyBuffer = await storage.getImageAsset(currentKey);
-  if (verifyBuffer == null || verifyBuffer.length === 0) {
+  if (!verifyBuffer || !verifyBuffer.equals(sourceBuffer) || !(await validateImage(verifyBuffer))) {
     return { key: currentKey, outcome: 'regenerate', sourceStatus: 'invalid' };
   }
   return { key: currentKey, outcome: 'copied', sourceStatus: 'valid' };
@@ -94,6 +98,7 @@ export async function resolveImageArtifact(params: {
   sourceNamespace: GenerationArtifactNamespace | null;
   kind: 'cover' | 'page' | 'back_cover';
   pageNumber?: number | undefined;
+  expectedSha256?: string | undefined;
 }): Promise<ClaimArtifactResolution> {
   const { storage, bookId, currentNamespace, sourceNamespace, kind, pageNumber } = params;
   const currentKey = claimImageAssetKey(bookId, currentNamespace, kind, pageNumber);
@@ -101,7 +106,7 @@ export async function resolveImageArtifact(params: {
     sourceNamespace && !namespacesEqual(currentNamespace, sourceNamespace)
       ? imageKeyForNamespace(bookId, sourceNamespace, kind, pageNumber)
       : null;
-  return resolveArtifact(storage, currentKey, sourceKey);
+  return resolveArtifact(storage, currentKey, sourceKey, params.expectedSha256);
 }
 
 /** Character-sheet counterpart to resolveImageArtifact — see its doc comment. */
@@ -110,6 +115,7 @@ export async function resolveCharacterSheetArtifact(params: {
   bookId: string;
   currentNamespace: ClaimArtifactNamespace;
   sourceNamespace: GenerationArtifactNamespace | null;
+  expectedSha256?: string | undefined;
 }): Promise<ClaimArtifactResolution> {
   const { storage, bookId, currentNamespace, sourceNamespace } = params;
   const currentKey = claimCharacterSheetAssetKey(bookId, currentNamespace);
@@ -117,5 +123,5 @@ export async function resolveCharacterSheetArtifact(params: {
     sourceNamespace && !namespacesEqual(currentNamespace, sourceNamespace)
       ? characterSheetKeyForNamespace(bookId, sourceNamespace)
       : null;
-  return resolveArtifact(storage, currentKey, sourceKey);
+  return resolveArtifact(storage, currentKey, sourceKey, params.expectedSha256);
 }

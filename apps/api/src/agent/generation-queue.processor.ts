@@ -129,6 +129,7 @@ export class GenerationQueueProcessor extends WorkerHost {
 
     const abortController = new AbortController();
     const ctx: GenerationExecutionContext = {
+      executionAuthorization: claimed.executionAuthorization,
       runId: claimed.id,
       bookId: claimed.bookId,
       fencingVersion: claimed.fencingVersion,
@@ -141,7 +142,17 @@ export class GenerationQueueProcessor extends WorkerHost {
       signal: abortController.signal,
     };
 
-    const heartbeatIntervalMs = Math.max(1000, Math.floor(leaseMs / 3));
+    const heartbeatIntervalMs = Math.max(
+      250,
+      Math.min(Number(process.env['GENERATION_HEARTBEAT_MS']) || 5000, Math.floor(leaseMs / 3)),
+    );
+    const deadlineMs = Number(process.env['GENERATION_RUN_DEADLINE_MS']) || 45 * 60_000;
+    const remainingMs = deadlineMs - (Date.now() - claimed.createdAt.getTime());
+    const deadline = setTimeout(
+      () => abortController.abort(new Error('GENERATION_RUN_DEADLINE_EXCEEDED')),
+      Math.max(0, remainingMs),
+    );
+    if (remainingMs <= 0) abortController.abort(new Error('GENERATION_RUN_DEADLINE_EXCEEDED'));
     const heartbeat = setInterval(() => {
       this.generationRunService
         .heartbeat(ctx.runId, token, ctx.fencingVersion, leaseMs)
@@ -156,6 +167,7 @@ export class GenerationQueueProcessor extends WorkerHost {
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           this.logger.error(`Heartbeat failed for run ${ctx.runId}: ${message}`);
+          abortController.abort();
         });
     }, heartbeatIntervalMs);
     heartbeat.unref?.();
@@ -164,6 +176,24 @@ export class GenerationQueueProcessor extends WorkerHost {
       await this.booksService.runGenerationPipeline(ctx);
     } finally {
       clearInterval(heartbeat);
+      clearTimeout(deadline);
+      if (
+        abortController.signal.reason instanceof Error &&
+        abortController.signal.reason.message === 'GENERATION_RUN_DEADLINE_EXCEEDED'
+      ) {
+        await this.generationRunCoordinator.failAbandoned(
+          {
+            runId: ctx.runId,
+            bookId: ctx.bookId,
+            fencingVersion: ctx.fencingVersion,
+            fromStatus: 'running',
+          },
+          {
+            errorCode: 'GENERATION_RUN_DEADLINE_EXCEEDED',
+            errorMessage: 'Generation exceeded its time limit.',
+          },
+        );
+      }
     }
   }
 

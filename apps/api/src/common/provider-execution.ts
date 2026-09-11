@@ -2,6 +2,7 @@ import type { ProviderCallMetrics, ProviderFailureKind } from '@book/types';
 
 export interface ProviderExecutionOptions {
   signal?: AbortSignal | undefined;
+  beforeDispatch?: (() => Promise<void>) | undefined;
   /** Safe numeric metrics observer supplied by the generation boundary. */
   onMetrics?: ((metrics: ProviderCallMetrics) => void) | undefined;
 }
@@ -13,6 +14,9 @@ const FAILURE_KINDS = new Set<ProviderFailureKind>([
   'network',
   'authentication',
   'invalid_response',
+  'refusal',
+  'truncated',
+  'schema_error',
   'provider_error',
   'unknown',
 ]);
@@ -65,6 +69,12 @@ export function safeProviderFailureMessage(error: unknown): string {
       return 'Provider request failed due to a temporary network error.';
     case 'authentication':
       return 'Provider authentication failed.';
+    case 'refusal':
+      return 'Provider declined this request.';
+    case 'truncated':
+      return 'Provider output exceeded the configured token limit.';
+    case 'schema_error':
+      return 'Provider output did not match the required schema.';
     case 'invalid_response':
       return 'Provider returned an invalid response.';
     case 'provider_error':

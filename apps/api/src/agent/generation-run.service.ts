@@ -91,25 +91,48 @@ export class GenerationRunService {
   ): Promise<GenerationRun | null> {
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + leaseMs);
-    const result = await this.prisma.generationRun.updateMany({
-      where: {
-        id: runId,
-        status: { in: [GenerationRunStatus.queued, GenerationRunStatus.running] },
-      },
-      data: {
-        status: GenerationRunStatus.running,
-        leaseOwner: workerId,
-        deliveryToken,
-        leaseExpiresAt,
-        // Overwritten on every (re-)claim, including a redelivery — this
-        // loses the true original start time across a retry, a cosmetic
-        // inaccuracy only; not worth a conditional-write round trip to avoid.
-        startedAt: now,
-        fencingVersion: { increment: 1 },
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const result = await tx.generationRun.updateMany({
+        where: {
+          id: runId,
+          status: { in: [GenerationRunStatus.queued, GenerationRunStatus.running] },
+        },
+        data: {
+          status: GenerationRunStatus.running,
+          leaseOwner: workerId,
+          deliveryToken,
+          leaseExpiresAt,
+          // Overwritten on every (re-)claim, including a redelivery — this
+          // loses the true original start time across a retry, a cosmetic
+          // inaccuracy only; not worth a conditional-write round trip to avoid.
+          startedAt: now,
+          fencingVersion: { increment: 1 },
+        },
+      });
+      if (result.count === 0) return null;
+      const claimed = await tx.generationRun.findUnique({ where: { id: runId } });
+      if (!claimed || claimed.deliveryToken !== deliveryToken)
+        throw new Error('Claim delivery identity mismatch');
+      if (Array.isArray(claimed.providerOperations)) {
+        const operations = claimed.providerOperations.map((operation) => {
+          if (
+            operation &&
+            typeof operation === 'object' &&
+            !Array.isArray(operation) &&
+            operation.state === 'reserved'
+          ) {
+            return { ...operation, state: 'unknown' };
+          }
+          return operation;
+        });
+        await tx.generationRun.update({
+          where: { id: runId },
+          data: { providerOperations: operations },
+        });
+        claimed.providerOperations = operations;
+      }
+      return claimed;
     });
-    if (result.count === 0) return null;
-    return this.prisma.generationRun.findUnique({ where: { id: runId } });
   }
 
   /**

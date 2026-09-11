@@ -1,3 +1,7 @@
+import { validateImage } from '../images/validated-image';
+import type { GenerationExecutionService } from './generation-execution.service';
+import type { GenerationExecutionContext } from './generation-execution-context';
+import type { ExecutionPolicy } from './generation-execution-policy';
 import { createHash } from 'node:crypto';
 import type {
   GenerationProviderCallMetadata,
@@ -134,15 +138,56 @@ function safeMetrics(metrics: ProviderCallMetrics): ProviderCallMetrics {
  */
 export class GenerationProviderTelemetry {
   private readonly calls: GenerationProviderCallMetadata[] = [];
+  private readonly artifacts: Record<string, unknown> = {};
+  artifactManifest(): Record<string, unknown> {
+    return { ...this.artifacts };
+  }
+  private durable?: {
+    execution: GenerationExecutionService;
+    ctx: GenerationExecutionContext;
+    policy: ExecutionPolicy;
+  };
+  bind(
+    execution: GenerationExecutionService,
+    ctx: GenerationExecutionContext,
+    policy: ExecutionPolicy,
+  ): void {
+    this.durable = { execution, ctx, policy };
+  }
+  async stored(label: string, key: string, buffer: Buffer): Promise<void> {
+    const manifest = await validateImage(buffer);
+    if (!manifest) throw new Error('INVALID_GENERATED_IMAGE');
+    this.artifacts[label] = { ...manifest, key };
+    if (this.durable)
+      await this.durable.execution.checkpoint(
+        this.durable.ctx,
+        this.durable.policy.fingerprint,
+        {},
+        { [label]: { ...manifest, key } },
+      );
+  }
+  async checkpoint(content: Record<string, unknown>): Promise<void> {
+    if (this.durable)
+      await this.durable.execution.checkpoint(
+        this.durable.ctx,
+        this.durable.policy.fingerprint,
+        content,
+      );
+  }
   private nextCallIndex = 1;
   private paidCallsStarted = 0;
 
   constructor(
     private readonly maxPaidCalls: number,
-    private readonly plannedPaidCalls: number,
+    private plannedPaidCalls: number,
     private readonly env: NodeJS.ProcessEnv = process.env,
   ) {
     assertPaidProviderCallBudget(plannedPaidCalls, maxPaidCalls);
+  }
+
+  planPaidCalls(calls: number): void {
+    assertPaidProviderCallBudget(calls, this.maxPaidCalls);
+    this.plannedPaidCalls = calls;
   }
 
   async record<T>(input: RecordProviderCallInput<T>): Promise<T> {
@@ -159,6 +204,9 @@ export class GenerationProviderTelemetry {
     const startedAt = Date.now();
     let metrics: ProviderCallMetrics = {};
     const executionOptions: ProviderExecutionOptions = {
+      beforeDispatch: async () => {
+        if (this.durable) await this.durable.execution.assertOwnership(this.durable.ctx);
+      },
       onMetrics: (reported) => {
         // Providers may report independent partial snapshots (for example,
         // request attempts and limiter waits). Defined fields replace the
@@ -182,8 +230,26 @@ export class GenerationProviderTelemetry {
       ...(estimatedCostUsd !== undefined && { estimatedCostUsd }),
     };
 
+    const reservation = this.durable
+      ? await this.durable.execution.reserveOperation(this.durable.ctx, this.durable.policy, base)
+      : undefined;
+    executionOptions.beforeDispatch = async () => {
+      if (this.durable && reservation !== undefined)
+        await this.durable.execution.reserveHttpAttempt(
+          this.durable.ctx,
+          this.durable.policy,
+          reservation,
+        );
+    };
     try {
+      if (this.durable) await this.durable.execution.assertOwnership(this.durable.ctx);
       const result = await input.execute(executionOptions);
+      if (reservation !== undefined && this.durable)
+        await this.durable.execution.finishOperation(
+          this.durable.ctx,
+          reservation,
+          'provider_succeeded',
+        );
       this.calls.push({
         ...base,
         ...metrics,
@@ -193,6 +259,14 @@ export class GenerationProviderTelemetry {
       return result;
     } catch (error) {
       const failureKind = classifyProviderFailure(error);
+      if (reservation !== undefined && this.durable)
+        await this.durable.execution.finishOperation(
+          this.durable.ctx,
+          reservation,
+          ['timeout', 'network', 'cancelled', 'unknown'].includes(failureKind)
+            ? 'unknown'
+            : 'failed',
+        );
       this.calls.push({
         ...base,
         ...metrics,

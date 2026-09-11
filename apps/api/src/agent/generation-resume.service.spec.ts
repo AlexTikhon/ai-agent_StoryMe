@@ -1,3 +1,4 @@
+import { generateMockImagePng as imageBytes } from '../images/mock-image-producer';
 import { describe, expect, it, vi } from 'vitest';
 import type { CharacterProfile, GeneratedImageEntry } from '@book/types';
 import {
@@ -158,11 +159,32 @@ function image(
 }
 
 describe('GenerationResumeService', () => {
+  it('never fills an unfinished candidate with story fields from the previous publication', async () => {
+    const service = new GenerationResumeService(new FakeImageAssetStorage());
+    const plan = await service.inspect(
+      book({
+        generationCheckpoint: {
+          version: 1,
+          inputHash: 'hash-1',
+          compatibilityFingerprint,
+          runId: sourceNamespace.runId,
+          fencingVersion: 1,
+          content: { characterProfile: profile },
+          artifacts: {},
+        },
+      }),
+      'hash-1',
+      compatibilityFingerprint,
+    );
+    expect(plan.profile).not.toBeNull();
+    expect(plan.story).toBeNull();
+    expect(plan.reuse.storyCalls).toBe(0);
+  });
   it('enables resume and copies a valid prior character sheet into the current claim', async () => {
     const storage = new FakeImageAssetStorage();
     const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
     const currentKey = claimCharacterSheetAssetKey('book-1', currentNamespace);
-    storage.seed(sourceKey, Buffer.from('prior-sheet'));
+    storage.seed(sourceKey, imageBytes('prior-sheet'));
     const service = new GenerationResumeService(storage);
 
     const plan = await service.plan(book(), 'hash-1', compatibilityFingerprint, 'run-current', 2);
@@ -182,7 +204,7 @@ describe('GenerationResumeService', () => {
   it('disables source copy-forward when the immutable input hash changed', async () => {
     const storage = new FakeImageAssetStorage();
     const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
-    storage.seed(sourceKey, Buffer.from('stale-sheet'));
+    storage.seed(sourceKey, imageBytes('stale-sheet'));
     const service = new GenerationResumeService(storage);
 
     const plan = await service.plan(book(), 'new-hash', compatibilityFingerprint, 'run-current', 2);
@@ -198,7 +220,7 @@ describe('GenerationResumeService', () => {
   it('disables reuse when a prompt version changes', async () => {
     const storage = new FakeImageAssetStorage();
     const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
-    storage.seed(sourceKey, Buffer.from('prior-sheet'));
+    storage.seed(sourceKey, imageBytes('prior-sheet'));
     const service = new GenerationResumeService(storage);
     const changedPromptFingerprint = buildGenerationCompatibilityFingerprint(providers, {
       ...PROMPT_VERSIONS,
@@ -211,13 +233,13 @@ describe('GenerationResumeService', () => {
     expect(plan.copyForwardSourceNamespace).toBeNull();
     expect(plan.canReuseCharacterProfile).toBe(false);
     expect(storage.copyImageAsset).not.toHaveBeenCalled();
-    expect(await storage.getImageAsset(sourceKey)).toEqual(Buffer.from('prior-sheet'));
+    expect(await storage.getImageAsset(sourceKey)).toEqual(imageBytes('prior-sheet'));
   });
 
   it('disables reuse when a selected model changes', async () => {
     const storage = new FakeImageAssetStorage();
     const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
-    storage.seed(sourceKey, Buffer.from('prior-sheet'));
+    storage.seed(sourceKey, imageBytes('prior-sheet'));
     const service = new GenerationResumeService(storage);
     const changedModelFingerprint = buildGenerationCompatibilityFingerprint({
       ...providers,
@@ -230,13 +252,13 @@ describe('GenerationResumeService', () => {
     expect(plan.copyForwardSourceNamespace).toBeNull();
     expect(plan.canReuseCharacterProfile).toBe(false);
     expect(storage.copyImageAsset).not.toHaveBeenCalled();
-    expect(await storage.getImageAsset(sourceKey)).toEqual(Buffer.from('prior-sheet'));
+    expect(await storage.getImageAsset(sourceKey)).toEqual(imageBytes('prior-sheet'));
   });
 
   it('treats a legacy book with missing compatibility metadata as non-resumable', async () => {
     const storage = new FakeImageAssetStorage();
     const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
-    storage.seed(sourceKey, Buffer.from('legacy-sheet'));
+    storage.seed(sourceKey, imageBytes('legacy-sheet'));
     const service = new GenerationResumeService(storage);
 
     const plan = await service.plan(
@@ -251,7 +273,7 @@ describe('GenerationResumeService', () => {
     expect(plan.copyForwardSourceNamespace).toBeNull();
     expect(plan.canReuseCharacterProfile).toBe(false);
     expect(storage.copyImageAsset).not.toHaveBeenCalled();
-    expect(await storage.getImageAsset(sourceKey)).toEqual(Buffer.from('legacy-sheet'));
+    expect(await storage.getImageAsset(sourceKey)).toEqual(imageBytes('legacy-sheet'));
   });
 
   it('reuses a compatible fingerprint and rejects a stale reference revision', async () => {
@@ -299,10 +321,10 @@ describe('GenerationResumeService', () => {
     expect(plan.priorSheet).toEqual({ status: 'missing' });
   });
 
-  it('starts from scratch when hash-matched reusable JSON is malformed', async () => {
+  it('keeps the validated character checkpoint when the story JSON is malformed', async () => {
     const storage = new FakeImageAssetStorage();
     const sourceKey = claimCharacterSheetAssetKey('book-1', sourceNamespace);
-    storage.seed(sourceKey, Buffer.from('prior-sheet'));
+    storage.seed(sourceKey, imageBytes('prior-sheet'));
     const service = new GenerationResumeService(storage);
 
     const plan = await service.plan(
@@ -315,15 +337,14 @@ describe('GenerationResumeService', () => {
 
     expect(plan.resumable).toBe(false);
     expect(plan.reusableStory).toBeNull();
-    expect(plan.canReuseCharacterProfile).toBe(false);
-    expect(plan.copyForwardSourceNamespace).toBeNull();
-    expect(storage.copyImageAsset).not.toHaveBeenCalled();
+    expect(plan.canReuseCharacterProfile).toBe(true);
+    expect(plan.copyForwardSourceNamespace).toEqual(sourceNamespace);
   });
 
-  it('still reuses a valid current-claim sheet on non-resumable same-claim re-entry', async () => {
+  it('does not adopt an orphan sheet when the input differs', async () => {
     const storage = new FakeImageAssetStorage();
     const currentKey = claimCharacterSheetAssetKey('book-1', currentNamespace);
-    storage.seed(currentKey, Buffer.from('current-sheet'));
+    storage.seed(currentKey, imageBytes('current-sheet'));
     const service = new GenerationResumeService(storage);
 
     const plan = await service.plan(
@@ -335,7 +356,7 @@ describe('GenerationResumeService', () => {
     );
 
     expect(plan.resumable).toBe(false);
-    expect(plan.priorSheet).toEqual({ status: 'valid', key: currentKey });
+    expect(plan.priorSheet).toEqual({ status: 'missing' });
     expect(storage.copyImageAsset).not.toHaveBeenCalled();
   });
 
@@ -349,11 +370,11 @@ describe('GenerationResumeService', () => {
     ];
     storage.seed(
       claimImageAssetKey('book-1', currentNamespace, 'cover'),
-      Buffer.from('current-cover'),
+      imageBytes('current-cover'),
     );
     storage.seed(
       claimImageAssetKey('book-1', sourceNamespace, 'page', 1),
-      Buffer.from('source-page'),
+      imageBytes('source-page'),
     );
     storage.seed(claimImageAssetKey('book-1', sourceNamespace, 'page', 2), Buffer.alloc(0));
     const service = new GenerationResumeService(storage);

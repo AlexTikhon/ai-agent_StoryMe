@@ -49,7 +49,7 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     startedAt: new Date('2026-01-01'),
     completedAt: null,
     failedAt: null,
-    createdAt: new Date('2026-01-01'),
+    createdAt: new Date(),
     updatedAt: new Date('2026-01-01'),
     ...overrides,
   };
@@ -79,6 +79,7 @@ function createMockGenerationRunCoordinator(): jest.Mocked<GenerationRunCoordina
   return {
     completeRun: vi.fn().mockResolvedValue('applied'),
     failInvalidSnapshot: vi.fn().mockResolvedValue('applied'),
+    failAbandoned: vi.fn().mockResolvedValue('applied'),
   } as unknown as jest.Mocked<GenerationRunCoordinator>;
 }
 
@@ -307,8 +308,8 @@ describe('GenerationQueueProcessor', () => {
         await vi.waitFor(() => expect(capturedCtx).toBeDefined());
         expect(capturedCtx?.signal?.aborted).toBe(false);
 
-        // Advance past the heartbeat interval (leaseMs/3, default 10 minutes).
-        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+        // Cancellation responsiveness is independent of the thirty-minute lease.
+        await vi.advanceTimersByTimeAsync(5000);
 
         expect(capturedCtx?.signal?.aborted).toBe(true);
         resolvePipeline();
@@ -316,6 +317,29 @@ describe('GenerationQueueProcessor', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it('keeps the original deadline across redelivery and finalizes the expired run', async () => {
+      const books = createMockBooksService();
+      const coordinator = createMockGenerationRunCoordinator();
+      const run = makeGenerationRun({
+        createdAt: new Date(Date.now() - 46 * 60_000),
+        fencingVersion: 4,
+      });
+      const processor = new GenerationQueueProcessor(
+        books as never,
+        createMockGenerationRunService(run) as never,
+        coordinator as never,
+        createMockSnapshotBackfillService() as never,
+      );
+      books.runGenerationPipeline.mockImplementation(async (ctx) => {
+        expect(ctx.signal?.aborted).toBe(true);
+      });
+      await processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' }), TOKEN);
+      expect(coordinator.failAbandoned).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-1', fencingVersion: 4 }),
+        expect.objectContaining({ errorCode: 'GENERATION_RUN_DEADLINE_EXCEEDED' }),
+      );
     });
 
     it('finalizes a permanently malformed input_snapshot via the coordinator, without ever calling runGenerationPipeline or rethrowing (so BullMQ never retries it)', async () => {

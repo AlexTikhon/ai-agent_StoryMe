@@ -28,6 +28,21 @@ export function createTestAgentService(
   characterProvider: CharacterProfileProvider,
   execution: GenerationExecutionService,
 ): AgentService {
+  // Legacy unit fixtures omit durable DB behavior; integration fixtures use the real service.
+  if (!execution.authorize) execution.authorize = async () => {};
+  if (!execution.assertOwnership) execution.assertOwnership = async () => {};
+  if (!execution.checkpoint)
+    execution.checkpoint = async (_ctx, _fingerprint, content) => {
+      if (Object.keys(content).length)
+        await execution.applyFencedBookWrite(
+          _ctx,
+          { generationCheckpoint: { content } } as never,
+          'layout',
+        );
+    };
+  if (!execution.reserveOperation) execution.reserveOperation = async () => 0;
+  if (!execution.reserveHttpAttempt) execution.reserveHttpAttempt = async () => {};
+  if (!execution.finishOperation) execution.finishOperation = async () => {};
   const preparation = new GenerationPreparationService(
     storyProvider,
     imageProvider,

@@ -1,3 +1,4 @@
+import { generateMockImagePng as imageBytes } from '../images/mock-image-producer';
 import { AgentStep } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
@@ -62,12 +63,33 @@ describe('PdfPublicationStage', () => {
     expect(new PdfPublicationStage().step).toBe(AgentStep.pdf_render);
   });
 
+  it('refuses a decodable illustration whose bytes changed after checkpointing', async () => {
+    const layout = await makeLayout();
+    for (const entry of layout.entries)
+      assets.set(
+        claimImageAssetKey('book-1', namespace, entry.kind, entry.pageNumber),
+        imageBytes(entry.id),
+      );
+    await expect(
+      new PdfPublicationStage().execute({
+        bookId: 'book-1',
+        bookLayout: layout,
+        namespace,
+        imageAssetStorage,
+        pdfStorage,
+        logger,
+        artifactManifest: { cover: { sha256: 'different-checkpoint' } },
+      }),
+    ).rejects.toThrow('Cannot render PDF');
+    expect(pdfStorage.saveClaimPreviewPdf).not.toHaveBeenCalled();
+  });
+
   it('resolves every planned image, renders and saves the claim-scoped PDF', async () => {
     const layout = await makeLayout();
     for (const entry of layout.entries) {
       assets.set(
         claimImageAssetKey('book-1', namespace, entry.kind, entry.pageNumber),
-        Buffer.from(`image:${entry.id}`),
+        imageBytes(`image:${entry.id}`),
       );
     }
 
@@ -94,7 +116,7 @@ describe('PdfPublicationStage', () => {
     for (const entry of layout.entries.slice(1)) {
       assets.set(
         claimImageAssetKey('book-1', namespace, entry.kind, entry.pageNumber),
-        Buffer.from(`image:${entry.id}`),
+        imageBytes(`image:${entry.id}`),
       );
     }
 

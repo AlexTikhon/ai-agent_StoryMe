@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { validateImage } from '../images/validated-image';
 import { AgentStep } from '@prisma/client';
 import type { CharacterProfile, GenerationProviderName } from '@book/types';
 import { createHash } from 'node:crypto';
@@ -121,6 +122,13 @@ export class CharacterReferenceStage implements GenerationStage<
     const { childName, childAge, theme, language } = input;
     const { photo, integrityError } = await this.loadAndVerifyChildPhoto(bookId, input.childPhoto);
 
+    const requirePersonalization =
+      process.env['CHARACTER_FALLBACK_POLICY'] !== 'allow_degraded' &&
+      (this.profileProvider.providerName === 'openai' ||
+        this.imageProvider.providerName === 'openai' ||
+        !!input.childPhoto);
+    if (requirePersonalization && integrityError)
+      throw new Error('REQUIRED_REFERENCE_PHOTO_UNAVAILABLE');
     let resolvedProviderName = this.profileProvider.providerName ?? null;
     const modelName = this.profileProvider.modelName ?? null;
     let characterProfile: CharacterProfile;
@@ -163,6 +171,7 @@ export class CharacterReferenceStage implements GenerationStage<
     } catch (err) {
       throwIfAborted(signal);
       if (isProviderCancellationError(err)) throw err;
+      if (requirePersonalization) throw err;
       error = safeProviderFailureMessage(err);
       this.logger.warn(
         `Character profile provider failed for book ${bookId}: ${error}. Falling back to a generic profile.`,
@@ -189,6 +198,7 @@ export class CharacterReferenceStage implements GenerationStage<
       resolvedProviderName = 'mock';
     }
 
+    await telemetry.checkpoint({ characterProfile, characterDegraded: !!error });
     let characterSheetKey: string | undefined;
     try {
       throwIfAborted(signal);
@@ -201,12 +211,15 @@ export class CharacterReferenceStage implements GenerationStage<
       throwIfAborted(signal);
       const key = claimCharacterSheetAssetKey(bookId, namespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      await telemetry.stored('character_sheet', key, buffer);
       characterSheetKey = key;
       characterProfile = { ...characterProfile, hasCharacterSheet: true };
     } catch (err) {
       throwIfAborted(signal);
       if (isProviderCancellationError(err)) throw err;
+      if (requirePersonalization) throw err;
       const sheetError = safeProviderFailureMessage(err);
+      error = sheetError;
       this.logger.warn(
         `Character sheet generation/save failed for book ${bookId}: ${sheetError}. Continuing without a character sheet reference image.`,
       );
@@ -241,6 +254,7 @@ export class CharacterReferenceStage implements GenerationStage<
       throwIfAborted(signal);
       const key = claimCharacterSheetAssetKey(bookId, namespace);
       await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      await telemetry.stored('character_sheet', key, buffer);
       return {
         characterProfile: { ...characterProfile, hasCharacterSheet: true },
         characterSheetKey: key,
@@ -249,6 +263,13 @@ export class CharacterReferenceStage implements GenerationStage<
     } catch (err) {
       throwIfAborted(signal);
       if (isProviderCancellationError(err)) throw err;
+      if (
+        process.env['CHARACTER_FALLBACK_POLICY'] !== 'allow_degraded' &&
+        (this.imageProvider.providerName === 'openai' ||
+          this.profileProvider.providerName === 'openai' ||
+          characterProfile.hasReferencePhoto)
+      )
+        throw err;
       const sheetError = safeProviderFailureMessage(err);
       this.logger.warn(
         `Character sheet regeneration/save failed for book ${bookId} during resume: ${sheetError}. Continuing without a character sheet reference image.`,
@@ -265,16 +286,31 @@ export class CharacterReferenceStage implements GenerationStage<
     bookId: string,
     characterSheetKey: string | undefined,
   ): Promise<CharacterReferenceLoadOutput> {
-    if (!characterSheetKey) return {};
+    if (!characterSheetKey) {
+      if (
+        this.imageProvider.providerName === 'openai' &&
+        process.env['CHARACTER_FALLBACK_POLICY'] !== 'allow_degraded'
+      )
+        throw new Error('REQUIRED_CHARACTER_REFERENCE_UNAVAILABLE');
+      return {};
+    }
 
     const buffer = await this.imageAssetStorage.getImageAsset(characterSheetKey);
-    if (!buffer) {
+    const decoded = await validateImage(buffer);
+    if (!buffer || !decoded) {
+      if (
+        this.imageProvider.providerName === 'openai' &&
+        process.env['CHARACTER_FALLBACK_POLICY'] !== 'allow_degraded'
+      )
+        throw new Error('REQUIRED_CHARACTER_REFERENCE_UNAVAILABLE');
       const loadError = `Character sheet asset "${characterSheetKey}" for book ${bookId} is recorded as existing but its bytes could not be loaded from image storage; continuing with text-only image generation for this run.`;
       this.logger.error(loadError);
       return { loadError };
     }
 
-    return { reference: { buffer, contentType: 'image/png' } };
+    return {
+      reference: { buffer, contentType: decoded.format === 'jpeg' ? 'image/jpeg' : 'image/png' },
+    };
   }
 
   private async loadAndVerifyChildPhoto(

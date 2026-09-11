@@ -36,6 +36,8 @@ export class GenerationImageService {
   ) {}
 
   async execute(input: {
+    allowedLabels?: readonly string[];
+    expectedHashes?: Readonly<Record<string, string>>;
     bookId: string;
     characterSheetKey?: string;
     characterCard: CharacterCard;
@@ -49,11 +51,20 @@ export class GenerationImageService {
     const startedAt = Date.now();
     const { reference: characterReference, loadError: characterReferenceLoadError } =
       await this.referenceStage.loadReference(input.bookId, input.characterSheetKey);
+    if (characterReference && input.characterSheetKey)
+      await input.telemetry.stored(
+        'character_sheet',
+        input.characterSheetKey,
+        characterReference.buffer,
+      );
     const classified = await this.resumeService.classifyImages(
       input.bookId,
       input.result.images,
       input.currentNamespace,
       input.sourceNamespace,
+      input.allowedLabels,
+      (label, key, bytes) => input.telemetry.stored(label, key, bytes),
+      input.expectedHashes,
     );
 
     if (classified.reusable.length > 0) {

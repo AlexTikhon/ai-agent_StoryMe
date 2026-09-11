@@ -324,6 +324,8 @@ model Upload {
 // ═══════════════════════════════════════════
 
 model Book {
+  publishedArtifactManifest Json? @map("published_artifact_manifest")
+  generationCheckpoint Json? @map("generation_checkpoint")
   id             String  @id @default(uuid()) @db.Uuid
   userId         String  @map("user_id") @db.Uuid
   childProfileId String? @map("child_profile_id") @db.Uuid
@@ -516,6 +518,9 @@ model BookPage {
 
 // Durable quote/confirmation/run boundary for one paid page-image call.
 model PageImageRevision {
+  executionFingerprint String? @map("execution_fingerprint")
+  providerDispatches Int @default(0) @map("provider_dispatches")
+  providerOutcome String? @map("provider_outcome")
   id                  String                  @id @default(uuid()) @db.Uuid
   bookId              String                  @map("book_id") @db.Uuid
   userId              String                  @map("user_id") @db.Uuid
@@ -746,6 +751,8 @@ model AgentLog {
 // (queued/running) run per book at the database level — Book.activeRunId
 // alone is an application-level mirror of that invariant, not its enforcement.
 model GenerationRun {
+  executionAuthorization Json? @map("execution_authorization")
+  providerOperations Json? @map("provider_operations")
   id             String              @id @default(uuid()) @db.Uuid
   bookId         String              @map("book_id") @db.Uuid
   userId         String              @map("user_id") @db.Uuid

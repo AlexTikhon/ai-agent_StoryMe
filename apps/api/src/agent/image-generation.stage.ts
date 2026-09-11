@@ -1,3 +1,4 @@
+import { validateImage } from '../images/validated-image';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AgentStep } from '@prisma/client';
 import type {
@@ -140,7 +141,9 @@ export class ImageGenerationStage implements GenerationStage<
           providerCompleted = true;
           throwIfAborted(signal);
           const key = claimImageAssetKey(bookId, namespace, image.kind, image.pageNumber);
+          if (!(await validateImage(buffer))) throw new Error('INVALID_GENERATED_IMAGE');
           await this.storage.saveImageAsset(key, buffer, contentType);
+          await telemetry.stored(imageAssetLabel(image), key, buffer);
           return {
             kind: 'generated',
             usedCharacterReference: usedReference === true,

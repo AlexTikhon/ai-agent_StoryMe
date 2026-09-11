@@ -1,3 +1,6 @@
+import { EXECUTION_POLICY_KEYS, executionPolicy } from '../agent/generation-execution-policy';
+import { GenerationResumeService } from '../agent/generation-resume.service';
+import { buildGenerationCompatibilityFingerprint } from '../agent/generation-compatibility-fingerprint';
 import {
   BadRequestException,
   ConflictException,
@@ -21,7 +24,6 @@ import {
   type GenerateBookResponse,
   type GenerationEstimateDto,
   type GenerationEstimateKind,
-  type GenerationProviderCallMetadata,
   type GenerationProviderName,
 } from '@book/types';
 import type { Env } from '../config/env.schema';
@@ -40,13 +42,11 @@ import {
   InvalidGenerationInputSnapshotError,
   type GenerationInputSnapshot,
 } from '../agent/generation-input-snapshot';
-import {
-  assertPaidProviderCallBudget,
-  requiredPaidProviderCallsForBook,
-} from '../agent/generation-provider-telemetry';
+import { assertPaidProviderCallBudget } from '../agent/generation-provider-telemetry';
 import {
   assertGenerationHardLimits,
   buildGenerationEstimate,
+  estimatedPaidCalls,
   GENERATION_HARD_BUDGET_EXCEEDED,
 } from '../agent/generation-estimate';
 import {
@@ -73,13 +73,6 @@ const GENERATION_STARTED_STATUS = BookStatus.char_build;
 
 export const IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE = 'IMAGE_GENERATION_BUDGET_INSUFFICIENT';
 export const PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE = 'PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT';
-
-function priorProviderCalls(book: Book): GenerationProviderCallMetadata[] {
-  const result = book.imageGenerationResult as {
-    providerUsage?: { calls?: GenerationProviderCallMetadata[] };
-  } | null;
-  return Array.isArray(result?.providerUsage?.calls) ? result.providerUsage.calls : [];
-}
 
 function estimateProviderName(name: string | undefined): GenerationProviderName {
   return name === 'openai' || name === 'mock' ? name : 'unknown';
@@ -121,6 +114,7 @@ export class BookGenerationService {
     private readonly storyGenerationProvider: StoryGenerationProvider,
     @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
     private readonly characterProfileProvider: CharacterProfileProvider,
+    private readonly planner: GenerationResumeService,
   ) {}
 
   async startGeneration(userId: string, bookId: string): Promise<GenerateBookResponse> {
@@ -248,27 +242,26 @@ export class BookGenerationService {
     return this.buildEstimate(book, inputSnapshot, kind);
   }
 
-  private buildEstimate(
+  private async buildEstimate(
     book: Book,
     inputSnapshot: GenerationInputSnapshot,
     kind: GenerationEstimateKind,
-  ): GenerationEstimateDto {
-    const exactRetry =
-      kind === 'retry' &&
-      book.lastGenerationInputHash !== null &&
-      hashInputSnapshot(inputSnapshot) === book.lastGenerationInputHash;
-    const successfulCalls = exactRetry
-      ? priorProviderCalls(book).filter((call) => call.status === 'success')
-      : [];
-    const reuse = {
-      storyCalls: successfulCalls.some((call) => call.operation === 'story') ? 1 : 0,
-      characterProfileCalls: successfulCalls.some((call) => call.operation === 'character_profile')
-        ? 1
-        : 0,
-      imageCalls: successfulCalls.filter(
-        (call) => call.operation === 'character_sheet' || call.operation === 'illustration',
-      ).length,
-    };
+  ): Promise<GenerationEstimateDto> {
+    const reuse =
+      kind === 'retry'
+        ? (
+            await this.planner.inspect(
+              book,
+              hashInputSnapshot(inputSnapshot),
+              buildGenerationCompatibilityFingerprint({
+                story: this.storyGenerationProvider,
+                image: this.imageGenerationProvider,
+                character: this.characterProfileProvider,
+              }),
+              inputSnapshot.childPhoto?.sha256 ?? null,
+            )
+          ).reuse
+        : {};
     const estimate = buildGenerationEstimate({
       kind,
       pageCount: inputSnapshot.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
@@ -296,12 +289,7 @@ export class BookGenerationService {
     return estimate;
   }
 
-  private assertGenerationEstimate(
-    book: Book,
-    inputSnapshot: GenerationInputSnapshot,
-    kind: GenerationEstimateKind,
-  ): void {
-    const estimate = this.buildEstimate(book, inputSnapshot, kind);
+  private assertGenerationEstimate(estimate: GenerationEstimateDto): void {
     try {
       assertGenerationHardLimits(estimate, {
         maxProviderCalls: this.config.get('REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN', {
@@ -336,16 +324,12 @@ export class BookGenerationService {
     }
   }
 
-  private assertPaidProviderCallBudget(inputSnapshot: GenerationInputSnapshot): void {
-    const requiredCalls = requiredPaidProviderCallsForBook(
-      inputSnapshot.pageCount ?? DEFAULT_BOOK_PAGE_COUNT,
-      {
-        storyProvider: this.storyGenerationProvider.providerName,
-        characterProfileProvider: this.characterProfileProvider.providerName,
-        imageProvider: this.imageGenerationProvider.providerName,
-        storyRepairEnabled: this.config.get('STORY_REPAIR_ENABLED', { infer: true }) === 'true',
-      },
-    );
+  private assertPaidProviderCallBudget(estimate: GenerationEstimateDto): void {
+    const requiredCalls = estimatedPaidCalls(estimate, {
+      story: estimateProviderName(this.storyGenerationProvider.providerName),
+      characterProfile: estimateProviderName(this.characterProfileProvider.providerName),
+      image: estimateProviderName(this.imageGenerationProvider.providerName),
+    });
     const configuredLimit = this.config.get('MAX_PAID_PROVIDER_CALLS_PER_RUN', { infer: true });
     try {
       assertPaidProviderCallBudget(requiredCalls, configuredLimit);
@@ -414,9 +398,26 @@ export class BookGenerationService {
     inputSnapshot: GenerationInputSnapshot;
     retryOfRunId?: string;
   }): Promise<Book> {
-    this.assertGenerationEstimate(params.book, params.inputSnapshot, params.kind);
+    const estimate = await this.buildEstimate(params.book, params.inputSnapshot, params.kind);
+    this.assertGenerationEstimate(estimate);
     this.assertCompleteImageBudget(params.inputSnapshot);
-    this.assertPaidProviderCallBudget(params.inputSnapshot);
+    this.assertPaidProviderCallBudget(estimate);
+    const policyEnv = Object.fromEntries(
+      EXECUTION_POLICY_KEYS.map((key) => [key, this.config.get(key, { infer: true })])
+        .filter(([, value]) => value !== undefined)
+        .map(([key, value]) => [key, String(value)]),
+    );
+    const authorization = {
+      policy: executionPolicy(
+        {
+          story: this.storyGenerationProvider,
+          image: this.imageGenerationProvider,
+          character: this.characterProfileProvider,
+        },
+        policyEnv,
+      ),
+      estimate,
+    };
     const inputHash = hashInputSnapshot(params.inputSnapshot);
     const requestId = getRequestId();
 
@@ -430,6 +431,9 @@ export class BookGenerationService {
             kind: params.kind,
             inputSnapshot: params.inputSnapshot as unknown as Prisma.InputJsonValue,
             inputHash,
+            executionAuthorization: JSON.parse(
+              JSON.stringify(authorization),
+            ) as Prisma.InputJsonValue,
             ...(params.retryOfRunId && { retryOfRunId: params.retryOfRunId }),
           },
         });

@@ -88,28 +88,31 @@ export class GenerationPublicationService {
     assertBookLayoutQuality(bookLayout, bookPreview.pages.length);
     const layoutDurationMs = Date.now() - layoutStartedAt;
 
-    await this.execution.applyFencedBookWrite(
-      ctx,
-      {
-        status: BookStatus.layout,
-        title: storyPlan.title,
-        characterCard: characterCard as unknown as Prisma.InputJsonValue,
-        storyPlan: storyPlan as unknown as Prisma.InputJsonValue,
-        bookPreview: bookPreview as unknown as Prisma.InputJsonValue,
-        qualityReport: qualityReport as unknown as Prisma.InputJsonValue,
-        imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
-        bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
-        lastGenerationInputHash: ctx.inputHash,
-        lastGenerationCompatibilityFingerprint: prepared.compatibilityFingerprint,
-        lastGenerationRunId: ctx.runId,
-        lastGenerationFencingVersion: ctx.fencingVersion,
-        ...characterProfileUpdateData,
-      },
-      bookLayoutStage.step,
-    );
+    const candidate: Prisma.BookUpdateInput = {
+      publishedArtifactManifest:
+        prepared.providerTelemetry.artifactManifest() as Prisma.InputJsonValue,
+      generatedDegraded:
+        !!charBuildResult.error || !charBuildResult.characterProfile.hasCharacterSheet,
+      title: storyPlan.title,
+      characterCard: characterCard as unknown as Prisma.InputJsonValue,
+      storyPlan: storyPlan as unknown as Prisma.InputJsonValue,
+      bookPreview: bookPreview as unknown as Prisma.InputJsonValue,
+      qualityReport: qualityReport as unknown as Prisma.InputJsonValue,
+      imageGenerationResult: imageGenerationResult as unknown as Prisma.InputJsonValue,
+      bookLayout: bookLayout as unknown as Prisma.InputJsonValue,
+      lastGenerationInputHash: ctx.inputHash,
+      lastGenerationCompatibilityFingerprint: prepared.compatibilityFingerprint,
+      lastGenerationRunId: ctx.runId,
+      lastGenerationFencingVersion: ctx.fencingVersion,
+      ...characterProfileUpdateData,
+    };
+    await prepared.providerTelemetry.checkpoint(candidate);
 
     this.assertNotSuperseded(ctx, pdfPublicationStage.step);
     await this.execution.markStep(ctx, pdfPublicationStage.step);
+    // Cancellation/takeover may commit while the stage write is awaiting the DB.
+    this.assertNotSuperseded(ctx, pdfPublicationStage.step);
+    await this.execution.assertOwnership(ctx);
 
     let previewPdfUrl: string | null = null;
     let pdfRenderError: string | undefined;
@@ -122,6 +125,7 @@ export class GenerationPublicationService {
         imageAssetStorage: this.imageAssetStorage,
         pdfStorage: this.pdfStorage,
         logger: this.logger,
+        artifactManifest: prepared.providerTelemetry.artifactManifest(),
       });
       previewPdfUrl = published.previewPdfUrl;
     } catch (error) {
@@ -129,6 +133,8 @@ export class GenerationPublicationService {
       this.logger.error(`PDF render failed for book ${book.id}: ${pdfRenderError}`);
     }
     const pdfDurationMs = Date.now() - pdfStartedAt;
+    this.assertNotSuperseded(ctx, pdfPublicationStage.step);
+    await this.execution.assertOwnership(ctx);
     const finalStatus = pdfRenderError ? BookStatus.failed : BookStatus.complete;
 
     const afterSheetStatus: ResumeAssetStatus = !charBuildResult.characterProfile.hasCharacterSheet
@@ -177,7 +183,7 @@ export class GenerationPublicationService {
       finalBookStatus: finalStatus,
     });
 
-    return this.collector.collectOutcome({
+    const outcome = this.collector.collectOutcome({
       bookId: book.id,
       traceId: input.traceId,
       generationTimeMs: Date.now() - input.startedAt,
@@ -201,6 +207,13 @@ export class GenerationPublicationService {
       layoutStep: bookLayoutStage.step,
       pdfStep: pdfPublicationStage.step,
     });
+    return {
+      ...outcome,
+      bookUpdate:
+        outcome.status === BookStatus.complete
+          ? { ...candidate, ...outcome.bookUpdate }
+          : outcome.bookUpdate,
+    };
   }
 
   private assertNotSuperseded(ctx: GenerationExecutionContext, step: AgentStep): void {

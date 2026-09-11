@@ -157,6 +157,7 @@ export function safeOpenAIRequestFailureMessage(err: unknown): string {
 }
 
 export interface FetchWithRetryOptions<T = never> {
+  beforeDispatch?: (() => Promise<void>) | undefined;
   fetchImpl: typeof fetch;
   url: string;
   init: RequestInit;
@@ -259,6 +260,8 @@ export async function fetchWithRetry<T>(
     let retryReason: string | undefined;
 
     try {
+      if (options.beforeDispatch) await options.beforeDispatch();
+      throwIfAborted(signal);
       response = await fetchImpl(url, { ...init, signal: controller.signal });
       if (
         !response.ok &&

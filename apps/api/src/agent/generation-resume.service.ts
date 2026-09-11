@@ -1,3 +1,6 @@
+import { checkpointBook } from './generation-checkpoint';
+import { validateImage } from '../images/validated-image';
+import { imageKeyForNamespace, characterSheetKeyForNamespace } from '../images/image-asset-storage';
 import type { CharacterProfile, GeneratedImageEntry } from '@book/types';
 import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/image-asset-storage';
 import {
@@ -13,6 +16,7 @@ import { parsePersistedGenerationState } from './persisted-generation-state';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 export interface GenerationResumeBook {
+  generationCheckpoint?: unknown;
   id: string;
   lastGenerationInputHash: string | null;
   lastGenerationCompatibilityFingerprint: string | null;
@@ -32,6 +36,7 @@ export interface GenerationResumePlan {
   currentNamespace: ClaimArtifactNamespace;
   copyForwardSourceNamespace: GenerationArtifactNamespace | null;
   priorCharacterProfile: CharacterProfile | null;
+  priorCharacterDegraded?: boolean;
   reusableStory: StoryGenerationResult | null;
   priorSheet: {
     status: ResumeAssetStatus;
@@ -60,6 +65,75 @@ export class GenerationResumeService {
 
   constructor(@Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly storage: ImageAssetStorage) {}
 
+  /** Shared read-only planner: no copies, writes, providers, or telemetry-based discounts. */
+  async inspect(
+    book: GenerationResumeBook,
+    inputHash: string,
+    fingerprint: string,
+    referenceAssetRevision?: string | null,
+  ) {
+    const checkpoint = book.generationCheckpoint as
+      | {
+          legacy?: boolean;
+          content?: { characterDegraded?: boolean };
+          artifacts?: Record<string, { sha256?: string }>;
+        }
+      | undefined;
+    const confirmed = async (label: string, key: string) => {
+      const decoded = await validateImage(await this.storage.getImageAsset(key));
+      if (!decoded) return null;
+      if (
+        checkpoint &&
+        !checkpoint.legacy &&
+        checkpoint.artifacts?.[label]?.sha256 !== decoded.sha256
+      )
+        return null;
+      return decoded;
+    };
+    book = checkpointBook(book);
+    const persisted = parsePersistedGenerationState(book);
+    const sourceNamespace = resolveLastGenerationNamespace(book);
+    const compatible =
+      book.lastGenerationInputHash === inputHash &&
+      book.lastGenerationCompatibilityFingerprint === fingerprint;
+    const profile =
+      compatible &&
+      (!checkpoint?.content?.characterDegraded ||
+        process.env['CHARACTER_FALLBACK_POLICY'] === 'allow_degraded') &&
+      persisted.characterProfile &&
+      (referenceAssetRevision === undefined ||
+        isCharacterFingerprintCompatible(persisted.characterProfile, referenceAssetRevision))
+        ? persisted.characterProfile
+        : null;
+    const story = compatible && profile ? persisted.reusableStory : null;
+    const sheetKey = characterSheetKeyForNamespace(book.id, sourceNamespace);
+    const sheet = profile?.hasCharacterSheet ? await confirmed('character_sheet', sheetKey) : null;
+    const images = story
+      ? await Promise.all(
+          story.imageGenerationResult.images.map(async (image) => {
+            const artifact = await confirmed(
+              image.kind === 'page' ? `page_${image.pageNumber}` : image.kind,
+              imageKeyForNamespace(book.id, sourceNamespace, image.kind, image.pageNumber),
+            );
+            return { image, valid: !!artifact, sha256: artifact?.sha256 };
+          }),
+        )
+      : [];
+    return {
+      profile,
+      degraded: !!checkpoint?.content?.characterDegraded,
+      story,
+      sheet,
+      sourceNamespace,
+      images,
+      reuse: {
+        storyCalls: story ? 1 : 0,
+        characterProfileCalls: profile ? 1 : 0,
+        imageCalls: images.filter((image) => image.valid).length + (sheet ? 1 : 0),
+      },
+    };
+  }
+
   async plan(
     book: GenerationResumeBook,
     inputHash: string,
@@ -69,42 +143,36 @@ export class GenerationResumeService {
     referenceAssetRevision?: string | null,
   ): Promise<GenerationResumePlan> {
     const currentNamespace = claimNamespace(runId, fencingVersion);
-    // Resolve unconditionally so a malformed partial pointer always fails,
-    // including on a fresh/non-resumable generation.
-    const sourceNamespace = resolveLastGenerationNamespace(book);
-    const persisted = parsePersistedGenerationState(book);
-    const inputCompatible = book.lastGenerationInputHash === inputHash;
-    const pipelineCompatible =
-      book.lastGenerationCompatibilityFingerprint === compatibilityFingerprint;
-    const resumable = inputCompatible && pipelineCompatible && persisted.reusableStory !== null;
-    if (inputCompatible && pipelineCompatible && persisted.invalidFields.length > 0) {
-      this.logger.warn(
-        `Book ${book.id}: reusable persisted generation JSON failed validation (${persisted.invalidFields.join(', ')}); starting safely from scratch.`,
-      );
-    }
-    const priorCharacterProfile = persisted.characterProfile;
-    const fingerprintCompatible =
-      priorCharacterProfile != null &&
-      (referenceAssetRevision === undefined ||
-        isCharacterFingerprintCompatible(priorCharacterProfile, referenceAssetRevision));
-    const copyForwardSourceNamespace = resumable && fingerprintCompatible ? sourceNamespace : null;
-    const priorSheet = priorCharacterProfile
-      ? await this.resolveCharacterSheet(
-          book.id,
-          priorCharacterProfile,
-          currentNamespace,
-          copyForwardSourceNamespace,
-        )
-      : ({ status: 'missing' } as const);
+    const inspected = await this.inspect(
+      book,
+      inputHash,
+      compatibilityFingerprint,
+      referenceAssetRevision,
+    );
+    const resumable = inspected.story !== null;
+    const priorCharacterProfile = inspected.profile;
+    const fingerprintCompatible = priorCharacterProfile !== null;
+    const copyForwardSourceNamespace = fingerprintCompatible ? inspected.sourceNamespace : null;
+    const priorSheet =
+      priorCharacterProfile && inspected.sheet
+        ? await this.resolveCharacterSheet(
+            book.id,
+            priorCharacterProfile,
+            currentNamespace,
+            copyForwardSourceNamespace,
+            inspected.sheet.sha256,
+          )
+        : ({ status: 'missing' } as const);
 
     return {
       resumable,
       currentNamespace,
       copyForwardSourceNamespace,
       priorCharacterProfile,
-      reusableStory: resumable ? persisted.reusableStory : null,
+      ...(inspected.degraded && { priorCharacterDegraded: true }),
+      reusableStory: inspected.story,
       priorSheet,
-      canReuseCharacterProfile: resumable && fingerprintCompatible,
+      canReuseCharacterProfile: fingerprintCompatible,
     };
   }
 
@@ -113,9 +181,15 @@ export class GenerationResumeService {
     images: GeneratedImageEntry[],
     currentNamespace: ClaimArtifactNamespace,
     sourceNamespace: GenerationArtifactNamespace | null,
+    allowedLabels?: readonly string[],
+    onReused?: (label: string, key: string, buffer: Buffer) => Promise<void>,
+    expectedHashes?: Readonly<Record<string, string>>,
   ): Promise<ImageReuseClassification> {
     const resolutions = await Promise.all(
       images.map(async (image) => {
+        const label = image.kind === 'page' ? `page_${image.pageNumber}` : image.kind;
+        if (allowedLabels && !allowedLabels.includes(label))
+          return { image, resolution: { outcome: 'regenerate', sourceStatus: 'missing' } as const };
         const resolution = await resolveImageArtifact({
           storage: this.storage,
           bookId,
@@ -123,7 +197,12 @@ export class GenerationResumeService {
           sourceNamespace,
           kind: image.kind,
           pageNumber: image.pageNumber,
+          expectedSha256: expectedHashes?.[label],
         });
+        if (onReused && resolution.outcome !== 'regenerate') {
+          const bytes = await this.storage.getImageAsset(resolution.key);
+          if (bytes) await onReused(label, resolution.key, bytes);
+        }
         return { image, resolution };
       }),
     );
@@ -149,6 +228,7 @@ export class GenerationResumeService {
     profile: CharacterProfile,
     currentNamespace: ClaimArtifactNamespace,
     sourceNamespace: GenerationArtifactNamespace | null,
+    expectedSha256: string,
   ): Promise<{ status: ResumeAssetStatus; key?: string }> {
     if (!profile.hasCharacterSheet) return { status: 'missing' };
     const resolution = await resolveCharacterSheetArtifact({
@@ -156,6 +236,7 @@ export class GenerationResumeService {
       bookId,
       currentNamespace,
       sourceNamespace,
+      expectedSha256,
     });
     if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
       return { status: 'valid', key: resolution.key };

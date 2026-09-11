@@ -6,6 +6,9 @@ type PromptVersions = { readonly [K in keyof typeof PROMPT_VERSIONS]: string };
 export interface GenerationProviderIdentity {
   readonly providerName?: string;
   readonly modelName?: string;
+  readonly promptVersion?: string;
+  readonly pageImagePromptVersion?: string;
+  readonly repairPromptVersion?: string;
 }
 
 export interface GenerationPipelineProviders {
@@ -24,18 +27,23 @@ export function buildGenerationCompatibilityFingerprint(
   promptVersions: PromptVersions = PROMPT_VERSIONS,
 ): string {
   const compatibility = {
-    version: 1,
+    version: 2,
     prompts: promptVersions,
     providers: {
       character: {
+        prompt: providers.character.promptVersion ?? promptVersions.characterProfile,
         provider: providers.character.providerName ?? null,
         model: providers.character.modelName ?? null,
       },
       image: {
+        prompt: providers.image.promptVersion ?? promptVersions.characterReference,
+        pagePrompt: providers.image.pageImagePromptVersion ?? promptVersions.pageImage,
         provider: providers.image.providerName ?? null,
         model: providers.image.modelName ?? null,
       },
       story: {
+        prompt: providers.story.promptVersion ?? promptVersions.story,
+        repairPrompt: providers.story.repairPromptVersion ?? promptVersions.storyRepair,
         provider: providers.story.providerName ?? null,
         model: providers.story.modelName ?? null,
       },

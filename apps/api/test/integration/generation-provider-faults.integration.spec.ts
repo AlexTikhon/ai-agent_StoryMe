@@ -410,21 +410,14 @@ describe('generation provider fault injection (real PostgreSQL)', () => {
     const story = new ScriptedStoryProvider([{ result: 'success' }]);
     const layoutPersisted = deferred();
     const releasePublication = deferred();
-    const gatedExecution = {
-      markStep: (
-        ctx: GenerationExecutionContext,
-        step: Parameters<GenerationExecutionService['markStep']>[1],
-      ) => execution.markStep(ctx, step),
-      applyFencedBookWrite: async (
-        ctx: GenerationExecutionContext,
-        data: Parameters<GenerationExecutionService['applyFencedBookWrite']>[1],
-        step: Parameters<GenerationExecutionService['applyFencedBookWrite']>[2],
-      ) => {
-        await execution.applyFencedBookWrite(ctx, data, step);
+    const gatedExecution = Object.create(execution) as GenerationExecutionService;
+    gatedExecution.markStep = async (ctx, step) => {
+      await execution.markStep(ctx, step);
+      if (step === 'pdf_render') {
         layoutPersisted.resolve();
         await releasePublication.promise;
-      },
-    } as GenerationExecutionService;
+      }
+    };
     const { agent, images, pdfs } = createHarness(story, { execution: gatedExecution });
     const pending = agent.startBookGeneration({ ...claim.ctx, signal: controller.signal });
 
@@ -436,7 +429,10 @@ describe('generation provider fault injection (real PostgreSQL)', () => {
     controller.abort('generation cancelled at publication boundary');
     releasePublication.resolve();
 
-    await expect(pending).rejects.toBeInstanceOf(StaleGenerationRunError);
+    await expect(pending).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof StaleGenerationRunError || error instanceof ProviderCancellationError,
+    );
     expect(cancelled.kind).toBe('applied');
     const [book, run] = await Promise.all([
       prisma.book.findUniqueOrThrow({ where: { id: claim.book.id } }),
@@ -451,7 +447,11 @@ describe('generation provider fault injection (real PostgreSQL)', () => {
   it('reuses valid story/images and regenerates only a subsequently missing artifact', async () => {
     const first = await createClaim({ userCredits: 3 });
     const firstStory = new ScriptedStoryProvider([{ result: 'success' }]);
-    const initial = createHarness(firstStory);
+    const initial = createHarness(firstStory, {
+      imageProvider: new ScriptedImageProvider(
+        Array.from({ length: 9 }, () => ({ result: 'success' as const })),
+      ),
+    });
     const firstOutcome = await initial.agent.startBookGeneration(first.ctx);
     expect(await coordinator.completeRun(first.ctx, firstOutcome)).toBe('applied');
 

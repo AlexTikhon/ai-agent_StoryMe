@@ -419,6 +419,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
             timeoutMaxRetries: this.timeoutMaxRetries,
             retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
             signal: options.signal,
+            beforeDispatch: options.beforeDispatch,
             onAttempt: (attempt, maxAttempts) => {
               attempts++;
               this.logger.log(
