@@ -1,5 +1,9 @@
 # StoryMe Codebase Audit
 
+Historical audit. Generation ownership, candidate publication, reuse/spending, image validation,
+CI, and BooksService wiring findings are superseded by the September 2026 guarantees and
+limitations in [CURRENT_PRODUCT.md](CURRENT_PRODUCT.md). Verify older findings against runtime code.
+
 Audit date: 2026-07-23; updated through the Phase 3 implementation on 2026-07-26. Findings come
 from controllers, Next.js route files, Prisma schema and runtime delegate use, service/module
 wiring, providers, storage, tests, and package/deployment configuration. Historical design

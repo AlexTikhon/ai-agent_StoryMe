@@ -1,5 +1,8 @@
 # Phase 11 AI pipeline simplification and observability audit
 
+Historical snapshot. See [CURRENT_PRODUCT.md](CURRENT_PRODUCT.md) for the subsequent candidate
+publication, durable operation ledger, strict raster/PDF validation, and required Nest wiring.
+
 Audited against the repository state on 2026-08-21 before Phase 11 implementation.
 
 ## Pre-change findings

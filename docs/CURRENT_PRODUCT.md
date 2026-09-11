@@ -118,7 +118,7 @@ page plan, story text, illustration plan and preview, deterministic quality revi
 single bounded repair attempt for repairable findings, image generation/reuse, deterministic
 layout, and PDF publication. The current orchestrator orders preparation, character,
 story/quality, image, and publication boundaries. Nest owns the stage/service composition.
-`GenerationPublicationService` owns deterministic layout, fenced intermediate persistence,
+`GenerationPublicationService` owns deterministic layout, fenced candidate persistence,
 claim-scoped PDF rendering, resume diagnostics, and outcome assembly; `GenerationRunCoordinator`
 still exclusively owns the transactional `complete`/`failed` transition;
 cancellation writes `cancelled`. The authoritative `GenerationRun.currentStep` separately records
@@ -131,6 +131,85 @@ before page-image generation and persist only typed, privacy-safe findings.
 execution source of truth. Every write verifies `(runId, fencingVersion)`. Reuse requires matching
 input identity and valid claim-scoped bytes. Success atomically advances the published pointer;
 a later failed/cancelled regeneration preserves the previous publication.
+
+### Publication and execution guarantees (September 2026)
+
+Claim update/read runs in a short PostgreSQL transaction holding the row lock; the returned
+delivery token is verified. External provider and storage calls run outside transactions.
+Candidate character identity, accepted story, layout, and each stored raster are saved in
+`Book.generationCheckpoint`. Reader fields remain on the previous publication until the winning
+fence atomically publishes all content, image manifest, page versions, and PDF pointer. A full
+regeneration replaces page-image overrides and advances page versions above the previous maximum.
+Text edits intentionally keep illustrations; image revisions change one illustration and its PDF.
+
+API estimation and worker preparation use the same read-only artifact inspection. Reuse requires
+input/provider/model/prompt compatibility, validated structured outputs, and decoded PNG/JPEG
+bytes matching the checkpoint checksum. Copy-forward and PDF rendering recheck image identity.
+Decoding is limited to 20 MiB compressed bytes and 16,777,216 pixels per single-frame image.
+Required publication images never silently become PDF placeholders. Explicit standalone preview
+rendering can still use placeholders; deterministic mocks produce real, small PNGs.
+
+Runs persist versioned execution authorization, provider identities, configured cost assumptions,
+limits, and the accepted estimate. Workers reject configuration drift and increased work before
+generation. Durable logical-operation reservations and HTTP-attempt reservations precede dispatch;
+paid allowances are also checked by operation category, so mock work cannot authorize extra paid
+work. Reservations survive redelivery. An interrupted remote operation is `unknown`, not free;
+at most two logical invocations per operation/asset are allowed within the original budget, and
+story repair has at most one. Provider success alone does not establish a reusable stored artifact.
+This is not exactly-once remote execution: a provider may continue or charge after cancellation.
+
+`GENERATION_HEARTBEAT_MS` defaults to five seconds independently of the thirty-minute lease.
+`GENERATION_RUN_DEADLINE_MS` defaults to 45 minutes from run creation, including queue time and
+redeliveries. Cancellation interrupts local waits and suppresses new dispatch after ownership is
+lost; in-flight remote cancellation is best effort. Refunds remain transactional and idempotent.
+Page-image revisions allow one durable dispatch across deliveries and persist provider/model/prompt
+and cost identity; incompatible or legacy paid quotes fail safely and need a fresh quote.
+
+The library returns `BookSummaryDto`. Reader responses include `publishedEdition`; image/PDF
+requests can pin that edition and receive a conflict if it changed. The web reader revokes old
+image blobs, reloads on edition change, and bounds its page index after page-count changes.
+
+### Quality scope and provider output
+
+Story and character Chat Completions use strict Structured Outputs with local schema/business
+validation, retaining the existing models and endpoint. Output limits are 10,000 tokens for story
+and 2,000 for character. Refusal, truncation, and schema failures remain distinct; token usage is
+reported even for refusal/truncation responses. See the
+[official Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
+`CHARACTER_FALLBACK_POLICY=required` prevents paid personalization from silently becoming a generic
+fallback; `allow_degraded` explicitly permits it, with publication degradation recorded.
+
+Language checks inspect actual prose, independently of metadata. The conservative classifier needs
+at least 80 letters and uses script proportions or strongly dominant English/Polish function words.
+Short or ambiguous samples are unknown; it is not a calibrated fluency or translation score, and
+Cyrillic does not distinguish Russian from all other Cyrillic languages. Common Russian/Polish name
+suffixes are tolerated, without claiming complete morphological analysis. Predefined lessons have
+canonical `lesson:sharing`, `lesson:mistakes`, and `lesson:patience` identities and localized labels;
+arbitrary translated free-text lessons produce advisory mismatches rather than literal-equality
+rejection. Offline fixtures exercise en/ru/pl, ages, themes, localized lessons, repeated prose,
+plan/reader contradictions and instruction-like output containing forbidden links.
+
+Structural checks and deterministic textual heuristics do not establish semantic coherence,
+comprehensive content safety, photo likeness, or visual consistency. No semantic/vision judge is
+enabled and no optional judge call is hidden in the budget. Human-reviewed semantic and visual
+calibration remains outstanding before introducing any such blocking score. Prompt identity checks
+verify prompt construction only. The bounded repair remains opt-in and budgeted.
+
+### Migration and CI compatibility
+
+Four additive migrations introduce candidate checkpoints/execution ledgers, page-revision dispatch
+state, published manifests, and page-revision execution identity. Legacy checkpoints retain their
+original namespace and are marked legacy; existing published pointers remain readable and receive
+confirmed manifests on subsequent publication. Historical mixed editions cannot be reconstructed
+from an overwritten legacy Book row. Legacy runs without authorization receive a conservative
+worker authorization before dispatch. Apply migrations before starting the updated API/worker;
+no destructive reset is needed.
+
+Only CI is enabled: lint, typecheck, build, unit tests, offline evaluation, and isolated PostgreSQL/
+Redis integration tests using synthetic data and mock providers. The integration runner refuses
+other targets than `127.0.0.1:5440/storyme_e2e` and Redis `127.0.0.1:6380/15`. Migration/deployment/
+backup workflows remain disabled. Repository owners must configure required branch checks
+`Checks` and `Isolated integration`; workflow files cannot enforce branch protection by themselves.
 
 ## Implemented and unimplemented
 
