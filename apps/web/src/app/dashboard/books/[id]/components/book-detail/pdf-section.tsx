@@ -38,7 +38,7 @@ export function PdfSection({ book }: { book: BookDto }) {
     setOpening(true);
     setOpenError(null);
     try {
-      const blob = await booksApi.downloadPdf(book.id);
+      const blob = await booksApi.downloadPdf(book.id, book.publishedEdition ?? undefined);
       const objectUrl = URL.createObjectURL(blob);
       pdfWindow.location.replace(objectUrl);
       // Keep the URL alive long enough for the browser's PDF viewer to take
@@ -58,7 +58,7 @@ export function PdfSection({ book }: { book: BookDto }) {
     setDownloading(true);
     setDownloadError(null);
     try {
-      const blob = await booksApi.downloadPdf(book.id);
+      const blob = await booksApi.downloadPdf(book.id, book.publishedEdition ?? undefined);
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;

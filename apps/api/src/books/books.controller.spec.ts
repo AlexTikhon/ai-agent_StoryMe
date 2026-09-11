@@ -404,7 +404,7 @@ describe('BooksController.getPublishedImage', () => {
 
     const result = await controller.getPublishedImage(FAKE_USER, 'b-1', 'cover', res);
 
-    expect(booksService.getPublishedImage).toHaveBeenCalledWith('b-1', 'u-1', 'cover');
+    expect(booksService.getPublishedImage).toHaveBeenCalledWith('b-1', 'u-1', 'cover', undefined);
     expect(res.set).toHaveBeenCalledWith({
       'Content-Type': 'image/png',
       'Content-Disposition': 'inline; filename="cover.png"',

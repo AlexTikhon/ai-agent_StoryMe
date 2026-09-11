@@ -1,4 +1,7 @@
-import { Injectable } from '@nestjs/common';
+/** Legacy construction adapter for tests only. Production uses required Nest services. */
+import { GenerationResumeService } from '../../agent/generation-resume.service';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { Book } from '@prisma/client';
 import {
   type BookDto,
@@ -10,28 +13,55 @@ import {
   type PageImageRegenerationQuote,
   type PageImageRevisionDto,
 } from '@book/types';
-import type { GenerationExecutionContext } from '../agent/generation-execution-context';
-import type { CreateBookDto } from './dto/create-book.dto';
-import type { UpdateBookDto } from './dto/update-book.dto';
-import type { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
-import type { CreatePageImageQuoteDto } from './dto/create-page-image-quote.dto';
-import { BookCrudService } from './book-crud.service';
-import { BookAssetService } from './book-asset.service';
-import { BookDiagnosticsService } from './book-diagnostics.service';
-import { BookGenerationService } from './book-generation.service';
-import { BookGenerationExecutionService } from './book-generation-execution.service';
-import type { PublishedImageResult } from './book-asset.service';
-import { BookPageChangeService } from './book-page-change.service';
-import { BookPageImageRevisionService } from './book-page-image-revision.service';
+import type { Env } from '../../config/env.schema';
+import { PrismaService } from '../../database/prisma.service';
+import { CreditsService } from '../../credits/credits.service';
+import { AgentService } from '../../agent/agent.service';
+import { GenerationQueueService } from '../../agent/generation-queue.service';
+import { GenerationRunService } from '../../agent/generation-run.service';
+import { GenerationRunCoordinator } from '../../agent/generation-run-coordinator.service';
+import { GenerationInputSnapshotBackfillService } from '../../agent/generation-input-snapshot-backfill.service';
+import type { GenerationExecutionContext } from '../../agent/generation-execution-context';
+import {
+  STORY_GENERATION_PROVIDER_TOKEN,
+  type StoryGenerationProvider,
+} from '../../agent/story-generation-provider';
+import {
+  CHARACTER_PROFILE_PROVIDER_TOKEN,
+  type CharacterProfileProvider,
+} from '../../agent/character-profile-provider';
+import { PDF_STORAGE_TOKEN, type PdfStorage } from '../../pdf/pdf-storage';
+import { RATE_LIMITER_TOKEN, type RateLimiter } from '../../rate-limit/rate-limiter.interface';
+import {
+  IMAGE_ASSET_STORAGE_TOKEN,
+  type ImageAssetStorage,
+} from '../../images/image-asset-storage';
+import { ChildPhotoProcessor } from '../../images/child-photo-processor';
+import {
+  IMAGE_GENERATION_PROVIDER_TOKEN,
+  type ImageGenerationProvider,
+} from '../../images/image-generation-provider';
+import type { CreateBookDto } from '../../books/dto/create-book.dto';
+import type { UpdateBookDto } from '../../books/dto/update-book.dto';
+import type { UpdateBookPageTextDto } from '../../books/dto/update-book-page-text.dto';
+import type { CreatePageImageQuoteDto } from '../../books/dto/create-page-image-quote.dto';
+import { BookCrudService } from '../../books/book-crud.service';
+import { BookAssetService } from '../../books/book-asset.service';
+import { BookDiagnosticsService } from '../../books/book-diagnostics.service';
+import { BookGenerationService } from '../../books/book-generation.service';
+import { BookGenerationExecutionService } from '../../books/book-generation-execution.service';
+import type { PublishedImageResult } from '../../books/book-asset.service';
+import { BookPageChangeService } from '../../books/book-page-change.service';
+import { BookPageImageRevisionService } from '../../books/book-page-image-revision.service';
 
 export {
   IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
   PAID_PROVIDER_CALL_BUDGET_INSUFFICIENT_CODE,
-} from './book-generation.service';
+} from '../../books/book-generation.service';
 export {
   BOOK_ALREADY_CANCELLED_CODE,
   BOOK_NOT_IN_PROGRESS_CODE,
-} from './book-generation-execution.service';
+} from '../../books/book-generation-execution.service';
 
 /**
  * Statuses where the generation pipeline is not actively running — safe for
@@ -41,15 +71,98 @@ export {
  */
 @Injectable()
 export class BooksService {
+  private readonly crudService: BookCrudService;
+  private readonly assetService: BookAssetService;
+  private readonly diagnosticsService: BookDiagnosticsService;
+  private readonly generationService: BookGenerationService;
+  private readonly generationExecutionService: BookGenerationExecutionService;
+  private readonly pageChangeService: BookPageChangeService;
+  private readonly pageImageRevisionService: BookPageImageRevisionService;
+
   constructor(
-    private readonly crudService: BookCrudService,
-    private readonly assetService: BookAssetService,
-    private readonly diagnosticsService: BookDiagnosticsService,
-    private readonly generationService: BookGenerationService,
-    private readonly generationExecutionService: BookGenerationExecutionService,
-    private readonly pageChangeService: BookPageChangeService,
-    private readonly pageImageRevisionService: BookPageImageRevisionService,
-  ) {}
+    private readonly prisma: PrismaService,
+    private readonly agentService: AgentService,
+    @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
+    @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageAssetStorage: ImageAssetStorage,
+    private readonly generationQueueService: GenerationQueueService,
+    private readonly generationRunService: GenerationRunService,
+    private readonly generationRunCoordinator: GenerationRunCoordinator,
+    private readonly snapshotBackfill: GenerationInputSnapshotBackfillService,
+    private readonly config: ConfigService<Env, true>,
+    @Inject(RATE_LIMITER_TOKEN) private readonly rateLimiter: RateLimiter,
+    private readonly childPhotoProcessor: ChildPhotoProcessor,
+    private readonly creditsService: CreditsService,
+    @Inject(IMAGE_GENERATION_PROVIDER_TOKEN)
+    private readonly imageGenerationProvider: ImageGenerationProvider,
+    @Inject(STORY_GENERATION_PROVIDER_TOKEN)
+    private readonly storyGenerationProvider: StoryGenerationProvider,
+    @Inject(CHARACTER_PROFILE_PROVIDER_TOKEN)
+    private readonly characterProfileProvider: CharacterProfileProvider,
+    @Optional() crudService?: BookCrudService,
+    @Optional() assetService?: BookAssetService,
+    @Optional() diagnosticsService?: BookDiagnosticsService,
+    @Optional() generationService?: BookGenerationService,
+    @Optional() generationExecutionService?: BookGenerationExecutionService,
+    @Optional() pageChangeService?: BookPageChangeService,
+    @Optional() pageImageRevisionService?: BookPageImageRevisionService,
+  ) {
+    this.crudService = crudService ?? new BookCrudService(prisma);
+    this.assetService =
+      assetService ??
+      new BookAssetService(
+        this.crudService,
+        prisma,
+        pdfStorage,
+        imageAssetStorage,
+        childPhotoProcessor,
+      );
+    this.diagnosticsService =
+      diagnosticsService ??
+      new BookDiagnosticsService(
+        this.crudService,
+        prisma,
+        generationRunService,
+        generationQueueService,
+        pdfStorage,
+      );
+    this.generationService =
+      generationService ??
+      new BookGenerationService(
+        this.crudService,
+        prisma,
+        generationRunService,
+        snapshotBackfill,
+        config,
+        rateLimiter,
+        creditsService,
+        imageGenerationProvider,
+        storyGenerationProvider,
+        characterProfileProvider,
+        new GenerationResumeService(imageAssetStorage),
+      );
+    this.generationExecutionService =
+      generationExecutionService ??
+      new BookGenerationExecutionService(
+        prisma,
+        agentService,
+        generationQueueService,
+        generationRunCoordinator,
+      );
+    this.pageChangeService =
+      pageChangeService ??
+      new BookPageChangeService(this.crudService, prisma, pdfStorage, imageAssetStorage);
+    this.pageImageRevisionService =
+      pageImageRevisionService ??
+      new BookPageImageRevisionService(
+        this.crudService,
+        prisma,
+        creditsService,
+        imageGenerationProvider,
+        imageAssetStorage,
+        pdfStorage,
+        config,
+      );
+  }
 
   /**
    * Persists a new draft book from a validated CreateBookDto. CreateBookDto's

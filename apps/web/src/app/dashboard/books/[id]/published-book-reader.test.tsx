@@ -85,12 +85,12 @@ describe('PublishedBookReader', () => {
       'src',
       'blob:reader-1',
     );
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover');
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover', undefined);
 
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     expect(await screen.findByAltText('Illustration for page 1')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'The First Step' })).toBeInTheDocument();
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'page-1');
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'page-1', undefined);
 
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     expect(await screen.findByAltText('Illustration for page 2')).toBeInTheDocument();
@@ -99,7 +99,11 @@ describe('PublishedBookReader', () => {
     expect(await screen.findByAltText('Illustration for back cover')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'The end' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled();
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'back-cover');
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith(
+      'book-1',
+      'back-cover',
+      undefined,
+    );
   });
 
   it('revokes each Blob URL when changing pages or unmounting', async () => {
@@ -112,6 +116,29 @@ describe('PublishedBookReader', () => {
 
     unmount();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:reader-2');
+  });
+
+  it('releases old image blobs and safely returns to the cover when a shorter edition arrives', async () => {
+    const { rerender } = render(
+      <PublishedBookReader bookId="book-1" edition="one" preview={PREVIEW} />,
+    );
+    await screen.findByAltText('Illustration for cover');
+    for (const label of ['page 1', 'page 2', 'back cover']) {
+      fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+      await screen.findByAltText(`Illustration for ${label}`);
+    }
+    const oldBlob = screen.getByAltText('Illustration for back cover').getAttribute('src');
+    rerender(
+      <PublishedBookReader
+        bookId="book-1"
+        edition="two"
+        preview={{ ...PREVIEW, pages: PREVIEW.pages.slice(1) }}
+      />,
+    );
+    await screen.findByAltText('Illustration for cover');
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover', 'two');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(oldBlob);
+    expect(screen.getByRole('button', { name: 'Previous page' })).toBeDisabled();
   });
 
   it('shows a recoverable page error and retries the same published image', async () => {
@@ -128,7 +155,7 @@ describe('PublishedBookReader', () => {
       expect(screen.getByAltText('Illustration for cover')).toBeInTheDocument();
     });
     expect(booksApi.downloadPublishedImage).toHaveBeenCalledTimes(2);
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover');
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover', undefined);
   });
 
   it('edits one story page with its optimistic version and returns the updated book', async () => {
