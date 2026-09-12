@@ -99,13 +99,15 @@ export async function resolveImageArtifact(params: {
   kind: 'cover' | 'page' | 'back_cover';
   pageNumber?: number | undefined;
   expectedSha256?: string | undefined;
+  sourceKey?: string | undefined;
 }): Promise<ClaimArtifactResolution> {
   const { storage, bookId, currentNamespace, sourceNamespace, kind, pageNumber } = params;
   const currentKey = claimImageAssetKey(bookId, currentNamespace, kind, pageNumber);
   const sourceKey =
-    sourceNamespace && !namespacesEqual(currentNamespace, sourceNamespace)
+    params.sourceKey ??
+    (sourceNamespace && !namespacesEqual(currentNamespace, sourceNamespace)
       ? imageKeyForNamespace(bookId, sourceNamespace, kind, pageNumber)
-      : null;
+      : null);
   return resolveArtifact(storage, currentKey, sourceKey, params.expectedSha256);
 }
 
@@ -116,12 +118,14 @@ export async function resolveCharacterSheetArtifact(params: {
   currentNamespace: ClaimArtifactNamespace;
   sourceNamespace: GenerationArtifactNamespace | null;
   expectedSha256?: string | undefined;
+  sourceKey?: string | undefined;
 }): Promise<ClaimArtifactResolution> {
   const { storage, bookId, currentNamespace, sourceNamespace } = params;
   const currentKey = claimCharacterSheetAssetKey(bookId, currentNamespace);
   const sourceKey =
-    sourceNamespace && !namespacesEqual(currentNamespace, sourceNamespace)
+    params.sourceKey ??
+    (sourceNamespace && !namespacesEqual(currentNamespace, sourceNamespace)
       ? characterSheetKeyForNamespace(bookId, sourceNamespace)
-      : null;
+      : null);
   return resolveArtifact(storage, currentKey, sourceKey, params.expectedSha256);
 }

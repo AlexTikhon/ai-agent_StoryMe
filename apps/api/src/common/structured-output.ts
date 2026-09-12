@@ -1,6 +1,7 @@
 /** Chat Completions Structured Outputs; local Zod/business validation still applies.
  * https://developers.openai.com/api/docs/guides/structured-outputs
  */
+import { GenerationControlError } from './provider-execution';
 function object(properties: Record<string, unknown>) {
   return {
     type: 'object',
@@ -54,9 +55,12 @@ export const CHARACTER_RESPONSE_FORMAT = {
   },
 };
 
-export class StructuredOutputError extends Error {
+export class StructuredOutputError extends GenerationControlError {
   constructor(readonly failureKind: 'refusal' | 'truncated' | 'schema_error') {
-    super(`Provider output ${failureKind}`);
+    super(
+      failureKind === 'refusal' ? 'refusal' : 'invalid_output',
+      `Provider output ${failureKind}`,
+    );
   }
 }
 export function assertStructuredCompletion(payload: unknown): void {

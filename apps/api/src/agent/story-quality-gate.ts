@@ -4,6 +4,7 @@ import type {
   QualityIssueCode,
   QualityIssueCategory,
   QualityReport,
+  StoryQualityDimensionEvaluations,
   StoryQualityDimensions,
 } from '@book/types';
 import {
@@ -206,6 +207,86 @@ function dimensionsFor(issues: readonly QualityIssue[]): StoryQualityDimensions 
       'ending_not_reflected_in_final_page',
       'protagonist_missing_from_ending',
     ]),
+  };
+}
+
+function dimensionEvaluationsFor(
+  issues: readonly QualityIssue[],
+  detectedLanguage: string,
+  requestedLanguage: string,
+): StoryQualityDimensionEvaluations {
+  const evaluate = (codes: readonly QualityIssueCode[], semanticPassNotEvaluated = false) => {
+    const failures = issues.filter(
+      (finding) => finding.severity === 'error' && codes.includes(finding.code),
+    );
+    if (failures.length) {
+      return { outcome: 'failed' as const, evidence: failures.map((finding) => finding.code) };
+    }
+    return semanticPassNotEvaluated
+      ? {
+          outcome: 'not_evaluated' as const,
+          evidence: ['semantic_judgment_not_established_by_deterministic_heuristics'],
+        }
+      : { outcome: 'passed' as const, evidence: ['no_blocking_deterministic_findings'] };
+  };
+  const language =
+    detectedLanguage === 'unknown'
+      ? {
+          outcome: 'not_evaluated' as const,
+          evidence: ['language_sample_not_confidently_classified'],
+        }
+      : detectedLanguage === requestedLanguage
+        ? { outcome: 'passed' as const, evidence: ['language_heuristic_matched'] }
+        : { outcome: 'failed' as const, evidence: ['actual_language_mismatch'] };
+  return {
+    structuralValidity: evaluate([
+      'page_count_mismatch',
+      'page_title_missing',
+      'page_text_missing',
+      'story_title_missing',
+      'page_text_mismatch',
+      'page_illustration_prompt_mismatch',
+    ]),
+    personalization: evaluate([
+      'metadata_theme_mismatch',
+      'metadata_age_mismatch',
+      'cover_child_name_mismatch',
+      'child_name_missing_from_story',
+      'educational_message_mismatch',
+      'personalization_insufficient',
+    ]),
+    protagonistConsistency: evaluate([
+      'cover_child_name_mismatch',
+      'character_card_name_mismatch',
+      'child_name_missing_from_story',
+      'protagonist_missing_from_opening',
+      'protagonist_missing_from_ending',
+      'protagonist_coverage_too_low',
+    ]),
+    ageAppropriateness: evaluate(['page_text_too_short', 'page_text_too_long']),
+    continuity: evaluate(
+      [
+        'page_scene_missing',
+        'page_progression_insufficient',
+        'protagonist_coverage_too_low',
+        'page_text_mismatch',
+        'page_illustration_prompt_mismatch',
+      ],
+      true,
+    ),
+    repetitionAcceptable: evaluate([
+      'duplicate_page_text',
+      'near_duplicate_page_text',
+      'repeated_sentence',
+      'repeated_page_opening',
+      'repeated_page_closing',
+    ]),
+    pageProgression: evaluate(['page_scene_missing', 'page_progression_insufficient'], true),
+    endingQuality: evaluate(
+      ['ending_missing', 'ending_not_reflected_in_final_page', 'protagonist_missing_from_ending'],
+      true,
+    ),
+    language,
   };
 }
 
@@ -461,6 +542,11 @@ export function evaluateStoryQuality(
     version: 1,
     overallPassed: !deduplicatedIssues.some((finding) => finding.severity === 'error'),
     dimensions: dimensionsFor(deduplicatedIssues),
+    dimensionEvaluations: dimensionEvaluationsFor(
+      deduplicatedIssues,
+      detectedLanguage,
+      input.language,
+    ),
     issues: deduplicatedIssues,
     flaggedPages,
   };

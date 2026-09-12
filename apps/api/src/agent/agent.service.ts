@@ -1,4 +1,4 @@
-import { revalidateExecution } from './generation-execution-policy';
+import { buildExecutionAuthorization, revalidateExecution } from './generation-execution-policy';
 import { estimatedPaidCalls } from './generation-estimate';
 import { Injectable, Logger } from '@nestjs/common';
 import { AgentStep, Prisma } from '@prisma/client';
@@ -58,7 +58,7 @@ export class AgentService {
       work.reuse,
       ctx.executionAuthorization,
     );
-    await this.execution.authorize(ctx, { policy: prepared.policy, estimate });
+    await this.execution.authorize(ctx, buildExecutionAuthorization(prepared.policy, estimate));
     prepared.providerTelemetry.planPaidCalls(
       estimatedPaidCalls(estimate, prepared.policy.providers),
     );
@@ -167,6 +167,7 @@ export class AgentService {
         storyModelName: prepared.storyModelName,
         providerUsage: prepared.providerTelemetry.snapshot(),
         failureKind: storyPhase.failureKind,
+        failureReason: storyPhase.failureReason,
         errorMessage: storyPhase.errorMessage,
       });
     }
@@ -195,6 +196,14 @@ export class AgentService {
     this.assertNotSuperseded(ctx, AgentStep.image_gen);
     await this.execution.markStep(ctx, AgentStep.image_gen);
     const imagePhase = await this.imageService.execute({
+      sourceKeys: Object.fromEntries(
+        work.images
+          .filter((item) => item.sourceKey)
+          .map(({ image, sourceKey }) => [
+            image.kind === 'page' ? `page_${image.pageNumber}` : image.kind,
+            sourceKey!,
+          ]),
+      ),
       expectedHashes: Object.fromEntries(
         work.images
           .filter((item) => item.sha256)

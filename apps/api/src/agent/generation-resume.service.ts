@@ -1,4 +1,4 @@
-import { checkpointBook } from './generation-checkpoint';
+import { checkpointBook, effectiveGenerationCheckpoint } from './generation-checkpoint';
 import { validateImage } from '../images/validated-image';
 import { imageKeyForNamespace, characterSheetKeyForNamespace } from '../images/image-asset-storage';
 import type { CharacterProfile, GeneratedImageEntry } from '@book/types';
@@ -72,15 +72,11 @@ export class GenerationResumeService {
     fingerprint: string,
     referenceAssetRevision?: string | null,
   ) {
-    const checkpoint = book.generationCheckpoint as
-      | {
-          legacy?: boolean;
-          content?: { characterDegraded?: boolean };
-          artifacts?: Record<string, { sha256?: string }>;
-        }
-      | undefined;
+    const checkpoint = effectiveGenerationCheckpoint(book.generationCheckpoint);
     const confirmed = async (label: string, key: string) => {
-      const decoded = await validateImage(await this.storage.getImageAsset(key));
+      const manifest = checkpoint?.artifacts[label];
+      const storedKey = typeof manifest?.key === 'string' ? manifest.key : key;
+      const decoded = await validateImage(await this.storage.getImageAsset(storedKey));
       if (!decoded) return null;
       if (
         checkpoint &&
@@ -88,7 +84,7 @@ export class GenerationResumeService {
         checkpoint.artifacts?.[label]?.sha256 !== decoded.sha256
       )
         return null;
-      return decoded;
+      return { ...decoded, key: storedKey };
     };
     book = checkpointBook(book);
     const persisted = parsePersistedGenerationState(book);
@@ -115,7 +111,12 @@ export class GenerationResumeService {
               image.kind === 'page' ? `page_${image.pageNumber}` : image.kind,
               imageKeyForNamespace(book.id, sourceNamespace, image.kind, image.pageNumber),
             );
-            return { image, valid: !!artifact, sha256: artifact?.sha256 };
+            return {
+              image,
+              valid: !!artifact,
+              sha256: artifact?.sha256,
+              sourceKey: artifact?.key,
+            };
           }),
         )
       : [];
@@ -161,6 +162,7 @@ export class GenerationResumeService {
             currentNamespace,
             copyForwardSourceNamespace,
             inspected.sheet.sha256,
+            inspected.sheet.key,
           )
         : ({ status: 'missing' } as const);
 
@@ -184,6 +186,7 @@ export class GenerationResumeService {
     allowedLabels?: readonly string[],
     onReused?: (label: string, key: string, buffer: Buffer) => Promise<void>,
     expectedHashes?: Readonly<Record<string, string>>,
+    sourceKeys?: Readonly<Record<string, string>>,
   ): Promise<ImageReuseClassification> {
     const resolutions = await Promise.all(
       images.map(async (image) => {
@@ -198,6 +201,7 @@ export class GenerationResumeService {
           kind: image.kind,
           pageNumber: image.pageNumber,
           expectedSha256: expectedHashes?.[label],
+          sourceKey: sourceKeys?.[label],
         });
         if (onReused && resolution.outcome !== 'regenerate') {
           const bytes = await this.storage.getImageAsset(resolution.key);
@@ -229,6 +233,7 @@ export class GenerationResumeService {
     currentNamespace: ClaimArtifactNamespace,
     sourceNamespace: GenerationArtifactNamespace | null,
     expectedSha256: string,
+    sourceKey?: string,
   ): Promise<{ status: ResumeAssetStatus; key?: string }> {
     if (!profile.hasCharacterSheet) return { status: 'missing' };
     const resolution = await resolveCharacterSheetArtifact({
@@ -237,6 +242,7 @@ export class GenerationResumeService {
       currentNamespace,
       sourceNamespace,
       expectedSha256,
+      ...(sourceKey && { sourceKey }),
     });
     if (resolution.outcome === 'reused' || resolution.outcome === 'copied') {
       return { status: 'valid', key: resolution.key };

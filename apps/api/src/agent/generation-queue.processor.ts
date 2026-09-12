@@ -21,6 +21,12 @@ import type {
 import { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
 import { correlationFields } from '../common/correlation/correlation-context';
 import { BookHardDeletionService } from '../books/book-hard-deletion.service';
+import {
+  asGenerationFailure,
+  GenerationControlError,
+  isGenerationControlError,
+  isGenerationFailureError,
+} from '../common/provider-execution';
 
 /** Safe, public-facing message for a run whose stored input_snapshot is permanently malformed — never the raw Zod issue list. */
 const INVALID_SNAPSHOT_PUBLIC_MESSAGE =
@@ -149,39 +155,69 @@ export class GenerationQueueProcessor extends WorkerHost {
     const deadlineMs = Number(process.env['GENERATION_RUN_DEADLINE_MS']) || 45 * 60_000;
     const remainingMs = deadlineMs - (Date.now() - claimed.createdAt.getTime());
     const deadline = setTimeout(
-      () => abortController.abort(new Error('GENERATION_RUN_DEADLINE_EXCEEDED')),
+      () =>
+        abortController.abort(
+          new GenerationControlError(
+            'deadline',
+            'Generation exceeded its fenced execution deadline.',
+          ),
+        ),
       Math.max(0, remainingMs),
     );
-    if (remainingMs <= 0) abortController.abort(new Error('GENERATION_RUN_DEADLINE_EXCEEDED'));
+    if (remainingMs <= 0)
+      abortController.abort(
+        new GenerationControlError(
+          'deadline',
+          'Generation exceeded its fenced execution deadline.',
+        ),
+      );
     const heartbeat = setInterval(() => {
       this.generationRunService
         .heartbeat(ctx.runId, token, ctx.fencingVersion, leaseMs)
-        .then((stillOwned) => {
+        .then(async (stillOwned) => {
           if (!stillOwned && !abortController.signal.aborted) {
+            const reason = await this.generationRunService.classifyOwnershipLoss(
+              ctx.runId,
+              ctx.fencingVersion,
+            );
             this.logger.warn(
               `Run ${ctx.runId} (book ${ctx.bookId}) heartbeat found it superseded by a newer delivery — signaling cancellation to the running pipeline.`,
             );
-            abortController.abort();
+            abortController.abort(
+              new GenerationControlError(reason, 'Generation ownership ended durably.'),
+            );
           }
         })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           this.logger.error(`Heartbeat failed for run ${ctx.runId}: ${message}`);
-          abortController.abort();
+          abortController.abort(
+            new GenerationControlError(
+              'ownership_uncertain',
+              'Generation ownership could not be established.',
+              err,
+            ),
+          );
         });
     }, heartbeatIntervalMs);
     heartbeat.unref?.();
 
     try {
       await this.booksService.runGenerationPipeline(ctx);
-    } finally {
-      clearInterval(heartbeat);
-      clearTimeout(deadline);
+      const abortReason = abortController.signal.reason;
       if (
-        abortController.signal.reason instanceof Error &&
-        abortController.signal.reason.message === 'GENERATION_RUN_DEADLINE_EXCEEDED'
+        isGenerationControlError(abortReason) &&
+        (abortReason.reason === 'deadline' || abortReason.reason === 'ownership_uncertain')
       ) {
-        await this.generationRunCoordinator.failAbandoned(
+        throw abortReason;
+      }
+      await this.generationRunService.assertQueueCompletionConsistent(
+        ctx.runId,
+        ctx.fencingVersion,
+      );
+    } catch (error) {
+      if (isGenerationControlError(error) && error.reason === 'deadline') {
+        const finalized = await this.generationRunCoordinator.failAbandoned(
           {
             runId: ctx.runId,
             bookId: ctx.bookId,
@@ -193,7 +229,12 @@ export class GenerationQueueProcessor extends WorkerHost {
             errorMessage: 'Generation exceeded its time limit.',
           },
         );
+        if (finalized === 'applied' || finalized === 'stale_fence') return;
       }
+      throw error;
+    } finally {
+      clearInterval(heartbeat);
+      clearTimeout(deadline);
     }
   }
 
@@ -238,7 +279,25 @@ export class GenerationQueueProcessor extends WorkerHost {
     }
     const claimed = await this.pageImageRevisionService.claim(job.data.revisionId, token);
     if (!claimed) return;
-    await this.pageImageRevisionService.executeClaimed(claimed.id, claimed.fencingVersion);
+    try {
+      await this.pageImageRevisionService.executeClaimed(claimed.id, claimed.fencingVersion);
+    } catch (error) {
+      const failure = asGenerationFailure(error);
+      await this.pageImageRevisionService
+        .failAndRefund(
+          claimed.id,
+          `PAGE_IMAGE_${failure.reason.toUpperCase()}`,
+          'The page illustration could not be regenerated. The previous book is unchanged.',
+          claimed.fencingVersion,
+          failure.reason,
+        )
+        .catch((finalizeError: unknown) => {
+          const message =
+            finalizeError instanceof Error ? finalizeError.message : String(finalizeError);
+          this.logger.error(`Failed to finalize page image revision ${claimed.id}: ${message}`);
+        });
+      throw failure;
+    }
   }
 
   @OnWorkerEvent('completed')
@@ -306,20 +365,21 @@ export class GenerationQueueProcessor extends WorkerHost {
     if (job.data.kind === 'book_deletion') return;
 
     if (job.data.kind === 'page_image_revision') {
-      const revisionId = job.data.revisionId;
-      await this.pageImageRevisionService?.failAndRefund(revisionId).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`Failed to finalize page image revision ${revisionId}: ${message}`);
-      });
+      // The processor finalizes with the exact claimed fencing version. A
+      // failed-event callback has no reliable delivery fence and therefore
+      // must never mutate a revision a newer delivery may now own. The
+      // revision recovery sweep handles process death / failed finalization.
       return;
     }
 
     const runId = (job.data as GenerationQueueJobData).runId;
-    await this.booksService
-      .markRunPermanentlyFailedAfterExhaustedRetries(runId)
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`Failed to finalize exhausted run ${runId}: ${message}`);
-      });
+    const failureReason = isGenerationFailureError(error) ? error.reason : undefined;
+    const finalization = failureReason
+      ? this.booksService.markRunPermanentlyFailedAfterExhaustedRetries(runId, failureReason)
+      : this.booksService.markRunPermanentlyFailedAfterExhaustedRetries(runId);
+    await finalization.catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to finalize exhausted run ${runId}: ${message}`);
+    });
   }
 }

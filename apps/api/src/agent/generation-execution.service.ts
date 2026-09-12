@@ -3,9 +3,14 @@ import { AgentStep, GenerationRunStatus, Prisma, type Book } from '@prisma/clien
 import { PrismaService } from '../database/prisma.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { ExecutionAuthorization, ExecutionPolicy } from './generation-execution-policy';
-import { assertAuthorizedOperations } from './generation-execution-policy';
+import {
+  assertAuthorizedOperations,
+  countAuthorizedDispatches,
+} from './generation-execution-policy';
 import type { GenerationProviderCallMetadata } from '@book/types';
-import { throwIfAborted } from '../common/provider-execution';
+import { GenerationControlError, throwIfAborted } from '../common/provider-execution';
+import { effectiveGenerationCheckpoint } from './generation-checkpoint';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Thrown by applyFencedBookWrite when the calling attempt no longer owns its
@@ -74,6 +79,29 @@ export class GenerationExecutionService {
       const book = await tx.book.findUniqueOrThrow({ where: { id: ctx.bookId } });
       const prior = book.generationCheckpoint as Record<string, unknown> | null;
       const same = prior?.runId === ctx.runId && prior?.fencingVersion === ctx.fencingVersion;
+      const effectivePrior = effectiveGenerationCheckpoint(prior);
+      const compatiblePrior =
+        effectivePrior?.inputHash === ctx.inputHash &&
+        effectivePrior.compatibilityFingerprint === fingerprint
+          ? effectivePrior
+          : null;
+      const sourceCheckpoint: Record<string, unknown> | undefined = same
+        ? prior?.sourceCheckpoint &&
+          typeof prior.sourceCheckpoint === 'object' &&
+          !Array.isArray(prior.sourceCheckpoint)
+          ? (prior.sourceCheckpoint as Record<string, unknown>)
+          : undefined
+        : compatiblePrior
+          ? {
+              version: 1,
+              inputHash: compatiblePrior.inputHash,
+              compatibilityFingerprint: compatiblePrior.compatibilityFingerprint,
+              runId: compatiblePrior.runId,
+              fencingVersion: compatiblePrior.fencingVersion,
+              content: compatiblePrior.content,
+              artifacts: compatiblePrior.artifacts,
+            }
+          : undefined;
       await tx.book.update({
         where: { id: ctx.bookId },
         data: {
@@ -83,13 +111,14 @@ export class GenerationExecutionService {
           lastGenerationCompatibilityFingerprint: fingerprint,
           generationCheckpoint: JSON.parse(
             JSON.stringify({
-              version: 1,
+              version: 2,
               inputHash: ctx.inputHash,
               compatibilityFingerprint: fingerprint,
               runId: ctx.runId,
               fencingVersion: ctx.fencingVersion,
               content: { ...(same ? (prior?.content as object) : {}), ...content },
               artifacts: { ...(same ? (prior?.artifacts as object) : {}), ...artifacts },
+              ...(sourceCheckpoint && { sourceCheckpoint }),
             }),
           ) as Prisma.InputJsonValue,
         },
@@ -117,8 +146,28 @@ export class GenerationExecutionService {
       const previous = operations.filter(
         (op) => op.operation === call.operation && op.assetLabel === call.assetLabel,
       );
+      const reclaimableIndex = operations.findIndex(
+        (op) =>
+          op.operation === call.operation &&
+          op.assetLabel === call.assetLabel &&
+          op.state === 'reserved_unsent',
+      );
+      if (reclaimableIndex >= 0) {
+        operations[reclaimableIndex] = {
+          ...operations[reclaimableIndex],
+          ...call,
+          fencingVersion: ctx.fencingVersion,
+          deliveryFencingVersion: ctx.fencingVersion,
+          state: 'reserved_unsent',
+        };
+        await tx.generationRun.update({
+          where: { id: ctx.runId },
+          data: { providerOperations: operations as Prisma.InputJsonValue },
+        });
+        return reclaimableIndex;
+      }
       if (previous.length >= (call.operation === 'story_repair' ? 1 : 2))
-        throw new Error('PROVIDER_OPERATION_RETRY_LIMIT');
+        throw new GenerationControlError('budget_rejection', 'PROVIDER_OPERATION_RETRY_LIMIT');
       const paid = operations.filter((op) => op.provider === 'openai');
       const authorization = run.executionAuthorization as unknown as ExecutionAuthorization | null;
       assertAuthorizedOperations(authorization, [...operations, { ...call }]);
@@ -126,12 +175,21 @@ export class GenerationExecutionService {
         const limit = Math.min(
           policy.maxPaidCalls,
           policy.limits.maxProviderCalls,
-          authorization?.estimate.maximumProviderCalls ?? policy.limits.maxProviderCalls,
+          authorization?.envelope?.maxDispatches ??
+            authorization?.estimate.maximumProviderCalls ??
+            policy.limits.maxProviderCalls,
         );
-        if (paid.reduce((sum, op) => sum + Math.max(1, Number(op.httpAttempts ?? 0)), 0) >= limit)
-          throw new Error('GENERATION_HARD_BUDGET_EXCEEDED');
+        const reservedExposure = paid.reduce(
+          (sum, op) =>
+            sum + countAuthorizedDispatches(op) + (op.state === 'reserved_unsent' ? 1 : 0),
+          0,
+        );
+        if (reservedExposure >= limit)
+          throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
         const costLimit =
-          authorization?.estimate.estimatedCostUsd?.maximum ?? policy.limits.maxEstimatedCostUsd;
+          authorization?.envelope?.maxEstimatedExposureUsd ??
+          authorization?.estimate.estimatedCostUsd?.maximum ??
+          policy.limits.maxEstimatedCostUsd;
         if (
           costLimit !== undefined &&
           (call.estimatedCostUsd === undefined ||
@@ -144,18 +202,22 @@ export class GenerationExecutionService {
               call.estimatedCostUsd >
               costLimit + 1e-9)
         )
-          throw new Error('GENERATION_HARD_BUDGET_EXCEEDED');
+          throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
       }
       // A prior in-flight dispatch has an unknown remote outcome, never a free retry.
       for (const op of operations)
-        if (op.state === 'reserved' && op.fencingVersion !== ctx.fencingVersion)
+        if (
+          (op.state === 'reserved' || op.state === 'dispatch_intent') &&
+          op.fencingVersion !== ctx.fencingVersion
+        )
           op.state = 'unknown';
       const index = operations.length;
       operations.push({
         ...call,
         fencingVersion: ctx.fencingVersion,
+        deliveryFencingVersion: ctx.fencingVersion,
         attempt: previous.length + 1,
-        state: 'reserved',
+        state: 'reserved_unsent',
       });
       await tx.generationRun.update({
         where: { id: ctx.runId },
@@ -170,7 +232,8 @@ export class GenerationExecutionService {
   async finishOperation(
     ctx: GenerationExecutionContext,
     index: number,
-    state: 'provider_succeeded' | 'unknown' | 'failed',
+    state: 'response_received' | 'artifact_stored' | 'unknown' | 'known_failure',
+    details: Record<string, unknown> = {},
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const owned = await tx.generationRun.updateMany({
@@ -180,7 +243,31 @@ export class GenerationExecutionService {
       if (!owned.count) throw new StaleGenerationRunError(ctx.runId, AgentStep.image_gen);
       const run = await tx.generationRun.findUniqueOrThrow({ where: { id: ctx.runId } });
       const operations = run.providerOperations as unknown as Array<Record<string, unknown>>;
-      operations[index] = { ...operations[index], state };
+      const operation = operations[index] ?? {};
+      const dispatches = Array.isArray(operation.dispatches)
+        ? (operation.dispatches as Array<Record<string, unknown>>)
+        : [];
+      const lastDispatch = dispatches.length - 1;
+      if (lastDispatch >= 0) {
+        const completedAt =
+          typeof details.completedAt === 'string' ? details.completedAt : new Date().toISOString();
+        const startedAt =
+          typeof dispatches[lastDispatch]!.startedAt === 'string'
+            ? Date.parse(dispatches[lastDispatch]!.startedAt as string)
+            : NaN;
+        const completedMs = Date.parse(completedAt);
+        dispatches[lastDispatch] = {
+          ...dispatches[lastDispatch],
+          ...details,
+          state,
+          completedAt,
+          durationMs:
+            Number.isFinite(startedAt) && Number.isFinite(completedMs)
+              ? Math.max(0, completedMs - startedAt)
+              : Number(details.durationMs ?? 0),
+        };
+      }
+      operations[index] = { ...operation, ...details, dispatches, state };
       await tx.generationRun.update({
         where: { id: ctx.runId },
         data: { providerOperations: operations as Prisma.InputJsonValue },
@@ -204,24 +291,59 @@ export class GenerationExecutionService {
       const operations = run.providerOperations as unknown as Array<Record<string, unknown>>;
       const operation = operations[index]!;
       const authorization = run.executionAuthorization as unknown as ExecutionAuthorization | null;
+      if (!operation || !['reserved_unsent', 'dispatch_intent'].includes(String(operation.state)))
+        throw new GenerationControlError('budget_rejection', 'PROVIDER_OPERATION_NOT_DISPATCHABLE');
       operation.httpAttempts = Number(operation.httpAttempts ?? 0) + 1;
+      operation.state = 'dispatch_intent';
+      const dispatches = Array.isArray(operation.dispatches)
+        ? (operation.dispatches as Array<Record<string, unknown>>)
+        : [];
+      const previousDispatch = dispatches.at(-1);
+      if (previousDispatch?.state === 'dispatch_intent') {
+        // A subsequent authorized attempt proves the provider adapter saw a
+        // retryable outcome, but a timeout/network failure may still have
+        // reached the provider. Keep that prior exposure conservative.
+        previousDispatch.state = 'unknown_remote_outcome';
+        const completedAt = new Date().toISOString();
+        previousDispatch.completedAt = completedAt;
+        const startedAt =
+          typeof previousDispatch.startedAt === 'string'
+            ? Date.parse(previousDispatch.startedAt)
+            : NaN;
+        previousDispatch.durationMs = Number.isFinite(startedAt)
+          ? Math.max(0, Date.parse(completedAt) - startedAt)
+          : 0;
+      }
+      dispatches.push({
+        dispatchId: randomUUID(),
+        operationId: operation.operationId,
+        deliveryToken: run.deliveryToken,
+        deliveryFencingVersion: ctx.fencingVersion,
+        state: 'dispatch_intent',
+        startedAt: new Date().toISOString(),
+      });
+      operation.dispatches = dispatches;
       assertAuthorizedOperations(authorization, operations);
       const paid = operations.filter((op) => op.provider === 'openai');
-      const attempts = paid.reduce((sum, op) => sum + Math.max(1, Number(op.httpAttempts ?? 0)), 0);
+      const attempts = paid.reduce((sum, op) => sum + countAuthorizedDispatches(op), 0);
       const limit = Math.min(
         policy.maxPaidCalls,
-        authorization?.estimate.maximumProviderCalls ?? policy.limits.maxProviderCalls,
+        authorization?.envelope?.maxDispatches ??
+          authorization?.estimate.maximumProviderCalls ??
+          policy.limits.maxProviderCalls,
         policy.limits.maxProviderCalls,
       );
       const ceiling =
-        authorization?.estimate.estimatedCostUsd?.maximum ?? policy.limits.maxEstimatedCostUsd;
+        authorization?.envelope?.maxEstimatedExposureUsd ??
+        authorization?.estimate.estimatedCostUsd?.maximum ??
+        policy.limits.maxEstimatedCostUsd;
       const cost = paid.reduce(
         (sum, op) =>
           sum + Number(op.estimatedCostUsd ?? 0) * Math.max(1, Number(op.httpAttempts ?? 0)),
         0,
       );
       if (attempts > limit || (ceiling !== undefined && cost > ceiling + 1e-9))
-        throw new Error('GENERATION_HARD_BUDGET_EXCEEDED');
+        throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
       await tx.generationRun.update({
         where: { id: ctx.runId },
         data: { providerOperations: operations as Prisma.InputJsonValue },

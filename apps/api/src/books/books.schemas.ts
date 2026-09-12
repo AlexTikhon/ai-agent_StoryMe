@@ -186,6 +186,9 @@ const generatedImageEntrySchema = z.object({
 });
 
 const generationProviderCallMetadataSchema = z.object({
+  operationId: z.string().optional(),
+  deliveryFencingVersion: z.number().int().positive().optional(),
+  providerRequestId: z.string().max(200).optional(),
   callIndex: z.number().int().positive(),
   operation: z.enum([
     'character_profile',
@@ -217,6 +220,9 @@ const generationProviderCallMetadataSchema = z.object({
       'unknown',
     ])
     .optional(),
+  failureReason: z
+    .enum(['provider_transient_failure', 'refusal', 'invalid_output', 'storage_failure'])
+    .optional(),
   inputTokens: z.number().int().nonnegative().optional(),
   outputTokens: z.number().int().nonnegative().optional(),
   httpAttempts: z.number().int().nonnegative().optional(),
@@ -233,6 +239,11 @@ const generationProviderUsageSchema = z.object({
   plannedPaidCalls: z.number().int().nonnegative(),
   actualPaidCalls: z.number().int().nonnegative(),
   estimatedCostUsd: z.number().nonnegative().optional(),
+  actualDispatches: z.number().int().nonnegative().optional(),
+  unknownOutcomes: z.number().int().nonnegative().optional(),
+  knownInputTokens: z.number().int().nonnegative().optional(),
+  knownOutputTokens: z.number().int().nonnegative().optional(),
+  estimatedExposureUsd: z.number().nonnegative().optional(),
   calls: z.array(generationProviderCallMetadataSchema),
 });
 
@@ -272,6 +283,9 @@ const imageGenerationFailureDetailSchema = z.object({
       'provider_error',
       'unknown',
     ])
+    .optional(),
+  failureReason: z
+    .enum(['provider_transient_failure', 'refusal', 'invalid_output', 'storage_failure'])
     .optional(),
   httpStatus: z.number().int().optional(),
   errorType: z.string().optional(),

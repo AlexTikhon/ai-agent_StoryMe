@@ -5,6 +5,7 @@ import type {
   BookLength,
   GenerationJobSummary,
   GenerationMetadata,
+  GenerationFailureReason,
   GenerationProviderCallMetadata,
   GenerationProviderUsage,
   IllustrationStyle,
@@ -296,6 +297,8 @@ export interface QualityReport {
   version: 1;
   overallPassed: boolean;
   dimensions: StoryQualityDimensions;
+  /** Additive evidence-bearing contract; legacy boolean dimensions stay stable for API clients. */
+  dimensionEvaluations: StoryQualityDimensionEvaluations;
   issues: QualityIssue[];
   flaggedPages: number[];
   repair?: {
@@ -305,6 +308,17 @@ export interface QualityReport {
     providerCall?: GenerationProviderCallMetadata;
   };
 }
+
+export interface StoryQualityDimensionEvaluation {
+  outcome: 'passed' | 'failed' | 'not_evaluated';
+  /** Privacy-safe rule/finding codes only; never generated prose or child input. */
+  evidence: string[];
+}
+
+export type StoryQualityDimensionEvaluations = Record<
+  keyof StoryQualityDimensions | 'language',
+  StoryQualityDimensionEvaluation
+>;
 
 /** Explicit pass/fail quality contract; no fabricated model score. */
 export interface StoryQualityDimensions {
@@ -608,6 +622,7 @@ export interface PageImageRevisionDto {
   provider: string;
   errorCode?: string | null;
   errorMessage?: string | null;
+  failureReason?: GenerationFailureReason | null;
   book?: BookDto;
 }
 

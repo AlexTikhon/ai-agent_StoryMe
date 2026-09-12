@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import type { ProviderFailureKind, QualityReport } from '@book/types';
+import type { GenerationFailureReason, ProviderFailureKind, QualityReport } from '@book/types';
 import { StoryContentStage } from './story-content.stage';
 import { evaluateStoryQuality } from './story-quality-gate';
 import { StoryQualityRepairStage } from './story-quality-repair.stage';
@@ -12,6 +12,7 @@ import {
 import type { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import { StaleGenerationRunError } from './generation-execution.service';
 import {
+  asGenerationFailure,
   classifyProviderFailure,
   isProviderCancellationError,
   safeProviderFailureMessage,
@@ -35,6 +36,7 @@ export type StoryQualityPhaseResult =
       kind: 'story_failure';
       errorMessage: string;
       failureKind: ProviderFailureKind;
+      failureReason: GenerationFailureReason;
     }
   | {
       kind: 'quality_failure';
@@ -95,10 +97,12 @@ export class StoryQualityService {
         if (error instanceof StaleGenerationRunError || isProviderCancellationError(error)) {
           throw error;
         }
+        const failure = asGenerationFailure(error);
         return {
           kind: 'story_failure',
           errorMessage: safeProviderFailureMessage(error),
           failureKind: classifyProviderFailure(error),
+          failureReason: failure.reason,
         };
       }
       storyDurationMs = this.now() - storyStartedAt;

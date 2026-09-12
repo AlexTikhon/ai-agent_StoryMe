@@ -40,6 +40,7 @@ import {
 import {
   IMAGE_GENERATION_PROVIDER_TOKEN,
   type ImageGenerationProvider,
+  type ImageGenerationOutput,
   type ImageReference,
 } from '../images/image-generation-provider';
 import { renderStorybookPdf } from '../pdf/pdf-renderer';
@@ -55,8 +56,14 @@ import { BookCrudService } from './book-crud.service';
 import type { Env } from '../config/env.schema';
 import type { CreatePageImageQuoteDto } from './dto/create-page-image-quote.dto';
 import { publishedImageKey } from './published-page-image-key';
+import { asGenerationFailure, GenerationControlError } from '../common/provider-execution';
+import { GenerationProviderTelemetry } from '../agent/generation-provider-telemetry';
+import { PageImageRevisionExecutionGateway } from './page-image-revision-execution.gateway';
 
 const PAGE_IMAGE_QUOTE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_PAGE_IMAGE_QUEUE_WAIT_MS = 30 * 60 * 1000;
+const DEFAULT_PAGE_IMAGE_LEASE_MS = 10 * 60 * 1000;
+const DEFAULT_PAGE_IMAGE_PROCESSING_DEADLINE_MS = 20 * 60 * 1000;
 const PUBLIC_FAILURE_MESSAGE =
   'The page illustration could not be regenerated. The previous book is unchanged.';
 
@@ -76,6 +83,10 @@ function providerName(provider: ImageGenerationProvider): string {
 
 @Injectable()
 export class BookPageImageRevisionService {
+  private positiveMs(name: string, fallback: number): number {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  }
   private executionFingerprint(): string {
     return hashProviderPrompt('page-revision-execution-v1', {
       provider: this.imageProvider.providerName ?? 'unknown',
@@ -91,11 +102,24 @@ export class BookPageImageRevisionService {
           this.imageProvider.providerName === 'openai' ? 'openai' : 'mock',
           process.env,
         ) ?? null,
+      authorizedDispatches: this.authorizedProviderDispatches(),
     });
+  }
+  private authorizedProviderDispatches(): number {
+    if (this.imageProvider.providerName !== 'openai') return 1;
+    const retries = (name: string, fallback: number) => {
+      const value = Number(process.env[name]);
+      return Number.isInteger(value) && value >= 0 ? value : fallback;
+    };
+    const transportRetries = retries('OPENAI_MAX_RETRIES', 2);
+    const timeoutRetries = retries('OPENAI_IMAGE_TIMEOUT_MAX_RETRIES', 1);
+    const rateLimitRetries = retries('OPENAI_IMAGE_MAX_RETRIES', 5);
+    return (1 + rateLimitRetries) * (1 + transportRetries + timeoutRetries);
   }
   constructor(
     private readonly crud: BookCrudService,
     private readonly prisma: PrismaService,
+    private readonly providerGateway: PageImageRevisionExecutionGateway,
     private readonly credits: CreditsService,
     @Inject(IMAGE_GENERATION_PROVIDER_TOKEN)
     private readonly imageProvider: ImageGenerationProvider,
@@ -145,6 +169,7 @@ export class BookPageImageRevisionService {
       provider === 'mock' || provider === 'openai' ? provider : 'unknown',
       process.env,
     );
+    const authorizedDispatches = this.authorizedProviderDispatches();
     const revision = await this.prisma.pageImageRevision.create({
       data: {
         bookId,
@@ -157,7 +182,11 @@ export class BookPageImageRevisionService {
             : 0,
         provider,
         executionFingerprint: this.executionFingerprint(),
+        authorizedDispatches,
         ...(estimatedCostUsd !== undefined && { estimatedCostUsd }),
+        ...(estimatedCostUsd !== undefined && {
+          maximumEstimatedExposureUsd: estimatedCostUsd * authorizedDispatches,
+        }),
         quoteExpiresAt: new Date(Date.now() + PAGE_IMAGE_QUOTE_TTL_MS),
         sourceBookUpdatedAt: book.updatedAt,
         sourcePublishedRunId: book.publishedRunId,
@@ -241,6 +270,10 @@ export class BookPageImageRevisionService {
         data: {
           status: PageImageRevisionStatus.queued,
           confirmedAt: new Date(),
+          queueExpiresAt: new Date(
+            Date.now() +
+              this.positiveMs('PAGE_IMAGE_QUEUE_WAIT_MS', DEFAULT_PAGE_IMAGE_QUEUE_WAIT_MS),
+          ),
           sourceBookUpdatedAt: reservedBook.updatedAt,
         },
       });
@@ -291,16 +324,39 @@ export class BookPageImageRevisionService {
 
   async claim(revisionId: string, deliveryToken: string): Promise<PageImageRevision | null> {
     return this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const current = await tx.pageImageRevision.findUnique({ where: { id: revisionId } });
+      if (!current) return null;
+      const claimable =
+        (current.status === PageImageRevisionStatus.queued &&
+          (!current.queueExpiresAt || current.queueExpiresAt > now)) ||
+        (current.status === PageImageRevisionStatus.running &&
+          current.deliveryToken !== deliveryToken &&
+          (!current.processingDeadlineAt || current.processingDeadlineAt > now));
+      if (!claimable) return null;
       const claimed = await tx.pageImageRevision.updateMany({
         where: {
           id: revisionId,
-          status: { in: [PageImageRevisionStatus.queued, PageImageRevisionStatus.running] },
+          status: current.status,
+          fencingVersion: current.fencingVersion,
         },
         data: {
           status: PageImageRevisionStatus.running,
           deliveryToken,
           fencingVersion: { increment: 1 },
-          startedAt: new Date(),
+          startedAt: current.startedAt ?? now,
+          leaseExpiresAt: new Date(
+            now.getTime() + this.positiveMs('PAGE_IMAGE_LEASE_MS', DEFAULT_PAGE_IMAGE_LEASE_MS),
+          ),
+          processingDeadlineAt:
+            current.processingDeadlineAt ??
+            new Date(
+              now.getTime() +
+                this.positiveMs(
+                  'PAGE_IMAGE_PROCESSING_DEADLINE_MS',
+                  DEFAULT_PAGE_IMAGE_PROCESSING_DEADLINE_MS,
+                ),
+            ),
         },
       });
       if (claimed.count === 0) return null;
@@ -320,8 +376,22 @@ export class BookPageImageRevisionService {
     ) {
       return;
     }
+    if (revision.processingDeadlineAt && revision.processingDeadlineAt.getTime() <= Date.now()) {
+      await this.failAndRefund(
+        revisionId,
+        'PAGE_IMAGE_PROCESSING_DEADLINE_EXCEEDED',
+        PUBLIC_FAILURE_MESSAGE,
+        fencingVersion,
+      );
+      return;
+    }
     if (!this.matchesSnapshot(revision.book, revision)) {
-      await this.failAndRefund(revisionId, 'PAGE_IMAGE_SOURCE_CHANGED', PUBLIC_FAILURE_MESSAGE);
+      await this.failAndRefund(
+        revisionId,
+        'PAGE_IMAGE_SOURCE_CHANGED',
+        PUBLIC_FAILURE_MESSAGE,
+        fencingVersion,
+      );
       return;
     }
 
@@ -336,6 +406,7 @@ export class BookPageImageRevisionService {
         revisionId,
         'PAGE_IMAGE_EXECUTION_CONFIG_DRIFT',
         PUBLIC_FAILURE_MESSAGE,
+        fencingVersion,
       );
       return;
     }
@@ -359,7 +430,12 @@ export class BookPageImageRevisionService {
       (entry) => entry.kind === 'page' && entry.pageNumber === revision.pageNumber,
     );
     if (!previewPage || !originalImage) {
-      await this.failAndRefund(revisionId, 'PAGE_IMAGE_SOURCE_INVALID', PUBLIC_FAILURE_MESSAGE);
+      await this.failAndRefund(
+        revisionId,
+        'PAGE_IMAGE_SOURCE_INVALID',
+        PUBLIC_FAILURE_MESSAGE,
+        fencingVersion,
+      );
       return;
     }
     const storedPages = await this.prisma.bookPage.findMany({
@@ -369,46 +445,132 @@ export class BookPageImageRevisionService {
     const currentPage = storedPages.find((page) => page.pageNumber === revision.pageNumber);
     const currentVersion = currentPage?.version ?? previewPage.version ?? 1;
     if (currentVersion !== revision.expectedPageVersion) {
-      await this.failAndRefund(revisionId, 'PAGE_VERSION_CONFLICT', PUBLIC_FAILURE_MESSAGE);
+      await this.failAndRefund(
+        revisionId,
+        'PAGE_VERSION_CONFLICT',
+        PUBLIC_FAILURE_MESSAGE,
+        fencingVersion,
+      );
       return;
     }
 
     const namespace = claimNamespace(revision.id, fencingVersion);
+    const candidateImageKey =
+      revision.candidateImageKey ??
+      claimImageAssetKey(book.id, namespace, 'page', revision.pageNumber);
     const candidateImage: GeneratedImageEntry = {
       ...originalImage,
       seed: `${originalImage.seed}:revision:${revision.id}`,
     };
     const characterReference = await this.loadCharacterReference(book.characterSheetAssetKey);
-    const beforeDispatch = async () => {
-      const reserved = await this.prisma.pageImageRevision.updateMany({
-        where: { id: revisionId, status: 'running', fencingVersion, providerDispatches: 0 },
-        data: { providerDispatches: { increment: 1 }, providerOutcome: 'unknown' },
-      });
-      if (!reserved.count) throw new Error('PAGE_IMAGE_DISPATCH_BUDGET_OR_FENCE_REJECTED');
-    };
-    if (this.imageProvider.providerName !== 'openai') await beforeDispatch();
-    const generated = await this.imageProvider.generateImage(
-      {
-        bookId: book.id,
-        entry: candidateImage,
-        characterCard,
-        ...(characterReference && { characterReference }),
-      },
-      { beforeDispatch },
+    const telemetry = new GenerationProviderTelemetry(
+      Math.max(1, revision.authorizedDispatches),
+      this.imageProvider.providerName === 'openai' ? 1 : 0,
+      process.env,
     );
-    const generatedManifest = await validateImage(generated.buffer);
-    if (!generatedManifest) throw new Error('INVALID_GENERATED_IMAGE');
-    const candidateImageKey = claimImageAssetKey(book.id, namespace, 'page', revision.pageNumber);
-    await this.imageStorage.saveImageAsset(
+    const durableGateway = this.providerGateway.bind({
+      revisionId,
+      fencingVersion,
       candidateImageKey,
-      generated.buffer,
-      generated.contentType,
-    );
-
-    await this.prisma.pageImageRevision.updateMany({
-      where: { id: revisionId, status: 'running', fencingVersion },
-      data: { providerOutcome: 'stored' },
+      leaseMs: this.positiveMs('PAGE_IMAGE_LEASE_MS', DEFAULT_PAGE_IMAGE_LEASE_MS),
     });
+    telemetry.bindGateway(durableGateway);
+    let generated: ImageGenerationOutput | undefined;
+    let generatedManifest = await validateImage(
+      revision.candidateImageKey
+        ? await this.imageStorage.getImageAsset(revision.candidateImageKey)
+        : undefined,
+    );
+    if (generatedManifest && revision.candidateImageKey && revision.providerDispatches > 0) {
+      const expectedSha256 = revision.candidateImageManifest
+        ? (revision.candidateImageManifest as Record<string, unknown>).sha256
+        : undefined;
+      if (expectedSha256 !== undefined && expectedSha256 !== generatedManifest.sha256) {
+        generatedManifest = null;
+      }
+    }
+    if (generatedManifest && revision.candidateImageKey && revision.providerDispatches > 0) {
+      const buffer = await this.imageStorage.getImageAsset(revision.candidateImageKey);
+      if (buffer) {
+        generated = {
+          buffer,
+          contentType: generatedManifest.format === 'jpeg' ? 'image/jpeg' : 'image/png',
+        };
+        // The key is persisted with dispatch intent, before remote work. If a
+        // process dies after saving bytes but before recording the manifest,
+        // a takeover can validate and durably adopt those exact bytes.
+        if (revision.checkpointState !== 'artifact_stored') {
+          await durableGateway.checkpoint(
+            {},
+            {
+              [`page_${revision.pageNumber}`]: {
+                ...generatedManifest,
+                key: revision.candidateImageKey,
+              },
+            },
+          );
+          if (Array.isArray(revision.providerOperations)) {
+            await durableGateway.finishOperation(0, 'artifact_stored', {
+              artifactKey: revision.candidateImageKey,
+              artifactSha256: generatedManifest.sha256,
+            });
+          }
+        }
+      }
+    }
+    if (!generated) {
+      if (revision.providerDispatches > 0) {
+        throw new GenerationControlError(
+          'provider_transient_failure',
+          'PAGE_IMAGE_REMOTE_OUTCOME_NOT_RETRYABLE',
+        );
+      }
+      generated = await telemetry.record({
+        operation: 'illustration',
+        assetLabel: `page_${revision.pageNumber}`,
+        provider:
+          this.imageProvider.providerName === 'openai'
+            ? 'openai'
+            : this.imageProvider.providerName === 'mock'
+              ? 'mock'
+              : 'unknown',
+        ...(this.imageProvider.modelName && { model: this.imageProvider.modelName }),
+        promptVersion:
+          this.imageProvider.pageImagePromptVersion ??
+          this.imageProvider.promptVersion ??
+          PROMPT_VERSIONS.pageImage,
+        promptInput: {
+          bookId: book.id,
+          entry: candidateImage,
+          characterCard,
+          characterReferenceSupplied: characterReference !== undefined,
+        },
+        execute: (options) =>
+          this.imageProvider.generateImage(
+            {
+              bookId: book.id,
+              entry: candidateImage,
+              characterCard,
+              ...(characterReference && { characterReference }),
+            },
+            options,
+          ),
+      });
+      generatedManifest = await validateImage(generated.buffer);
+      if (!generatedManifest)
+        throw asGenerationFailure(new Error('INVALID_GENERATED_IMAGE'), 'invalid_output');
+      try {
+        await this.imageStorage.saveImageAsset(
+          candidateImageKey,
+          generated.buffer,
+          generated.contentType,
+        );
+      } catch (error) {
+        throw asGenerationFailure(error, 'storage_failure');
+      }
+      await telemetry.stored(`page_${revision.pageNumber}`, candidateImageKey, generated.buffer);
+    }
+    if (!generatedManifest || !candidateImageKey) throw new Error('PAGE_IMAGE_CANDIDATE_INVALID');
     const nextImageResult: ImageGenerationResult = {
       ...imageResult,
       images: imageResult.images.map((entry) =>
@@ -431,7 +593,12 @@ export class BookPageImageRevisionService {
     });
     const sourceNamespace = resolvePublishedImageNamespace(book);
     if (sourceNamespace.kind === 'not_ready') {
-      await this.failAndRefund(revisionId, 'PAGE_IMAGE_SOURCE_INVALID', PUBLIC_FAILURE_MESSAGE);
+      await this.failAndRefund(
+        revisionId,
+        'PAGE_IMAGE_SOURCE_INVALID',
+        PUBLIC_FAILURE_MESSAGE,
+        fencingVersion,
+      );
       return;
     }
     const overrides = new Map(
@@ -551,6 +718,8 @@ export class BookPageImageRevisionService {
     revisionId: string,
     errorCode = 'PAGE_IMAGE_REGENERATION_FAILED',
     errorMessage = PUBLIC_FAILURE_MESSAGE,
+    expectedFencingVersion?: number,
+    failureReason?: import('@book/types').GenerationFailureReason,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const revision = await tx.pageImageRevision.findUnique({ where: { id: revisionId } });
@@ -566,12 +735,14 @@ export class BookPageImageRevisionService {
         where: {
           id: revision.id,
           status: { in: [PageImageRevisionStatus.queued, PageImageRevisionStatus.running] },
+          ...(expectedFencingVersion !== undefined && { fencingVersion: expectedFencingVersion }),
         },
         data: {
           status: PageImageRevisionStatus.failed,
           failedAt: new Date(),
           errorCode,
           errorMessage,
+          ...(failureReason && { failureReason }),
         },
       });
       if (failed.count === 0) return;
@@ -627,7 +798,10 @@ export class BookPageImageRevisionService {
         this.imageProvider.providerName === 'openai' &&
         process.env['CHARACTER_FALLBACK_POLICY'] !== 'allow_degraded'
       )
-        throw new Error('REQUIRED_CHARACTER_REFERENCE_UNAVAILABLE');
+        throw new GenerationControlError(
+          'storage_failure',
+          'REQUIRED_CHARACTER_REFERENCE_UNAVAILABLE',
+        );
       return undefined;
     }
     return { buffer, contentType: validated.format === 'jpeg' ? 'image/jpeg' : 'image/png' };
@@ -665,6 +839,7 @@ export class BookPageImageRevisionService {
       provider: revision.provider,
       errorCode: revision.errorCode,
       errorMessage: revision.errorMessage,
+      failureReason: revision.failureReason as import('@book/types').GenerationFailureReason | null,
       ...(book && { book }),
     };
   }

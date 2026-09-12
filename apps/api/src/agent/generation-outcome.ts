@@ -1,5 +1,6 @@
 import type { AgentStep, Prisma } from '@prisma/client';
 import { BookStatus } from '@prisma/client';
+import type { GenerationFailureReason } from '@book/types';
 
 /**
  * What AgentService.startBookGeneration computed for one claimed run, without
@@ -21,6 +22,7 @@ export interface GenerationOutcome {
   readonly status: typeof BookStatus.complete | typeof BookStatus.failed;
   readonly completedStep: AgentStep;
   readonly errorCode?: string;
+  readonly failureReason?: GenerationFailureReason;
   readonly errorMessage?: string;
   readonly failedStep?: AgentStep;
   readonly bookUpdate: Prisma.BookUpdateInput;

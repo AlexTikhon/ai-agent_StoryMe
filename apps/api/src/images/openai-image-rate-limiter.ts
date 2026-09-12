@@ -7,17 +7,24 @@ import {
   throwIfAborted,
 } from '../common/provider-execution';
 import type { ProviderCallMetrics } from '@book/types';
+import type { ProviderQuotaGate } from './provider-quota-gate';
 
 export const DEFAULT_OPENAI_IMAGE_MIN_INTERVAL_MS = 15_000;
 export const DEFAULT_OPENAI_IMAGE_MAX_RETRIES = 5;
 export const DEFAULT_OPENAI_IMAGE_RETRY_BASE_MS = 12_000;
 export const DEFAULT_OPENAI_IMAGE_RETRY_MAX_MS = 60_000;
+export const DEFAULT_OPENAI_IMAGE_MAX_WAIT_MS = 10 * 60_000;
+export const DEFAULT_OPENAI_IMAGE_MAX_CONCURRENCY = 1;
+export const DEFAULT_OPENAI_IMAGE_CONCURRENCY_LEASE_MS = 5 * 60_000;
 
 export interface OpenAIImageRateLimiterConfig {
   minIntervalMs: number;
   maxRetries: number;
   retryBaseMs: number;
   retryMaxMs: number;
+  maxWaitMs: number;
+  maxConcurrency: number;
+  concurrencyLeaseMs: number;
 }
 
 function parseNonNegativeInt(raw: string | undefined, fallback: number): number {
@@ -56,7 +63,27 @@ export function readOpenAIImageRateLimiterConfig(
     parsePositiveInt(env['OPENAI_IMAGE_RETRY_MAX_MS'], DEFAULT_OPENAI_IMAGE_RETRY_MAX_MS),
     retryBaseMs,
   );
-  return { minIntervalMs, maxRetries, retryBaseMs, retryMaxMs };
+  const maxWaitMs = parsePositiveInt(
+    env['OPENAI_IMAGE_MAX_WAIT_MS'],
+    DEFAULT_OPENAI_IMAGE_MAX_WAIT_MS,
+  );
+  const maxConcurrency = parsePositiveInt(
+    env['OPENAI_IMAGE_MAX_CONCURRENCY'],
+    DEFAULT_OPENAI_IMAGE_MAX_CONCURRENCY,
+  );
+  const concurrencyLeaseMs = parsePositiveInt(
+    env['OPENAI_IMAGE_CONCURRENCY_LEASE_MS'],
+    DEFAULT_OPENAI_IMAGE_CONCURRENCY_LEASE_MS,
+  );
+  return {
+    minIntervalMs,
+    maxRetries,
+    retryBaseMs,
+    retryMaxMs,
+    maxWaitMs,
+    maxConcurrency,
+    concurrencyLeaseMs,
+  };
 }
 
 export interface OpenAIImageRateLimiterGlobalDiagnostics {
@@ -87,6 +114,8 @@ export interface OpenAIImageRateLimiterOptions extends Partial<OpenAIImageRateLi
   /** Injectable jitter source (0-1) for tests; defaults to Math.random. */
   random?: () => number;
   logger?: Logger;
+  sharedGate?: ProviderQuotaGate;
+  quotaScope?: string;
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -141,6 +170,11 @@ export class OpenAIImageRateLimiter {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly random: () => number;
   private readonly logger: Logger;
+  private readonly maxWaitMs: number;
+  private readonly maxConcurrency: number;
+  private readonly concurrencyLeaseMs: number;
+  private readonly sharedGate: ProviderQuotaGate | undefined;
+  private readonly quotaScope: string;
 
   private queueTail: Promise<void> = Promise.resolve();
   private lastDispatchAt: number | undefined;
@@ -165,6 +199,12 @@ export class OpenAIImageRateLimiter {
     this.sleep = options.sleep ?? defaultSleep;
     this.random = options.random ?? Math.random;
     this.logger = options.logger ?? new Logger(OpenAIImageRateLimiter.name);
+    this.maxWaitMs = options.maxWaitMs ?? DEFAULT_OPENAI_IMAGE_MAX_WAIT_MS;
+    this.maxConcurrency = options.maxConcurrency ?? DEFAULT_OPENAI_IMAGE_MAX_CONCURRENCY;
+    this.concurrencyLeaseMs =
+      options.concurrencyLeaseMs ?? DEFAULT_OPENAI_IMAGE_CONCURRENCY_LEASE_MS;
+    this.sharedGate = options.sharedGate;
+    this.quotaScope = options.quotaScope ?? 'openai:image';
   }
 
   /** Process-lifetime operator diagnostics; never use as one generation's metrics. */
@@ -214,12 +254,17 @@ export class OpenAIImageRateLimiter {
     signal?: AbortSignal,
   ): Promise<T> {
     throwIfAborted(signal);
-    await this.waitForSpacing(label, metrics, signal);
-
     const maxAttempts = this.maxRetries + 1;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       throwIfAborted(signal);
-      const response = await dispatch();
+      const release = await this.waitForSpacing(label, metrics, signal);
+      let response: T;
+      try {
+        throwIfAborted(signal);
+        response = await dispatch();
+      } finally {
+        await release();
+      }
       if (response.status !== 429) return response;
 
       this.diagnostics.rateLimitHits++;
@@ -245,7 +290,21 @@ export class OpenAIImageRateLimiter {
     label: string,
     metrics: MutableCallMetrics,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<() => Promise<void>> {
+    if (this.sharedGate) {
+      const permit = await this.sharedGate.acquire(
+        this.quotaScope,
+        this.minIntervalMs,
+        this.maxWaitMs,
+        this.maxConcurrency,
+        this.concurrencyLeaseMs,
+        signal,
+      );
+      this.diagnostics.totalWaitMs += permit.waitMs;
+      metrics.rateLimitWaitMs += permit.waitMs;
+      this.lastDispatchAt = this.now();
+      return () => permit.release();
+    }
     const now = this.now();
     if (this.lastDispatchAt !== undefined) {
       const waitMs = this.minIntervalMs - (now - this.lastDispatchAt);
@@ -258,6 +317,7 @@ export class OpenAIImageRateLimiter {
     }
     throwIfAborted(signal);
     this.lastDispatchAt = this.now();
+    return async () => undefined;
   }
 
   private async waitBeforeRetry(

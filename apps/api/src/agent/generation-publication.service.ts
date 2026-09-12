@@ -23,6 +23,7 @@ import { imageAssetLabel } from './image-generation.stage';
 import { pdfPublicationStage } from './pdf-publication.stage';
 import type { StoryGenerationResult } from './story-generation-provider';
 import { assertBookLayoutQuality } from './book-layout-quality';
+import { asGenerationFailure } from '../common/provider-execution';
 
 export interface GenerationPublicationInput {
   book: Book;
@@ -116,6 +117,7 @@ export class GenerationPublicationService {
 
     let previewPdfUrl: string | null = null;
     let pdfRenderError: string | undefined;
+    let failureReason = imagePhase.failureReason;
     const pdfStartedAt = Date.now();
     try {
       const published = await pdfPublicationStage.execute({
@@ -129,7 +131,9 @@ export class GenerationPublicationService {
       });
       previewPdfUrl = published.previewPdfUrl;
     } catch (error) {
-      pdfRenderError = error instanceof Error ? error.message : String(error);
+      const failure = asGenerationFailure(error, 'storage_failure');
+      failureReason = failure.reason;
+      pdfRenderError = failure.message;
       this.logger.error(`PDF render failed for book ${book.id}: ${pdfRenderError}`);
     }
     const pdfDurationMs = Date.now() - pdfStartedAt;
@@ -192,6 +196,7 @@ export class GenerationPublicationService {
       previewPdfUrl,
       finalStatus,
       ...(pdfRenderError && { pdfRenderError }),
+      ...(failureReason && { failureReason }),
       charBuildResult,
       storyProviderName: prepared.storyProviderName,
       storyModelName: prepared.storyModelName,

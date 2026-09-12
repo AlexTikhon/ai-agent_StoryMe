@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { PROMPT_VERSIONS } from './prompt-versions';
+import { PROMPT_COMPATIBILITY_IDENTITY } from './prompt-specs';
 
 type PromptVersions = { readonly [K in keyof typeof PROMPT_VERSIONS]: string };
 
@@ -27,8 +28,9 @@ export function buildGenerationCompatibilityFingerprint(
   promptVersions: PromptVersions = PROMPT_VERSIONS,
 ): string {
   const compatibility = {
-    version: 2,
+    version: 3,
     prompts: promptVersions,
+    promptContracts: PROMPT_COMPATIBILITY_IDENTITY,
     providers: {
       character: {
         prompt: providers.character.promptVersion ?? promptVersions.characterProfile,

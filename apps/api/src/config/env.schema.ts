@@ -105,6 +105,15 @@ export const envSchema = z
     // invalid value is still caught at boot, just one layer down from here.
     STORY_GENERATION_PROVIDER: z.string().optional(),
     IMAGE_GENERATION_PROVIDER: z.string().optional(),
+    OPENAI_MAX_RETRIES: z.coerce.number().int().nonnegative().default(2),
+    OPENAI_IMAGE_TIMEOUT_MAX_RETRIES: z.coerce.number().int().nonnegative().default(1),
+    OPENAI_IMAGE_MIN_INTERVAL_MS: z.coerce.number().int().nonnegative().default(15000),
+    OPENAI_IMAGE_MAX_RETRIES: z.coerce.number().int().nonnegative().default(5),
+    OPENAI_IMAGE_RETRY_BASE_MS: z.coerce.number().int().positive().default(12000),
+    OPENAI_IMAGE_RETRY_MAX_MS: z.coerce.number().int().positive().default(60000),
+    OPENAI_IMAGE_MAX_WAIT_MS: z.coerce.number().int().positive().default(600000),
+    OPENAI_IMAGE_MAX_CONCURRENCY: z.coerce.number().int().positive().default(1),
+    OPENAI_IMAGE_CONCURRENCY_LEASE_MS: z.coerce.number().int().positive().default(300000),
     // Explicit local/test-only deterministic failure injection. The enable
     // flag is required; production activation is rejected below.
     MOCK_FAILURES_ENABLED: z.enum(['true', 'false']).default('false'),
@@ -117,6 +126,9 @@ export const envSchema = z
     CHARACTER_FALLBACK_POLICY: z.enum(['required', 'allow_degraded']).default('required'),
     GENERATION_HEARTBEAT_MS: z.coerce.number().int().min(250).max(30000).default(5000),
     GENERATION_RUN_DEADLINE_MS: z.coerce.number().int().positive().max(7200000).default(2700000),
+    PAGE_IMAGE_QUEUE_WAIT_MS: z.coerce.number().int().positive().default(1800000),
+    PAGE_IMAGE_LEASE_MS: z.coerce.number().int().positive().default(600000),
+    PAGE_IMAGE_PROCESSING_DEADLINE_MS: z.coerce.number().int().positive().default(1200000),
     STORY_REPAIR_ENABLED: z.enum(['true', 'false']).default('false'),
     // A real book needs one illustration per story page plus cover and back
     // cover. The default covers the current 12-page product maximum; runtime

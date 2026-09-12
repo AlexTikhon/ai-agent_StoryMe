@@ -4,6 +4,7 @@ import type { GenerationExecutionContext } from './generation-execution-context'
 import type { ExecutionPolicy } from './generation-execution-policy';
 import { createHash } from 'node:crypto';
 import type {
+  GenerationFailureReason,
   GenerationProviderCallMetadata,
   GenerationProviderName,
   GenerationProviderOperation,
@@ -11,7 +12,11 @@ import type {
   ProviderCallMetrics,
 } from '@book/types';
 import {
+  asGenerationFailure,
   classifyProviderFailure,
+  isGenerationControlError,
+  isProviderCancellationError,
+  providerFailureReason,
   type ProviderExecutionOptions,
 } from '../common/provider-execution';
 
@@ -109,6 +114,28 @@ interface RecordProviderCallInput<T> {
   execute: (options: ProviderExecutionOptions) => Promise<T>;
 }
 
+export type DurableProviderOperationState =
+  'response_received' | 'artifact_stored' | 'unknown' | 'known_failure';
+
+/**
+ * Storage-neutral mandatory boundary used by both whole-book runs and
+ * one-page revisions. Implementations own fencing, authorization and the
+ * durable provider-operation ledger; telemetry owns adapter invocation.
+ */
+export interface DurableProviderExecutionGateway {
+  assertOwnership(): Promise<void>;
+  reserveOperation(
+    call: Omit<GenerationProviderCallMetadata, 'status' | 'durationMs'>,
+  ): Promise<number>;
+  reserveHttpAttempt(index: number): Promise<void>;
+  finishOperation(
+    index: number,
+    state: DurableProviderOperationState,
+    details?: Record<string, unknown>,
+  ): Promise<void>;
+  checkpoint(content: Record<string, unknown>, artifacts?: Record<string, unknown>): Promise<void>;
+}
+
 const COUNT_METRICS: ReadonlyArray<keyof ProviderCallMetrics> = [
   'inputTokens',
   'outputTokens',
@@ -121,11 +148,16 @@ const COUNT_METRICS: ReadonlyArray<keyof ProviderCallMetrics> = [
 ];
 
 function safeMetrics(metrics: ProviderCallMetrics): ProviderCallMetrics {
-  const result: ProviderCallMetrics = {};
+  const result: ProviderCallMetrics = {
+    ...(typeof metrics.providerRequestId === 'string' &&
+      metrics.providerRequestId.length <= 200 && {
+        providerRequestId: metrics.providerRequestId,
+      }),
+  };
   for (const key of COUNT_METRICS) {
     const value = metrics[key];
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-      result[key] = Math.floor(value);
+      Object.assign(result, { [key]: Math.floor(value) });
     }
   }
   return result;
@@ -142,40 +174,46 @@ export class GenerationProviderTelemetry {
   artifactManifest(): Record<string, unknown> {
     return { ...this.artifacts };
   }
-  private durable?: {
-    execution: GenerationExecutionService;
-    ctx: GenerationExecutionContext;
-    policy: ExecutionPolicy;
-  };
+  private durable?: DurableProviderExecutionGateway;
   bind(
     execution: GenerationExecutionService,
     ctx: GenerationExecutionContext,
     policy: ExecutionPolicy,
   ): void {
-    this.durable = { execution, ctx, policy };
+    this.bindGateway({
+      assertOwnership: () => execution.assertOwnership(ctx),
+      reserveOperation: (call) => execution.reserveOperation(ctx, policy, call),
+      reserveHttpAttempt: (index) => execution.reserveHttpAttempt(ctx, policy, index),
+      finishOperation: (index, state, details) =>
+        execution.finishOperation(ctx, index, state, details),
+      checkpoint: (content, artifacts = {}) =>
+        execution.checkpoint(ctx, policy.fingerprint, content, artifacts),
+    });
+  }
+
+  bindGateway(gateway: DurableProviderExecutionGateway): void {
+    if (this.durable) throw new Error('PROVIDER_EXECUTION_GATEWAY_ALREADY_BOUND');
+    this.durable = gateway;
   }
   async stored(label: string, key: string, buffer: Buffer): Promise<void> {
     const manifest = await validateImage(buffer);
-    if (!manifest) throw new Error('INVALID_GENERATED_IMAGE');
+    if (!manifest)
+      throw asGenerationFailure(new Error('INVALID_GENERATED_IMAGE'), 'invalid_output');
     this.artifacts[label] = { ...manifest, key };
-    if (this.durable)
-      await this.durable.execution.checkpoint(
-        this.durable.ctx,
-        this.durable.policy.fingerprint,
-        {},
-        { [label]: { ...manifest, key } },
-      );
+    if (this.durable) await this.durable.checkpoint({}, { [label]: { ...manifest, key } });
+    const operationIndex = this.operationByAsset.get(label);
+    if (this.durable && operationIndex !== undefined)
+      await this.durable.finishOperation(operationIndex, 'artifact_stored', {
+        artifactKey: key,
+        artifactSha256: manifest.sha256,
+      });
   }
   async checkpoint(content: Record<string, unknown>): Promise<void> {
-    if (this.durable)
-      await this.durable.execution.checkpoint(
-        this.durable.ctx,
-        this.durable.policy.fingerprint,
-        content,
-      );
+    if (this.durable) await this.durable.checkpoint(content);
   }
   private nextCallIndex = 1;
   private paidCallsStarted = 0;
+  private readonly operationByAsset = new Map<string, number>();
 
   constructor(
     private readonly maxPaidCalls: number,
@@ -191,6 +229,9 @@ export class GenerationProviderTelemetry {
   }
 
   async record<T>(input: RecordProviderCallInput<T>): Promise<T> {
+    if (input.provider === 'openai' && process.env['NODE_ENV'] === 'production' && !this.durable) {
+      throw new Error('PAID_PROVIDER_EXECUTION_GATEWAY_UNBOUND');
+    }
     const callIndex = this.nextCallIndex++;
     if (input.provider === 'openai' && this.paidCallsStarted >= this.maxPaidCalls) {
       throw new PaidProviderCallBudgetError(this.paidCallsStarted + 1, this.maxPaidCalls);
@@ -204,9 +245,6 @@ export class GenerationProviderTelemetry {
     const startedAt = Date.now();
     let metrics: ProviderCallMetrics = {};
     const executionOptions: ProviderExecutionOptions = {
-      beforeDispatch: async () => {
-        if (this.durable) await this.durable.execution.assertOwnership(this.durable.ctx);
-      },
       onMetrics: (reported) => {
         // Providers may report independent partial snapshots (for example,
         // request attempts and limiter waits). Defined fields replace the
@@ -223,6 +261,7 @@ export class GenerationProviderTelemetry {
       ...(input.model && { model: input.model }),
       promptVersion: input.promptVersion,
       promptHash: hashProviderPrompt(input.promptVersion, input.promptInput),
+      operationId: `${input.operation}:${input.assetLabel ?? 'singleton'}`,
       attempt:
         this.calls.filter(
           (call) => call.operation === input.operation && call.assetLabel === input.assetLabel,
@@ -230,26 +269,22 @@ export class GenerationProviderTelemetry {
       ...(estimatedCostUsd !== undefined && { estimatedCostUsd }),
     };
 
-    const reservation = this.durable
-      ? await this.durable.execution.reserveOperation(this.durable.ctx, this.durable.policy, base)
-      : undefined;
+    const reservation = this.durable ? await this.durable.reserveOperation(base) : undefined;
+    if (reservation !== undefined && input.assetLabel)
+      this.operationByAsset.set(input.assetLabel, reservation);
     executionOptions.beforeDispatch = async () => {
       if (this.durable && reservation !== undefined)
-        await this.durable.execution.reserveHttpAttempt(
-          this.durable.ctx,
-          this.durable.policy,
-          reservation,
-        );
+        await this.durable.reserveHttpAttempt(reservation);
     };
     try {
-      if (this.durable) await this.durable.execution.assertOwnership(this.durable.ctx);
+      if (this.durable) await this.durable.assertOwnership();
       const result = await input.execute(executionOptions);
       if (reservation !== undefined && this.durable)
-        await this.durable.execution.finishOperation(
-          this.durable.ctx,
-          reservation,
-          'provider_succeeded',
-        );
+        await this.durable.finishOperation(reservation, 'response_received', {
+          ...safeMetrics(metrics),
+          durationMs: Date.now() - startedAt,
+          completedAt: new Date().toISOString(),
+        });
       this.calls.push({
         ...base,
         ...metrics,
@@ -259,22 +294,42 @@ export class GenerationProviderTelemetry {
       return result;
     } catch (error) {
       const failureKind = classifyProviderFailure(error);
-      if (reservation !== undefined && this.durable)
-        await this.durable.execution.finishOperation(
-          this.durable.ctx,
-          reservation,
-          ['timeout', 'network', 'cancelled', 'unknown'].includes(failureKind)
-            ? 'unknown'
-            : 'failed',
-        );
+      const failureReason: GenerationFailureReason = providerFailureReason(failureKind);
+      if (reservation !== undefined && this.durable) {
+        try {
+          await this.durable.finishOperation(
+            reservation,
+            ['timeout', 'network', 'cancelled', 'unknown'].includes(failureKind)
+              ? 'unknown'
+              : 'known_failure',
+            {
+              ...safeMetrics(metrics),
+              durationMs: Date.now() - startedAt,
+              failureKind,
+              failureReason,
+              completedAt: new Date().toISOString(),
+            },
+          );
+        } catch {
+          // Recording a failure must never replace the original provider or
+          // control outcome. Recovery reconciles the still-in-flight record.
+        }
+      }
       this.calls.push({
         ...base,
         ...metrics,
         durationMs: Date.now() - startedAt,
         status: failureKind === 'cancelled' ? 'cancelled' : 'error',
         failureKind,
+        failureReason,
       });
-      throw error;
+      if (
+        isProviderCancellationError(error) ||
+        (isGenerationControlError(error) && !isGenerationFailureReasonForTelemetry(error.reason))
+      ) {
+        throw error;
+      }
+      throw asGenerationFailure(error);
     }
   }
 
@@ -295,4 +350,13 @@ export class GenerationProviderTelemetry {
       calls,
     };
   }
+}
+
+function isGenerationFailureReasonForTelemetry(reason: string): boolean {
+  return (
+    reason === 'provider_transient_failure' ||
+    reason === 'refusal' ||
+    reason === 'invalid_output' ||
+    reason === 'storage_failure'
+  );
 }

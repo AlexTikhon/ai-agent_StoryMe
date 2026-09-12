@@ -4,6 +4,7 @@ import { AgentStep } from '@prisma/client';
 import type {
   CharacterCard,
   GeneratedImageEntry,
+  GenerationFailureReason,
   GenerationProviderName,
   ImageGenerationFailureDetail,
 } from '@book/types';
@@ -24,7 +25,9 @@ import type { ClaimArtifactNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import type { GenerationStage } from './generation-stage';
 import {
+  asGenerationFailure,
   classifyProviderFailure,
+  isGenerationFailureError,
   isProviderCancellationError,
   safeProviderFailureMessage,
   throwIfAborted,
@@ -141,8 +144,13 @@ export class ImageGenerationStage implements GenerationStage<
           providerCompleted = true;
           throwIfAborted(signal);
           const key = claimImageAssetKey(bookId, namespace, image.kind, image.pageNumber);
-          if (!(await validateImage(buffer))) throw new Error('INVALID_GENERATED_IMAGE');
-          await this.storage.saveImageAsset(key, buffer, contentType);
+          if (!(await validateImage(buffer)))
+            throw asGenerationFailure(new Error('INVALID_GENERATED_IMAGE'), 'invalid_output');
+          try {
+            await this.storage.saveImageAsset(key, buffer, contentType);
+          } catch (error) {
+            throw asGenerationFailure(error, 'storage_failure');
+          }
           await telemetry.stored(imageAssetLabel(image), key, buffer);
           return {
             kind: 'generated',
@@ -159,7 +167,15 @@ export class ImageGenerationStage implements GenerationStage<
           this.logger.warn(
             `Image generation/save failed for entry "${image.id}" (book ${bookId}): ${message}. Falling back to a placeholder for this entry.`,
           );
-          const details = hasImageGenerationFailureDetails(err) ? err.details : {};
+          const diagnosticError =
+            isGenerationFailureError(err) && err.cause !== undefined ? err.cause : err;
+          const details = hasImageGenerationFailureDetails(diagnosticError)
+            ? diagnosticError.details
+            : {};
+          const typed = asGenerationFailure(
+            err,
+            providerCompleted ? 'storage_failure' : 'provider_transient_failure',
+          );
           return {
             kind: 'failed',
             message,
@@ -167,7 +183,10 @@ export class ImageGenerationStage implements GenerationStage<
               assetLabel: imageAssetLabel(image),
               provider: resolvedProviderName,
               ...(modelName && { model: modelName }),
-              failureKind: details.failureKind ?? classifyProviderFailure(err),
+              ...(!providerCompleted && {
+                failureKind: details.failureKind ?? classifyProviderFailure(diagnosticError),
+              }),
+              failureReason: typed.reason as GenerationFailureReason,
               ...(details.httpStatus !== undefined && { httpStatus: details.httpStatus }),
               ...(details.errorType !== undefined && { errorType: details.errorType }),
               ...(details.errorCode !== undefined && { errorCode: details.errorCode }),

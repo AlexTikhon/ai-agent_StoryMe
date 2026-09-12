@@ -3,12 +3,16 @@ import {
   PRESERVE_APPEARANCE_INSTRUCTION,
   type StoryGenerationResult,
 } from './story-generation-provider';
+import { GenerationControlError } from '../common/provider-execution';
 
-export class StoryGenerationResultValidationError extends Error {
+export class StoryGenerationResultValidationError extends GenerationControlError {
   readonly failureKind = 'invalid_response' as const;
 
-  constructor(readonly reason: string) {
-    super(`Story generation result failed deterministic validation: ${reason}`);
+  constructor(readonly validationReason: string) {
+    super(
+      'invalid_output',
+      `Story generation result failed deterministic validation: ${validationReason}`,
+    );
     this.name = 'StoryGenerationResultValidationError';
   }
 }

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { GenerationRunStatus, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { GenerationControlError } from '../common/provider-execution';
 
 /** Generous default — real (paid) image generation can run for several minutes; a run's lease must comfortably outlive one full pipeline attempt so a slow-but-alive worker is never mistaken for abandoned. */
 export const DEFAULT_GENERATION_RUN_LEASE_MS = 30 * 60 * 1000;
@@ -119,7 +120,7 @@ export class GenerationRunService {
             operation &&
             typeof operation === 'object' &&
             !Array.isArray(operation) &&
-            operation.state === 'reserved'
+            (operation.state === 'reserved' || operation.state === 'dispatch_intent')
           ) {
             return { ...operation, state: 'unknown' };
           }
@@ -164,5 +165,53 @@ export class GenerationRunService {
       data: { leaseExpiresAt: new Date(Date.now() + leaseMs) },
     });
     return result.count > 0;
+  }
+
+  /** Resolve a rejected heartbeat without treating database uncertainty as supersession. */
+  async classifyOwnershipLoss(
+    runId: string,
+    fencingVersion: number,
+  ): Promise<'user_cancellation' | 'confirmed_supersession'> {
+    const run = await this.prisma.generationRun.findUnique({
+      where: { id: runId },
+      select: { status: true, fencingVersion: true },
+    });
+    if (run?.status === GenerationRunStatus.cancelled) return 'user_cancellation';
+    if (!run || run.status !== GenerationRunStatus.running || run.fencingVersion !== fencingVersion)
+      return 'confirmed_supersession';
+    throw new Error('GENERATION_OWNERSHIP_COULD_NOT_BE_ESTABLISHED');
+  }
+
+  /** Refuse BullMQ completion while the same fenced run is still non-terminal. */
+  async assertQueueCompletionConsistent(runId: string, fencingVersion: number): Promise<void> {
+    let run: { status: GenerationRunStatus; fencingVersion: number } | null;
+    try {
+      run = await this.prisma.generationRun.findUnique({
+        where: { id: runId },
+        select: { status: true, fencingVersion: true },
+      });
+    } catch (cause) {
+      throw new GenerationControlError(
+        'ownership_uncertain',
+        'Generation terminal state could not be verified.',
+        cause,
+      );
+    }
+
+    if (!run) return; // A committed hard deletion is terminal.
+    if (
+      run.status === GenerationRunStatus.completed ||
+      run.status === GenerationRunStatus.failed ||
+      run.status === GenerationRunStatus.cancelled
+    ) {
+      return;
+    }
+    if (run.status === GenerationRunStatus.running && run.fencingVersion !== fencingVersion) {
+      return; // Confirmed supersession by a newer delivery.
+    }
+    throw new GenerationControlError(
+      'ownership_uncertain',
+      'Generation delivery ended before a fenced terminal state was persisted.',
+    );
   }
 }

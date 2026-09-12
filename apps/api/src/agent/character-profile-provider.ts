@@ -79,8 +79,9 @@ export class MockCharacterProfileProvider implements CharacterProfileProvider {
 
   async buildProfile(
     input: CharacterProfileInput,
-    _options?: ProviderExecutionOptions,
+    options: ProviderExecutionOptions = {},
   ): Promise<CharacterProfile> {
+    await options.beforeDispatch?.();
     await this.failures?.before('character');
     const { childName, childAge } = input;
     const faceDescription = 'a round, friendly face with a warm smile';

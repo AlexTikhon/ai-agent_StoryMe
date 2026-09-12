@@ -23,6 +23,7 @@ import type { ClaimArtifactNamespace } from './generation-artifact-namespace';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import type { GenerationStage } from './generation-stage';
 import {
+  asGenerationFailure,
   isProviderCancellationError,
   safeProviderFailureMessage,
   throwIfAborted,
@@ -210,7 +211,11 @@ export class CharacterReferenceStage implements GenerationStage<
       );
       throwIfAborted(signal);
       const key = claimCharacterSheetAssetKey(bookId, namespace);
-      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      try {
+        await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      } catch (storageError) {
+        throw asGenerationFailure(storageError, 'storage_failure');
+      }
       await telemetry.stored('character_sheet', key, buffer);
       characterSheetKey = key;
       characterProfile = { ...characterProfile, hasCharacterSheet: true };
@@ -253,7 +258,11 @@ export class CharacterReferenceStage implements GenerationStage<
       );
       throwIfAborted(signal);
       const key = claimCharacterSheetAssetKey(bookId, namespace);
-      await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      try {
+        await this.imageAssetStorage.saveImageAsset(key, buffer, contentType);
+      } catch (storageError) {
+        throw asGenerationFailure(storageError, 'storage_failure');
+      }
       await telemetry.stored('character_sheet', key, buffer);
       return {
         characterProfile: { ...characterProfile, hasCharacterSheet: true },

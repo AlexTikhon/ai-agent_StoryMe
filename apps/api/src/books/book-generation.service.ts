@@ -1,4 +1,8 @@
-import { EXECUTION_POLICY_KEYS, executionPolicy } from '../agent/generation-execution-policy';
+import {
+  buildExecutionAuthorization,
+  EXECUTION_POLICY_KEYS,
+  executionPolicy,
+} from '../agent/generation-execution-policy';
 import { GenerationResumeService } from '../agent/generation-resume.service';
 import { buildGenerationCompatibilityFingerprint } from '../agent/generation-compatibility-fingerprint';
 import {
@@ -407,17 +411,15 @@ export class BookGenerationService {
         .filter(([, value]) => value !== undefined)
         .map(([key, value]) => [key, String(value)]),
     );
-    const authorization = {
-      policy: executionPolicy(
-        {
-          story: this.storyGenerationProvider,
-          image: this.imageGenerationProvider,
-          character: this.characterProfileProvider,
-        },
-        policyEnv,
-      ),
-      estimate,
-    };
+    const policy = executionPolicy(
+      {
+        story: this.storyGenerationProvider,
+        image: this.imageGenerationProvider,
+        character: this.characterProfileProvider,
+      },
+      policyEnv,
+    );
+    const authorization = buildExecutionAuthorization(policy, estimate);
     const inputHash = hashInputSnapshot(params.inputSnapshot);
     const requestId = getRequestId();
 

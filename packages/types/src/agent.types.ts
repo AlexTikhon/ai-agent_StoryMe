@@ -127,11 +127,21 @@ export type ProviderFailureKind =
   | 'unknown';
 
 /**
+ * Stable generation-level failure taxonomy. Provider-specific failure kinds
+ * remain available for diagnostics, while orchestration, workers and durable
+ * ledgers make retry/finalization decisions from this smaller closed set.
+ */
+export type GenerationFailureReason =
+  'provider_transient_failure' | 'refusal' | 'invalid_output' | 'storage_failure';
+
+/**
  * Optional numeric execution metadata reported by a provider. Providers do
  * not fabricate unavailable values, and this contract deliberately has no
  * prompt, response, credential, or image-data fields.
  */
 export interface ProviderCallMetrics {
+  /** Provider-issued correlation id, when returned in response headers. */
+  providerRequestId?: string;
   inputTokens?: number;
   outputTokens?: number;
   httpAttempts?: number;
@@ -151,6 +161,8 @@ export type GenerationProviderOperation =
  * normalized input without making that input part of diagnostics.
  */
 export interface GenerationProviderCallMetadata extends ProviderCallMetrics {
+  operationId?: string;
+  deliveryFencingVersion?: number;
   callIndex: number;
   operation: GenerationProviderOperation;
   assetLabel?: string;
@@ -162,6 +174,7 @@ export interface GenerationProviderCallMetadata extends ProviderCallMetrics {
   durationMs: number;
   status: 'success' | 'error' | 'cancelled';
   failureKind?: ProviderFailureKind;
+  failureReason?: GenerationFailureReason;
   estimatedCostUsd?: number;
 }
 
@@ -172,6 +185,12 @@ export interface GenerationProviderUsage {
   actualPaidCalls: number;
   /** Present only when every paid call had an operator-configured estimate. */
   estimatedCostUsd?: number;
+  /** Durable delivery-spanning totals; absent on legacy embedded snapshots. */
+  actualDispatches?: number;
+  unknownOutcomes?: number;
+  knownInputTokens?: number;
+  knownOutputTokens?: number;
+  estimatedExposureUsd?: number;
   calls: GenerationProviderCallMetadata[];
 }
 
@@ -332,6 +351,7 @@ export interface ImageGenerationFailureDetail {
   provider: GenerationProviderName;
   model?: string;
   failureKind?: ProviderFailureKind;
+  failureReason?: GenerationFailureReason;
   /** HTTP status code from the provider response, if the failure was an HTTP-level error. */
   httpStatus?: number;
   /** OpenAI error `type` field (e.g. 'invalid_request_error'), if the provider returned one. */

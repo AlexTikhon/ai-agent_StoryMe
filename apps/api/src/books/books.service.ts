@@ -6,6 +6,7 @@ import {
   type CancelGenerationResponse,
   type GenerateBookResponse,
   type GenerationDiagnosticsDto,
+  type GenerationFailureReason,
   type GenerationProgressDto,
   type PageImageRegenerationQuote,
   type PageImageRevisionDto,
@@ -286,8 +287,14 @@ export class BooksService {
    * dying mid-attempt, as opposed to a single job exhausting its retries
    * while the process stays up.
    */
-  async markRunPermanentlyFailedAfterExhaustedRetries(runId: string): Promise<void> {
-    return this.generationExecutionService.markRunPermanentlyFailedAfterExhaustedRetries(runId);
+  async markRunPermanentlyFailedAfterExhaustedRetries(
+    runId: string,
+    failureReason?: GenerationFailureReason,
+  ): Promise<void> {
+    return this.generationExecutionService.markRunPermanentlyFailedAfterExhaustedRetries(
+      runId,
+      failureReason,
+    );
   }
 
   async getPreviewPdfBuffer(

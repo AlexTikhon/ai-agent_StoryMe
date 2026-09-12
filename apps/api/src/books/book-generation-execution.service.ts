@@ -4,8 +4,12 @@ import type { CancelGenerationResponse } from '@book/types';
 import { AgentService } from '../agent/agent.service';
 import type { GenerationExecutionContext } from '../agent/generation-execution-context';
 import { StaleGenerationRunError } from '../agent/generation-execution.service';
-import { isProviderCancellationError } from '../common/provider-execution';
+import {
+  isGenerationControlError,
+  isProviderCancellationError,
+} from '../common/provider-execution';
 import type { GenerationOutcome } from '../agent/generation-outcome';
+import type { GenerationFailureReason } from '@book/types';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import {
   GenerationRunCoordinator,
@@ -86,11 +90,20 @@ export class BookGenerationExecutionService {
       outcome = await this.agentService.startBookGeneration(ctx);
       this.logger.log(`Book ${bookId} pipeline outcome -> ${outcome.status} (run ${runId})`);
     } catch (err) {
-      if (err instanceof StaleGenerationRunError || isProviderCancellationError(err)) {
+      const cancellationReason = isProviderCancellationError(err) ? err.controlReason : undefined;
+      if (
+        err instanceof StaleGenerationRunError ||
+        cancellationReason === 'confirmed_supersession' ||
+        cancellationReason === 'user_cancellation'
+      ) {
+        const cancellationMessage = err instanceof Error ? err.message : 'generation cancelled';
         this.logger.warn(
-          `Run ${runId} (book ${bookId}) was superseded mid-pipeline — abandoning this attempt without touching Book/GenerationRun further: ${err.message}`,
+          `Run ${runId} (book ${bookId}) ended durably mid-pipeline — abandoning this attempt without touching Book/GenerationRun further: ${cancellationMessage}`,
         );
         return;
+      }
+      if (isProviderCancellationError(err) && isGenerationControlError(err.cause)) {
+        throw err.cause;
       }
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(
@@ -106,7 +119,10 @@ export class BookGenerationExecutionService {
     if (published !== 'applied') return;
   }
 
-  async markRunPermanentlyFailedAfterExhaustedRetries(runId: string): Promise<void> {
+  async markRunPermanentlyFailedAfterExhaustedRetries(
+    runId: string,
+    failureReason?: GenerationFailureReason,
+  ): Promise<void> {
     const run = await this.prisma.generationRun.findUnique({ where: { id: runId } });
     if (!run || run.status !== GenerationRunStatus.running) return;
 
@@ -118,7 +134,12 @@ export class BookGenerationExecutionService {
         fencingVersion: run.fencingVersion,
         fromStatus: GenerationRunStatus.running,
       },
-      { errorCode: 'GENERATION_INFRASTRUCTURE_FAILURE', errorMessage: safeMessage },
+      {
+        errorCode: failureReason
+          ? `GENERATION_${failureReason.toUpperCase()}`
+          : 'GENERATION_INFRASTRUCTURE_FAILURE',
+        errorMessage: safeMessage,
+      },
     );
     if (result === 'book_mirror_mismatch') {
       throw new GenerationRunMirrorInvariantError(run.id, run.bookId);

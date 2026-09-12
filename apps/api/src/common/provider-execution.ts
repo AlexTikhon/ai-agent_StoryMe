@@ -1,10 +1,61 @@
-import type { ProviderCallMetrics, ProviderFailureKind } from '@book/types';
+import type {
+  GenerationFailureReason,
+  ProviderCallMetrics,
+  ProviderFailureKind,
+} from '@book/types';
 
 export interface ProviderExecutionOptions {
   signal?: AbortSignal | undefined;
   beforeDispatch?: (() => Promise<void>) | undefined;
   /** Safe numeric metrics observer supplied by the generation boundary. */
   onMetrics?: ((metrics: ProviderCallMetrics) => void) | undefined;
+}
+
+/** Stable, persistence-safe reasons carried across provider and worker boundaries. */
+export type GenerationControlReason =
+  | 'user_cancellation'
+  | 'confirmed_supersession'
+  | 'ownership_uncertain'
+  | 'deadline'
+  | 'budget_rejection'
+  | 'configuration_drift'
+  | 'provider_transient_failure'
+  | 'refusal'
+  | 'invalid_output'
+  | 'storage_failure';
+
+const GENERATION_FAILURE_REASONS = new Set<GenerationFailureReason>([
+  'provider_transient_failure',
+  'refusal',
+  'invalid_output',
+  'storage_failure',
+]);
+
+export class GenerationControlError extends Error {
+  constructor(
+    readonly reason: GenerationControlReason,
+    message: string,
+    override readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'GenerationControlError';
+  }
+}
+
+export function isGenerationControlError(error: unknown): error is GenerationControlError {
+  return error instanceof GenerationControlError;
+}
+
+export function isGenerationFailureReason(reason: unknown): reason is GenerationFailureReason {
+  return (
+    typeof reason === 'string' && GENERATION_FAILURE_REASONS.has(reason as GenerationFailureReason)
+  );
+}
+
+export function isGenerationFailureError(
+  error: unknown,
+): error is GenerationControlError & { readonly reason: GenerationFailureReason } {
+  return isGenerationControlError(error) && isGenerationFailureReason(error.reason);
 }
 
 const FAILURE_KINDS = new Set<ProviderFailureKind>([
@@ -39,6 +90,9 @@ export function classifyProviderFailure(error: unknown): ProviderFailureKind {
   if (isProviderCancellationError(error)) return 'cancelled';
   const tagged = taggedFailureKind(error);
   if (tagged) return tagged;
+  if (isGenerationFailureError(error) && error.cause !== undefined) {
+    return classifyProviderFailure(error.cause);
+  }
 
   if (error && typeof error === 'object') {
     const details = (
@@ -54,6 +108,59 @@ export function classifyProviderFailure(error: unknown): ProviderFailureKind {
     if (details?.httpStatus === 401 || details?.httpStatus === 403) return 'authentication';
   }
   return error instanceof Error ? 'provider_error' : 'unknown';
+}
+
+/** Maps provider-specific diagnostics onto the orchestration-level taxonomy. */
+export function providerFailureReason(kind: ProviderFailureKind): GenerationFailureReason {
+  switch (kind) {
+    case 'refusal':
+      return 'refusal';
+    case 'truncated':
+    case 'schema_error':
+    case 'invalid_response':
+      return 'invalid_output';
+    case 'cancelled':
+    case 'timeout':
+    case 'rate_limit':
+    case 'network':
+    case 'authentication':
+    case 'provider_error':
+    case 'unknown':
+      return 'provider_transient_failure';
+  }
+}
+
+/**
+ * Normalizes an arbitrary adapter/stage error once while preserving the
+ * existing public diagnostic message contract. The typed reason is carried
+ * independently from the message and is the value orchestration branches on.
+ */
+export function asGenerationFailure(
+  error: unknown,
+  fallback: GenerationFailureReason = 'provider_transient_failure',
+): GenerationControlError & { readonly reason: GenerationFailureReason } {
+  if (isGenerationFailureError(error)) return error;
+  const reason =
+    fallback === 'provider_transient_failure'
+      ? providerFailureReason(classifyProviderFailure(error))
+      : fallback;
+  const message =
+    reason === 'storage_failure'
+      ? error instanceof Error
+        ? error.message
+        : 'Generated artifact storage failed.'
+      : reason === 'refusal'
+        ? 'Provider declined this request.'
+        : reason === 'invalid_output'
+          ? 'Provider returned invalid output.'
+          : safeProviderFailureMessage(error);
+  return new GenerationControlError(reason, message, error) as GenerationControlError & {
+    readonly reason: GenerationFailureReason;
+  };
+}
+
+export function generationFailureCode(reason: GenerationFailureReason): string {
+  return `GENERATION_${reason.toUpperCase()}`;
 }
 
 /** Stable persistence-safe message; never copies a provider/runtime payload. */
@@ -97,9 +204,12 @@ export function reportProviderMetrics(
 
 /** Typed control-flow error for cooperative pipeline cancellation. */
 export class ProviderCancellationError extends Error {
+  readonly controlReason: GenerationControlReason | undefined;
+
   constructor(override readonly cause?: unknown) {
     super('Provider operation cancelled');
     this.name = 'ProviderCancellationError';
+    this.controlReason = isGenerationControlError(cause) ? cause.reason : undefined;
   }
 }
 
