@@ -197,8 +197,8 @@ verify prompt construction only. The bounded repair remains opt-in and budgeted.
 
 ### Migration and CI compatibility
 
-Four additive migrations introduce candidate checkpoints/execution ledgers, page-revision dispatch
-state, published manifests, and page-revision execution identity. Legacy checkpoints retain their
+Five additive migrations introduce candidate checkpoints/execution ledgers, page-revision dispatch
+and recovery state, published manifests, and page-revision execution identity. Legacy checkpoints retain their
 original namespace and are marked legacy; existing published pointers remain readable and receive
 confirmed manifests on subsequent publication. Historical mixed editions cannot be reconstructed
 from an overwritten legacy Book row. Legacy runs without authorization receive a conservative

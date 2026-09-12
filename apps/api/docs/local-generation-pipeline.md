@@ -480,6 +480,11 @@ and injected into the provider, so it's effectively process-wide):
   below.
 - Enforces **`OPENAI_IMAGE_MIN_INTERVAL_MS`** (default `15000`) between the
   start of successive requests.
+- A Redis gate enforces the same provider/model spacing across every worker
+  process and queue, plus **`OPENAI_IMAGE_MAX_CONCURRENCY`** (default `1`).
+  Its permits use **`OPENAI_IMAGE_CONCURRENCY_LEASE_MS`** (default `300000`)
+  as a crash backstop and waiting is cancellable and bounded by
+  **`OPENAI_IMAGE_MAX_WAIT_MS`** (default `600000`).
 - On HTTP `429`, retries up to **`OPENAI_IMAGE_MAX_RETRIES`** (default `5`)
   times: honors the `Retry-After` response header when present, otherwise
   waits an exponential backoff (`OPENAI_IMAGE_RETRY_BASE_MS` default `12000`,
@@ -491,6 +496,10 @@ and injected into the provider, so it's effectively process-wide):
   already handled by `fetchWithRetry` inside the dispatched request; a
   thrown error propagates immediately, preserving the existing
   fallback-to-placeholder behavior for that entry.
+- Each HTTP 429 retry reacquires the shared spacing slot and concurrency
+  permit. Ownership/dispatch authorization still runs immediately before the
+  actual fetch, after limiter waiting, so queued-but-unsent work is not
+  recorded as a remote dispatch.
 - Testable without real waiting: `now`/`sleep`/`random` are all injectable
   (see `OpenAIImageRateLimiter`'s constructor options and its spec file).
 - Every `schedule()` call accumulates its own spacing/backoff wait, 429 count,
