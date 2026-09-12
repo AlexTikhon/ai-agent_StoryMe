@@ -182,7 +182,7 @@ describe('complete editions and durable spending (real PostgreSQL, real PDF, syn
     expect(pages.every((page) => page.version === 8 && page.imageR2Key === null)).toBe(true);
   });
 
-  it('retains unknown reservations across takeover and never resets the paid budget', async () => {
+  it('transfers proven-unsent reservations but retains dispatch intent as unknown exposure', async () => {
     const value = await book();
     const first = await claim(value);
     const policy = executionPolicy(
@@ -208,9 +208,14 @@ describe('complete editions and durable spending (real PostgreSQL, real PDF, syn
       'second',
       60_000,
     );
+    const secondCtx = { ...first, fencingVersion: second!.fencingVersion };
+    const transferred = await execution.reserveOperation(secondCtx, policy, operation);
+    expect(transferred).toBe(0);
+    await execution.reserveHttpAttempt(secondCtx, policy, transferred);
+    const third = await new GenerationRunService(db).claim(first.runId, 'third', 'third', 60_000);
     await expect(
       execution.reserveOperation(
-        { ...first, fencingVersion: second!.fencingVersion },
+        { ...first, fencingVersion: third!.fencingVersion },
         policy,
         operation,
       ),
@@ -220,16 +225,18 @@ describe('complete editions and durable spending (real PostgreSQL, real PDF, syn
     ).rejects.toThrow('no longer owned');
     const run = await db.generationRun.findUniqueOrThrow({ where: { id: first.runId } });
     expect(run.providerOperations).toHaveLength(1);
-    expect(run.providerOperations).toEqual([expect.objectContaining({ state: 'unknown' })]);
+    expect(run.providerOperations).toEqual([
+      expect.objectContaining({ state: 'unknown', httpAttempts: 1 }),
+    ]);
   });
 
-  it('resumes only three confirmed illustrations after a real worker process terminates', async () => {
+  it('survives worker A generation death and worker B adoption death before worker C resumes', async () => {
     const value = await book();
     const first = await claim(value);
     const images = new LocalImageAssetStorage();
     const pdfs = new LocalPdfStorage();
-    try {
-      const code = await new Promise<number | null>((resolve, reject) => {
+    const terminateWorkerAfterStoredImages = (count: number) =>
+      new Promise<number | null>((resolve, reject) => {
         const child = spawn(
           process.execPath,
           [
@@ -239,6 +246,7 @@ describe('complete editions and durable spending (real PostgreSQL, real PDF, syn
             'tsconfig-paths/register',
             'test/integration/fixtures/terminated-generation-worker.ts',
             first.runId,
+            String(count),
           ],
           {
             env: { ...process.env, TS_NODE_PROJECT: 'tsconfig.scripts.json' },
@@ -258,31 +266,52 @@ describe('complete editions and durable spending (real PostgreSQL, real PDF, syn
           resolve(status);
         });
       });
-      expect(code).toBe(86);
-      const stopped = await db.book.findUniqueOrThrow({ where: { id: value.id } });
+    try {
+      // Worker A accepts the story and stores three images before abrupt death.
+      expect(await terminateWorkerAfterStoredImages(3)).toBe(86);
+      const stoppedAfterA = await db.book.findUniqueOrThrow({ where: { id: value.id } });
       const providers = {
         story: new MockStoryGenerationProvider(),
         image: new MockImageGenerationProvider(),
         character: new MockCharacterProfileProvider(),
       };
       const policy = executionPolicy(providers);
-      const work = await new GenerationResumeService(images).inspect(
-        stopped,
+      const workAfterA = await new GenerationResumeService(images).inspect(
+        stoppedAfterA,
         first.inputHash,
         policy.fingerprint,
         null,
       );
-      expect(work.images.filter((image) => image.valid)).toHaveLength(3);
-      expect(stopped.bookPreview).toBeNull();
+      expect(workAfterA.images.filter((image) => image.valid)).toHaveLength(3);
+      expect(stoppedAfterA.bookPreview).toBeNull();
+
+      // Worker B takes over, starts copying those compatible artifacts into its
+      // fence, then dies during adoption. Worker C must still see A's immutable
+      // source checkpoint through B's partially adopted checkpoint.
+      expect(await terminateWorkerAfterStoredImages(1)).toBe(86);
+      const stoppedAfterB = await db.book.findUniqueOrThrow({ where: { id: value.id } });
+      const workAfterB = await new GenerationResumeService(images).inspect(
+        stoppedAfterB,
+        first.inputHash,
+        policy.fingerprint,
+        null,
+      );
+      expect(workAfterB.images.filter((image) => image.valid)).toHaveLength(3);
+
       const delivery = await new GenerationRunService(db).claim(
         first.runId,
-        'replacement',
-        'replacement',
+        'worker-c',
+        'worker-c',
         60_000,
       );
-      const previousIllustrations = (
-        delivery!.providerOperations as Array<{ operation: string }>
-      ).filter((op) => op.operation === 'illustration').length;
+      const previousIllustrationDispatches = (
+        delivery!.providerOperations as Array<{
+          operation: string;
+          dispatches?: unknown[];
+        }>
+      )
+        .filter((op) => op.operation === 'illustration')
+        .reduce((total, op) => total + (op.dispatches?.length ?? 0), 0);
       const ctx = {
         ...first,
         fencingVersion: delivery!.fencingVersion,
@@ -302,12 +331,15 @@ describe('complete editions and durable spending (real PostgreSQL, real PDF, syn
       const completed = await db.book.findUniqueOrThrow({ where: { id: value.id } });
       expect(Object.keys(completed.publishedArtifactManifest as object)).toHaveLength(9);
       const ledger = (await db.generationRun.findUniqueOrThrow({ where: { id: first.runId } }))
-        .providerOperations as Array<{ operation: string }>;
+        .providerOperations as Array<{ operation: string; dispatches?: unknown[] }>;
       expect(ledger.filter((op) => op.operation === 'story')).toHaveLength(1);
-      // Other operations may have been reserved before death; exactly five assets remain.
-      expect(ledger.filter((op) => op.operation === 'illustration')).toHaveLength(
-        previousIllustrations + 5,
-      );
+      // Reserved-unsent operations are reclaimed rather than duplicated, so
+      // dispatch records—not operation rows—prove that exactly five assets remained.
+      expect(
+        ledger
+          .filter((op) => op.operation === 'illustration')
+          .reduce((total, op) => total + (op.dispatches?.length ?? 0), 0),
+      ).toBe(previousIllustrationDispatches + 5);
     } finally {
       await images.deleteBookArtifacts(value.id);
       await pdfs.deleteBookArtifacts(value.id);

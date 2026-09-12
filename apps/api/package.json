@@ -17,6 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "node scripts/run-integration-tests.mjs",
+    "typecheck:integration:hardening": "tsc --project tsconfig.integration.json",
     "test:coverage": "vitest run --coverage",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate",

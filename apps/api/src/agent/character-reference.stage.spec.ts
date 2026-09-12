@@ -247,7 +247,10 @@ describe('CharacterReferenceStage', () => {
         namespace,
         telemetry: new GenerationProviderTelemetry(10, 1),
       }),
-    ).rejects.toThrow('sheet unavailable');
+    ).rejects.toMatchObject({
+      reason: 'provider_transient_failure',
+      message: 'Provider request failed.',
+    });
     await expect(stage.loadReference('book-1', sheetKey)).rejects.toThrow(
       'REQUIRED_CHARACTER_REFERENCE',
     );

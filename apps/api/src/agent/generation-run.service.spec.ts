@@ -218,4 +218,39 @@ describe('GenerationRunService', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('assertQueueCompletionConsistent', () => {
+    it.each(['completed', 'failed', 'cancelled'] as const)(
+      'accepts a durably terminal %s run',
+      async (status) => {
+        prisma.generationRun.findUnique.mockResolvedValue({ status, fencingVersion: 4 });
+        await expect(service.assertQueueCompletionConsistent('run-1', 4)).resolves.toBeUndefined();
+      },
+    );
+
+    it('accepts a running run only when a newer fence confirms supersession', async () => {
+      prisma.generationRun.findUnique.mockResolvedValue({
+        status: 'running',
+        fencingVersion: 5,
+      });
+      await expect(service.assertQueueCompletionConsistent('run-1', 4)).resolves.toBeUndefined();
+    });
+
+    it('rejects queue completion while the same fence remains running', async () => {
+      prisma.generationRun.findUnique.mockResolvedValue({
+        status: 'running',
+        fencingVersion: 4,
+      });
+      await expect(service.assertQueueCompletionConsistent('run-1', 4)).rejects.toMatchObject({
+        reason: 'ownership_uncertain',
+      });
+    });
+
+    it('preserves database uncertainty as a typed retryable control outcome', async () => {
+      prisma.generationRun.findUnique.mockRejectedValue(new Error('database unavailable'));
+      await expect(service.assertQueueCompletionConsistent('run-1', 4)).rejects.toMatchObject({
+        reason: 'ownership_uncertain',
+      });
+    });
+  });
 });

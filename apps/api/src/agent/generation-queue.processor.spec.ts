@@ -68,6 +68,8 @@ function createMockGenerationRunService(
   return {
     claim: vi.fn().mockResolvedValue(claimed),
     heartbeat: vi.fn().mockResolvedValue(true),
+    classifyOwnershipLoss: vi.fn().mockResolvedValue('confirmed_supersession'),
+    assertQueueCompletionConsistent: vi.fn().mockResolvedValue(undefined),
   } as unknown as jest.Mocked<GenerationRunService>;
 }
 
@@ -230,6 +232,27 @@ describe('GenerationQueueProcessor', () => {
       ).rejects.toThrow('unexpected');
     });
 
+    it('does not let BullMQ complete when PostgreSQL still reports the claimed fence running', async () => {
+      const booksService = createMockBooksService();
+      const generationRunService = createMockGenerationRunService();
+      generationRunService.assertQueueCompletionConsistent.mockRejectedValue(
+        Object.assign(new Error('terminal state not persisted'), {
+          reason: 'ownership_uncertain',
+        }),
+      );
+      const processor = new GenerationQueueProcessor(
+        booksService as never,
+        generationRunService as never,
+        createMockGenerationRunCoordinator() as never,
+        createMockSnapshotBackfillService() as never,
+      );
+
+      await expect(
+        processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' }), TOKEN),
+      ).rejects.toMatchObject({ reason: 'ownership_uncertain' });
+      expect(generationRunService.assertQueueCompletionConsistent).toHaveBeenCalledWith('run-1', 1);
+    });
+
     it('throws (and never claims) when BullMQ invokes process() without a delivery token', async () => {
       const booksService = createMockBooksService();
       const generationRunService = createMockGenerationRunService();
@@ -314,6 +337,43 @@ describe('GenerationQueueProcessor', () => {
         expect(capturedCtx?.signal?.aborted).toBe(true);
         resolvePipeline();
         await processPromise;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('fails the delivery when heartbeat storage errors make ownership uncertain', async () => {
+      vi.useFakeTimers();
+      try {
+        const booksService = createMockBooksService();
+        let capturedCtx: GenerationExecutionContext | undefined;
+        booksService.runGenerationPipeline.mockImplementation((ctx: GenerationExecutionContext) => {
+          capturedCtx = ctx;
+          return new Promise<void>((_resolve, reject) => {
+            ctx.signal?.addEventListener('abort', () => reject(ctx.signal?.reason), { once: true });
+          });
+        });
+        const generationRunService = createMockGenerationRunService();
+        generationRunService.heartbeat.mockRejectedValue(new Error('database unavailable'));
+        const coordinator = createMockGenerationRunCoordinator();
+        const processor = new GenerationQueueProcessor(
+          booksService as never,
+          generationRunService as never,
+          coordinator as never,
+          createMockSnapshotBackfillService() as never,
+        );
+
+        const processPromise = processor.process(makeJob({ bookId: 'b-1', runId: 'run-1' }), TOKEN);
+        const rejection = expect(processPromise).rejects.toMatchObject({
+          reason: 'ownership_uncertain',
+        });
+        await vi.waitFor(() => expect(capturedCtx).toBeDefined());
+        await vi.advanceTimersByTimeAsync(5000);
+
+        await rejection;
+        expect(capturedCtx?.signal?.aborted).toBe(true);
+        expect(generationRunService.classifyOwnershipLoss).not.toHaveBeenCalled();
+        expect(coordinator.failAbandoned).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
       }
@@ -438,7 +498,7 @@ describe('GenerationQueueProcessor', () => {
   });
 
   describe('onFailed', () => {
-    it('refunds a failed one-call page-image job instead of finalizing a GenerationRun', async () => {
+    it('does not let an unfenced failed-event callback mutate a page-image revision', async () => {
       const booksService = createMockBooksService();
       const pageRevisionService = createMockPageImageRevisionService();
       const processor = new GenerationQueueProcessor(
@@ -460,7 +520,7 @@ describe('GenerationQueueProcessor', () => {
 
       await processor.onFailed(job, new Error('provider failed'));
 
-      expect(pageRevisionService.failAndRefund).toHaveBeenCalledWith('revision-1');
+      expect(pageRevisionService.failAndRefund).not.toHaveBeenCalled();
       expect(booksService.markRunPermanentlyFailedAfterExhaustedRetries).not.toHaveBeenCalled();
     });
     it('logs a safe error message without throwing on an undefined job', async () => {

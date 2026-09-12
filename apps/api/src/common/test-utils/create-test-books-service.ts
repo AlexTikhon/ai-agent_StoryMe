@@ -9,6 +9,7 @@ import {
   type CancelGenerationResponse,
   type GenerateBookResponse,
   type GenerationDiagnosticsDto,
+  type GenerationFailureReason,
   type GenerationProgressDto,
   type PageImageRegenerationQuote,
   type PageImageRevisionDto,
@@ -53,6 +54,7 @@ import { BookGenerationExecutionService } from '../../books/book-generation-exec
 import type { PublishedImageResult } from '../../books/book-asset.service';
 import { BookPageChangeService } from '../../books/book-page-change.service';
 import { BookPageImageRevisionService } from '../../books/book-page-image-revision.service';
+import { PageImageRevisionExecutionGateway } from '../../books/page-image-revision-execution.gateway';
 
 export {
   IMAGE_GENERATION_BUDGET_INSUFFICIENT_CODE,
@@ -156,6 +158,7 @@ export class BooksService {
       new BookPageImageRevisionService(
         this.crudService,
         prisma,
+        new PageImageRevisionExecutionGateway(prisma),
         creditsService,
         imageGenerationProvider,
         imageAssetStorage,
@@ -399,8 +402,14 @@ export class BooksService {
    * dying mid-attempt, as opposed to a single job exhausting its retries
    * while the process stays up.
    */
-  async markRunPermanentlyFailedAfterExhaustedRetries(runId: string): Promise<void> {
-    return this.generationExecutionService.markRunPermanentlyFailedAfterExhaustedRetries(runId);
+  async markRunPermanentlyFailedAfterExhaustedRetries(
+    runId: string,
+    failureReason?: GenerationFailureReason,
+  ): Promise<void> {
+    return this.generationExecutionService.markRunPermanentlyFailedAfterExhaustedRetries(
+      runId,
+      failureReason,
+    );
   }
 
   async getPreviewPdfBuffer(

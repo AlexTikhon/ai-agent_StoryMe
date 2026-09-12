@@ -325,7 +325,7 @@ describe('generation provider fault injection (real PostgreSQL)', () => {
 
     expect(run).toMatchObject({
       status: 'failed',
-      errorCode: 'PROVIDER_INVALID_RESPONSE',
+      errorCode: 'GENERATION_INVALID_OUTPUT',
       errorMessage: 'Provider returned an invalid response.',
     });
     expect(book).toMatchObject({

@@ -1998,7 +1998,8 @@ describe('AgentService', () => {
 
         expect(result.status).toBe('failed');
         expect(result.errorMessage).toBe('Provider request failed.');
-        expect(result.errorCode).toBe('PROVIDER_PROVIDER_ERROR');
+        expect(result.errorCode).toBe('GENERATION_PROVIDER_TRANSIENT_FAILURE');
+        expect(result.failureReason).toBe('provider_transient_failure');
         expect(result.failedStep).toBe('story_plan');
         expect(result.bookUpdate).toEqual({
           generationTimeMs: expect.any(Number),
@@ -2582,7 +2583,8 @@ describe('AgentService', () => {
         expect(outcome).toMatchObject({
           status: 'failed',
           failedStep: 'story_plan',
-          errorCode: 'PROVIDER_INVALID_RESPONSE',
+          errorCode: 'GENERATION_INVALID_OUTPUT',
+          failureReason: 'invalid_output',
         });
         expect(outcome.errorMessage).toBe('Provider returned an invalid response.');
         expect(

@@ -5,6 +5,9 @@ import { GenerationRunStatus, type Prisma, type Book } from '@prisma/client';
 import { PrismaService } from '../../src/database/prisma.service';
 import { GenerationRunService } from '../../src/agent/generation-run.service';
 import { buildInputSnapshot, hashInputSnapshot } from '../../src/agent/generation-input-snapshot';
+import { BookPageImageRevisionService } from '../../src/books/book-page-image-revision.service';
+import { PageImageRevisionExecutionGateway } from '../../src/books/page-image-revision-execution.gateway';
+import { CreditsService } from '../../src/credits/credits.service';
 
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
 
@@ -173,5 +176,101 @@ describe('BullMQ stalled-job redelivery — delivery-token fencing (real Redis +
     const finalRun = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
     expect(finalRun.deliveryToken).toBe(workerBToken);
     expect(finalRun.fencingVersion).toBe(workerBFencingVersion);
+  }, 15_000);
+
+  it("fences a duplicate/stalled page-image delivery so worker A cannot release worker B's active pointer", async () => {
+    const book = await createUserAndBook();
+    const completed = await prisma.book.update({
+      where: { id: book.id },
+      data: { status: 'complete' },
+    });
+    await prisma.bookPage.create({
+      data: { bookId: book.id, pageNumber: 1, version: 1 },
+    });
+    const revision = await prisma.pageImageRevision.create({
+      data: {
+        bookId: book.id,
+        userId: book.userId,
+        pageNumber: 1,
+        expectedPageVersion: 1,
+        status: 'queued',
+        costCredits: 0,
+        provider: 'mock',
+        quoteExpiresAt: new Date(Date.now() + 60_000),
+        queueExpiresAt: new Date(Date.now() + 60_000),
+        sourceBookUpdatedAt: completed.updatedAt,
+      },
+    });
+    await prisma.book.update({
+      where: { id: book.id },
+      data: { activePageImageRevisionId: revision.id },
+    });
+    const revisions = new BookPageImageRevisionService(
+      {} as never,
+      prisma,
+      new PageImageRevisionExecutionGateway(prisma),
+      new CreditsService(prisma),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const queueName = `test-page-stalled-redelivery-${randomUUID()}`;
+    const connection = { url: REDIS_URL, maxRetriesPerRequest: null };
+    queue = new Queue(queueName, { connection });
+    await queue.add('page-revision', { revisionId: revision.id }, { jobId: revision.id });
+    const workerAClaimed = createDeferred<void>();
+    const workerBClaimed = createDeferred<void>();
+    let fenceA = 0;
+    let fenceB = 0;
+    let tokenB: string | undefined;
+
+    workerA = new Worker(
+      queueName,
+      async (_job, token) => {
+        const claimed = await revisions.claim(revision.id, token!);
+        fenceA = claimed!.fencingVersion;
+        workerAClaimed.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+        await revisions.failAndRefund(
+          revision.id,
+          'STALE_WORKER_MUST_NOT_APPLY',
+          'safe',
+          fenceA,
+          'storage_failure',
+        );
+      },
+      { connection, lockDuration: 300, skipLockRenewal: true, stalledInterval: 200 },
+    );
+    workerA.on('error', () => undefined);
+    await workerA.waitUntilReady();
+    await workerAClaimed.promise;
+
+    workerB = new Worker(
+      queueName,
+      async (_job, token) => {
+        tokenB = token;
+        const claimed = await revisions.claim(revision.id, token!);
+        fenceB = claimed!.fencingVersion;
+        workerBClaimed.resolve();
+      },
+      { connection, lockDuration: 300, stalledInterval: 200 },
+    );
+    await workerB.waitUntilReady();
+    await workerBClaimed.promise;
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    const [finalRevision, finalBook] = await Promise.all([
+      prisma.pageImageRevision.findUniqueOrThrow({ where: { id: revision.id } }),
+      prisma.book.findUniqueOrThrow({ where: { id: book.id } }),
+    ]);
+    expect(fenceB).toBe(fenceA + 1);
+    expect(finalRevision).toMatchObject({
+      status: 'running',
+      fencingVersion: fenceB,
+      deliveryToken: tokenB,
+      failureReason: null,
+    });
+    expect(finalBook.activePageImageRevisionId).toBe(revision.id);
   }, 15_000);
 });

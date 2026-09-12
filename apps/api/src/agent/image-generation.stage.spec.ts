@@ -211,6 +211,7 @@ describe('ImageGenerationStage', () => {
       expect.objectContaining({
         assetLabel: 'cover',
         message: 'disk full',
+        failureReason: 'storage_failure',
         attempts: 1,
       }),
     );
