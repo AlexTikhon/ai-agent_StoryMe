@@ -31,6 +31,7 @@ import {
   MockCharacterProfileProvider,
 } from '../agent/character-profile-provider';
 import { GenerationExecutionService } from '../agent/generation-execution.service';
+import { GenerationModule } from '../agent/generation.module';
 
 /**
  * These assert on the DynamicModule metadata BooksModule.register produces,
@@ -77,23 +78,11 @@ describe('BooksModule.register', () => {
     expect(dynamicModule.providers).toContain(GenerationQueueProcessor);
   });
 
-  it('registers every AgentService collaborator in worker composition', () => {
-    const providers = BooksModule.register({ enableGenerationWorker: true }).providers;
-    for (const provider of [
-      AgentService,
-      GenerationPreparationService,
-      GenerationResumeService,
-      CharacterReferenceStage,
-      StoryContentStage,
-      StoryQualityRepairStage,
-      StoryQualityService,
-      ImageGenerationStage,
-      GenerationResultCollector,
-      GenerationImageService,
-      GenerationPublicationService,
-    ]) {
-      expect(providers).toContain(provider);
-    }
+  it('delegates AgentService composition to the explicit GenerationModule boundary', () => {
+    const dynamicModule = BooksModule.register({ enableGenerationWorker: true });
+
+    expect(dynamicModule.imports).toContain(GenerationModule);
+    expect(dynamicModule.providers).not.toContain(AgentService);
   });
 
   it('resolves AgentService through the same Nest provider graph used by the worker', async () => {

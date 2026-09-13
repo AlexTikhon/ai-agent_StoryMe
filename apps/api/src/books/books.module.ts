@@ -1,17 +1,9 @@
 import { DynamicModule, Module, Provider } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { CreditsModule } from '../credits/credits.module';
-import { AgentService } from '../agent/agent.service';
-import { GenerationQueueService } from '../agent/generation-queue.service';
 import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
-import { GenerationRunService } from '../agent/generation-run.service';
 import { GenerationRunRecoveryService } from '../agent/generation-run-recovery.service';
 import { ClaimArtifactCleanupService } from '../agent/claim-artifact-cleanup.service';
-import { GenerationExecutionService } from '../agent/generation-execution.service';
-import { GenerationRunCoordinator } from '../agent/generation-run-coordinator.service';
-import { GenerationInputSnapshotBackfillService } from '../agent/generation-input-snapshot-backfill.service';
-import { OutboxService } from '../outbox/outbox.service';
-import { OutboxDispatcherService } from '../outbox/outbox-dispatcher.service';
 import { BooksController } from './books.controller';
 import { BookDeletionController } from './book-deletion.controller';
 import { BookHardDeletionService } from './book-hard-deletion.service';
@@ -23,29 +15,12 @@ import { BookGenerationService } from './book-generation.service';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
 import { BookPageChangeService } from './book-page-change.service';
 import { BookPageImageRevisionService } from './book-page-image-revision.service';
-import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
-import { IMAGE_ASSET_STORAGE_TOKEN, createImageAssetStorage } from '../images/image-asset-storage';
-import { ChildPhotoProcessor } from '../images/child-photo-processor';
-import { IMAGE_GENERATION_PROVIDER_TOKEN } from '../images/image-generation-provider';
-import { createImageGenerationProvider } from '../images/image-generation-provider.factory';
-import { STORY_GENERATION_PROVIDER_TOKEN } from '../agent/story-generation-provider';
-import { createStoryGenerationProvider } from '../agent/story-generation-provider.factory';
-import { CHARACTER_PROFILE_PROVIDER_TOKEN } from '../agent/character-profile-provider';
-import { createCharacterProfileProvider } from '../agent/character-profile-provider.factory';
-import { CharacterReferenceStage } from '../agent/character-reference.stage';
-import { GenerationImageService } from '../agent/generation-image.service';
-import { GenerationPreparationService } from '../agent/generation-preparation';
-import { GenerationPublicationService } from '../agent/generation-publication.service';
-import { GenerationResultCollector } from '../agent/generation-result.collector';
-import { GenerationResumeService } from '../agent/generation-resume.service';
-import { ImageGenerationStage } from '../agent/image-generation.stage';
-import { StoryQualityService } from '../agent/story-quality.service';
-import { StoryContentStage } from '../agent/story-content.stage';
-import { StoryQualityRepairStage } from '../agent/story-quality-repair.stage';
-import { RedisProviderQuotaGate } from '../images/provider-quota-gate';
 import { PageImageRevisionQueueProcessor } from '../agent/page-image-revision-queue.processor';
 import { MaintenanceQueueProcessor } from '../agent/maintenance-queue.processor';
 import { PageImageRevisionExecutionGateway } from './page-image-revision-execution.gateway';
+import { ArtifactStorageModule } from '../storage/artifact-storage.module';
+import { ProviderExecutionModule } from '../provider-execution/provider-execution.module';
+import { GenerationModule } from '../agent/generation.module';
 
 export interface BooksModuleOptions {
   /** Whether to register GenerationQueueProcessor (see app.module.ts / worker.ts). */
@@ -56,29 +31,6 @@ export interface BooksModuleOptions {
 export class BooksModule {
   static register(options: BooksModuleOptions): DynamicModule {
     const providers: Provider[] = [
-      {
-        provide: PDF_STORAGE_TOKEN,
-        useFactory: () => createPdfStorage(process.env['PDF_STORAGE_DRIVER']),
-      },
-      {
-        provide: IMAGE_ASSET_STORAGE_TOKEN,
-        useFactory: () => createImageAssetStorage(process.env['IMAGE_STORAGE_DRIVER']),
-      },
-      {
-        provide: STORY_GENERATION_PROVIDER_TOKEN,
-        useFactory: () => createStoryGenerationProvider(),
-      },
-      {
-        provide: CHARACTER_PROFILE_PROVIDER_TOKEN,
-        useFactory: () => createCharacterProfileProvider(),
-      },
-      {
-        provide: IMAGE_GENERATION_PROVIDER_TOKEN,
-        inject: [RedisProviderQuotaGate],
-        useFactory: (quotaGate: RedisProviderQuotaGate) =>
-          createImageGenerationProvider(process.env, quotaGate),
-      },
-      RedisProviderQuotaGate,
       BooksService,
       BookCrudService,
       BookAssetService,
@@ -89,22 +41,6 @@ export class BooksModule {
       BookPageImageRevisionService,
       PageImageRevisionExecutionGateway,
       BookHardDeletionService,
-      GenerationPreparationService,
-      GenerationResumeService,
-      CharacterReferenceStage,
-      StoryContentStage,
-      StoryQualityRepairStage,
-      StoryQualityService,
-      ImageGenerationStage,
-      GenerationResultCollector,
-      GenerationImageService,
-      GenerationPublicationService,
-      AgentService,
-      GenerationQueueService,
-      GenerationRunService,
-      GenerationExecutionService,
-      GenerationRunCoordinator,
-      GenerationInputSnapshotBackfillService,
       // Registered unconditionally, same reasoning as OutboxDispatcherService
       // below — recovery is safe and useful in every process, and its
       // Postgres advisory lock already ensures only one live instance runs a
@@ -115,14 +51,11 @@ export class BooksModule {
       // own dedicated RecoveryLease row ensures only one live instance runs a
       // pass at a time even with both API and worker registering it.
       ClaimArtifactCleanupService,
-      OutboxService,
       // Registered unconditionally (not gated on enableGenerationWorker) —
       // the outbox sweep is safe and useful in every process, API included,
       // since a runId-keyed BullMQ jobId makes a duplicate sweep of the same
       // event an idempotent no-op (see OutboxDispatcherService's own doc
       // comment).
-      OutboxDispatcherService,
-      ChildPhotoProcessor,
     ];
 
     // GenerationQueueProcessor's @Processor decorator opens a real BullMQ
@@ -138,7 +71,13 @@ export class BooksModule {
 
     return {
       module: BooksModule,
-      imports: [AuthModule, CreditsModule],
+      imports: [
+        AuthModule,
+        CreditsModule,
+        ArtifactStorageModule,
+        ProviderExecutionModule,
+        GenerationModule,
+      ],
       controllers: [BooksController, BookDeletionController],
       providers,
     };

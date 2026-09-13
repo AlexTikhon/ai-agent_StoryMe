@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
-import { AppModule } from './app.module';
+import { WorkerModule } from './worker.module';
 import { envPresent, logStartup } from './common/startup-log';
 import { QUEUES } from './queue/queues.config';
 import { assertPdfStorageSupportsWorker } from './pdf/pdf-storage';
@@ -31,10 +31,9 @@ async function bootstrap(): Promise<void> {
     redisUrlPresent: envPresent(process.env['REDIS_URL']),
     databaseUrlPresent: envPresent(process.env['DATABASE_URL']),
   });
-  const app = await NestFactory.createApplicationContext(
-    AppModule.register({ enableGenerationWorker: true }),
-    { logger: ['error', 'warn', 'log', 'debug'] },
-  );
+  const app = await NestFactory.createApplicationContext(WorkerModule.register(), {
+    logger: ['error', 'warn', 'log', 'debug'],
+  });
 
   app.enableShutdownHooks();
 
