@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Test } from '@nestjs/testing';
+import { MODULE_METADATA } from '@nestjs/common/constants';
 import { BooksModule } from './books.module';
 import { GenerationQueueProcessor } from '../agent/generation-queue.processor';
 import { BookGenerationService } from './book-generation.service';
@@ -83,6 +84,9 @@ describe('BooksModule.register', () => {
 
     expect(dynamicModule.imports).toContain(GenerationModule);
     expect(dynamicModule.providers).not.toContain(AgentService);
+    expect(Reflect.getMetadata(MODULE_METADATA.EXPORTS, GenerationModule)).toContain(
+      GenerationResumeService,
+    );
   });
 
   it('resolves AgentService through the same Nest provider graph used by the worker', async () => {

@@ -23,6 +23,7 @@ import { StoryQualityService } from './story-quality.service';
 
 const GENERATION_EXPORTS = [
   AgentService,
+  GenerationResumeService,
   GenerationQueueService,
   GenerationRunService,
   GenerationExecutionService,
@@ -36,7 +37,6 @@ const GENERATION_EXPORTS = [
   imports: [CreditsModule, ArtifactStorageModule, ProviderExecutionModule],
   providers: [
     GenerationPreparationService,
-    GenerationResumeService,
     CharacterReferenceStage,
     StoryContentStage,
     StoryQualityRepairStage,
