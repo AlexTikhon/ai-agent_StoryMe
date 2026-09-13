@@ -12,6 +12,17 @@ const realProviders = {
 } as const;
 
 describe('generation estimate and hard limits', () => {
+  it('charges only the real provider in a mixed pipeline', () => {
+    expect(
+      buildGenerationEstimate({
+        kind: 'initial',
+        pageCount: 6,
+        providers: { story: 'openai', characterProfile: 'mock', image: 'mock' },
+        repairEnabled: false,
+        configuration: { storyCostUsd: 0.02 },
+      }).estimatedCostUsd?.maximum,
+    ).toBe(0.02);
+  });
   it('reports a complete real-provider estimate from server configuration', () => {
     expect(
       buildGenerationEstimate({

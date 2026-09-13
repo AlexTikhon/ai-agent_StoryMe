@@ -24,6 +24,8 @@ export const QUEUES = {
    * AgentService.startBookGeneration call as a single durable job instead.
    */
   BOOK_GENERATION: 'book-generation',
+  PAGE_IMAGE_REVISION: 'page-image-revision',
+  MAINTENANCE: 'book-maintenance',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];

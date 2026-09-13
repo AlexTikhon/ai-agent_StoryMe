@@ -9,6 +9,7 @@ import type { GenerationInputSnapshot } from './generation-input-snapshot';
  * generate from — never the book's live, possibly-since-edited columns.
  */
 export interface GenerationExecutionContext {
+  readonly executionAuthorization?: unknown;
   readonly runId: string;
   readonly bookId: string;
   readonly fencingVersion: number;

@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type { Book } from '@prisma/client';
-import { BookStatus, SupportedLanguage, type BookDto } from '@book/types';
+import { BookStatus, SupportedLanguage, type BookDto, type BookSummaryDto } from '@book/types';
 import type { ZodTypeAny } from 'zod';
 import {
   bookLayoutSchema,
@@ -43,8 +43,43 @@ function parseJsonField<T>(
   return result.data as T;
 }
 
+export function publishedEdition(
+  book: Pick<
+    Book,
+    | 'previewPdfUrl'
+    | 'publishedPdfRunId'
+    | 'publishedPdfFencingVersion'
+    | 'publishedRunId'
+    | 'publishedRunFencingVersion'
+  >,
+): string | null {
+  if (!book.previewPdfUrl) return null;
+  return book.publishedPdfRunId
+    ? `${book.publishedPdfRunId}:${book.publishedPdfFencingVersion}`
+    : book.publishedRunId
+      ? `${book.publishedRunId}:${book.publishedRunFencingVersion}`
+      : 'legacy';
+}
+
+export function toBookSummaryDto(book: Book): BookSummaryDto {
+  return {
+    id: book.id,
+    title: book.title,
+    childName: book.childName,
+    childAge: book.childAge,
+    language: book.language as SupportedLanguage | null,
+    theme: book.theme,
+    status: book.status as BookStatus,
+    previewPdfUrl: book.previewPdfUrl,
+    createdAt: book.createdAt.toISOString(),
+    updatedAt: book.updatedAt.toISOString(),
+    publishedEdition: publishedEdition(book),
+  };
+}
+
 export function toBookDto(book: Book): BookDto {
   return {
+    publishedEdition: publishedEdition(book),
     id: book.id,
     userId: book.userId,
     childProfileId: book.childProfileId,

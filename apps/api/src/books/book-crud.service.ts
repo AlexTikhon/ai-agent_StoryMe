@@ -7,7 +7,7 @@ import {
   type BooksPageDto,
 } from '@book/types';
 import { PrismaService } from '../database/prisma.service';
-import { toBookDto } from './books.mapper';
+import { toBookDto, toBookSummaryDto } from './books.mapper';
 import type { CreateBookDto } from './dto/create-book.dto';
 import type { UpdateBookDto } from './dto/update-book.dto';
 
@@ -76,7 +76,7 @@ export class BookCrudService {
         take: safeLimit,
       }),
     ]);
-    return { items: books.map(toBookDto), page: safePage, limit: safeLimit, total };
+    return { items: books.map(toBookSummaryDto), page: safePage, limit: safeLimit, total };
   }
 
   async findOneForUser(id: string, userId: string): Promise<BookDto> {

@@ -10,6 +10,7 @@ import {
 import type { GenerationQueueService } from './generation-queue.service';
 import type { GenerationRunCoordinator } from './generation-run-coordinator.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
+import type { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
 
 type MockPrisma = ReturnType<typeof createMockPrisma>;
 
@@ -43,6 +44,8 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
 function createMockGenerationQueueService(isPending = false): jest.Mocked<GenerationQueueService> {
   return {
     isJobStillPending: vi.fn().mockResolvedValue(isPending),
+    isPageImageRevisionJobStillPending: vi.fn().mockResolvedValue(false),
+    enqueuePageImageRevision: vi.fn().mockResolvedValue(undefined),
   } as unknown as jest.Mocked<GenerationQueueService>;
 }
 
@@ -289,6 +292,103 @@ describe('GenerationRunRecoveryService', () => {
     const summary = await service.recover(now);
 
     expect(summary).toMatchObject({ staleFound: 2, recovered: 1, errors: 1 });
+  });
+
+  describe('page-image revision recovery sweep', () => {
+    function revision(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'revision-1',
+        bookId: 'book-1',
+        status: 'running',
+        fencingVersion: 3,
+        providerDispatches: 0,
+        checkpointState: 'none',
+        queueExpiresAt: null,
+        leaseExpiresAt: new Date(now.getTime() - 1_000),
+        processingDeadlineAt: new Date(now.getTime() + 60_000),
+        startedAt: new Date(now.getTime() - 10_000),
+        createdAt: new Date(now.getTime() - 20_000),
+        ...overrides,
+      };
+    }
+
+    function pageSweep(revisions: Array<Record<string, unknown>>) {
+      const pageImageRevisions = {
+        failAndRefund: vi.fn().mockResolvedValue(undefined),
+      } as unknown as jest.Mocked<BookPageImageRevisionService>;
+      prisma.pageImageRevision.findMany.mockResolvedValue(revisions as never);
+      service = new GenerationRunRecoveryService(
+        prisma as never,
+        generationQueueService as never,
+        generationRunCoordinator as never,
+        pageImageRevisions,
+      );
+      return pageImageRevisions;
+    }
+
+    it('fails an expired queue wait with the exact revision fence', async () => {
+      const page = pageSweep([
+        revision({
+          status: 'queued',
+          fencingVersion: 0,
+          queueExpiresAt: new Date(now.getTime() - 1),
+          leaseExpiresAt: null,
+          processingDeadlineAt: null,
+        }),
+      ]);
+
+      await service.recover(now);
+
+      expect(page.failAndRefund).toHaveBeenCalledWith(
+        'revision-1',
+        'PAGE_IMAGE_QUEUE_WAIT_EXPIRED',
+        expect.any(String),
+        0,
+      );
+      expect(generationQueueService.enqueuePageImageRevision).not.toHaveBeenCalled();
+    });
+
+    it('leaves a stalled-looking revision alone while BullMQ still owns a delivery', async () => {
+      const page = pageSweep([revision()]);
+      generationQueueService.isPageImageRevisionJobStillPending.mockResolvedValue(true);
+
+      await service.recover(now);
+
+      expect(page.failAndRefund).not.toHaveBeenCalled();
+      expect(generationQueueService.enqueuePageImageRevision).not.toHaveBeenCalled();
+    });
+
+    it('never redispatches an ambiguous remote outcome and persists its typed failure', async () => {
+      const page = pageSweep([revision({ providerDispatches: 1 })]);
+
+      await service.recover(now);
+
+      expect(page.failAndRefund).toHaveBeenCalledWith(
+        'revision-1',
+        'PAGE_IMAGE_REMOTE_OUTCOME_UNKNOWN',
+        expect.any(String),
+        3,
+        'provider_transient_failure',
+      );
+      expect(generationQueueService.enqueuePageImageRevision).not.toHaveBeenCalled();
+    });
+
+    it('requeues proven-unsent and artifact-stored work, and retries finalization after a DB outage', async () => {
+      const page = pageSweep([
+        revision({ id: 'unsent' }),
+        revision({ id: 'stored', providerDispatches: 1, checkpointState: 'artifact_stored' }),
+        revision({ id: 'ambiguous', providerDispatches: 1 }),
+      ]);
+      page.failAndRefund
+        .mockRejectedValueOnce(new Error('database unavailable'))
+        .mockResolvedValue(undefined);
+
+      await expect(service.recover(now)).resolves.toBeDefined();
+      expect(generationQueueService.enqueuePageImageRevision).toHaveBeenCalledTimes(2);
+
+      await expect(service.recover(now)).resolves.toBeDefined();
+      expect(page.failAndRefund).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('onApplicationBootstrap', () => {

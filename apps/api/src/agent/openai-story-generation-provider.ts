@@ -1,3 +1,5 @@
+import { resolveLesson } from './story-language';
+import { assertStructuredCompletion } from '../common/structured-output';
 import { Logger } from '@nestjs/common';
 import { z } from 'zod';
 import {
@@ -32,12 +34,15 @@ import {
   safeOpenAIRequestFailureMessage,
 } from '../common/openai-request';
 import {
+  GenerationControlError,
   isProviderCancellationError,
+  providerFailureReason,
   reportProviderMetrics,
   type ProviderExecutionOptions,
 } from '../common/provider-execution';
 import { createCharacterCard } from './character-card.factory';
 import { PROMPT_VERSIONS } from './prompt-versions';
+import { PROMPT_SPECS } from './prompt-specs';
 import { resolveCharacterVisualBible } from './character-visual-bible';
 import { buildBookImagePrompt } from './image-prompt.builder';
 
@@ -61,13 +66,13 @@ function resolveLanguageDisplayName(languageCode: string): string {
   return LANGUAGE_DISPLAY_NAMES[languageCode.trim().toLowerCase()] ?? languageCode;
 }
 
-export class StoryGenerationProviderError extends Error {
+export class StoryGenerationProviderError extends GenerationControlError {
   constructor(
     message: string,
     override readonly cause?: unknown,
     readonly failureKind: ProviderFailureKind = 'provider_error',
   ) {
-    super(message);
+    super(providerFailureReason(failureKind), message, cause);
     this.name = 'StoryGenerationProviderError';
   }
 }
@@ -83,7 +88,10 @@ const llmPageSchema = z.object({
 
 const llmResponseSchema = z.object({
   title: z.string().trim().min(1),
-  subtitle: z.string().trim().min(1).optional(),
+  subtitle: z.preprocess(
+    (value) => (value === null ? undefined : value),
+    z.string().trim().min(1).optional(),
+  ),
   theme: z.string().trim().min(1),
   educationalMessage: z.string().trim().min(1),
   openingHook: z.string().trim().min(1),
@@ -127,7 +135,10 @@ export function buildStoryGenerationPrompt(
     childAge: input.childAge,
     theme: input.theme,
     language: input.language,
-    ...(input.educationalMessage && { educationalMessage: input.educationalMessage }),
+    ...(input.educationalMessage && {
+      lesson: resolveLesson(input.educationalMessage),
+      educationalMessage: input.educationalMessage,
+    }),
   });
 
   const user = [
@@ -160,7 +171,7 @@ export function buildStoryGenerationPrompt(
     'Return strict JSON matching exactly this shape (no extra keys or trailing commas):',
     '{',
     '  "title": string,',
-    '  "subtitle": string (optional),',
+    '  "subtitle": string or null,',
     '  "theme": string,',
     '  "educationalMessage": string,',
     '  "openingHook": string,',
@@ -391,6 +402,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     operation: 'generation' | 'repair',
     options: ProviderExecutionOptions,
   ): Promise<LlmStoryGenerationResponse> {
+    const promptSpec = operation === 'repair' ? PROMPT_SPECS.storyRepair : PROMPT_SPECS.story;
     const metrics: ProviderCallMetrics = {
       httpAttempts: 0,
       retries: 0,
@@ -410,8 +422,9 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
           },
           body: JSON.stringify({
             model: this.model,
-            response_format: { type: 'json_object' },
-            temperature: 0.7,
+            response_format: promptSpec.outputSchema,
+            max_completion_tokens: promptSpec.parameters.maxCompletionTokens,
+            temperature: promptSpec.parameters.temperature,
             messages: [
               { role: 'system', content: system },
               { role: 'user', content: user },
@@ -421,6 +434,7 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
         timeoutMs: this.timeoutMs,
         maxRetries: this.maxRetries,
         signal: options.signal,
+        beforeDispatch: options.beforeDispatch,
         onAttempt: (attempt, maxAttempts) => {
           metrics.httpAttempts = (metrics.httpAttempts ?? 0) + 1;
           this.logger.log(
@@ -468,6 +482,9 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     }
 
     if (!response.ok) {
+      const providerRequestId =
+        response.headers?.get('x-request-id') ?? response.headers?.get('request-id') ?? undefined;
+      if (providerRequestId) metrics.providerRequestId = providerRequestId;
       if (response.status === 429) metrics.rateLimitHits = (metrics.rateLimitHits ?? 0) + 1;
       reportProviderMetrics(options, metrics);
       this.logger.error(
@@ -485,9 +502,12 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     }
 
     const payload = response.body;
-
+    const providerRequestId =
+      response.headers?.get('x-request-id') ?? response.headers?.get('request-id') ?? undefined;
+    if (providerRequestId) metrics.providerRequestId = providerRequestId;
     Object.assign(metrics, readOpenAITextUsage(payload));
     reportProviderMetrics(options, metrics);
+    assertStructuredCompletion(payload);
 
     const content = (payload as { choices?: Array<{ message?: { content?: unknown } }> })
       ?.choices?.[0]?.message?.content;
@@ -513,9 +533,9 @@ export class OpenAIStoryGenerationProvider implements StoryGenerationProvider {
     const parsed = llmResponseSchema.safeParse(raw);
     if (!parsed.success) {
       throw new StoryGenerationProviderError(
-        `OpenAI story content failed validation: ${parsed.error.message}`,
+        'OpenAI story content failed schema validation',
         undefined,
-        'invalid_response',
+        'schema_error',
       );
     }
 

@@ -1,3 +1,4 @@
+import { generateMockImagePng as imageBytes } from '../images/mock-image-producer';
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
@@ -58,26 +59,26 @@ describe('claim-scoped image key isolation under a same-run redelivery race — 
 
     // Claim B (the newer claim that reclaimed the run after a stalled
     // redelivery) completes its write first.
-    await storage.saveImageAsset(keyB, Buffer.from('claim-B-bytes'), 'image/png');
+    await storage.saveImageAsset(keyB, imageBytes('claim-B-bytes'), 'image/png');
     // Claim A (the stale worker, still unaware it's been superseded) writes
     // its own bytes for the *same logical cover page* after B — the exact
     // "late write from a superseded claim" race Phase B closes for artifact
     // storage (see docs/local-generation-pipeline.md's "Run-scoped artifact
     // storage" gap this slice fixes).
-    await storage.saveImageAsset(keyA, Buffer.from('claim-A-bytes'), 'image/png');
+    await storage.saveImageAsset(keyA, imageBytes('claim-A-bytes'), 'image/png');
 
     const bytesAtB = await storage.getImageAsset(keyB);
-    expect(bytesAtB!.equals(Buffer.from('claim-B-bytes'))).toBe(true);
+    expect(bytesAtB!.equals(imageBytes('claim-B-bytes'))).toBe(true);
     const bytesAtA = await storage.getImageAsset(keyA);
-    expect(bytesAtA!.equals(Buffer.from('claim-A-bytes'))).toBe(true);
+    expect(bytesAtA!.equals(imageBytes('claim-A-bytes'))).toBe(true);
 
     const entries = [makeCoverEntry()];
     const resolveForB = await buildImageBufferResolver(storage, BOOK_ID, entries, CLAIM_B);
     const resolvedForB = resolveForB(entries[0]!.imageBlock!, entries[0]!);
-    expect(resolvedForB!.equals(Buffer.from('claim-B-bytes'))).toBe(true);
+    expect(resolvedForB!.equals(imageBytes('claim-B-bytes'))).toBe(true);
 
     const resolveForA = await buildImageBufferResolver(storage, BOOK_ID, entries, CLAIM_A);
     const resolvedForA = resolveForA(entries[0]!.imageBlock!, entries[0]!);
-    expect(resolvedForA!.equals(Buffer.from('claim-A-bytes'))).toBe(true);
+    expect(resolvedForA!.equals(imageBytes('claim-A-bytes'))).toBe(true);
   });
 });

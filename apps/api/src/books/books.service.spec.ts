@@ -9,7 +9,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, type Book, type CreditTransaction, type GenerationRun } from '@prisma/client';
-import { BooksService } from './books.service';
+import { BooksService } from '../common/test-utils/create-test-books-service';
 import type { AgentService } from '../agent/agent.service';
 import type { GenerationQueueService } from '../agent/generation-queue.service';
 import type { GenerationRunService } from '../agent/generation-run.service';

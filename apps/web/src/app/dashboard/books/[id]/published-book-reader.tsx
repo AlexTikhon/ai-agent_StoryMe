@@ -20,6 +20,7 @@ interface ReaderSlide {
 }
 
 interface PublishedBookReaderProps {
+  edition?: string | null | undefined;
   bookId: string;
   preview: BookPreview;
   onBookUpdated?: (book: BookDto) => void;
@@ -28,6 +29,7 @@ interface PublishedBookReaderProps {
 
 export function PublishedBookReader({
   bookId,
+  edition,
   preview,
   onBookUpdated,
   allowRevisions = true,
@@ -74,14 +76,14 @@ export function PublishedBookReader({
   const [requestingImageQuote, setRequestingImageQuote] = useState(false);
   const [confirmingImage, setConfirmingImage] = useState(false);
   const [imageActionError, setImageActionError] = useState<string | null>(null);
-  const slide = slides[currentIndex];
+  const slide = slides[Math.min(currentIndex, slides.length - 1)];
   const imageRevisionActive =
     imageRevision?.status === 'queued' || imageRevision?.status === 'running';
   const imageActionBusy = requestingImageQuote || confirmingImage || imageRevisionActive;
 
   useEffect(() => {
     setCurrentIndex(0);
-  }, [bookId]);
+  }, [bookId, edition, slides.length]);
 
   useEffect(() => {
     setEditingText(false);
@@ -202,7 +204,7 @@ export function PublishedBookReader({
     setLoadError(null);
 
     void booksApi
-      .downloadPublishedImage(bookId, slide.imageId)
+      .downloadPublishedImage(bookId, slide.imageId, edition ?? undefined)
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -221,7 +223,7 @@ export function PublishedBookReader({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [bookId, retryNonce, slide.imageId]);
+  }, [bookId, edition, retryNonce, slide.imageId]);
 
   return (
     <section

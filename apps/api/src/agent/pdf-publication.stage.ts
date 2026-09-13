@@ -1,3 +1,4 @@
+import { validateImage } from '../images/validated-image';
 import { AgentStep } from '@prisma/client';
 import type { BookLayout, BookLayoutEntry } from '@book/types';
 import { buildImageBufferResolver, type ImageAssetStorage } from '../images/image-asset-storage';
@@ -18,6 +19,7 @@ export interface PdfPublicationStageInput {
   readonly imageAssetStorage: ImageAssetStorage;
   readonly pdfStorage: PdfStorage;
   readonly logger: StageLogger;
+  readonly artifactManifest?: Record<string, unknown>;
 }
 
 export interface PdfPublicationStageOutput {
@@ -33,19 +35,23 @@ function describeEntry(entry: BookLayoutEntry): string {
 /**
  * Refuses to render placeholders in place of planned illustrations.
  */
-function assertAllImagesResolved(
+async function assertAllImagesResolved(
   logger: StageLogger,
   bookId: string,
   layout: BookLayout,
   resolveImageBuffer: ImageBufferResolver,
-): void {
+  artifactManifest?: Record<string, unknown>,
+): Promise<void> {
   const missing: string[] = [];
 
   for (const entry of layout.entries) {
     if (!entry.imageBlock) continue;
     const label = describeEntry(entry);
     const buffer = resolveImageBuffer(entry.imageBlock, entry);
-    if (!buffer) {
+    const decoded = await validateImage(buffer);
+    const assetLabel = entry.kind === 'page' ? `page_${entry.pageNumber}` : entry.kind;
+    const confirmed = artifactManifest?.[assetLabel] as { sha256?: string } | undefined;
+    if (!buffer || !decoded || (artifactManifest && confirmed?.sha256 !== decoded.sha256)) {
       logger.error(
         `Missing generated illustration for ${label} (entry ${entry.id}, book ${bookId}) — no bytes found in image storage.`,
       );
@@ -78,6 +84,7 @@ export class PdfPublicationStage implements GenerationStage<
     imageAssetStorage,
     pdfStorage,
     logger,
+    artifactManifest,
   }: PdfPublicationStageInput): Promise<PdfPublicationStageOutput> {
     const resolveImageBuffer = await buildImageBufferResolver(
       imageAssetStorage,
@@ -85,11 +92,11 @@ export class PdfPublicationStage implements GenerationStage<
       bookLayout.entries,
       namespace,
     );
-    assertAllImagesResolved(logger, bookId, bookLayout, resolveImageBuffer);
+    await assertAllImagesResolved(logger, bookId, bookLayout, resolveImageBuffer, artifactManifest);
     logger.log(
       `Rendering PDF for book ${bookId}: ${bookLayout.entries.length} pages — ${bookLayout.entries.map(describeEntry).join(', ')}.`,
     );
-    const buffer = await renderStorybookPdf(bookLayout, { resolveImageBuffer });
+    const buffer = await renderStorybookPdf(bookLayout, { resolveImageBuffer, strict: true });
     logger.log(`PDF rendered for book ${bookId}: ${buffer.length} bytes.`);
     // Claim-scoped storage is intentionally not publication: the coordinator
     // publishes this URL only after the attempt wins its terminal fencing

@@ -16,6 +16,7 @@ import {
 import { resolveTemplateLanguage } from './mock-story-templates';
 import { createCharacterCard } from './character-card.factory';
 import { PROMPT_VERSIONS } from './prompt-versions';
+import type { ProviderExecutionOptions } from '../common/provider-execution';
 
 /**
  * Deterministic local stand-in for a future real-LLM StoryGenerationProvider.
@@ -30,7 +31,11 @@ export class MockStoryGenerationProvider implements StoryGenerationProvider {
 
   constructor(private readonly failures?: MockFailureController) {}
 
-  async generateStory(input: StoryGenerationInput): Promise<StoryGenerationResult> {
+  async generateStory(
+    input: StoryGenerationInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<StoryGenerationResult> {
+    await options.beforeDispatch?.();
     await this.failures?.before('story');
     const { bookId, childName, childAge, theme, language, educationalMessage, characterProfile } =
       input;

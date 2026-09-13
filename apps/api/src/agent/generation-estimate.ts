@@ -13,23 +13,34 @@ export interface GenerationEstimateProviders {
 }
 
 export interface GenerationEstimateReuse {
-  storyCalls?: number;
-  characterProfileCalls?: number;
-  imageCalls?: number;
+  storyCalls?: number | undefined;
+  characterProfileCalls?: number | undefined;
+  imageCalls?: number | undefined;
 }
 
 export interface GenerationEstimateConfiguration {
-  storyCostUsd?: number;
-  characterProfileCostUsd?: number;
-  imageCostUsd?: number;
-  durationMinSeconds?: number;
-  durationMaxSeconds?: number;
+  storyCostUsd?: number | undefined;
+  characterProfileCostUsd?: number | undefined;
+  imageCostUsd?: number | undefined;
+  durationMinSeconds?: number | undefined;
+  durationMaxSeconds?: number | undefined;
 }
 
 export interface GenerationHardLimits {
   maxProviderCalls: number;
   maxImages: number;
-  maxEstimatedCostUsd?: number;
+  maxEstimatedCostUsd?: number | undefined;
+}
+
+export function estimatedPaidCalls(
+  estimate: GenerationEstimateDto,
+  providers: GenerationEstimateProviders,
+): number {
+  return (
+    (providers.story === 'openai' ? estimate.storyCalls + estimate.repairAllowanceCalls : 0) +
+    (providers.characterProfile === 'openai' ? estimate.characterProfileCalls : 0) +
+    (providers.image === 'openai' ? estimate.imageCalls : 0)
+  );
 }
 
 export function buildGenerationEstimate(input: {
@@ -68,17 +79,26 @@ export function buildGenerationEstimate(input: {
   const providerMode = Object.values(input.providers).includes('openai') ? 'real' : 'mock';
 
   const costs = input.configuration;
-  const hasCompleteCostConfiguration =
-    costs?.storyCostUsd !== undefined &&
-    costs.characterProfileCostUsd !== undefined &&
-    costs.imageCostUsd !== undefined;
-  const unroundedExpectedCost =
-    hasCompleteCostConfiguration && providerMode === 'real'
-      ? storyCalls * costs.storyCostUsd! +
-        characterProfileCalls * costs.characterProfileCostUsd! +
-        repairAllowanceCalls * costs.storyCostUsd! +
-        imageCalls * costs.imageCostUsd!
-      : 0;
+  const paidWork = [
+    {
+      count: storyCalls + repairAllowanceCalls,
+      provider: input.providers.story,
+      cost: costs?.storyCostUsd,
+    },
+    {
+      count: characterProfileCalls,
+      provider: input.providers.characterProfile,
+      cost: costs?.characterProfileCostUsd,
+    },
+    { count: imageCalls, provider: input.providers.image, cost: costs?.imageCostUsd },
+  ].filter((work) => work.provider !== 'mock' && work.count > 0);
+  const hasCompleteCostConfiguration = paidWork.every(
+    (work) => work.provider === 'openai' && work.cost !== undefined,
+  );
+  const unroundedExpectedCost = paidWork.reduce(
+    (sum, work) => sum + work.count * (work.cost ?? 0),
+    0,
+  );
   const expectedCost = Math.round(unroundedExpectedCost * 1_000_000) / 1_000_000;
 
   return {

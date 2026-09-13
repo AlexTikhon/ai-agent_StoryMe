@@ -42,6 +42,10 @@ import { ImageGenerationStage } from '../agent/image-generation.stage';
 import { StoryQualityService } from '../agent/story-quality.service';
 import { StoryContentStage } from '../agent/story-content.stage';
 import { StoryQualityRepairStage } from '../agent/story-quality-repair.stage';
+import { RedisProviderQuotaGate } from '../images/provider-quota-gate';
+import { PageImageRevisionQueueProcessor } from '../agent/page-image-revision-queue.processor';
+import { MaintenanceQueueProcessor } from '../agent/maintenance-queue.processor';
+import { PageImageRevisionExecutionGateway } from './page-image-revision-execution.gateway';
 
 export interface BooksModuleOptions {
   /** Whether to register GenerationQueueProcessor (see app.module.ts / worker.ts). */
@@ -70,8 +74,11 @@ export class BooksModule {
       },
       {
         provide: IMAGE_GENERATION_PROVIDER_TOKEN,
-        useFactory: () => createImageGenerationProvider(),
+        inject: [RedisProviderQuotaGate],
+        useFactory: (quotaGate: RedisProviderQuotaGate) =>
+          createImageGenerationProvider(process.env, quotaGate),
       },
+      RedisProviderQuotaGate,
       BooksService,
       BookCrudService,
       BookAssetService,
@@ -80,6 +87,7 @@ export class BooksModule {
       BookGenerationExecutionService,
       BookPageChangeService,
       BookPageImageRevisionService,
+      PageImageRevisionExecutionGateway,
       BookHardDeletionService,
       GenerationPreparationService,
       GenerationResumeService,
@@ -121,7 +129,11 @@ export class BooksModule {
     // Worker (Redis connection) the moment it's instantiated — only include
     // it as a provider when this process is actually meant to consume jobs.
     if (options.enableGenerationWorker) {
-      providers.push(GenerationQueueProcessor);
+      providers.push(
+        GenerationQueueProcessor,
+        PageImageRevisionQueueProcessor,
+        MaintenanceQueueProcessor,
+      );
     }
 
     return {

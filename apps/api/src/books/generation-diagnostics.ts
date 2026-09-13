@@ -1,4 +1,4 @@
-import type { AgentLog, Book, GenerationRun } from '@prisma/client';
+import type { AgentLog, Book, GenerationRun, Prisma } from '@prisma/client';
 import type {
   AgentLogSummary,
   AgentStep,
@@ -7,12 +7,14 @@ import type {
   GenerationJobSummary,
   GenerationMetadata,
   GenerationProviderName,
+  GenerationProviderCallMetadata,
   GenerationProviderUsage,
   ImageGenerationFailureDetail,
   PdfStorageDiagnostics,
   QueueDiagnostics,
   ResumeDiagnostics,
 } from '@book/types';
+import { countAuthorizedDispatches } from '../agent/generation-execution-policy';
 import { PRESERVE_APPEARANCE_INSTRUCTION } from '../agent/story-generation-provider';
 import type { QualityReport } from '@book/types';
 
@@ -97,6 +99,164 @@ function buildProviderUsage(
   return usage ? (usage as GenerationProviderUsage) : null;
 }
 
+const PROVIDER_OPERATIONS = new Set([
+  'character_profile',
+  'character_sheet',
+  'story',
+  'story_repair',
+  'illustration',
+]);
+const PROVIDER_FAILURES = new Set([
+  'cancelled',
+  'timeout',
+  'rate_limit',
+  'network',
+  'authentication',
+  'invalid_response',
+  'refusal',
+  'truncated',
+  'schema_error',
+  'provider_error',
+  'unknown',
+]);
+const GENERATION_FAILURES = new Set([
+  'provider_transient_failure',
+  'refusal',
+  'invalid_output',
+  'storage_failure',
+]);
+
+function isJsonObject(value: Prisma.JsonValue): value is Prisma.JsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Aggregate the authoritative ledger across every delivery of one run. */
+function buildDurableProviderUsage(run?: GenerationRun | null): GenerationProviderUsage | null {
+  if (!run || !Array.isArray(run.providerOperations)) return null;
+  const operations = run.providerOperations.filter(isJsonObject);
+  const calls: GenerationProviderCallMetadata[] = [];
+  for (const [index, operation] of operations.entries()) {
+    if (
+      !PROVIDER_OPERATIONS.has(String(operation.operation)) ||
+      !['mock', 'openai', 'unknown'].includes(String(operation.provider)) ||
+      typeof operation.promptVersion !== 'string' ||
+      typeof operation.promptHash !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(operation.promptHash)
+    ) {
+      continue;
+    }
+    const state = String(operation.state ?? 'unknown');
+    const failureKind = PROVIDER_FAILURES.has(String(operation.failureKind))
+      ? (operation.failureKind as GenerationProviderCallMetadata['failureKind'])
+      : state === 'unknown' || state === 'dispatch_intent'
+        ? 'unknown'
+        : undefined;
+    const failureReason = GENERATION_FAILURES.has(String(operation.failureReason))
+      ? (operation.failureReason as GenerationProviderCallMetadata['failureReason'])
+      : undefined;
+    calls.push({
+      callIndex: Number.isInteger(operation.callIndex) ? Number(operation.callIndex) : index + 1,
+      operation: operation.operation as GenerationProviderCallMetadata['operation'],
+      provider: operation.provider as GenerationProviderName,
+      promptVersion: operation.promptVersion,
+      promptHash: operation.promptHash,
+      attempt: Number.isInteger(operation.attempt) ? Number(operation.attempt) : 1,
+      durationMs:
+        typeof operation.durationMs === 'number' && operation.durationMs >= 0
+          ? operation.durationMs
+          : 0,
+      status:
+        state === 'response_received' || state === 'artifact_stored'
+          ? 'success'
+          : failureKind === 'cancelled'
+            ? 'cancelled'
+            : 'error',
+      ...(typeof operation.operationId === 'string' && {
+        operationId: operation.operationId,
+      }),
+      ...(Number.isInteger(operation.deliveryFencingVersion) && {
+        deliveryFencingVersion: Number(operation.deliveryFencingVersion),
+      }),
+      ...(typeof operation.assetLabel === 'string' && { assetLabel: operation.assetLabel }),
+      ...(typeof operation.model === 'string' && { model: operation.model }),
+      ...(typeof operation.providerRequestId === 'string' && {
+        providerRequestId: operation.providerRequestId,
+      }),
+      ...(typeof operation.inputTokens === 'number' && { inputTokens: operation.inputTokens }),
+      ...(typeof operation.outputTokens === 'number' && { outputTokens: operation.outputTokens }),
+      ...(typeof operation.httpAttempts === 'number' && {
+        httpAttempts: operation.httpAttempts,
+      }),
+      ...(typeof operation.estimatedCostUsd === 'number' && {
+        estimatedCostUsd: operation.estimatedCostUsd,
+      }),
+      ...(failureKind && { failureKind }),
+      ...(failureReason && { failureReason }),
+    });
+  }
+  const paid = operations.filter((operation) => operation.provider === 'openai');
+  const actualDispatches = paid.reduce(
+    (sum, operation) => sum + countAuthorizedDispatches(operation),
+    0,
+  );
+  const logicalPaid = new Set(
+    paid
+      .filter((operation) => countAuthorizedDispatches(operation) > 0)
+      .map((operation, index) => String(operation.operationId ?? `legacy:${index}`)),
+  ).size;
+  const unknownOutcomes = paid.reduce((sum, operation) => {
+    const dispatches = Array.isArray(operation.dispatches)
+      ? operation.dispatches.filter(
+          (dispatch) =>
+            dispatch &&
+            typeof dispatch === 'object' &&
+            ['unknown', 'unknown_remote_outcome', 'dispatch_intent'].includes(
+              String((dispatch as Record<string, unknown>).state),
+            ),
+        ).length
+      : ['unknown', 'dispatch_intent'].includes(String(operation.state))
+        ? countAuthorizedDispatches(operation)
+        : 0;
+    return sum + dispatches;
+  }, 0);
+  const authorization = run.executionAuthorization as {
+    policy?: { maxPaidCalls?: unknown };
+    estimate?: { maximumProviderCalls?: unknown };
+  } | null;
+  const estimatedValues = paid.map((operation) => operation.estimatedCostUsd);
+  const allEstimated = estimatedValues.every(
+    (value) => typeof value === 'number' && Number.isFinite(value),
+  );
+  return {
+    maxPaidCalls: Number(authorization?.policy?.maxPaidCalls ?? Math.max(1, actualDispatches)),
+    plannedPaidCalls: Number(authorization?.estimate?.maximumProviderCalls ?? logicalPaid),
+    actualPaidCalls: logicalPaid,
+    actualDispatches,
+    unknownOutcomes,
+    knownInputTokens: paid.reduce(
+      (sum, operation) => sum + (Number(operation.inputTokens) || 0),
+      0,
+    ),
+    knownOutputTokens: paid.reduce(
+      (sum, operation) => sum + (Number(operation.outputTokens) || 0),
+      0,
+    ),
+    ...(allEstimated && {
+      estimatedCostUsd: estimatedValues.reduce<number>(
+        (sum, value) => sum + (typeof value === 'number' ? value : 0),
+        0,
+      ),
+      estimatedExposureUsd: paid.reduce(
+        (sum, operation) =>
+          sum +
+          Number(operation.estimatedCostUsd) * Math.max(1, countAuthorizedDispatches(operation)),
+        0,
+      ),
+    }),
+    calls,
+  };
+}
+
 /**
  * Builds the safe, non-secret GenerationMetadata view for a book from
  * already-persisted columns (Book.generationTimeMs/aiModelVersions/
@@ -104,7 +264,11 @@ function buildProviderUsage(
  * storage, no schema change. `startedAt` is derived (updatedAt - durationMs)
  * since generation has no dedicated start-timestamp column.
  */
-export function buildGenerationMetadata(book: Book, logs: AgentLog[]): GenerationMetadata {
+export function buildGenerationMetadata(
+  book: Book,
+  logs: AgentLog[],
+  providerUsageOverride?: GenerationProviderUsage | null,
+): GenerationMetadata {
   const storyLog = logs.find((log) => log.step === 'story_plan');
   const imageLog = logs.find((log) => log.step === 'image_gen');
   const aiModelVersions = book.aiModelVersions as { story?: string; image?: string } | null;
@@ -119,7 +283,7 @@ export function buildGenerationMetadata(book: Book, logs: AgentLog[]): Generatio
   const imageModel = aiModelVersions?.image ?? imageLog?.model ?? undefined;
   const generatedPages = generatedPageCount(book.bookPreview);
   const { generatedImageCount, failedImageCount } = imageCounts(book.imageGenerationResult);
-  const providerUsage = buildProviderUsage(book.imageGenerationResult);
+  const providerUsage = providerUsageOverride ?? buildProviderUsage(book.imageGenerationResult);
   const quality = book.qualityReport as unknown as QualityReport | null;
   const promptVersions = providerUsage
     ? [...new Set(providerUsage.calls.map((call) => call.promptVersion))]
@@ -253,6 +417,8 @@ export function buildGenerationDiagnostics(
   pdfStorage?: PdfStorageDiagnostics,
   queue?: Omit<QueueDiagnostics, 'stalledNoWorker'>,
 ): GenerationDiagnosticsDto {
+  const providerUsage =
+    buildDurableProviderUsage(latestRun) ?? buildProviderUsage(book.imageGenerationResult);
   const resolvedQueue = queue ?? {
     queueName: 'book-generation',
     workerCount: 0,
@@ -263,7 +429,7 @@ export function buildGenerationDiagnostics(
     status: book.status as unknown as GenerationDiagnosticsDto['status'],
     failedStep: book.failedStep as unknown as AgentStep | null,
     errorMessage: book.errorMessage,
-    generationMetadata: buildGenerationMetadata(book, logs),
+    generationMetadata: buildGenerationMetadata(book, logs, providerUsage),
     recentLogs: logs.map(toAgentLogSummary),
     previewPdfUrl: book.previewPdfUrl,
     latestJob: latestRun ? toGenerationJobSummary(latestRun) : null,
@@ -280,6 +446,6 @@ export function buildGenerationDiagnostics(
     characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
     resume: buildResumeDiagnostics(book.imageGenerationResult),
     imageFailures: buildImageFailureDiagnostics(book.imageGenerationResult),
-    providerUsage: buildProviderUsage(book.imageGenerationResult),
+    providerUsage,
   };
 }

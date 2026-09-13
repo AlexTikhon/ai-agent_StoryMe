@@ -1,8 +1,10 @@
+import { detectStoryLanguage, resolveLesson } from './story-language';
 import type {
   QualityIssue,
   QualityIssueCode,
   QualityIssueCategory,
   QualityReport,
+  StoryQualityDimensionEvaluations,
   StoryQualityDimensions,
 } from '@book/types';
 import {
@@ -24,6 +26,7 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const MARKUP_OR_URL = /(?:https?:\/\/|www\.|<\s*\/?\s*[a-z][^>]*>)/iu;
 
 const SAFE_MESSAGES: Record<QualityIssueCode, string> = {
+  actual_language_mismatch: 'The story prose is confidently detected in a different language.',
   metadata_language_mismatch: 'Generated language metadata does not match the requested language.',
   metadata_theme_mismatch: 'Generated theme metadata does not match the requested theme.',
   metadata_age_mismatch: 'Generated age metadata does not match the requested age.',
@@ -77,7 +80,16 @@ function wordCount(value: string): number {
 
 function nameAppears(value: string, name: string): boolean {
   const needle = normalize(name);
-  return needle !== '' && ` ${normalize(value)} `.includes(` ${needle} `);
+  if (needle === '') return false;
+  if (` ${normalize(value)} `.includes(` ${needle} `)) return true;
+  // Conservative suffix handling for common Russian and Polish given-name inflections.
+  if (needle.length < 3 || needle.includes(' ')) return false;
+  const stem = needle.replace(/[aаяь]$/u, '');
+  return words(value).some(
+    (word) =>
+      word.startsWith(stem) &&
+      /^(?:a|y|i|ę|ą|ie|owi|em|а|я|ы|и|у|ю|е|ой|ей|ом|ем)$/u.test(word.slice(stem.length)),
+  );
 }
 
 function sentences(value: string): string[] {
@@ -198,6 +210,86 @@ function dimensionsFor(issues: readonly QualityIssue[]): StoryQualityDimensions 
   };
 }
 
+function dimensionEvaluationsFor(
+  issues: readonly QualityIssue[],
+  detectedLanguage: string,
+  requestedLanguage: string,
+): StoryQualityDimensionEvaluations {
+  const evaluate = (codes: readonly QualityIssueCode[], semanticPassNotEvaluated = false) => {
+    const failures = issues.filter(
+      (finding) => finding.severity === 'error' && codes.includes(finding.code),
+    );
+    if (failures.length) {
+      return { outcome: 'failed' as const, evidence: failures.map((finding) => finding.code) };
+    }
+    return semanticPassNotEvaluated
+      ? {
+          outcome: 'not_evaluated' as const,
+          evidence: ['semantic_judgment_not_established_by_deterministic_heuristics'],
+        }
+      : { outcome: 'passed' as const, evidence: ['no_blocking_deterministic_findings'] };
+  };
+  const language =
+    detectedLanguage === 'unknown'
+      ? {
+          outcome: 'not_evaluated' as const,
+          evidence: ['language_sample_not_confidently_classified'],
+        }
+      : detectedLanguage === requestedLanguage
+        ? { outcome: 'passed' as const, evidence: ['language_heuristic_matched'] }
+        : { outcome: 'failed' as const, evidence: ['actual_language_mismatch'] };
+  return {
+    structuralValidity: evaluate([
+      'page_count_mismatch',
+      'page_title_missing',
+      'page_text_missing',
+      'story_title_missing',
+      'page_text_mismatch',
+      'page_illustration_prompt_mismatch',
+    ]),
+    personalization: evaluate([
+      'metadata_theme_mismatch',
+      'metadata_age_mismatch',
+      'cover_child_name_mismatch',
+      'child_name_missing_from_story',
+      'educational_message_mismatch',
+      'personalization_insufficient',
+    ]),
+    protagonistConsistency: evaluate([
+      'cover_child_name_mismatch',
+      'character_card_name_mismatch',
+      'child_name_missing_from_story',
+      'protagonist_missing_from_opening',
+      'protagonist_missing_from_ending',
+      'protagonist_coverage_too_low',
+    ]),
+    ageAppropriateness: evaluate(['page_text_too_short', 'page_text_too_long']),
+    continuity: evaluate(
+      [
+        'page_scene_missing',
+        'page_progression_insufficient',
+        'protagonist_coverage_too_low',
+        'page_text_mismatch',
+        'page_illustration_prompt_mismatch',
+      ],
+      true,
+    ),
+    repetitionAcceptable: evaluate([
+      'duplicate_page_text',
+      'near_duplicate_page_text',
+      'repeated_sentence',
+      'repeated_page_opening',
+      'repeated_page_closing',
+    ]),
+    pageProgression: evaluate(['page_scene_missing', 'page_progression_insufficient'], true),
+    endingQuality: evaluate(
+      ['ending_missing', 'ending_not_reflected_in_final_page', 'protagonist_missing_from_ending'],
+      true,
+    ),
+    language,
+  };
+}
+
 /** Pure deterministic product-quality gate. It performs no provider calls. */
 export function evaluateStoryQuality(
   result: StoryGenerationResult,
@@ -230,6 +322,9 @@ export function evaluateStoryQuality(
   }
 
   const storyTexts = previewPages.map((page) => page.text);
+  const detectedLanguage = detectStoryLanguage(storyTexts.join(' '));
+  if (detectedLanguage !== 'unknown' && detectedLanguage !== input.language)
+    issues.push(issue('actual_language_mismatch', 'alignment'));
   const namePages = previewPages.filter((page) => nameAppears(page.text, input.childName));
   if (namePages.length === 0) {
     issues.push(issue('child_name_missing_from_story', 'personalization'));
@@ -264,7 +359,21 @@ export function evaluateStoryQuality(
     input.educationalMessage !== undefined &&
     normalize(result.storyPlan.educationalMessage) !== normalize(input.educationalMessage)
   ) {
-    issues.push(issue('educational_message_mismatch', 'personalization'));
+    const expected = resolveLesson(input.educationalMessage);
+    const actual = resolveLesson(result.storyPlan.educationalMessage);
+    if (!(
+      expected.kind === 'predefined' &&
+      actual.kind === 'predefined' &&
+      expected.id === actual.id
+    )) {
+      // Equivalence of arbitrary translations is semantic, not a structural guarantee.
+      issues.push(
+        issue('educational_message_mismatch', 'personalization', {
+          severity: 'warning',
+          repairable: false,
+        }),
+      );
+    }
   }
 
   const maxWords = maximumWordsPerPage(input.childAge);
@@ -433,6 +542,11 @@ export function evaluateStoryQuality(
     version: 1,
     overallPassed: !deduplicatedIssues.some((finding) => finding.severity === 'error'),
     dimensions: dimensionsFor(deduplicatedIssues),
+    dimensionEvaluations: dimensionEvaluationsFor(
+      deduplicatedIssues,
+      detectedLanguage,
+      input.language,
+    ),
     issues: deduplicatedIssues,
     flaggedPages,
   };

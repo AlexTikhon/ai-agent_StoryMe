@@ -1,3 +1,4 @@
+import { executionPolicy, type ExecutionPolicy } from './generation-execution-policy';
 import { Inject, Injectable } from '@nestjs/common';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { StoryGenerationProvider } from './story-generation-provider';
@@ -8,7 +9,6 @@ import type { CharacterProfileProvider } from './character-profile-provider';
 import { CHARACTER_PROFILE_PROVIDER_TOKEN } from './character-profile-provider';
 import {
   GenerationProviderTelemetry,
-  requiredPaidProviderCallsForBook,
   resolveMaxPaidProviderCallsPerRun,
 } from './generation-provider-telemetry';
 import { resolveTargetPageCount } from './story-generation-provider';
@@ -26,6 +26,7 @@ export interface ResolvedGenerationInput {
 }
 
 export interface PreparedGenerationContext {
+  policy: ExecutionPolicy;
   input: ResolvedGenerationInput;
   targetPageCount: number;
   storyRepairEnabled: boolean;
@@ -77,20 +78,16 @@ export function prepareGeneration(
   };
   const targetPageCount = resolveTargetPageCount(pageCount);
   const storyRepairEnabled = resolveStoryRepairEnabled(env);
-  const plannedPaidCalls = requiredPaidProviderCallsForBook(targetPageCount, {
-    storyProvider: providers.story.providerName,
-    characterProfileProvider: providers.character.providerName,
-    imageProvider: providers.image.providerName,
-    storyRepairEnabled,
-  });
 
   return {
+    policy: executionPolicy(providers, env),
     input,
     targetPageCount,
     storyRepairEnabled,
     providerTelemetry: new GenerationProviderTelemetry(
       resolveMaxPaidProviderCallsPerRun(env),
-      plannedPaidCalls,
+      0, // Set from validated remaining work before dispatch, never the full-book shape.
+      env,
     ),
     storyProviderName: providers.story.providerName ?? null,
     storyModelName: providers.story.modelName ?? null,

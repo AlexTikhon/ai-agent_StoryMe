@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { CharacterCard, GeneratedImageEntry, ImageGenerationResult } from '@book/types';
+import type {
+  CharacterCard,
+  GeneratedImageEntry,
+  GenerationFailureReason,
+  ImageGenerationResult,
+} from '@book/types';
 import type { ImageReference } from '../images/image-generation-provider';
 import type {
   ClaimArtifactNamespace,
@@ -21,6 +26,7 @@ export interface GenerationImagePhaseResult {
   failedCount: number;
   attemptedImageCount: number;
   imageDurationMs: number;
+  failureReason?: GenerationFailureReason;
 }
 
 /** Claim-scoped image reference loading, reuse classification and generation. */
@@ -36,6 +42,9 @@ export class GenerationImageService {
   ) {}
 
   async execute(input: {
+    allowedLabels?: readonly string[];
+    expectedHashes?: Readonly<Record<string, string>>;
+    sourceKeys?: Readonly<Record<string, string>>;
     bookId: string;
     characterSheetKey?: string;
     characterCard: CharacterCard;
@@ -49,11 +58,21 @@ export class GenerationImageService {
     const startedAt = Date.now();
     const { reference: characterReference, loadError: characterReferenceLoadError } =
       await this.referenceStage.loadReference(input.bookId, input.characterSheetKey);
+    if (characterReference && input.characterSheetKey)
+      await input.telemetry.stored(
+        'character_sheet',
+        input.characterSheetKey,
+        characterReference.buffer,
+      );
     const classified = await this.resumeService.classifyImages(
       input.bookId,
       input.result.images,
       input.currentNamespace,
       input.sourceNamespace,
+      input.allowedLabels,
+      (label, key, bytes) => input.telemetry.stored(label, key, bytes),
+      input.expectedHashes,
+      input.sourceKeys,
     );
 
     if (classified.reusable.length > 0) {
@@ -97,6 +116,9 @@ export class GenerationImageService {
       failedCount: generation.failedCount,
       attemptedImageCount: classified.toGenerate.length,
       imageDurationMs: Date.now() - startedAt,
+      ...(generation.failures[0]?.failureReason && {
+        failureReason: generation.failures[0].failureReason,
+      }),
     };
   }
 }

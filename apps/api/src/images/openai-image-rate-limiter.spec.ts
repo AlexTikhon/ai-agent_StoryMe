@@ -7,6 +7,9 @@ import {
   DEFAULT_OPENAI_IMAGE_MAX_RETRIES,
   DEFAULT_OPENAI_IMAGE_RETRY_BASE_MS,
   DEFAULT_OPENAI_IMAGE_RETRY_MAX_MS,
+  DEFAULT_OPENAI_IMAGE_MAX_WAIT_MS,
+  DEFAULT_OPENAI_IMAGE_MAX_CONCURRENCY,
+  DEFAULT_OPENAI_IMAGE_CONCURRENCY_LEASE_MS,
 } from './openai-image-rate-limiter';
 import { ProviderCancellationError } from '../common/provider-execution';
 
@@ -47,6 +50,9 @@ describe('readOpenAIImageRateLimiterConfig', () => {
       maxRetries: DEFAULT_OPENAI_IMAGE_MAX_RETRIES,
       retryBaseMs: DEFAULT_OPENAI_IMAGE_RETRY_BASE_MS,
       retryMaxMs: DEFAULT_OPENAI_IMAGE_RETRY_MAX_MS,
+      maxWaitMs: DEFAULT_OPENAI_IMAGE_MAX_WAIT_MS,
+      maxConcurrency: DEFAULT_OPENAI_IMAGE_MAX_CONCURRENCY,
+      concurrencyLeaseMs: DEFAULT_OPENAI_IMAGE_CONCURRENCY_LEASE_MS,
     });
   });
 
@@ -56,12 +62,17 @@ describe('readOpenAIImageRateLimiterConfig', () => {
       OPENAI_IMAGE_MAX_RETRIES: '3',
       OPENAI_IMAGE_RETRY_BASE_MS: '5000',
       OPENAI_IMAGE_RETRY_MAX_MS: '30000',
+      OPENAI_IMAGE_MAX_CONCURRENCY: '2',
+      OPENAI_IMAGE_CONCURRENCY_LEASE_MS: '450000',
     } as unknown as NodeJS.ProcessEnv);
     expect(config).toEqual({
       minIntervalMs: 20000,
       maxRetries: 3,
       retryBaseMs: 5000,
       retryMaxMs: 30000,
+      maxWaitMs: DEFAULT_OPENAI_IMAGE_MAX_WAIT_MS,
+      maxConcurrency: 2,
+      concurrencyLeaseMs: 450000,
     });
   });
 
@@ -77,6 +88,9 @@ describe('readOpenAIImageRateLimiterConfig', () => {
       maxRetries: DEFAULT_OPENAI_IMAGE_MAX_RETRIES,
       retryBaseMs: DEFAULT_OPENAI_IMAGE_RETRY_BASE_MS,
       retryMaxMs: DEFAULT_OPENAI_IMAGE_RETRY_MAX_MS,
+      maxWaitMs: DEFAULT_OPENAI_IMAGE_MAX_WAIT_MS,
+      maxConcurrency: DEFAULT_OPENAI_IMAGE_MAX_CONCURRENCY,
+      concurrencyLeaseMs: DEFAULT_OPENAI_IMAGE_CONCURRENCY_LEASE_MS,
     });
   });
 
@@ -343,6 +357,54 @@ describe('OpenAIImageRateLimiter', () => {
 
     expect(response.ok).toBe(true);
     expect(dispatch).toHaveBeenCalledTimes(3);
+  });
+
+  it('holds and releases a shared concurrency permit around each dispatch', async () => {
+    const release = vi.fn().mockResolvedValue(undefined);
+    const acquire = vi.fn().mockResolvedValue({ waitMs: 7, release });
+    const limiter = new OpenAIImageRateLimiter({
+      minIntervalMs: 123,
+      maxWaitMs: 456,
+      maxConcurrency: 2,
+      concurrencyLeaseMs: 789,
+      sharedGate: { acquire },
+      quotaScope: 'test:image',
+    });
+
+    await limiter.schedule('img', vi.fn().mockResolvedValue(okResponse()));
+
+    expect(acquire).toHaveBeenCalledWith('test:image', 123, 456, 2, 789, undefined);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(limiter.getGlobalDiagnostics().totalWaitMs).toBe(7);
+  });
+
+  it('reacquires and releases the shared permit for every 429 retry dispatch', async () => {
+    const firstRelease = vi.fn().mockResolvedValue(undefined);
+    const secondRelease = vi.fn().mockResolvedValue(undefined);
+    const acquire = vi
+      .fn()
+      .mockResolvedValueOnce({ waitMs: 0, release: firstRelease })
+      .mockResolvedValueOnce({ waitMs: 0, release: secondRelease });
+    const clock = makeFakeClock();
+    const limiter = new OpenAIImageRateLimiter({
+      minIntervalMs: 0,
+      maxRetries: 1,
+      retryBaseMs: 10,
+      retryMaxMs: 10,
+      now: clock.now,
+      sleep: clock.sleep,
+      sharedGate: { acquire },
+    });
+    const dispatch = vi
+      .fn()
+      .mockResolvedValueOnce(rateLimitedResponse())
+      .mockResolvedValueOnce(okResponse());
+
+    await limiter.schedule('img', dispatch);
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(firstRelease).toHaveBeenCalledTimes(1);
+    expect(secondRelease).toHaveBeenCalledTimes(1);
   });
 
   it("reports request-local metrics that do not inherit a previous call's 429", async () => {

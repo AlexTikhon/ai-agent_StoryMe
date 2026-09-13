@@ -1,3 +1,5 @@
+import { GenerationResumeService } from '../agent/generation-resume.service';
+import type { ImageAssetStorage } from '../images/image-asset-storage';
 import { ConflictException, HttpStatus } from '@nestjs/common';
 import { Prisma, type Book, type GenerationRun } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -149,6 +151,9 @@ describe('BookGenerationService scheduling boundary', () => {
       imageProvider,
       storyProvider,
       characterProvider,
+      new GenerationResumeService({
+        getImageAsset: async () => null,
+      } as unknown as ImageAssetStorage),
     );
   });
 
@@ -321,7 +326,7 @@ describe('BookGenerationService scheduling boundary', () => {
     });
   });
 
-  it('excludes successful reusable provider work from a same-input retry estimate', async () => {
+  it('does not discount provider success without compatible saved outputs', async () => {
     Object.assign(imageProvider, { providerName: 'openai' });
     Object.assign(storyProvider, { providerName: 'openai' });
     Object.assign(characterProvider, { providerName: 'openai' });
@@ -348,11 +353,40 @@ describe('BookGenerationService scheduling boundary', () => {
     });
 
     await expect(service.estimateGeneration('user-1', 'book-1', 'retry')).resolves.toMatchObject({
-      storyCalls: 0,
-      characterProfileCalls: 0,
-      imageCalls: 7,
-      maximumProviderCalls: 7,
-      reusedProviderCalls: 4,
+      storyCalls: 1,
+      characterProfileCalls: 1,
+      imageCalls: 9,
+      maximumProviderCalls: 11,
+      reusedProviderCalls: 0,
     });
+  });
+
+  it('authorizes only remaining paid work for a compatible retry under a one-call cap', async () => {
+    Object.assign(storyProvider, { providerName: 'openai' });
+    Object.assign(characterProvider, { providerName: 'openai' });
+    crud.findOwnedOrThrow.mockResolvedValue(makeBook({ status: 'failed' }));
+    runs.findLatestForBook.mockResolvedValue(makeRun({ id: 'prior-run' }));
+    snapshots.normalize.mockResolvedValue({
+      snapshot: SNAPSHOT,
+      inputHash: hashInputSnapshot(SNAPSHOT),
+    });
+    config.get.mockImplementation((key: string) =>
+      key === 'MAX_PAID_PROVIDER_CALLS_PER_RUN' ? 1 : configValues[key],
+    );
+    const inspect = vi
+      .spyOn(GenerationResumeService.prototype, 'inspect')
+      .mockResolvedValue({ reuse: { storyCalls: 1 } } as never);
+    try {
+      await service.retryGeneration('user-1', 'book-1');
+      expect(prisma.generationRun.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          executionAuthorization: expect.objectContaining({
+            estimate: expect.objectContaining({ storyCalls: 0, characterProfileCalls: 1 }),
+          }),
+        }),
+      });
+    } finally {
+      inspect.mockRestore();
+    }
   });
 });

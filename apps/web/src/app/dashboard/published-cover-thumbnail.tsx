@@ -4,11 +4,12 @@ import { useEffect, useState } from 'react';
 import { booksApi } from '@/lib/api/books';
 
 interface PublishedCoverThumbnailProps {
+  edition?: string | null | undefined;
   bookId: string;
   title: string;
 }
 
-export function PublishedCoverThumbnail({ bookId, title }: PublishedCoverThumbnailProps) {
+export function PublishedCoverThumbnail({ bookId, title, edition }: PublishedCoverThumbnailProps) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -19,7 +20,7 @@ export function PublishedCoverThumbnail({ bookId, title }: PublishedCoverThumbna
     setImageUrl(null);
     setFailed(false);
     void booksApi
-      .downloadPublishedImage(bookId, 'cover')
+      .downloadPublishedImage(bookId, 'cover', edition ?? undefined)
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -33,7 +34,7 @@ export function PublishedCoverThumbnail({ bookId, title }: PublishedCoverThumbna
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [bookId]);
+  }, [bookId, edition]);
 
   return (
     <div className="mb-4 flex aspect-[3/4] items-center justify-center overflow-hidden rounded-xl bg-violet-50">

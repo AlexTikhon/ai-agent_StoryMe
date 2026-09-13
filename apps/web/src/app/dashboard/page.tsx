@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState, useCallback } from 'react';
-import type { BookDto } from '@book/types';
+import type { BookSummaryDto } from '@book/types';
 import { BookStatus } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 import { PublishedCoverThumbnail } from './published-cover-thumbnail';
@@ -21,7 +21,7 @@ function isBookEditable(status: BookStatus): boolean {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const [books, setBooks] = useState<BookDto[] | null>(null);
+  const [books, setBooks] = useState<BookSummaryDto[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -105,7 +105,7 @@ export default function DashboardPage() {
 // ── BookCard ──────────────────────────────────────────────────────────────────
 
 interface BookCardProps {
-  book: BookDto;
+  book: BookSummaryDto;
   onDelete: () => void;
   deleting: boolean;
 }
@@ -119,7 +119,7 @@ function BookCard({ book, onDelete, deleting }: BookCardProps) {
   return (
     <div className="flex h-full flex-col rounded-2xl border border-border-subtle bg-bg-surface p-5 shadow-xs transition-shadow hover:shadow-sm">
       {book.previewPdfUrl ? (
-        <PublishedCoverThumbnail bookId={book.id} title={title} />
+        <PublishedCoverThumbnail bookId={book.id} title={title} edition={book.publishedEdition} />
       ) : (
         <div
           role="img"

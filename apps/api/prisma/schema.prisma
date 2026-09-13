@@ -324,9 +324,11 @@ model Upload {
 // ═══════════════════════════════════════════
 
 model Book {
-  id             String  @id @default(uuid()) @db.Uuid
-  userId         String  @map("user_id") @db.Uuid
-  childProfileId String? @map("child_profile_id") @db.Uuid
+  publishedArtifactManifest Json?   @map("published_artifact_manifest")
+  generationCheckpoint      Json?   @map("generation_checkpoint")
+  id                        String  @id @default(uuid()) @db.Uuid
+  userId                    String  @map("user_id") @db.Uuid
+  childProfileId            String? @map("child_profile_id") @db.Uuid
 
   // BookStatus.created doubles as the Phase 1A "draft" state — editable/deletable
   // until the generation pipeline (Phase 1B+) advances it to a later status.
@@ -516,16 +518,28 @@ model BookPage {
 
 // Durable quote/confirmation/run boundary for one paid page-image call.
 model PageImageRevision {
-  id                  String                  @id @default(uuid()) @db.Uuid
-  bookId              String                  @map("book_id") @db.Uuid
-  userId              String                  @map("user_id") @db.Uuid
-  pageNumber          Int                     @map("page_number")
-  expectedPageVersion Int                     @map("expected_page_version")
-  status              PageImageRevisionStatus @default(quoted)
-  costCredits         Int                     @map("cost_credits")
-  provider            String
-  estimatedCostUsd    Decimal?                @map("estimated_cost_usd") @db.Decimal(10, 6)
-  quoteExpiresAt      DateTime                @map("quote_expires_at")
+  executionFingerprint        String?                 @map("execution_fingerprint")
+  providerOperations          Json?                   @map("provider_operations")
+  providerDispatches          Int                     @default(0) @map("provider_dispatches")
+  authorizedDispatches        Int                     @default(1) @map("authorized_dispatches")
+  providerOutcome             String?                 @map("provider_outcome")
+  candidateImageKey           String?                 @map("candidate_image_key")
+  candidateImageManifest      Json?                   @map("candidate_image_manifest")
+  checkpointState             String                  @default("none") @map("checkpoint_state")
+  queueExpiresAt              DateTime?               @map("queue_expires_at")
+  leaseExpiresAt              DateTime?               @map("lease_expires_at")
+  processingDeadlineAt        DateTime?               @map("processing_deadline_at")
+  id                          String                  @id @default(uuid()) @db.Uuid
+  bookId                      String                  @map("book_id") @db.Uuid
+  userId                      String                  @map("user_id") @db.Uuid
+  pageNumber                  Int                     @map("page_number")
+  expectedPageVersion         Int                     @map("expected_page_version")
+  status                      PageImageRevisionStatus @default(quoted)
+  costCredits                 Int                     @map("cost_credits")
+  provider                    String
+  estimatedCostUsd            Decimal?                @map("estimated_cost_usd") @db.Decimal(10, 6)
+  maximumEstimatedExposureUsd Decimal?                @map("maximum_estimated_exposure_usd") @db.Decimal(10, 6)
+  quoteExpiresAt              DateTime                @map("quote_expires_at")
 
   sourceBookUpdatedAt              DateTime @map("source_book_updated_at")
   sourcePublishedRunId             String?  @map("source_published_run_id") @db.Uuid
@@ -537,6 +551,7 @@ model PageImageRevision {
   deliveryToken  String? @map("delivery_token")
   errorCode      String? @map("error_code")
   errorMessage   String? @map("error_message")
+  failureReason  String? @map("failure_reason")
 
   confirmedAt DateTime? @map("confirmed_at")
   startedAt   DateTime? @map("started_at")
@@ -551,6 +566,7 @@ model PageImageRevision {
   @@index([bookId, createdAt(sort: Desc)])
   @@index([userId, createdAt(sort: Desc)])
   @@index([status, createdAt])
+  @@index([status, queueExpiresAt, leaseExpiresAt, processingDeadlineAt], map: "page_image_revisions_recovery_idx")
   @@map("page_image_revisions")
 }
 
@@ -746,27 +762,29 @@ model AgentLog {
 // (queued/running) run per book at the database level — Book.activeRunId
 // alone is an application-level mirror of that invariant, not its enforcement.
 model GenerationRun {
-  id             String              @id @default(uuid()) @db.Uuid
-  bookId         String              @map("book_id") @db.Uuid
-  userId         String              @map("user_id") @db.Uuid
-  kind           GenerationRunKind
-  status         GenerationRunStatus @default(queued)
+  executionAuthorization Json?               @map("execution_authorization")
+  providerOperations     Json?               @map("provider_operations")
+  id                     String              @id @default(uuid()) @db.Uuid
+  bookId                 String              @map("book_id") @db.Uuid
+  userId                 String              @map("user_id") @db.Uuid
+  kind                   GenerationRunKind
+  status                 GenerationRunStatus @default(queued)
   // Immutable copy of the book's generation-relevant fields at run-creation
   // time (childName, childAge, language, theme, educationalMessage,
   // pageCount, childPhotoAssetKey, childPhotoContentType).
-  inputSnapshot  Json                @map("input_snapshot")
+  inputSnapshot          Json                @map("input_snapshot")
   // sha256 of a canonical serialization of inputSnapshot — lets the frontend
   // (Phase 5) derive "this edit hasn't been generated yet" without a second
   // round-trip.
-  inputHash      String              @map("input_hash")
+  inputHash              String              @map("input_hash")
   // Set only when kind = retry — the run being retried, whose inputSnapshot
   // this run reuses verbatim. Plain UUID, not a Prisma self-relation: see the
   // note on Book.activeRunId/publishedRunId above for why.
-  retryOfRunId   String?             @map("retry_of_run_id") @db.Uuid
-  currentStep    AgentStep?          @map("current_step")
-  attempt        Int                 @default(1)
-  leaseOwner     String?             @map("lease_owner")
-  leaseExpiresAt DateTime?           @map("lease_expires_at")
+  retryOfRunId           String?             @map("retry_of_run_id") @db.Uuid
+  currentStep            AgentStep?          @map("current_step")
+  attempt                Int                 @default(1)
+  leaseOwner             String?             @map("lease_owner")
+  leaseExpiresAt         DateTime?           @map("lease_expires_at")
   // BullMQ's own per-delivery lock token (the `token` argument
   // GenerationQueueProcessor.process(job, token) receives) — a fresh value
   // every time BullMQ hands this job's lock to a worker, *including* a
@@ -777,14 +795,14 @@ model GenerationRun {
   // run is still queued/running) and unconditionally bumps fencingVersion,
   // replacing whichever delivery held it before — see GenerationRunService.
   // claim/heartbeat.
-  deliveryToken  String?             @map("delivery_token")
+  deliveryToken          String?             @map("delivery_token")
   // Incremented on every guarded claim/heartbeat/recovery-forced-failure —
   // every mutation this run makes must condition its WHERE clause on the
   // fencingVersion it last observed, so a stale worker's late write matches
   // zero rows instead of resurrecting a run recovery already failed.
-  fencingVersion Int                 @default(0) @map("fencing_version")
-  errorCode      String?             @map("error_code")
-  errorMessage   String?             @map("error_message")
+  fencingVersion         Int                 @default(0) @map("fencing_version")
+  errorCode              String?             @map("error_code")
+  errorMessage           String?             @map("error_message")
 
   startedAt   DateTime? @map("started_at")
   completedAt DateTime? @map("completed_at")

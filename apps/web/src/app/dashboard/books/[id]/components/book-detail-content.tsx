@@ -273,6 +273,7 @@ export function BookDetailContent({
         <PublishedBookReader
           bookId={book.id}
           preview={bookPreview}
+          edition={book.publishedEdition}
           onBookUpdated={onBookUpdated}
           allowRevisions={book.status === BookStatus.Complete}
         />

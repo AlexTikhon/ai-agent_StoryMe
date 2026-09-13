@@ -461,6 +461,71 @@ describe('buildGenerationDiagnostics', () => {
     expect(diagnostics.generationMetadata.providerUsage).toEqual(providerUsage);
   });
 
+  it('prefers the durable delivery-spanning provider ledger over a latest-delivery snapshot', () => {
+    const run = makeGenerationRun({
+      executionAuthorization: {
+        policy: { maxPaidCalls: 4 },
+        estimate: { maximumProviderCalls: 2 },
+      },
+      providerOperations: [
+        {
+          callIndex: 1,
+          operationId: 'run-1:story:singleton',
+          operation: 'story',
+          provider: 'openai',
+          model: 'gpt-test',
+          promptVersion: 'story-v1',
+          promptHash: 'a'.repeat(64),
+          attempt: 1,
+          deliveryFencingVersion: 1,
+          state: 'unknown',
+          httpAttempts: 1,
+          estimatedCostUsd: 0.02,
+          dispatches: [{ state: 'unknown_remote_outcome' }],
+        },
+        {
+          callIndex: 2,
+          operationId: 'run-1:illustration:page_1',
+          operation: 'illustration',
+          assetLabel: 'page_1',
+          provider: 'openai',
+          model: 'image-test',
+          promptVersion: 'page-v1',
+          promptHash: 'b'.repeat(64),
+          attempt: 1,
+          deliveryFencingVersion: 2,
+          state: 'artifact_stored',
+          httpAttempts: 2,
+          inputTokens: 10,
+          outputTokens: 20,
+          estimatedCostUsd: 0.04,
+          providerRequestId: 'req_123',
+          dispatches: [{ state: 'unknown_remote_outcome' }, { state: 'artifact_stored' }],
+        },
+      ],
+    } as Partial<GenerationRun>);
+
+    const diagnostics = buildGenerationDiagnostics(makeBook(), [], run);
+
+    expect(diagnostics.providerUsage).toMatchObject({
+      maxPaidCalls: 4,
+      plannedPaidCalls: 2,
+      actualPaidCalls: 2,
+      actualDispatches: 3,
+      unknownOutcomes: 2,
+      knownInputTokens: 10,
+      knownOutputTokens: 20,
+      estimatedCostUsd: 0.06,
+      estimatedExposureUsd: 0.1,
+    });
+    expect(diagnostics.providerUsage?.calls[1]).toMatchObject({
+      operationId: 'run-1:illustration:page_1',
+      providerRequestId: 'req_123',
+      status: 'success',
+    });
+    expect(diagnostics.generationMetadata.providerUsage).toEqual(diagnostics.providerUsage);
+  });
+
   it('surfaces imageFailures from imageGenerationResult', () => {
     const failure = {
       assetLabel: 'back_cover',

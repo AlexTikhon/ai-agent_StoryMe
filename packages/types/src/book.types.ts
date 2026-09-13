@@ -5,6 +5,7 @@ import type {
   BookLength,
   GenerationJobSummary,
   GenerationMetadata,
+  GenerationFailureReason,
   GenerationProviderCallMetadata,
   GenerationProviderUsage,
   IllustrationStyle,
@@ -247,6 +248,7 @@ export type QualityIssueCategory =
   | 'safety';
 
 export type QualityIssueCode =
+  | 'actual_language_mismatch'
   | 'metadata_language_mismatch'
   | 'metadata_theme_mismatch'
   | 'metadata_age_mismatch'
@@ -295,6 +297,8 @@ export interface QualityReport {
   version: 1;
   overallPassed: boolean;
   dimensions: StoryQualityDimensions;
+  /** Additive evidence-bearing contract; legacy boolean dimensions stay stable for API clients. */
+  dimensionEvaluations: StoryQualityDimensionEvaluations;
   issues: QualityIssue[];
   flaggedPages: number[];
   repair?: {
@@ -304,6 +308,17 @@ export interface QualityReport {
     providerCall?: GenerationProviderCallMetadata;
   };
 }
+
+export interface StoryQualityDimensionEvaluation {
+  outcome: 'passed' | 'failed' | 'not_evaluated';
+  /** Privacy-safe rule/finding codes only; never generated prose or child input. */
+  evidence: string[];
+}
+
+export type StoryQualityDimensionEvaluations = Record<
+  keyof StoryQualityDimensions | 'language',
+  StoryQualityDimensionEvaluation
+>;
 
 /** Explicit pass/fail quality contract; no fabricated model score. */
 export interface StoryQualityDimensions {
@@ -547,6 +562,7 @@ export const DEFAULT_BOOK_PAGE_COUNT = 6;
 
 /** API-facing shape of a Book in the Phase 1A simple draft flow. */
 export interface BookDto {
+  publishedEdition?: string | null;
   id: string;
   userId: string;
   /** Reusable profile explicitly applied to this draft. The Book name/age remain the generation snapshot. */
@@ -606,6 +622,7 @@ export interface PageImageRevisionDto {
   provider: string;
   errorCode?: string | null;
   errorMessage?: string | null;
+  failureReason?: GenerationFailureReason | null;
   book?: BookDto;
 }
 
@@ -643,8 +660,23 @@ export interface CreateBookInput {
 export type UpdateBookInput = Partial<CreateBookInput>;
 
 /** Paginated response for GET /books */
+export type BookSummaryDto = Pick<
+  BookDto,
+  | 'id'
+  | 'title'
+  | 'childName'
+  | 'childAge'
+  | 'language'
+  | 'theme'
+  | 'status'
+  | 'previewPdfUrl'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'publishedEdition'
+>;
+
 export interface BooksPageDto {
-  items: BookDto[];
+  items: BookSummaryDto[];
   page: number;
   limit: number;
   total: number;

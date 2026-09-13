@@ -1,9 +1,16 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+  Optional,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { GenerationRunStatus, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { GenerationQueueService } from './generation-queue.service';
 import { GenerationRunCoordinator } from './generation-run-coordinator.service';
+import { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
 
 export const DEFAULT_GENERATION_RUN_QUEUED_STALE_MS = 5 * 60 * 1000;
 export const DEFAULT_GENERATION_RUN_RECOVERY_INTERVAL_MS = 60 * 1000;
@@ -96,6 +103,7 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
     private readonly prisma: PrismaService,
     private readonly generationQueueService: GenerationQueueService,
     private readonly generationRunCoordinator: GenerationRunCoordinator,
+    @Optional() private readonly pageImageRevisions?: BookPageImageRevisionService,
   ) {}
 
   /** Never throws — a recovery failure is logged and the app still boots/keeps running. */
@@ -260,6 +268,10 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
         }
       }
 
+      if (this.pageImageRevisions && (await this.stillHoldsLease(generation))) {
+        await this.recoverPageImageRevisions(now);
+      }
+
       return {
         staleFound: candidates.length,
         recovered,
@@ -271,6 +283,66 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
       };
     } finally {
       await this.releaseLease(generation);
+    }
+  }
+
+  private async recoverPageImageRevisions(now: Date): Promise<void> {
+    const legacyQueuedCutoff = new Date(now.getTime() - readGenerationRunQueuedStaleMs());
+    const legacyRunningCutoff = new Date(now.getTime() - readRecoveryLeaseMs());
+    const revisions = await this.prisma.pageImageRevision.findMany({
+      where: {
+        OR: [
+          { status: 'queued', queueExpiresAt: { lt: now } },
+          { status: 'queued', queueExpiresAt: null, createdAt: { lt: legacyQueuedCutoff } },
+          { status: 'running', processingDeadlineAt: { lt: now } },
+          { status: 'running', leaseExpiresAt: { lt: now } },
+          { status: 'running', leaseExpiresAt: null, startedAt: { lt: legacyRunningCutoff } },
+        ],
+      },
+    });
+    for (const revision of revisions) {
+      try {
+        const queueExpired =
+          revision.status === 'queued' &&
+          (revision.queueExpiresAt?.getTime() ?? revision.createdAt.getTime()) < now.getTime();
+        const processingExpired =
+          revision.status === 'running' &&
+          !!revision.processingDeadlineAt &&
+          revision.processingDeadlineAt < now;
+        if (queueExpired || processingExpired) {
+          await this.pageImageRevisions!.failAndRefund(
+            revision.id,
+            queueExpired
+              ? 'PAGE_IMAGE_QUEUE_WAIT_EXPIRED'
+              : 'PAGE_IMAGE_PROCESSING_DEADLINE_EXCEEDED',
+            'The page illustration could not be regenerated. The previous book is unchanged.',
+            revision.fencingVersion,
+          );
+          continue;
+        }
+        if (await this.generationQueueService.isPageImageRevisionJobStillPending(revision.id)) {
+          continue;
+        }
+        if (revision.providerDispatches > 0 && revision.checkpointState !== 'artifact_stored') {
+          await this.pageImageRevisions!.failAndRefund(
+            revision.id,
+            'PAGE_IMAGE_REMOTE_OUTCOME_UNKNOWN',
+            'The page illustration could not be regenerated. The previous book is unchanged.',
+            revision.fencingVersion,
+            'provider_transient_failure',
+          );
+          continue;
+        }
+        await this.generationQueueService.enqueuePageImageRevision({
+          kind: 'page_image_revision',
+          bookId: revision.bookId,
+          revisionId: revision.id,
+        });
+      } catch (error) {
+        this.logger.error(
+          `Failed to recover page image revision ${revision.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 

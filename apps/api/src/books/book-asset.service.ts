@@ -21,7 +21,7 @@ import {
   resolvePublishedImageNamespace,
   resolvePublishedPdfNamespace,
 } from '../agent/generation-artifact-namespace';
-import { toBookDto } from './books.mapper';
+import { toBookDto, publishedEdition } from './books.mapper';
 import { BookCrudService, EDITABLE_BOOK_STATUSES } from './book-crud.service';
 import { publishedImageKey } from './published-page-image-key';
 
@@ -134,8 +134,11 @@ export class BookAssetService {
   async getPreviewPdfBuffer(
     bookId: string,
     userId: string,
+    edition?: string,
   ): Promise<{ buffer: Buffer; contentType: 'application/pdf'; filename: string }> {
     const book = await this.crud.findOwnedOrThrow(bookId, userId);
+    if (edition && edition !== publishedEdition(book))
+      throw new ConflictException('PUBLISHED_EDITION_CHANGED');
     const namespace = resolvePublishedPdfNamespace(book);
     if (namespace.kind === 'not_ready') {
       throw new ConflictException('PDF not ready — book generation is not complete');
@@ -149,9 +152,12 @@ export class BookAssetService {
     bookId: string,
     userId: string,
     rawImageId: string,
+    edition?: string,
   ): Promise<PublishedImageResult> {
     const image = parsePublishedImageId(rawImageId);
     const book = await this.crud.findOwnedOrThrow(bookId, userId);
+    if (edition && edition !== publishedEdition(book))
+      throw new ConflictException('PUBLISHED_EDITION_CHANGED');
     const namespace = resolvePublishedImageNamespace(book);
     if (namespace.kind === 'not_ready') {
       throw new ConflictException('Images not ready â€” book generation is not complete');
@@ -176,6 +182,8 @@ export class BookAssetService {
     const buffer = await this.imageStorage.getImageAsset(key);
     if (!buffer) throw new NotFoundException('Published image not found in storage');
 
+    if (edition && edition !== publishedEdition(await this.crud.findOwnedOrThrow(bookId, userId)))
+      throw new ConflictException('PUBLISHED_EDITION_CHANGED');
     const contentType = detectImageContentType(buffer);
     if (!contentType) {
       throw new InternalServerErrorException('Published image has an unsupported stored format');

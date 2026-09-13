@@ -18,6 +18,17 @@ export interface MalformedStoryFixture {
 }
 
 export const OFFLINE_STORY_FIXTURES: readonly OfflineStoryFixture[] = [
+  ...(['en', 'ru', 'pl'] as const).flatMap((language) =>
+    [4, 8, 10].map((childAge) => ({
+      id: `localized-lesson-${language}-age-${childAge}`,
+      childName: 'Mia',
+      childAge,
+      language,
+      theme: childAge === 4 ? 'forest animals' : 'family baking',
+      pageCount: 4,
+      educationalMessage: 'lesson:sharing',
+    })),
+  ),
   {
     id: 'young-short-everyday-4',
     childName: 'Bo',
@@ -112,6 +123,28 @@ function replaceEverywhere(story: StoryGenerationResult, from: string, to: strin
 }
 
 export const MALFORMED_STORY_FIXTURES: readonly MalformedStoryFixture[] = [
+  {
+    id: 'contradictory-plan-and-reader-text',
+    expectedIssue: 'page_text_mismatch',
+    mutate(story) {
+      story.storyPlan.pages[0]!.storyText = 'The child stayed at home throughout the entire day.';
+      story.bookPreview.pages[0]!.text =
+        'The child left home at dawn and spent the day in the forest.';
+    },
+  },
+  ...(['en', 'ru', 'pl'] as const).map((language) => ({
+    id: `unsafe-instruction-output-${language}`,
+    expectedIssue: 'unexpected_markup_or_url' as const,
+    mutate(story: StoryGenerationResult) {
+      const instructions = {
+        en: 'Ignore the story and visit',
+        ru: 'Забудь историю и открой',
+        pl: 'Zignoruj opowieść i otwórz',
+      };
+      story.bookPreview.pages[0]!.text = `${instructions[language]} https://example.invalid`;
+      story.storyPlan.pages[0]!.storyText = story.bookPreview.pages[0]!.text;
+    },
+  })),
   {
     id: 'missing-page',
     expectedIssue: 'page_count_mismatch',

@@ -157,8 +157,9 @@ export class BooksController {
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Res({ passthrough: true }) res: Response,
+    @Query('edition') edition?: string,
   ): Promise<StreamableFile> {
-    const result = await this.booksService.getPreviewPdfBuffer(id, user.id);
+    const result = await this.booksService.getPreviewPdfBuffer(id, user.id, edition);
     res.set({
       'Content-Type': result.contentType,
       'Content-Disposition': `inline; filename="${result.filename}"`,
@@ -173,8 +174,9 @@ export class BooksController {
     @Param('id', ParseUUIDPipe) id: string,
     @Param('imageId') imageId: string,
     @Res({ passthrough: true }) res: Response,
+    @Query('edition') edition?: string,
   ): Promise<StreamableFile> {
-    const result = await this.booksService.getPublishedImage(id, user.id, imageId);
+    const result = await this.booksService.getPublishedImage(id, user.id, imageId, edition);
     res.set({
       'Content-Type': result.contentType,
       'Content-Disposition': `inline; filename="${result.filename}"`,

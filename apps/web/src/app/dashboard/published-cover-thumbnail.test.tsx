@@ -24,13 +24,13 @@ describe('PublishedCoverThumbnail', () => {
   });
 
   it('loads the ownership-checked published cover', async () => {
-    render(<PublishedCoverThumbnail bookId="book-1" title="Emma's Story" />);
+    render(<PublishedCoverThumbnail bookId="book-1" title="Emma's Story" edition="edition-1" />);
 
     expect(await screen.findByAltText("Cover of Emma's Story")).toHaveAttribute(
       'src',
       'blob:cover',
     );
-    expect(booksApi.downloadPublishedImage).toHaveBeenCalledWith('book-1', 'cover');
+    expect(booksApi.downloadPublishedImage).toHaveBeenCalledWith('book-1', 'cover', 'edition-1');
   });
 
   it('revokes the Blob URL when the card unmounts', async () => {

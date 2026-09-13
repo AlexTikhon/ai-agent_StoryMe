@@ -146,7 +146,11 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
 
   constructor(private readonly failures?: MockFailureController) {}
 
-  async generateImage(input: ImageGenerationInput): Promise<ImageGenerationOutput> {
+  async generateImage(
+    input: ImageGenerationInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<ImageGenerationOutput> {
+    await options.beforeDispatch?.();
     await this.failures?.before('image', input.entry.pageNumber);
     return {
       buffer: generateMockImagePng(input.entry.seed),
@@ -154,7 +158,11 @@ export class MockImageGenerationProvider implements ImageGenerationProvider {
     };
   }
 
-  async generateCharacterSheet(input: CharacterSheetInput): Promise<ImageGenerationOutput> {
+  async generateCharacterSheet(
+    input: CharacterSheetInput,
+    options: ProviderExecutionOptions = {},
+  ): Promise<ImageGenerationOutput> {
+    await options.beforeDispatch?.();
     await this.failures?.before('image');
     return {
       buffer: generateMockImagePng(`${input.bookId}:character_sheet:0`),

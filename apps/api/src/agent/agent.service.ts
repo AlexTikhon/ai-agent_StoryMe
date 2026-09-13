@@ -1,3 +1,5 @@
+import { buildExecutionAuthorization, revalidateExecution } from './generation-execution-policy';
+import { estimatedPaidCalls } from './generation-estimate';
 import { Injectable, Logger } from '@nestjs/common';
 import { AgentStep, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -42,7 +44,24 @@ export class AgentService {
     const startedAt = Date.now();
     const prepared = this.preparation.prepare(ctx);
     const resolvedInput = prepared.input;
+    prepared.providerTelemetry.bind(this.execution, ctx, prepared.policy);
 
+    const work = await this.resume.inspect(
+      book,
+      ctx.inputHash,
+      prepared.compatibilityFingerprint,
+      resolvedInput.childPhoto?.sha256 ?? null,
+    );
+    const estimate = revalidateExecution(
+      prepared.policy,
+      prepared.targetPageCount,
+      work.reuse,
+      ctx.executionAuthorization,
+    );
+    await this.execution.authorize(ctx, buildExecutionAuthorization(prepared.policy, estimate));
+    prepared.providerTelemetry.planPaidCalls(
+      estimatedPaidCalls(estimate, prepared.policy.providers),
+    );
     const resumePlan = await this.resume.plan(
       book,
       ctx.inputHash,
@@ -100,6 +119,8 @@ export class AgentService {
       });
     }
 
+    if (resumePlan.priorCharacterDegraded && skippedCharacterProfileGeneration)
+      charBuildResult.error ??= 'Resumed an explicitly degraded character profile.';
     const characterProfileUpdateData: Prisma.BookUpdateInput = {
       characterProfile: charBuildResult.characterProfile as unknown as Prisma.InputJsonValue,
       ...(charBuildResult.characterSheetKey && {
@@ -107,6 +128,10 @@ export class AgentService {
       }),
     };
 
+    await prepared.providerTelemetry.checkpoint({
+      ...characterProfileUpdateData,
+      characterDegraded: !!charBuildResult.error,
+    });
     const storyPhase = await this.storyQuality.execute({
       generationInput: {
         bookId: book.id,
@@ -142,6 +167,7 @@ export class AgentService {
         storyModelName: prepared.storyModelName,
         providerUsage: prepared.providerTelemetry.snapshot(),
         failureKind: storyPhase.failureKind,
+        failureReason: storyPhase.failureReason,
         errorMessage: storyPhase.errorMessage,
       });
     }
@@ -163,9 +189,32 @@ export class AgentService {
       });
     }
 
+    await prepared.providerTelemetry.checkpoint({
+      ...storyPhase.story,
+      qualityReport: storyPhase.qualityReport,
+    });
     this.assertNotSuperseded(ctx, AgentStep.image_gen);
     await this.execution.markStep(ctx, AgentStep.image_gen);
     const imagePhase = await this.imageService.execute({
+      sourceKeys: Object.fromEntries(
+        work.images
+          .filter((item) => item.sourceKey)
+          .map(({ image, sourceKey }) => [
+            image.kind === 'page' ? `page_${image.pageNumber}` : image.kind,
+            sourceKey!,
+          ]),
+      ),
+      expectedHashes: Object.fromEntries(
+        work.images
+          .filter((item) => item.sha256)
+          .map(({ image, sha256 }) => [
+            image.kind === 'page' ? `page_${image.pageNumber}` : image.kind,
+            sha256!,
+          ]),
+      ),
+      allowedLabels: work.images
+        .filter((item) => item.valid)
+        .map(({ image }) => (image.kind === 'page' ? `page_${image.pageNumber}` : image.kind)),
       bookId: book.id,
       ...(charBuildResult.characterSheetKey && {
         characterSheetKey: charBuildResult.characterSheetKey,

@@ -26,7 +26,8 @@ describe('evaluateStoryQuality', () => {
   it('passes a normal deterministic provider result without changing it', async () => {
     const { input, result } = await candidate();
 
-    expect(evaluateStoryQuality(result, input)).toEqual({
+    const report = evaluateStoryQuality(result, input);
+    expect(report).toMatchObject({
       version: 1,
       overallPassed: true,
       dimensions: {
@@ -41,6 +42,14 @@ describe('evaluateStoryQuality', () => {
       },
       issues: [],
       flaggedPages: [],
+    });
+    expect(report.dimensionEvaluations.language).toEqual({
+      outcome: 'passed',
+      evidence: ['language_heuristic_matched'],
+    });
+    expect(report.dimensionEvaluations.continuity).toEqual({
+      outcome: 'not_evaluated',
+      evidence: ['semantic_judgment_not_established_by_deterministic_heuristics'],
     });
   });
 
@@ -83,7 +92,22 @@ describe('evaluateStoryQuality', () => {
     result.storyPlan.pages.pop();
     const report = evaluateStoryQuality(result, input);
     expect(report.dimensions.structuralValidity).toBe(false);
+    expect(report.dimensionEvaluations.structuralValidity).toMatchObject({
+      outcome: 'failed',
+      evidence: expect.arrayContaining(['page_count_mismatch']),
+    });
     expect(report.issues).toContainEqual(expect.objectContaining({ code: 'page_count_mismatch' }));
+  });
+
+  it('reports language as not_evaluated when deterministic detection is inconclusive', async () => {
+    const { input, result } = await candidate();
+    for (const page of result.bookPreview.pages) page.text = 'Mia.';
+    for (const page of result.storyPlan.pages) page.storyText = 'Mia.';
+    const report = evaluateStoryQuality(result, input);
+    expect(report.dimensionEvaluations.language).toEqual({
+      outcome: 'not_evaluated',
+      evidence: ['language_sample_not_confidently_classified'],
+    });
   });
 
   it('detects when the personalized protagonist disappears', async () => {
