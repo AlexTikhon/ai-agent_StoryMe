@@ -246,21 +246,32 @@ model User {
 }
 
 model RefreshToken {
-  id        String    @id @default(uuid()) @db.Uuid
-  userId    String    @map("user_id") @db.Uuid
-  tokenHash String    @unique @map("token_hash")
-  family    String    @db.Uuid
-  expiresAt DateTime  @map("expires_at")
-  revokedAt DateTime? @map("revoked_at")
-  ipAddress String?   @map("ip_address")
-  userAgent String?   @map("user_agent")
-  createdAt DateTime  @default(now()) @map("created_at")
+  id               String                        @id @default(uuid()) @db.Uuid
+  userId           String                        @map("user_id") @db.Uuid
+  tokenHash        String                        @unique @map("token_hash")
+  family           String                        @db.Uuid
+  expiresAt        DateTime                      @map("expires_at")
+  revokedAt        DateTime?                     @map("revoked_at")
+  revocationReason RefreshTokenRevocationReason? @map("revocation_reason")
+  rotatedFromId    String?                       @unique @map("rotated_from_id") @db.Uuid
+  ipAddress        String?                       @map("ip_address")
+  userAgent        String?                       @map("user_agent")
+  createdAt        DateTime                      @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rotatedFrom RefreshToken? @relation("RefreshTokenRotation", fields: [rotatedFromId], references: [id], onDelete: SetNull)
+  rotatedTo   RefreshToken? @relation("RefreshTokenRotation")
 
   @@index([userId])
   @@index([family])
   @@map("refresh_tokens")
+}
+
+enum RefreshTokenRevocationReason {
+  rotation
+  logout
+  password_reset
+  compromise
 }
 
 // ═══════════════════════════════════════════
@@ -785,6 +796,10 @@ model GenerationRun {
   attempt                Int                 @default(1)
   leaseOwner             String?             @map("lease_owner")
   leaseExpiresAt         DateTime?           @map("lease_expires_at")
+  // Queue admission and worker execution have independent clocks. Queue
+  // expiry is fixed at creation; processing deadline is fixed on first claim.
+  queueExpiresAt         DateTime?           @map("queue_expires_at")
+  processingDeadlineAt   DateTime?           @map("processing_deadline_at")
   // BullMQ's own per-delivery lock token (the `token` argument
   // GenerationQueueProcessor.process(job, token) receives) — a fresh value
   // every time BullMQ hands this job's lock to a worker, *including* a
@@ -818,6 +833,7 @@ model GenerationRun {
 
   @@index([bookId])
   @@index([userId])
+  @@index([status, queueExpiresAt])
   @@map("generation_runs")
 }
 

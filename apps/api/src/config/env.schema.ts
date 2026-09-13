@@ -39,6 +39,10 @@ export const envSchema = z
     // Auth
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
+    // Lax is correct for the default same-site web/API deployment. Cross-site
+    // deployments must deliberately select none (Secure is then forced) and
+    // list the exact frontend origins in ALLOWED_ORIGINS.
+    REFRESH_COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).default('lax'),
     // dev: DevAuthGuard (x-user-email header, no credential check) — refuses to
     // run when NODE_ENV=production regardless of this setting.
     // jwt: real email/password + JWT access token + rotating refresh cookie.
@@ -125,7 +129,18 @@ export const envSchema = z
     // review fails, and the potential paid call is budgeted before scheduling.
     CHARACTER_FALLBACK_POLICY: z.enum(['required', 'allow_degraded']).default('required'),
     GENERATION_HEARTBEAT_MS: z.coerce.number().int().min(250).max(30000).default(5000),
-    GENERATION_RUN_DEADLINE_MS: z.coerce.number().int().positive().max(7200000).default(2700000),
+    GENERATION_RUN_QUEUE_WAIT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(86_400_000)
+      .default(900_000),
+    GENERATION_RUN_DEADLINE_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(7_200_000)
+      .default(2_700_000),
     PAGE_IMAGE_QUEUE_WAIT_MS: z.coerce.number().int().positive().default(1800000),
     PAGE_IMAGE_LEASE_MS: z.coerce.number().int().positive().default(600000),
     PAGE_IMAGE_PROCESSING_DEADLINE_MS: z.coerce.number().int().positive().default(1200000),
@@ -148,6 +163,10 @@ export const envSchema = z
     OPENAI_STORY_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
     OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
     OPENAI_IMAGE_ESTIMATED_COST_USD: z.coerce.number().nonnegative().optional(),
+    // Operator-owned identifier (for example `openai-pricing-2026-09-01`)
+    // recorded in authorizations so estimates are auditable, never presented
+    // as an exact provider invoice.
+    OPENAI_PRICING_ASSUMPTIONS_VERSION: z.string().min(1).optional(),
 
     // Transactional email provider selection. Loose optional string (not a
     // z.enum) for the same reason as STORY_GENERATION_PROVIDER above — the
