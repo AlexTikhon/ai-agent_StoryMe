@@ -207,6 +207,44 @@ export class GenerationRunCoordinator {
         });
         if (runUpdate.count === 0) return 'stale_fence';
 
+        let pageRows: Prisma.BookPageCreateManyInput[] = [];
+        if (params.clearBookPageRevisionsOnApply) {
+          const preview = params.bookData.bookPreview as unknown as
+            { pages?: Array<{ pageNumber: number; version?: number }> } | undefined;
+          if (
+            Array.isArray(preview?.pages) &&
+            preview.pages.every((page) => Number.isInteger(page.pageNumber))
+          ) {
+            const previous = await tx.book.findUnique({
+              where: { id: params.bookId },
+              select: { bookPreview: true },
+            });
+            const previousPages = (previous?.bookPreview as typeof preview)?.pages ?? [];
+            const stored = await tx.bookPage.findMany({
+              where: { bookId: params.bookId },
+              select: { version: true },
+            });
+            const nextVersion =
+              Math.max(
+                0,
+                ...previousPages.map((page) => page.version ?? 1),
+                ...(stored ?? []).map((page) => page.version),
+              ) + 1;
+            params.bookData = {
+              ...params.bookData,
+              bookPreview: {
+                ...preview,
+                pages: preview.pages.map((page) => ({ ...page, version: nextVersion })),
+              } as Prisma.InputJsonValue,
+            };
+            pageRows = preview.pages.map((page) => ({
+              bookId: params.bookId,
+              pageNumber: page.pageNumber,
+              version: nextVersion,
+            }));
+          }
+        }
+
         const bookUpdate = await tx.book.updateMany({
           where: { id: params.bookId, activeRunId: params.runId },
           data: params.bookData,
@@ -219,6 +257,7 @@ export class GenerationRunCoordinator {
 
         if (params.clearBookPageRevisionsOnApply) {
           await tx.bookPage.deleteMany({ where: { bookId: params.bookId } });
+          if (pageRows.length) await tx.bookPage.createMany({ data: pageRows });
         }
 
         if (params.agentLogs && params.agentLogs.length > 0) {
@@ -306,7 +345,7 @@ export class GenerationRunCoordinator {
    */
   async completeRun(ctx: ClaimedRunRef, outcome: GenerationOutcome): Promise<CoordinatorOutcome> {
     const bookData: Prisma.BookUpdateInput = {
-      ...outcome.bookUpdate,
+      ...(outcome.status === BookStatus.complete ? outcome.bookUpdate : {}),
       status: outcome.status,
       ...(outcome.errorMessage !== undefined && { errorMessage: outcome.errorMessage }),
       ...(outcome.failedStep !== undefined && { failedStep: outcome.failedStep }),

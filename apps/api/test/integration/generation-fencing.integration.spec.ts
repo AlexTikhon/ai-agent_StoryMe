@@ -100,6 +100,49 @@ describe('Generation pipeline fencing (real Postgres)', () => {
   }
 
   describe('GenerationRunService.claim', () => {
+    it('returns each concurrent delivery its own fence and rejects the loser after takeover', async () => {
+      const book = await createUserAndBook();
+      const run = await createRun(book);
+      const second = new PrismaService();
+      await second.$connect();
+      try {
+        const [a, b] = await Promise.all([
+          new GenerationRunService(prisma).claim(run.id, 'A', 'worker-a', 60_000),
+          new GenerationRunService(second).claim(run.id, 'B', 'worker-b', 60_000),
+        ]);
+        expect(a?.deliveryToken).toBe('A');
+        expect(b?.deliveryToken).toBe('B');
+        expect(new Set([a!.fencingVersion, b!.fencingVersion]).size).toBe(2);
+        const loser = a!.fencingVersion < b!.fencingVersion ? a! : b!;
+        const ctx = {
+          runId: run.id,
+          bookId: book.id,
+          fencingVersion: loser.fencingVersion,
+          inputSnapshot: buildInputSnapshot(book),
+          inputHash: run.inputHash,
+        };
+        await expect(
+          new GenerationExecutionService(prisma).applyFencedBookWrite(
+            ctx,
+            { title: 'stale' },
+            AgentStep.layout,
+          ),
+        ).rejects.toBeInstanceOf(StaleGenerationRunError);
+        expect(
+          await new GenerationRunCoordinator(prisma, new CreditsService(prisma)).completeRun(ctx, {
+            status: 'complete',
+            completedStep: AgentStep.pdf_render,
+            bookUpdate: { title: 'stale' },
+            agentLogs: [],
+          }),
+        ).toBe('stale_fence');
+        expect((await prisma.book.findUniqueOrThrow({ where: { id: book.id } })).title).toBe(
+          book.title,
+        );
+      } finally {
+        await second.$disconnect();
+      }
+    });
     it('lets the same worker re-claim its own still-live lease (a BullMQ retry re-invoking the same process)', async () => {
       const book = await createUserAndBook();
       const run = await createRun(book);

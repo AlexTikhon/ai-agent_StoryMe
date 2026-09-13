@@ -1,3 +1,4 @@
+import { generateMockImagePng as imageBytes } from '../images/mock-image-producer';
 import { createHash } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -37,7 +38,7 @@ function makeImageProvider() {
     characterReferencePromptVersion: 'character-reference-v3',
     generateImage: vi.fn(),
     generateCharacterSheet: vi.fn().mockResolvedValue({
-      buffer: Buffer.from('sheet-bytes'),
+      buffer: imageBytes('sheet-bytes'),
       contentType: 'image/png',
     }),
   } as ImageGenerationProvider & {
@@ -73,7 +74,7 @@ describe('CharacterReferenceStage', () => {
   });
 
   it('verifies the immutable photo, builds a profile, and saves a claim-scoped sheet', async () => {
-    const photo = Buffer.from('verified-photo');
+    const photo = imageBytes('verified-photo');
     const storage = makeStorage();
     storage.getImageAsset.mockResolvedValue(photo);
     const buildProfile = vi
@@ -99,7 +100,7 @@ describe('CharacterReferenceStage', () => {
     );
     expect(storage.saveImageAsset).toHaveBeenCalledWith(
       sheetKey,
-      Buffer.from('sheet-bytes'),
+      imageBytes('sheet-bytes'),
       'image/png',
     );
     expect(result.characterProfile.hasCharacterSheet).toBe(true);
@@ -115,9 +116,9 @@ describe('CharacterReferenceStage', () => {
   });
 
   it('reports an integrity error and never passes mismatched photo bytes to the provider', async () => {
-    const expectedPhoto = Buffer.from('expected-photo');
+    const expectedPhoto = imageBytes('expected-photo');
     const storage = makeStorage();
-    storage.getImageAsset.mockResolvedValue(Buffer.from('tampered-photo'));
+    storage.getImageAsset.mockResolvedValue(imageBytes('tampered-photo'));
     const buildProfile = vi
       .fn()
       .mockImplementation((input) => new MockCharacterProfileProvider().buildProfile(input));
@@ -128,19 +129,15 @@ describe('CharacterReferenceStage', () => {
       makeImageProvider(),
     );
 
-    const result = await stage.execute(makeInput(expectedPhoto));
-
-    expect(buildProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ photo: undefined }),
-      expect.objectContaining({ onMetrics: expect.any(Function) }),
+    await expect(stage.execute(makeInput(expectedPhoto))).rejects.toThrow(
+      'REQUIRED_REFERENCE_PHOTO_UNAVAILABLE',
     );
-    expect(result.error).toContain('CHILD_PHOTO_INTEGRITY_MISMATCH');
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('CHILD_PHOTO_INTEGRITY_MISMATCH'),
-    );
+    expect(buildProfile).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
   });
 
-  it('falls back to a generic profile without aborting sheet generation', async () => {
+  it('allows explicitly configured degraded profile fallback', async () => {
+    vi.stubEnv('CHARACTER_FALLBACK_POLICY', 'allow_degraded');
     const storage = makeStorage();
     const imageProvider = makeImageProvider();
     const stage = new CharacterReferenceStage(
@@ -158,6 +155,7 @@ describe('CharacterReferenceStage', () => {
       telemetry: new GenerationProviderTelemetry(10, 1),
     });
 
+    vi.unstubAllEnvs();
     expect(result.providerName).toBe('mock');
     expect(result.error).toBe('Provider request failed.');
     expect(result.characterProfile.consistencyPrompt).toBeTruthy();
@@ -213,10 +211,10 @@ describe('CharacterReferenceStage', () => {
       new MockCharacterProfileProvider(),
       makeImageProvider(),
     );
-    storage.getImageAsset.mockResolvedValueOnce(Buffer.from('stored-sheet'));
+    storage.getImageAsset.mockResolvedValueOnce(imageBytes('stored-sheet'));
 
     await expect(stage.loadReference('book-1', sheetKey)).resolves.toEqual({
-      reference: { buffer: Buffer.from('stored-sheet'), contentType: 'image/png' },
+      reference: { buffer: imageBytes('stored-sheet'), contentType: 'image/png' },
     });
 
     storage.getImageAsset.mockResolvedValueOnce(undefined);
@@ -224,5 +222,38 @@ describe('CharacterReferenceStage', () => {
     expect(missing.reference).toBeUndefined();
     expect(missing.loadError).toContain('recorded as existing');
     expect(storage.getImageAsset).toHaveBeenCalledTimes(2);
+  });
+
+  it('enforces required personalization during sheet regeneration and late reference loss', async () => {
+    const storage = makeStorage();
+    const profileProvider = new MockCharacterProfileProvider();
+    const profile = await profileProvider.buildProfile({
+      bookId: 'book-1',
+      childName: 'Mia',
+      childAge: 6,
+      theme: 'forest',
+      language: 'en',
+    });
+    const images = makeImageProvider();
+    const stage = new CharacterReferenceStage(storage, profileProvider, {
+      ...images,
+      providerName: 'openai',
+    });
+    images.generateCharacterSheet.mockRejectedValue(new Error('sheet unavailable'));
+    await expect(
+      stage.regenerateSheet({
+        bookId: 'book-1',
+        characterProfile: profile,
+        namespace,
+        telemetry: new GenerationProviderTelemetry(10, 1),
+      }),
+    ).rejects.toMatchObject({
+      reason: 'provider_transient_failure',
+      message: 'Provider request failed.',
+    });
+    await expect(stage.loadReference('book-1', sheetKey)).rejects.toThrow(
+      'REQUIRED_CHARACTER_REFERENCE',
+    );
+    expect(images.generateImage).not.toHaveBeenCalled();
   });
 });

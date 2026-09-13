@@ -1,3 +1,4 @@
+import { localizeLesson } from './story-language';
 import {
   type BookPreview,
   type CharacterCard,
@@ -40,7 +41,9 @@ export function buildStoryPlan(
   return {
     title: strings.title(name, titleTheme),
     theme,
-    educationalMessage: educationalMessage ?? strings.educationalMessageDefault(theme),
+    educationalMessage: educationalMessage
+      ? localizeLesson(educationalMessage, lang)
+      : strings.educationalMessageDefault(theme),
     openingHook: strings.openingHook(name),
     resolution: strings.resolution(name),
     chapters,

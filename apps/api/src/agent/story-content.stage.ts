@@ -8,7 +8,7 @@ import {
 } from './story-generation-provider';
 import { GenerationProviderTelemetry } from './generation-provider-telemetry';
 import { validateStoryGenerationResult } from './story-generation-result-validator';
-import { throwIfAborted } from '../common/provider-execution';
+import { asGenerationFailure, throwIfAborted } from '../common/provider-execution';
 
 type StoryPromptInput = Parameters<StoryGenerationProvider['generateStory']>[0];
 
@@ -55,7 +55,11 @@ export class StoryContentStage implements GenerationStage<
         }),
     });
     throwIfAborted(input.signal);
-    validateStoryGenerationResult(result, input.targetPageCount);
+    try {
+      validateStoryGenerationResult(result, input.targetPageCount);
+    } catch (error) {
+      throw asGenerationFailure(error, 'invalid_output');
+    }
     return result;
   }
 }

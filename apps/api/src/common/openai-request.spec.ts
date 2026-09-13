@@ -124,6 +124,32 @@ describe('readOpenAIImageTimeoutConfig', () => {
 });
 
 describe('fetchWithRetry', () => {
+  it('propagates a rejected pre-dispatch gate once with zero fetches and zero attempts', async () => {
+    const controlError = new Error('fence database unavailable');
+    const beforeDispatch = vi.fn().mockRejectedValue(controlError);
+    const fetchImpl = vi.fn();
+    const onAttempt = vi.fn();
+    const onRetry = vi.fn();
+
+    await expect(
+      fetchWithRetry({
+        fetchImpl,
+        url: 'https://example.test',
+        init: {},
+        timeoutMs: 1000,
+        maxRetries: 2,
+        beforeDispatch,
+        onAttempt,
+        onRetry,
+      }),
+    ).rejects.toBe(controlError);
+
+    expect(beforeDispatch).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onAttempt).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
   it('rejects an external abort before dispatch without calling fetch', async () => {
     const controller = new AbortController();
     controller.abort();

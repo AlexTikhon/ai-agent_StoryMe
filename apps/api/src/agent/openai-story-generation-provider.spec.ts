@@ -318,7 +318,11 @@ describe('OpenAIStoryGenerationProvider', () => {
     );
     const body = JSON.parse(fetchImpl.mock.calls[0]![1].body as string);
     expect(body.model).toBe('gpt-test-model');
-    expect(body.response_format).toEqual({ type: 'json_object' });
+    expect(body.response_format).toMatchObject({
+      type: 'json_schema',
+      json_schema: { strict: true },
+    });
+    expect(body.max_completion_tokens).toBeGreaterThan(0);
   });
 
   it('uses the per-call input.pageCount over the constructor default (Phase 4A)', async () => {
@@ -366,7 +370,27 @@ describe('OpenAIStoryGenerationProvider', () => {
     const fetchImpl = makeFetchOk('not json at all');
     const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-test', fetchImpl });
 
-    await expect(provider.generateStory(makeInput())).rejects.toThrow(StoryGenerationProviderError);
+    await expect(provider.generateStory(makeInput())).rejects.toMatchObject({
+      name: 'StoryGenerationProviderError',
+      reason: 'invalid_output',
+    });
+  });
+
+  it('surfaces a provider refusal as the canonical typed refusal outcome', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({
+        choices: [{ finish_reason: 'content_filter', message: { refusal: 'declined' } }],
+      }),
+    });
+    const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-test', fetchImpl });
+
+    await expect(provider.generateStory(makeInput())).rejects.toMatchObject({
+      reason: 'refusal',
+      failureKind: 'refusal',
+    });
   });
 
   it('throws a clear error when the JSON is structurally invalid', async () => {
@@ -374,7 +398,7 @@ describe('OpenAIStoryGenerationProvider', () => {
     const fetchImpl = makeFetchOk(JSON.stringify(invalidPayload));
     const provider = new OpenAIStoryGenerationProvider({ apiKey: 'sk-test', fetchImpl });
 
-    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed validation/);
+    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed schema validation/);
   });
 
   it('throws a clear error when the HTTP response is not ok', async () => {
@@ -399,9 +423,10 @@ describe('OpenAIStoryGenerationProvider', () => {
       maxRetries: 0,
     });
 
-    await expect(provider.generateStory(makeInput())).rejects.toThrow(
-      /OpenAI request failed due to a network error/,
-    );
+    await expect(provider.generateStory(makeInput())).rejects.toMatchObject({
+      reason: 'provider_transient_failure',
+      failureKind: 'network',
+    });
   });
 
   it('throws a StoryGenerationProviderError when the request times out', async () => {
@@ -549,7 +574,7 @@ describe('OpenAIStoryGenerationProvider', () => {
       maxRetries: 2,
     });
 
-    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed validation/);
+    await expect(provider.generateStory(makeInput())).rejects.toThrow(/failed schema validation/);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

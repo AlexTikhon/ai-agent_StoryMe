@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { GenerationRunStatus, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { GenerationControlError } from '../common/provider-execution';
 
 /** Generous default — real (paid) image generation can run for several minutes; a run's lease must comfortably outlive one full pipeline attempt so a slow-but-alive worker is never mistaken for abandoned. */
 export const DEFAULT_GENERATION_RUN_LEASE_MS = 30 * 60 * 1000;
@@ -91,25 +92,48 @@ export class GenerationRunService {
   ): Promise<GenerationRun | null> {
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + leaseMs);
-    const result = await this.prisma.generationRun.updateMany({
-      where: {
-        id: runId,
-        status: { in: [GenerationRunStatus.queued, GenerationRunStatus.running] },
-      },
-      data: {
-        status: GenerationRunStatus.running,
-        leaseOwner: workerId,
-        deliveryToken,
-        leaseExpiresAt,
-        // Overwritten on every (re-)claim, including a redelivery — this
-        // loses the true original start time across a retry, a cosmetic
-        // inaccuracy only; not worth a conditional-write round trip to avoid.
-        startedAt: now,
-        fencingVersion: { increment: 1 },
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const result = await tx.generationRun.updateMany({
+        where: {
+          id: runId,
+          status: { in: [GenerationRunStatus.queued, GenerationRunStatus.running] },
+        },
+        data: {
+          status: GenerationRunStatus.running,
+          leaseOwner: workerId,
+          deliveryToken,
+          leaseExpiresAt,
+          // Overwritten on every (re-)claim, including a redelivery — this
+          // loses the true original start time across a retry, a cosmetic
+          // inaccuracy only; not worth a conditional-write round trip to avoid.
+          startedAt: now,
+          fencingVersion: { increment: 1 },
+        },
+      });
+      if (result.count === 0) return null;
+      const claimed = await tx.generationRun.findUnique({ where: { id: runId } });
+      if (!claimed || claimed.deliveryToken !== deliveryToken)
+        throw new Error('Claim delivery identity mismatch');
+      if (Array.isArray(claimed.providerOperations)) {
+        const operations = claimed.providerOperations.map((operation) => {
+          if (
+            operation &&
+            typeof operation === 'object' &&
+            !Array.isArray(operation) &&
+            (operation.state === 'reserved' || operation.state === 'dispatch_intent')
+          ) {
+            return { ...operation, state: 'unknown' };
+          }
+          return operation;
+        });
+        await tx.generationRun.update({
+          where: { id: runId },
+          data: { providerOperations: operations },
+        });
+        claimed.providerOperations = operations;
+      }
+      return claimed;
     });
-    if (result.count === 0) return null;
-    return this.prisma.generationRun.findUnique({ where: { id: runId } });
   }
 
   /**
@@ -141,5 +165,53 @@ export class GenerationRunService {
       data: { leaseExpiresAt: new Date(Date.now() + leaseMs) },
     });
     return result.count > 0;
+  }
+
+  /** Resolve a rejected heartbeat without treating database uncertainty as supersession. */
+  async classifyOwnershipLoss(
+    runId: string,
+    fencingVersion: number,
+  ): Promise<'user_cancellation' | 'confirmed_supersession'> {
+    const run = await this.prisma.generationRun.findUnique({
+      where: { id: runId },
+      select: { status: true, fencingVersion: true },
+    });
+    if (run?.status === GenerationRunStatus.cancelled) return 'user_cancellation';
+    if (!run || run.status !== GenerationRunStatus.running || run.fencingVersion !== fencingVersion)
+      return 'confirmed_supersession';
+    throw new Error('GENERATION_OWNERSHIP_COULD_NOT_BE_ESTABLISHED');
+  }
+
+  /** Refuse BullMQ completion while the same fenced run is still non-terminal. */
+  async assertQueueCompletionConsistent(runId: string, fencingVersion: number): Promise<void> {
+    let run: { status: GenerationRunStatus; fencingVersion: number } | null;
+    try {
+      run = await this.prisma.generationRun.findUnique({
+        where: { id: runId },
+        select: { status: true, fencingVersion: true },
+      });
+    } catch (cause) {
+      throw new GenerationControlError(
+        'ownership_uncertain',
+        'Generation terminal state could not be verified.',
+        cause,
+      );
+    }
+
+    if (!run) return; // A committed hard deletion is terminal.
+    if (
+      run.status === GenerationRunStatus.completed ||
+      run.status === GenerationRunStatus.failed ||
+      run.status === GenerationRunStatus.cancelled
+    ) {
+      return;
+    }
+    if (run.status === GenerationRunStatus.running && run.fencingVersion !== fencingVersion) {
+      return; // Confirmed supersession by a newer delivery.
+    }
+    throw new GenerationControlError(
+      'ownership_uncertain',
+      'Generation delivery ended before a fenced terminal state was persisted.',
+    );
   }
 }

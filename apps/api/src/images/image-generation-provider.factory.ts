@@ -10,6 +10,7 @@ import {
   readOpenAIImageRateLimiterConfig,
 } from './openai-image-rate-limiter';
 import { MockFailureController, readMockFailureConfig } from '../config/mock-failure';
+import type { ProviderQuotaGate } from './provider-quota-gate';
 
 export type ImageGenerationProviderName = 'mock' | 'openai';
 
@@ -32,6 +33,7 @@ function readMaxPages(env: NodeJS.ProcessEnv): number {
  */
 export function createImageGenerationProvider(
   env: NodeJS.ProcessEnv = process.env,
+  sharedGate?: ProviderQuotaGate,
 ): ImageGenerationProvider {
   const raw = env['IMAGE_GENERATION_PROVIDER']?.trim().toLowerCase();
 
@@ -60,7 +62,11 @@ export function createImageGenerationProvider(
   const rateLimiterConfig = readOpenAIImageRateLimiterConfig(env);
   // One limiter instance shared by every call this provider makes (character
   // sheet, cover, pages, back cover) — see OpenAIImageRateLimiter's class doc.
-  const rateLimiter = new OpenAIImageRateLimiter(rateLimiterConfig);
+  const rateLimiter = new OpenAIImageRateLimiter({
+    ...rateLimiterConfig,
+    ...(sharedGate && { sharedGate }),
+    quotaScope: `openai:image:${model ?? 'default'}`,
+  });
   logger.log(
     `Image generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries} timeoutMaxRetries=${timeoutMaxRetries} maxPages=${maxPages} ` +
       `imageMinIntervalMs=${rateLimiterConfig.minIntervalMs} imageMaxRetries=${rateLimiterConfig.maxRetries} imageRetryBaseMs=${rateLimiterConfig.retryBaseMs} imageRetryMaxMs=${rateLimiterConfig.retryMaxMs}`,

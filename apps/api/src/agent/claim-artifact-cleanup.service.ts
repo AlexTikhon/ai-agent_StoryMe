@@ -17,6 +17,7 @@ import {
   type ClaimArtifactStorageEntry,
 } from './claim-artifact-key';
 import { readRecoveryLeaseMs } from './generation-run-recovery.service';
+import { effectiveGenerationCheckpoint } from './generation-checkpoint';
 
 /**
  * Phase C — Orphaned Claim-Artifact Cleanup.
@@ -207,8 +208,10 @@ type BookProtectionFields = Pick<
   | 'publishedPdfFencingVersion'
   | 'lastGenerationRunId'
   | 'lastGenerationFencingVersion'
+  | 'generationCheckpoint'
 > & {
   pageImageNamespaceKeys: ReadonlySet<string>;
+  checkpointNamespaceKeys: ReadonlySet<string>;
 };
 
 @Injectable()
@@ -434,6 +437,7 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
           publishedPdfFencingVersion: true,
           lastGenerationRunId: true,
           lastGenerationFencingVersion: true,
+          generationCheckpoint: true,
         },
       });
       const pageOverrides =
@@ -528,6 +532,7 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
             publishedPdfFencingVersion: true,
             lastGenerationRunId: true,
             lastGenerationFencingVersion: true,
+            generationCheckpoint: true,
           },
         });
         const freshPageOverrides = freshBookRow
@@ -628,6 +633,13 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
       ) {
         return 'protected_resumable';
       }
+      if (
+        book.checkpointNamespaceKeys.has(
+          claimArtifactNamespaceGroupKey(group.bookId, group.runId, group.fencingVersion),
+        )
+      ) {
+        return 'protected_resumable';
+      }
       if (book.activeRunId === group.runId) {
         return 'protected_active_run';
       }
@@ -651,7 +663,7 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
   }
 
   private withPageImageProtection(
-    book: Omit<BookProtectionFields, 'pageImageNamespaceKeys'>,
+    book: Omit<BookProtectionFields, 'pageImageNamespaceKeys' | 'checkpointNamespaceKeys'>,
     pages: ReadonlyArray<{ bookId: string; imageR2Key: string | null }>,
   ): BookProtectionFields {
     const pageImageNamespaceKeys = new Set<string>();
@@ -663,7 +675,26 @@ export class ClaimArtifactCleanupService implements OnApplicationBootstrap, OnMo
         claimArtifactNamespaceGroupKey(parsed.bookId, parsed.runId, parsed.fencingVersion),
       );
     }
-    return { ...book, pageImageNamespaceKeys };
+    const checkpointNamespaceKeys = new Set<string>();
+    const addCheckpoint = (value: unknown): void => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const record = value as Record<string, unknown>;
+      if (
+        typeof record.runId === 'string' &&
+        Number.isInteger(record.fencingVersion) &&
+        (record.fencingVersion as number) > 0
+      ) {
+        checkpointNamespaceKeys.add(
+          claimArtifactNamespaceGroupKey(book.id, record.runId, record.fencingVersion as number),
+        );
+      }
+      addCheckpoint(record.sourceCheckpoint);
+    };
+    addCheckpoint(book.generationCheckpoint);
+    // Parsing validates version/shape; a malformed checkpoint still keeps its
+    // explicit owner above and cannot accidentally broaden protection.
+    void effectiveGenerationCheckpoint(book.generationCheckpoint);
+    return { ...book, pageImageNamespaceKeys, checkpointNamespaceKeys };
   }
 
   /** Fails closed: a namespace whose age can't be determined (no driver ever reported a lastModified for any of its objects) is treated as within retention, never as eligible. */

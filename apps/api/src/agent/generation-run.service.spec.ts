@@ -38,6 +38,7 @@ describe('GenerationRunService', () => {
 
   beforeEach(() => {
     prisma = createMockPrisma();
+    prisma.$transaction.mockImplementation((cb: (tx: MockPrisma) => unknown) => cb(prisma));
     service = new GenerationRunService(prisma as never);
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
@@ -97,6 +98,30 @@ describe('GenerationRunService', () => {
   });
 
   describe('claim', () => {
+    it('never returns the fence of a delivery that takes over between update and read', async () => {
+      let row = makeGenerationRun();
+      let locked = false;
+      prisma.$transaction.mockImplementation(async (callback: (tx: MockPrisma) => unknown) => {
+        locked = true;
+        try {
+          return await callback(prisma);
+        } finally {
+          locked = false;
+        }
+      });
+      prisma.generationRun.updateMany.mockImplementation(async ({ data }) => {
+        row = { ...row, ...data, fencingVersion: row.fencingVersion + 1 };
+        return { count: 1 };
+      });
+      prisma.generationRun.findUnique.mockImplementation(async () => {
+        if (!locked && row.deliveryToken === 'A') {
+          await service.claim('run-1', 'B', 'worker-b', 60_000);
+        }
+        return { ...row };
+      });
+      const a = await service.claim('run-1', 'A', 'worker-a', 60_000);
+      expect(a).toMatchObject({ deliveryToken: 'A', fencingVersion: 1 });
+    });
     it('atomically claims a queued run: sets running/leaseOwner/deliveryToken/leaseExpiresAt and increments fencingVersion', async () => {
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
       prisma.generationRun.findUnique.mockResolvedValue(
@@ -139,7 +164,11 @@ describe('GenerationRunService', () => {
     it('succeeds unconditionally (no OR-clause gate) for a run that is still queued/running, regardless of whether the same or a different worker/token held it before — every claim() call represents BullMQ itself asserting it holds the lock right now', async () => {
       prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
       prisma.generationRun.findUnique.mockResolvedValue(
-        makeGenerationRun({ status: 'running' as GenerationRun['status'], leaseOwner: 'worker-a' }),
+        makeGenerationRun({
+          status: 'running' as GenerationRun['status'],
+          leaseOwner: 'worker-a',
+          deliveryToken: 'token-2',
+        }),
       );
 
       const result = await service.claim('run-1', 'token-2', 'worker-a', 60_000);
@@ -187,6 +216,41 @@ describe('GenerationRunService', () => {
       const result = await service.heartbeat('run-1', 'token-1', 3, 60_000);
 
       expect(result).toBe(false);
+    });
+  });
+
+  describe('assertQueueCompletionConsistent', () => {
+    it.each(['completed', 'failed', 'cancelled'] as const)(
+      'accepts a durably terminal %s run',
+      async (status) => {
+        prisma.generationRun.findUnique.mockResolvedValue({ status, fencingVersion: 4 });
+        await expect(service.assertQueueCompletionConsistent('run-1', 4)).resolves.toBeUndefined();
+      },
+    );
+
+    it('accepts a running run only when a newer fence confirms supersession', async () => {
+      prisma.generationRun.findUnique.mockResolvedValue({
+        status: 'running',
+        fencingVersion: 5,
+      });
+      await expect(service.assertQueueCompletionConsistent('run-1', 4)).resolves.toBeUndefined();
+    });
+
+    it('rejects queue completion while the same fence remains running', async () => {
+      prisma.generationRun.findUnique.mockResolvedValue({
+        status: 'running',
+        fencingVersion: 4,
+      });
+      await expect(service.assertQueueCompletionConsistent('run-1', 4)).rejects.toMatchObject({
+        reason: 'ownership_uncertain',
+      });
+    });
+
+    it('preserves database uncertainty as a typed retryable control outcome', async () => {
+      prisma.generationRun.findUnique.mockRejectedValue(new Error('database unavailable'));
+      await expect(service.assertQueueCompletionConsistent('run-1', 4)).rejects.toMatchObject({
+        reason: 'ownership_uncertain',
+      });
     });
   });
 });

@@ -9,7 +9,7 @@ import type {
 } from './story-generation-provider';
 import { STORY_GENERATION_PROVIDER_TOKEN } from './story-generation-provider';
 import { validateStoryGenerationResult } from './story-generation-result-validator';
-import { throwIfAborted } from '../common/provider-execution';
+import { asGenerationFailure, throwIfAborted } from '../common/provider-execution';
 
 export interface StoryQualityRepairStageInput {
   repairInput: StoryRepairInput;
@@ -82,7 +82,11 @@ export class StoryQualityRepairStage implements GenerationStage<
         }),
     });
     throwIfAborted(input.signal);
-    validateStoryGenerationResult(result, input.targetPageCount);
+    try {
+      validateStoryGenerationResult(result, input.targetPageCount);
+    } catch (error) {
+      throw asGenerationFailure(error, 'invalid_output');
+    }
     return result;
   }
 }

@@ -1,3 +1,4 @@
+import { generateMockImagePng as imageBytes } from '../images/mock-image-producer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CharacterCard, GeneratedImageEntry } from '@book/types';
 import { claimImageAssetKey, type ImageAssetStorage } from '../images/image-asset-storage';
@@ -65,7 +66,7 @@ function makeProvider(
     pageImagePromptVersion: 'page-image-v3',
     generateCharacterSheet: vi.fn(),
     generateImage: vi.fn().mockImplementation(async ({ entry }) => ({
-      buffer: Buffer.from(`bytes-${entry.id}`),
+      buffer: imageBytes(`bytes-${entry.id}`),
       contentType: 'image/png',
     })),
     ...overrides,
@@ -81,12 +82,12 @@ describe('ImageGenerationStage', () => {
   it('generates and saves every claim-scoped image while sharing one reference', async () => {
     const storage = makeStorage();
     const reference: ImageReference = {
-      buffer: Buffer.from('character-sheet'),
+      buffer: imageBytes('character-sheet'),
       contentType: 'image/png',
     };
     const provider = makeProvider({
       generateImage: vi.fn().mockImplementation(async ({ entry, characterReference }) => ({
-        buffer: Buffer.from(`bytes-${entry.id}`),
+        buffer: imageBytes(`bytes-${entry.id}`),
         contentType: 'image/png',
         usedReference: characterReference === reference,
       })),
@@ -117,12 +118,12 @@ describe('ImageGenerationStage', () => {
     }
     expect(storage.saveImageAsset).toHaveBeenCalledWith(
       claimImageAssetKey('book-1', namespace, 'cover'),
-      Buffer.from('bytes-cover'),
+      imageBytes('bytes-cover'),
       'image/png',
     );
     expect(storage.saveImageAsset).toHaveBeenCalledWith(
       claimImageAssetKey('book-1', namespace, 'page', 1),
-      Buffer.from('bytes-page-1'),
+      imageBytes('bytes-page-1'),
       'image/png',
     );
     expect(telemetry.snapshot().calls.map((call) => call.assetLabel)).toEqual(['cover', 'page_1']);
@@ -150,7 +151,7 @@ describe('ImageGenerationStage', () => {
       generateImage: vi.fn().mockImplementation(async ({ entry }) => {
         if (entry.kind === 'cover') throw failure;
         return {
-          buffer: Buffer.from(`bytes-${entry.id}`),
+          buffer: imageBytes(`bytes-${entry.id}`),
           contentType: 'image/png',
         };
       }),
@@ -210,6 +211,7 @@ describe('ImageGenerationStage', () => {
       expect.objectContaining({
         assetLabel: 'cover',
         message: 'disk full',
+        failureReason: 'storage_failure',
         attempts: 1,
       }),
     );
@@ -243,7 +245,7 @@ describe('ImageGenerationStage', () => {
     await Promise.resolve();
 
     pending.get('page-2')!.reject(new Error('page two failed first'));
-    pending.get('page-1')!.resolve({ buffer: Buffer.from('page-1'), contentType: 'image/png' });
+    pending.get('page-1')!.resolve({ buffer: imageBytes('page-1'), contentType: 'image/png' });
     pending.get('cover')!.reject(new Error('cover failed last'));
 
     const result = await promise;

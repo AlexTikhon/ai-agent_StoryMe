@@ -157,6 +157,7 @@ export function safeOpenAIRequestFailureMessage(err: unknown): string {
 }
 
 export interface FetchWithRetryOptions<T = never> {
+  beforeDispatch?: (() => Promise<void>) | undefined;
   fetchImpl: typeof fetch;
   url: string;
   init: RequestInit;
@@ -238,8 +239,12 @@ export async function fetchWithRetry<T>(
   let timeoutRetriesUsed = 0;
 
   for (let attempt = 1; ; attempt++) {
+    // Fencing/authorization is control-plane work, not a network attempt.
+    // Keep it outside the transport try/catch so a rejected gate preserves
+    // its type, runs once, and can never enter network retry handling.
     throwIfAborted(signal);
-    onAttempt?.(attempt, maxAttemptsForDisplay);
+    if (options.beforeDispatch) await options.beforeDispatch();
+    throwIfAborted(signal);
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -259,6 +264,8 @@ export async function fetchWithRetry<T>(
     let retryReason: string | undefined;
 
     try {
+      // Count only actual dispatches, immediately before fetch.
+      onAttempt?.(attempt, maxAttemptsForDisplay);
       response = await fetchImpl(url, { ...init, signal: controller.signal });
       if (
         !response.ok &&

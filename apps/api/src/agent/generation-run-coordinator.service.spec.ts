@@ -68,6 +68,32 @@ describe('GenerationRunCoordinator', () => {
   });
 
   describe('completeRun', () => {
+    it('preserves all published content when a candidate fails', async () => {
+      const published = {
+        title: 'Old edition',
+        bookPreview: { pages: ['old'] },
+        previewPdfUrl: '/old.pdf',
+        characterProfile: { name: 'Old' },
+      };
+      let reader = { ...published };
+      prisma.book.updateMany.mockImplementation(async ({ data }) => {
+        reader = { ...reader, ...data };
+        return { count: 1 };
+      });
+      await coordinator.completeRun(
+        { runId: 'run-1', bookId: 'b-1', fencingVersion: 1 },
+        makeOutcome({
+          status: 'failed',
+          bookUpdate: {
+            title: 'Candidate',
+            bookPreview: { pages: ['new', 'new'] },
+            previewPdfUrl: null,
+            characterProfile: { name: 'New' },
+          },
+        }),
+      );
+      expect(reader).toMatchObject(published);
+    });
     it('on success: publishes the whole-book namespace, clears an independent PDF revision and page revisions, and returns "applied"', async () => {
       const outcome = makeOutcome();
 

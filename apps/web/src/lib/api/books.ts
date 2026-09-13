@@ -110,8 +110,17 @@ export const booksApi = {
   getGenerationProgress: (id: string): Promise<GenerationProgressDto> =>
     apiFetch(`/books/${id}/generation-progress`),
 
-  downloadPdf: (id: string): Promise<Blob> => apiFetchBlob(`/books/${id}/pdf/preview`),
+  downloadPdf: (id: string, edition?: string): Promise<Blob> =>
+    apiFetchBlob(
+      `/books/${id}/pdf/preview${edition ? `?edition=${encodeURIComponent(edition)}` : ''}`,
+    ),
 
-  downloadPublishedImage: (id: string, imageId: PublishedBookImageId): Promise<Blob> =>
-    apiFetchBlob(`/books/${id}/images/${imageId}`),
+  downloadPublishedImage: (
+    id: string,
+    imageId: PublishedBookImageId,
+    edition?: string,
+  ): Promise<Blob> =>
+    apiFetchBlob(
+      `/books/${id}/images/${imageId}${edition ? `?edition=${encodeURIComponent(edition)}` : ''}`,
+    ),
 };

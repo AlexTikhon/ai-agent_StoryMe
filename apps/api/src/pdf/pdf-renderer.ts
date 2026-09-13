@@ -154,6 +154,7 @@ export type ImageBufferResolver = (
 
 export interface RenderStorybookPdfOptions {
   resolveImageBuffer?: ImageBufferResolver;
+  strict?: boolean;
 }
 
 function renderImagePlaceholder(
@@ -212,6 +213,7 @@ function renderImageBlock(
   entry: BookLayoutEntry,
   imageBlock: LayoutImageBlock,
   resolveImageBuffer: ImageBufferResolver | undefined,
+  strict = false,
 ): void {
   const x = pt(imageBlock.box.x);
   const y = pt(imageBlock.box.y);
@@ -233,6 +235,7 @@ function renderImageBlock(
       return;
     } catch (err) {
       doc.restore();
+      if (strict) throw err;
       const message = err instanceof Error ? err.message : String(err);
       console.warn(
         `[pdf-renderer] Failed to embed image for entry "${entry.id}" (${entry.kind}): ${message}`,
@@ -240,6 +243,7 @@ function renderImageBlock(
     }
   }
 
+  if (strict) throw new Error(`Required image unavailable: ${entry.id}`);
   renderImagePlaceholder(doc, entry, imageBlock, x, y, w, h);
 }
 
@@ -267,13 +271,14 @@ function renderPage(
   doc: PDFKit.PDFDocument,
   entry: BookLayoutEntry,
   resolveImageBuffer: ImageBufferResolver | undefined,
+  strict = false,
 ): void {
   // Page background
   doc.rect(0, 0, PAGE_PT, PAGE_PT).fill('#F9F6F2');
 
   // Image block — embeds real bytes when available, else a labelled placeholder
   if (entry.imageBlock) {
-    renderImageBlock(doc, entry, entry.imageBlock, resolveImageBuffer);
+    renderImageBlock(doc, entry, entry.imageBlock, resolveImageBuffer, strict);
   }
 
   // Text block
@@ -360,8 +365,13 @@ export function renderStorybookPdf(
       // page instead of drawing on the current one.
       doc.addPage({ size: [PAGE_PT, PAGE_PT], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
       try {
-        renderPage(doc, entry, resolveImageBuffer);
+        renderPage(doc, entry, resolveImageBuffer, options?.strict);
       } catch (err) {
+        if (options?.strict) {
+          reject(err);
+          doc.end();
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         console.warn(
           `[pdf-renderer] Failed to render entry "${entry.id}" (${entry.kind}): ${message}`,

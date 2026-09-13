@@ -1,3 +1,5 @@
+import { generateMockImagePng as imageBytes } from '../images/mock-image-producer';
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi } from 'vitest';
 import type { ImageAssetStorage, ImageAssetRef } from '../images/image-asset-storage';
 import { claimImageAssetKey, claimCharacterSheetAssetKey } from '../images/image-asset-storage';
@@ -37,9 +39,31 @@ class FakeImageAssetStorage implements ImageAssetStorage {
 }
 
 describe('resolveImageArtifact', () => {
+  it('rejects decodable orphan bytes and copies only the confirmed checkpoint digest', async () => {
+    const storage = new FakeImageAssetStorage();
+    const bytes = imageBytes('confirmed');
+    const expectedSha256 = createHash('sha256').update(bytes).digest('hex');
+    const currentKey = claimImageAssetKey(BOOK_ID, CLAIM_A1, 'cover');
+    const sourceKey = claimImageAssetKey(BOOK_ID, CLAIM_B1, 'cover');
+    storage.seed(currentKey, imageBytes('orphan'));
+    storage.seed(sourceKey, bytes);
+    const params = {
+      storage,
+      bookId: BOOK_ID,
+      currentNamespace: CLAIM_A1,
+      sourceNamespace: CLAIM_B1,
+      kind: 'cover' as const,
+      expectedSha256,
+    };
+    expect((await resolveImageArtifact(params)).outcome).toBe('copied');
+    expect(await storage.getImageAsset(currentKey)).toEqual(bytes);
+    storage.seed(currentKey, imageBytes('orphan'));
+    storage.seed(sourceKey, imageBytes('replaced after planning'));
+    expect((await resolveImageArtifact(params)).outcome).toBe('regenerate');
+  });
   it('reuses a valid current-claim image without consulting the source at all', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_A1, 'cover'), Buffer.from('current-bytes'));
+    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_A1, 'cover'), imageBytes('current-bytes'));
 
     const result = await resolveImageArtifact({
       storage,
@@ -59,7 +83,7 @@ describe('resolveImageArtifact', () => {
 
   it('copies a valid legacy-positional source into the current claim namespace', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed('book-1/cover', Buffer.from('legacy-bytes'));
+    storage.seed('book-1/cover', imageBytes('legacy-bytes'));
 
     const result = await resolveImageArtifact({
       storage,
@@ -77,14 +101,14 @@ describe('resolveImageArtifact', () => {
     );
     expect(
       (await storage.getImageAsset(claimImageAssetKey(BOOK_ID, CLAIM_A1, 'cover')))!.equals(
-        Buffer.from('legacy-bytes'),
+        imageBytes('legacy-bytes'),
       ),
     ).toBe(true);
   });
 
   it('copies a valid source from a different run into the current claim namespace', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'page', 3), Buffer.from('run-b-bytes'));
+    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'page', 3), imageBytes('run-b-bytes'));
 
     const result = await resolveImageArtifact({
       storage,
@@ -104,7 +128,7 @@ describe('resolveImageArtifact', () => {
 
   it('copies from a prior claim of the same run (a stalled-redelivery reclaim bumps fencingVersion, not runId)', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_A1, 'cover'), Buffer.from('claim-1-bytes'));
+    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_A1, 'cover'), imageBytes('claim-1-bytes'));
 
     const result = await resolveImageArtifact({
       storage,
@@ -192,7 +216,7 @@ describe('resolveImageArtifact', () => {
 
   it('falls back to regeneration (sourceStatus "missing") when copyImageAsset resolves undefined because the source disappeared mid-flight', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'cover'), Buffer.from('bytes'));
+    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'cover'), imageBytes('bytes'));
     storage.copyImageAsset.mockResolvedValueOnce(undefined);
 
     const result = await resolveImageArtifact({
@@ -209,7 +233,7 @@ describe('resolveImageArtifact', () => {
 
   it('propagates an operational copy error instead of reclassifying it as a missing source', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'cover'), Buffer.from('bytes'));
+    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'cover'), imageBytes('bytes'));
     storage.copyImageAsset.mockRejectedValueOnce(new Error('access denied'));
 
     await expect(
@@ -240,7 +264,7 @@ describe('resolveImageArtifact', () => {
 
   it('falls through to regeneration when the copy lands but a verification read finds it zero-byte', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'cover'), Buffer.from('bytes'));
+    storage.seed(claimImageAssetKey(BOOK_ID, CLAIM_B1, 'cover'), imageBytes('bytes'));
     // Simulate a copy that "succeeds" per the driver but leaves nothing
     // readable back at the destination.
     storage.copyImageAsset.mockImplementationOnce(async (_source, dest) => ({
@@ -265,7 +289,7 @@ describe('resolveImageArtifact', () => {
 describe('resolveCharacterSheetArtifact', () => {
   it('reuses a valid current-claim sheet without consulting the source', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed(claimCharacterSheetAssetKey(BOOK_ID, CLAIM_A1), Buffer.from('sheet-bytes'));
+    storage.seed(claimCharacterSheetAssetKey(BOOK_ID, CLAIM_A1), imageBytes('sheet-bytes'));
 
     const result = await resolveCharacterSheetArtifact({
       storage,
@@ -280,7 +304,7 @@ describe('resolveCharacterSheetArtifact', () => {
 
   it('copies a valid legacy source sheet into the current claim namespace', async () => {
     const storage = new FakeImageAssetStorage();
-    storage.seed('book-1/character-sheet', Buffer.from('legacy-sheet'));
+    storage.seed('book-1/character-sheet', imageBytes('legacy-sheet'));
 
     const result = await resolveCharacterSheetArtifact({
       storage,

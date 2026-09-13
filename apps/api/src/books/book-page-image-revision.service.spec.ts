@@ -1,4 +1,5 @@
 import { BookStatus, PageImageRevisionStatus, Prisma, type Book } from '@prisma/client';
+import { generateMockImagePng } from '../images/mock-image-producer';
 import {
   Pronouns,
   type BookPreview,
@@ -15,6 +16,7 @@ import type { ImageGenerationProvider } from '../images/image-generation-provide
 import type { ImageAssetStorage } from '../images/image-asset-storage';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import { BookPageImageRevisionService } from './book-page-image-revision.service';
+import { validateImage } from '../images/validated-image';
 
 vi.mock('../pdf/pdf-renderer', () => ({ renderStorybookPdf: vi.fn() }));
 
@@ -157,8 +159,20 @@ function makeRevision(status: PageImageRevisionStatus = PageImageRevisionStatus.
     sourcePublishedPdfFencingVersion: null,
     fencingVersion: status === PageImageRevisionStatus.running ? 1 : 0,
     deliveryToken: status === PageImageRevisionStatus.running ? 'token-1' : null,
+    providerDispatches: 0,
+    authorizedDispatches: 1,
+    providerOperations: null,
+    providerOutcome: null,
+    executionFingerprint: null,
+    candidateImageKey: null,
+    candidateImageManifest: null,
+    checkpointState: 'none',
+    queueExpiresAt: null,
+    leaseExpiresAt: null,
+    processingDeadlineAt: null,
     errorCode: null,
     errorMessage: null,
+    failureReason: null,
     confirmedAt: null,
     startedAt: null,
     completedAt: null,
@@ -188,28 +202,49 @@ function createHarness(book = makeBook(), productMode: 'home' | 'demo' = 'demo')
   const provider = {
     providerName: 'mock',
     promptVersion: 'mock-v1',
-    generateImage: vi.fn().mockResolvedValue({
-      buffer: Buffer.from('new-image'),
-      contentType: 'image/png',
+    generateImage: vi.fn().mockImplementation(async (_input, options) => {
+      await options?.beforeDispatch?.();
+      return {
+        buffer: generateMockImagePng('new-image'),
+        contentType: 'image/png',
+      };
     }),
   } as unknown as jest.Mocked<ImageGenerationProvider>;
   const imageStorage = {
-    getImageAsset: vi.fn().mockResolvedValue(Buffer.from('old-image')),
+    getImageAsset: vi.fn().mockResolvedValue(generateMockImagePng('old-image')),
     saveImageAsset: vi.fn().mockResolvedValue(undefined),
   } as unknown as jest.Mocked<ImageAssetStorage>;
   const pdfStorage = {
     saveClaimPreviewPdf: vi.fn().mockResolvedValue({ url: '/new.pdf' }),
   } as unknown as jest.Mocked<PdfStorage>;
+  const gatewayBinding = {
+    assertOwnership: vi.fn().mockResolvedValue(undefined),
+    reserveOperation: vi.fn().mockResolvedValue(0),
+    reserveHttpAttempt: vi.fn().mockResolvedValue(undefined),
+    finishOperation: vi.fn().mockResolvedValue(undefined),
+    checkpoint: vi.fn().mockResolvedValue(undefined),
+  };
+  const providerGateway = { bind: vi.fn().mockReturnValue(gatewayBinding) };
   const service = new BookPageImageRevisionService(
     crud,
     prisma as never,
+    providerGateway as never,
     credits,
     provider,
     imageStorage,
     pdfStorage,
     { get: vi.fn().mockReturnValue(productMode) } as never,
   );
-  return { service, prisma, credits, provider, imageStorage, pdfStorage };
+  return {
+    service,
+    prisma,
+    credits,
+    provider,
+    imageStorage,
+    pdfStorage,
+    providerGateway,
+    gatewayBinding,
+  };
 }
 
 describe('BookPageImageRevisionService', () => {
@@ -299,6 +334,44 @@ describe('BookPageImageRevisionService', () => {
     expect(harness.provider.generateImage).not.toHaveBeenCalled();
   });
 
+  it('does not reclaim a running revision after its terminal processing deadline', async () => {
+    const harness = createHarness();
+    const expired = makeRevision(PageImageRevisionStatus.running);
+    expired.leaseExpiresAt = new Date(Date.now() - 2_000);
+    expired.processingDeadlineAt = new Date(Date.now() - 1_000);
+    harness.prisma.pageImageRevision.findUnique.mockResolvedValue(expired);
+
+    await expect(harness.service.claim(expired.id, 'token-2')).resolves.toBeNull();
+    expect(harness.prisma.pageImageRevision.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('reclaims a BullMQ stalled redelivery by its fresh delivery token even before the DB lease expires', async () => {
+    const harness = createHarness();
+    const running = makeRevision(PageImageRevisionStatus.running);
+    running.leaseExpiresAt = new Date(Date.now() + 60_000);
+    running.processingDeadlineAt = new Date(Date.now() + 120_000);
+    harness.prisma.pageImageRevision.findUnique.mockResolvedValue(running);
+    harness.prisma.pageImageRevision.findUniqueOrThrow.mockResolvedValue({
+      ...running,
+      deliveryToken: 'token-2',
+      fencingVersion: 2,
+    });
+
+    await expect(harness.service.claim(running.id, 'token-2')).resolves.toMatchObject({
+      deliveryToken: 'token-2',
+      fencingVersion: 2,
+    });
+    expect(harness.prisma.pageImageRevision.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ fencingVersion: 1, status: 'running' }),
+        data: expect.objectContaining({
+          deliveryToken: 'token-2',
+          fencingVersion: { increment: 1 },
+        }),
+      }),
+    );
+  });
+
   it('generates only the selected image and atomically publishes its exact key plus a new PDF', async () => {
     const harness = createHarness(makeBook({ activePageImageRevisionId: makeRevision().id }));
     const running = makeRevision(PageImageRevisionStatus.running);
@@ -312,7 +385,7 @@ describe('BookPageImageRevisionService', () => {
     expect(harness.provider.generateImage).toHaveBeenCalledOnce();
     expect(harness.imageStorage.saveImageAsset).toHaveBeenCalledWith(
       expect.stringContaining(`/runs/${running.id}/claims/1/page-1`),
-      Buffer.from('new-image'),
+      generateMockImagePng('new-image'),
       'image/png',
     );
     expect(harness.prisma.bookPage.upsert).toHaveBeenCalledWith(
@@ -330,6 +403,87 @@ describe('BookPageImageRevisionService', () => {
           activePageImageRevisionId: null,
           publishedPdfRunId: running.id,
           publishedPdfFencingVersion: 1,
+        }),
+      }),
+    );
+  });
+
+  it('reuses a verified stored candidate after takeover without another provider dispatch', async () => {
+    const running = makeRevision(PageImageRevisionStatus.running);
+    const candidateBytes = generateMockImagePng('stored-candidate');
+    const manifest = await validateImage(candidateBytes);
+    const candidateKey = `books/b-1/runs/${running.id}/claims/1/page-1`;
+    const harness = createHarness(makeBook({ activePageImageRevisionId: running.id }));
+    harness.prisma.pageImageRevision.findUnique.mockResolvedValue({
+      ...running,
+      fencingVersion: 2,
+      providerDispatches: 1,
+      providerOutcome: 'artifact_stored',
+      checkpointState: 'artifact_stored',
+      candidateImageKey: candidateKey,
+      candidateImageManifest: manifest,
+      book: makeBook({ activePageImageRevisionId: running.id }),
+    });
+    harness.imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === candidateKey ? candidateBytes : generateMockImagePng('old-image'),
+    );
+
+    await harness.service.executeClaimed(running.id, 2);
+
+    expect(harness.provider.generateImage).not.toHaveBeenCalled();
+    expect(harness.imageStorage.saveImageAsset).not.toHaveBeenCalled();
+    expect(harness.prisma.bookPage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ imageR2Key: candidateKey, version: 3 }),
+      }),
+    );
+  });
+
+  it('adopts bytes saved after dispatch when the prior worker crashed before manifest recording', async () => {
+    const running = makeRevision(PageImageRevisionStatus.running);
+    const candidateBytes = generateMockImagePng('saved-before-checkpoint');
+    const candidateKey = `books/b-1/runs/${running.id}/claims/1/page-1`;
+    const harness = createHarness(makeBook({ activePageImageRevisionId: running.id }));
+    harness.prisma.pageImageRevision.findUnique.mockResolvedValue({
+      ...running,
+      fencingVersion: 2,
+      providerDispatches: 1,
+      providerOutcome: 'response_received',
+      checkpointState: 'response_received',
+      candidateImageKey: candidateKey,
+      candidateImageManifest: null,
+      book: makeBook({ activePageImageRevisionId: running.id }),
+    });
+    harness.imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === candidateKey ? candidateBytes : generateMockImagePng('old-image'),
+    );
+
+    await harness.service.executeClaimed(running.id, 2);
+
+    expect(harness.provider.generateImage).not.toHaveBeenCalled();
+    expect(harness.gatewayBinding.checkpoint).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        page_1: expect.objectContaining({ sha256: expect.any(String), key: candidateKey }),
+      }),
+    );
+  });
+
+  it('rejects changed execution identity before a page-image dispatch', async () => {
+    const running = makeRevision(PageImageRevisionStatus.running);
+    const harness = createHarness(makeBook({ activePageImageRevisionId: running.id }));
+    harness.prisma.pageImageRevision.findUnique.mockResolvedValue({
+      ...running,
+      executionFingerprint: 'older-model-and-prompt',
+      book: makeBook({ activePageImageRevisionId: running.id }),
+    });
+    await harness.service.executeClaimed(running.id, 1);
+    expect(harness.provider.generateImage).not.toHaveBeenCalled();
+    expect(harness.prisma.pageImageRevision.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          errorCode: 'PAGE_IMAGE_EXECUTION_CONFIG_DRIFT',
+          status: 'failed',
         }),
       }),
     );

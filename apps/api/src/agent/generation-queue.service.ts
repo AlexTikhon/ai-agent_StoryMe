@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queues.config';
@@ -79,6 +79,12 @@ export class GenerationQueueService {
 
   constructor(
     @InjectQueue(QUEUES.BOOK_GENERATION) private readonly queue: Queue<BookWorkQueueJobData>,
+    @Optional()
+    @InjectQueue(QUEUES.PAGE_IMAGE_REVISION)
+    private readonly pageRevisionQueue?: Queue<PageImageRevisionQueueJobData>,
+    @Optional()
+    @InjectQueue(QUEUES.MAINTENANCE)
+    private readonly maintenanceQueue?: Queue<BookDeletionQueueJobData>,
   ) {}
 
   async enqueue(data: GenerationQueueJobData): Promise<void> {
@@ -100,8 +106,14 @@ export class GenerationQueueService {
         revisionId: data.revisionId,
       })}`,
     );
-    await this.queue.add('run-page-image-revision', data, {
-      jobId: `page-image-${data.revisionId}`,
+    const jobId = `page-image-${data.revisionId}`;
+    const queue = this.pageRevisionQueue ?? this.queue;
+    const existing = await queue.getJob(jobId);
+    if (existing && ['failed', 'completed'].includes(await existing.getState())) {
+      await existing.remove();
+    }
+    await queue.add('run-page-image-revision', data, {
+      jobId,
       // One confirmed quote authorizes one logical provider call. Provider
       // HTTP retries remain bounded inside the provider; BullMQ must not
       // repeat a paid call after an ordinary thrown failure.
@@ -118,9 +130,10 @@ export class GenerationQueueService {
       })}`,
     );
     const jobId = `book-deletion-${data.deletionRequestId}`;
-    const existing = await this.queue.getJob(jobId);
+    const queue = this.maintenanceQueue ?? this.queue;
+    const existing = await queue.getJob(jobId);
     if (existing && (await existing.getState()) === 'failed') await existing.remove();
-    await this.queue.add('run-book-deletion', data, {
+    await queue.add('run-book-deletion', data, {
       jobId,
       attempts: readHardDeleteJobAttempts(),
       backoff: {
@@ -136,7 +149,14 @@ export class GenerationQueueService {
     // deletion transaction suppressed it and publish milliseconds later.
     // Waiting/delayed jobs must therefore quiesce too, not only jobs already
     // holding an active lock at this instant.
-    const pending = await this.queue.getJobs(['active', 'waiting', 'delayed', 'prioritized']);
+    const queues = [this.queue, this.pageRevisionQueue, this.maintenanceQueue].filter(
+      (queue): queue is Queue<BookWorkQueueJobData> => !!queue,
+    );
+    const pending = (
+      await Promise.all(
+        queues.map((queue) => queue.getJobs(['active', 'waiting', 'delayed', 'prioritized'])),
+      )
+    ).flat();
     return pending.some(
       (job) =>
         job.data.bookId === bookId &&
@@ -152,7 +172,9 @@ export class GenerationQueueService {
       ...runIds.map((runId) => this.removeIfSafe(runId)),
       ...revisionIds.map(async (revisionId) => {
         try {
-          const job = await this.queue.getJob(`page-image-${revisionId}`);
+          const job = await (this.pageRevisionQueue ?? this.queue).getJob(
+            `page-image-${revisionId}`,
+          );
           if (!job) return;
           const state = await job.getState();
           if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
@@ -246,5 +268,11 @@ export class GenerationQueueService {
         delayed: counts['delayed'] ?? 0,
       },
     };
+  }
+
+  async isPageImageRevisionJobStillPending(revisionId: string): Promise<boolean> {
+    const job = await (this.pageRevisionQueue ?? this.queue).getJob(`page-image-${revisionId}`);
+    if (!job) return false;
+    return ['active', 'waiting', 'delayed', 'prioritized'].includes(await job.getState());
   }
 }

@@ -1,5 +1,6 @@
 import type {
   GeneratedImageEntry,
+  GenerationFailureReason,
   GenerationProviderUsage,
   GenerationProviderOperation,
   ImageGenerationResult,
@@ -54,6 +55,7 @@ export interface CollectGenerationOutcomeInput {
   previewPdfUrl: string | null;
   finalStatus: GenerationOutcome['status'];
   pdfRenderError?: string;
+  failureReason?: GenerationFailureReason;
   charBuildResult: CharacterBuildStageOutput;
   storyProviderName: string | null;
   storyModelName: string | null;
@@ -81,6 +83,7 @@ export interface CollectStoryFailureOutcomeInput {
   storyModelName: string | null;
   providerUsage?: GenerationProviderUsage;
   failureKind?: ProviderFailureKind;
+  failureReason?: GenerationFailureReason;
   errorMessage: string;
 }
 
@@ -141,13 +144,19 @@ export class GenerationResultCollector {
       storyModelName,
       providerUsage,
       failureKind,
+      failureReason,
       errorMessage,
     } = input;
 
     return {
       status: 'failed',
       completedStep: AgentStep.story_plan,
-      errorCode: failureKind ? `PROVIDER_${failureKind.toUpperCase()}` : 'GENERATION_FAILED',
+      errorCode: failureReason
+        ? `GENERATION_${failureReason.toUpperCase()}`
+        : failureKind
+          ? `PROVIDER_${failureKind.toUpperCase()}`
+          : 'GENERATION_FAILED',
+      ...(failureReason && { failureReason }),
       errorMessage,
       failedStep: AgentStep.story_plan,
       bookUpdate: {
@@ -346,6 +355,7 @@ export class GenerationResultCollector {
       previewPdfUrl,
       finalStatus,
       pdfRenderError,
+      failureReason,
       charBuildResult,
       storyProviderName,
       storyModelName,
@@ -461,7 +471,10 @@ export class GenerationResultCollector {
       completedStep: pdfStep,
       bookUpdate,
       ...(pdfRenderError && {
-        errorCode: 'GENERATION_FAILED',
+        errorCode: failureReason
+          ? `GENERATION_${failureReason.toUpperCase()}`
+          : 'GENERATION_FAILED',
+        ...(failureReason && { failureReason }),
         errorMessage: pdfRenderError,
         failedStep: pdfStep,
       }),

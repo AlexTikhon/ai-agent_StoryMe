@@ -102,7 +102,10 @@ describe('generation provider telemetry', () => {
           throw new Error('provider unavailable');
         },
       }),
-    ).rejects.toThrow('provider unavailable');
+    ).rejects.toMatchObject({
+      reason: 'provider_transient_failure',
+      message: 'Provider request failed.',
+    });
 
     const snapshot = telemetry.snapshot();
     expect(snapshot).toMatchObject({
@@ -125,6 +128,7 @@ describe('generation provider telemetry', () => {
       assetLabel: 'cover',
       status: 'error',
       estimatedCostUsd: 0.04,
+      failureReason: 'provider_transient_failure',
     });
     expect(snapshot.calls.every((call) => /^[a-f0-9]{64}$/.test(call.promptHash))).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('safe fingerprint input');
@@ -166,10 +170,24 @@ describe('generation provider telemetry', () => {
   });
 
   it.each([
-    ['timeout', Object.assign(new Error('safe timeout'), { failureKind: 'timeout' })],
-    ['rate_limit', Object.assign(new Error('safe 429'), { failureKind: 'rate_limit' })],
-    ['provider_error', new Error('safe provider failure')],
-  ] as const)('classifies %s failures', async (failureKind, error) => {
+    [
+      'timeout',
+      'provider_transient_failure',
+      Object.assign(new Error('safe timeout'), { failureKind: 'timeout' }),
+    ],
+    [
+      'rate_limit',
+      'provider_transient_failure',
+      Object.assign(new Error('safe 429'), { failureKind: 'rate_limit' }),
+    ],
+    ['refusal', 'refusal', Object.assign(new Error('safe refusal'), { failureKind: 'refusal' })],
+    [
+      'schema_error',
+      'invalid_output',
+      Object.assign(new Error('safe schema'), { failureKind: 'schema_error' }),
+    ],
+    ['provider_error', 'provider_transient_failure', new Error('safe provider failure')],
+  ] as const)('classifies %s failures', async (failureKind, failureReason, error) => {
     const telemetry = new GenerationProviderTelemetry(2, 1);
     await expect(
       telemetry.record({
@@ -182,7 +200,11 @@ describe('generation provider telemetry', () => {
         },
       }),
     ).rejects.toThrow();
-    expect(telemetry.snapshot().calls[0]).toMatchObject({ status: 'error', failureKind });
+    expect(telemetry.snapshot().calls[0]).toMatchObject({
+      status: 'error',
+      failureKind,
+      failureReason,
+    });
   });
 
   it('records cancellation as cancelled control flow, never an ordinary provider error', async () => {

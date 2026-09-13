@@ -10,7 +10,7 @@ import {
   GenerationRunMirrorInvariantError,
 } from '../agent/generation-run-coordinator.service';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
-import { ProviderCancellationError } from '../common/provider-execution';
+import { GenerationControlError, ProviderCancellationError } from '../common/provider-execution';
 import { BookGenerationExecutionService } from './book-generation-execution.service';
 
 const SNAPSHOT = {
@@ -125,10 +125,27 @@ describe('BookGenerationExecutionService', () => {
     expect(coordinator.completeRun).not.toHaveBeenCalled();
   });
 
-  it('quietly abandons cooperative provider cancellation without publication', async () => {
-    agent.startBookGeneration.mockRejectedValue(new ProviderCancellationError());
+  it('quietly abandons only a cancellation whose durable supersession is confirmed', async () => {
+    agent.startBookGeneration.mockRejectedValue(
+      new ProviderCancellationError(
+        new GenerationControlError('confirmed_supersession', 'new fence owns the run'),
+      ),
+    );
 
     await expect(service.runGenerationPipeline(CTX)).resolves.toBeUndefined();
+    expect(coordinator.completeRun).not.toHaveBeenCalled();
+  });
+
+  it('rethrows cancellation caused by uncertain ownership so BullMQ retries it', async () => {
+    agent.startBookGeneration.mockRejectedValue(
+      new ProviderCancellationError(
+        new GenerationControlError('ownership_uncertain', 'heartbeat database unavailable'),
+      ),
+    );
+
+    await expect(service.runGenerationPipeline(CTX)).rejects.toMatchObject({
+      reason: 'ownership_uncertain',
+    });
     expect(coordinator.completeRun).not.toHaveBeenCalled();
   });
 
