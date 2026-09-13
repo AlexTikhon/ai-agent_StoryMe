@@ -19,39 +19,39 @@ export class UpdateBookDto {
   @trim()
   @IsString()
   @Length(1, 120)
-  title?: string;
+  title?: string | null;
 
   @IsOptional()
   @trim()
   @IsString()
   @Length(1, 80)
-  childName?: string;
+  childName?: string | null;
 
   @IsOptional()
   @IsInt()
   @Min(1)
   @Max(12)
-  childAge?: number;
+  childAge?: number | null;
 
   @IsOptional()
   @IsEnum(SupportedLanguage)
-  language?: SupportedLanguage;
+  language?: SupportedLanguage | null;
 
   @IsOptional()
   @trim()
   @IsString()
   @Length(1, 120)
-  theme?: string;
+  theme?: string | null;
 
   @IsOptional()
   @trim()
   @IsString()
   @Length(1, 300)
-  educationalMessage?: string;
+  educationalMessage?: string | null;
 
   @IsOptional()
   @IsInt()
   @Min(MIN_BOOK_PAGE_COUNT)
   @Max(MAX_BOOK_PAGE_COUNT)
-  pageCount?: number;
+  pageCount?: number | null;
 }
