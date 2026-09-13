@@ -16,6 +16,7 @@ import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { buildRefreshCookieOptions, REFRESH_COOKIE_NAME } from './refresh-cookie';
+import { CookieCsrfGuard } from './cookie-csrf.guard';
 
 export interface AuthResponse {
   accessToken: string;
@@ -52,7 +53,7 @@ export class AuthController {
     return { accessToken: result.accessToken, user: toUserDto(result.user) };
   }
 
-  @UseGuards(AuthRateLimitGuard)
+  @UseGuards(AuthRateLimitGuard, CookieCsrfGuard)
   @Post('refresh')
   @HttpCode(200)
   async refresh(
@@ -64,7 +65,7 @@ export class AuthController {
     return { accessToken: result.accessToken, user: toUserDto(result.user) };
   }
 
-  @UseGuards(AuthRateLimitGuard)
+  @UseGuards(AuthRateLimitGuard, CookieCsrfGuard)
   @Post('logout')
   @HttpCode(204)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<void> {
@@ -113,7 +114,10 @@ export class AuthController {
     res.cookie(
       REFRESH_COOKIE_NAME,
       rawRefreshToken,
-      buildRefreshCookieOptions(this.config.get('NODE_ENV', { infer: true })),
+      buildRefreshCookieOptions(
+        this.config.get('NODE_ENV', { infer: true }),
+        this.config.get('REFRESH_COOKIE_SAME_SITE', { infer: true }),
+      ),
     );
   }
 }

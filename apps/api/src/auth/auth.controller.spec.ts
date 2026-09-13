@@ -9,6 +9,7 @@ import { AuthController } from './auth.controller';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import type { AuthService } from './auth.service';
 import { REFRESH_COOKIE_NAME } from './refresh-cookie';
+import { CookieCsrfGuard } from './cookie-csrf.guard';
 
 const USER = {
   id: 'u-1',
@@ -21,7 +22,9 @@ const USER = {
 } as unknown as User;
 
 function createConfig(nodeEnv: Env['NODE_ENV'] = 'development'): ConfigService<Env, true> {
-  return { get: () => nodeEnv } as unknown as ConfigService<Env, true>;
+  return {
+    get: (key: string) => (key === 'REFRESH_COOKIE_SAME_SITE' ? 'lax' : nodeEnv),
+  } as unknown as ConfigService<Env, true>;
 }
 
 function createResponse(): Response {
@@ -246,6 +249,12 @@ describe('AuthController', () => {
       const guards: unknown[] =
         Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype.getMe) ?? [];
       expect(guards).not.toContain(AuthRateLimitGuard);
+    });
+
+    it.each(['refresh', 'logout'] as const)('applies cookie CSRF protection to %s', (method) => {
+      const guards: unknown[] =
+        Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype[method]) ?? [];
+      expect(guards).toContain(CookieCsrfGuard);
     });
   });
 

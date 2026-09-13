@@ -1356,3 +1356,21 @@ the verification/reset link host.
   follow-up. This was the last auth-specific blocker called out in §14.12/
   §15.10 — real auth, rate limiting, email verification, password reset, and
   now real transactional email are all done end-to-end.
+
+## Session invalidation contract (September 2026)
+
+Refresh-token revocation records the reason. Only a token revoked by normal
+rotation may use the ten-second concurrent-browser grace period, and that
+period returns the single already-created child token. Logout, password reset,
+compromise, expired tokens, and legacy revocations are terminal. Rotation and
+password-reset consumption use serializable transactions so reset cannot race
+refresh into preserving an active descendant.
+
+Password reset invalidates all refresh sessions. Already-issued access JWTs
+are intentionally stateless and may survive only until their existing
+15-minute expiry; sensitive deployments should account for that bounded
+window. Cookie-authorized refresh/logout POSTs require an exact allowed Origin
+(or same-origin Fetch Metadata; non-browser clients without either must send
+`X-StoryMe-CSRF: 1`). The refresh cookie defaults to `SameSite=Lax`;
+cross-site deployments must explicitly select `REFRESH_COOKIE_SAME_SITE=none`,
+which also forces `Secure`, and configure exact `ALLOWED_ORIGINS`.

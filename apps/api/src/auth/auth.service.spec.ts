@@ -70,6 +70,12 @@ describe('AuthService', () => {
         expiresAt: new Date('2026-01-08'),
       }),
       hashRefreshToken: vi.fn().mockReturnValue('hashed-refresh'),
+      deriveRotatedRefreshToken: vi.fn().mockReturnValue({
+        raw: 'rotated-raw-refresh',
+        hash: 'rotated-hashed-refresh',
+        family: 'family-1',
+        expiresAt: new Date('2026-01-08'),
+      }),
       generateEmailVerificationToken: vi.fn().mockReturnValue({
         raw: 'raw-verification-token',
         hash: 'hashed-verification-token',
@@ -90,6 +96,13 @@ describe('AuthService', () => {
     config = {
       get: vi.fn().mockReturnValue('http://localhost:3000'),
     } as unknown as ConfigService<Env, true>;
+    prisma.$transaction.mockImplementation(async (operation: (tx: MockPrisma) => unknown) =>
+      operation(prisma),
+    );
+    prisma.user.findUnique.mockImplementation(({ where }: { where: { id: string } }) =>
+      (usersService.findById as Mock)(where.id),
+    );
+    prisma.user.updateMany.mockResolvedValue({ count: 1 });
     service = new AuthService(prisma as never, usersService, tokenService, emailService, config);
   });
 
@@ -272,16 +285,18 @@ describe('AuthService', () => {
       };
       prisma.refreshToken.findUnique.mockResolvedValue(record);
       (usersService.findById as Mock).mockResolvedValue(makeUser());
-      prisma.refreshToken.update.mockResolvedValue({});
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
       prisma.refreshToken.create.mockResolvedValue({});
 
       const result = await service.refresh('raw-refresh');
 
-      expect(prisma.refreshToken.update).toHaveBeenCalledWith({
-        where: { id: 'rt-1' },
-        data: { revokedAt: expect.any(Date) },
-      });
-      expect(tokenService.generateRefreshToken).toHaveBeenCalledWith('family-1');
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ id: 'rt-1' }) }),
+      );
+      expect(tokenService.deriveRotatedRefreshToken).toHaveBeenCalledWith(
+        'raw-refresh',
+        'family-1',
+      );
       expect(result.accessToken).toBe('access-token');
     });
 
@@ -295,14 +310,16 @@ describe('AuthService', () => {
         // Well past REFRESH_REUSE_GRACE_MS (10s) — a real replay, not a
         // same-instant multi-tab race.
         revokedAt: new Date(Date.now() - 60_000),
+        revocationReason: 'rotation',
       };
       prisma.refreshToken.findUnique.mockResolvedValue(record);
+      (usersService.findById as Mock).mockResolvedValue(makeUser());
       prisma.refreshToken.updateMany.mockResolvedValue({ count: 2 });
 
       await expect(service.refresh('raw-refresh')).rejects.toThrow(UnauthorizedException);
       expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
         where: { family: 'family-1', revokedAt: null },
-        data: { revokedAt: expect.any(Date) },
+        data: { revokedAt: expect.any(Date), revocationReason: 'compromise' },
       });
     });
 
@@ -316,14 +333,20 @@ describe('AuthService', () => {
         // A second tab presenting the same pre-rotation token milliseconds
         // after another tab already rotated it.
         revokedAt: new Date(Date.now() - 50),
+        revocationReason: 'rotation',
       };
-      prisma.refreshToken.findUnique.mockResolvedValue(record);
+      prisma.refreshToken.findUnique.mockResolvedValueOnce(record).mockResolvedValueOnce({
+        ...record,
+        id: 'rt-2',
+        revokedAt: null,
+        revocationReason: null,
+      });
       (usersService.findById as Mock).mockResolvedValue(makeUser());
 
       const result = await service.refresh('raw-refresh');
 
       expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
-      expect(tokenService.generateRefreshToken).toHaveBeenCalledWith('family-1');
+      expect(tokenService.deriveRotatedRefreshToken).toHaveBeenCalled();
       expect(result.accessToken).toBe('access-token');
     });
 
@@ -335,6 +358,7 @@ describe('AuthService', () => {
         family: 'family-1',
         expiresAt: new Date(Date.now() + 100_000),
         revokedAt: new Date(Date.now() - 50),
+        revocationReason: 'rotation',
       };
       prisma.refreshToken.findUnique.mockResolvedValue(record);
       (usersService.findById as Mock).mockResolvedValue(
@@ -357,6 +381,40 @@ describe('AuthService', () => {
 
       await expect(service.refresh('raw-refresh')).rejects.toThrow(UnauthorizedException);
     });
+
+    it('rejects an expired rotated token even when revoked inside the grace window', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-1',
+        userId: 'u-1',
+        tokenHash: 'hashed-refresh',
+        family: 'family-1',
+        expiresAt: new Date(Date.now() - 1),
+        revokedAt: new Date(),
+        revocationReason: 'rotation',
+      });
+
+      await expect(service.refresh('raw-refresh')).rejects.toThrow('Refresh token expired');
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it.each(['logout', 'password_reset', 'compromise'] as const)(
+      'never grants grace to a recently terminally revoked token (%s)',
+      async (revocationReason) => {
+        prisma.refreshToken.findUnique.mockResolvedValue({
+          id: 'rt-1',
+          userId: 'u-1',
+          tokenHash: 'hashed-refresh',
+          family: 'family-1',
+          expiresAt: new Date(Date.now() + 100_000),
+          revokedAt: new Date(),
+          revocationReason,
+        });
+        (usersService.findById as Mock).mockResolvedValue(makeUser());
+
+        await expect(service.refresh('raw-refresh')).rejects.toThrow('Refresh token revoked');
+        expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+      },
+    );
 
     it('rejects an unknown refresh token', async () => {
       prisma.refreshToken.findUnique.mockResolvedValue(null);
@@ -389,13 +447,14 @@ describe('AuthService', () => {
 
   describe('logout', () => {
     it('revokes the matching non-revoked refresh token', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({ family: 'family-1' });
       prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
 
       await service.logout('raw-refresh');
 
       expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
-        where: { tokenHash: 'hashed-refresh', revokedAt: null },
-        data: { revokedAt: expect.any(Date) },
+        where: { family: 'family-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date), revocationReason: 'logout' },
       });
     });
 
@@ -603,18 +662,22 @@ describe('AuthService', () => {
         passwordResetExpiresAt: new Date(Date.now() + 100_000),
       });
       prisma.user.findFirst.mockResolvedValue(user);
-      prisma.user.update.mockResolvedValue({});
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
       prisma.refreshToken.updateMany.mockResolvedValue({ count: 1 });
 
       await service.resetPassword('raw-reset-token', 'NewPassword1');
 
       expect(tokenService.hashPasswordResetToken).toHaveBeenCalledWith('raw-reset-token');
-      expect(prisma.user.findFirst).toHaveBeenCalledWith({
-        where: { passwordResetTokenHash: 'hashed-reset-token' },
-      });
+      expect(prisma.user.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ passwordResetTokenHash: 'hashed-reset-token' }),
+        }),
+      );
 
-      const updateArg = (prisma.user.update as Mock).mock.calls[0][0];
-      expect(updateArg.where).toEqual({ id: user.id });
+      const updateArg = (prisma.user.updateMany as Mock).mock.calls[0][0];
+      expect(updateArg.where).toEqual(
+        expect.objectContaining({ id: user.id, passwordResetTokenHash: 'hashed-reset-token' }),
+      );
       expect(updateArg.data.passwordResetTokenHash).toBeNull();
       expect(updateArg.data.passwordResetExpiresAt).toBeNull();
       expect(updateArg.data.passwordHash).not.toBe('NewPassword1');
@@ -622,7 +685,7 @@ describe('AuthService', () => {
 
       expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
         where: { userId: user.id, revokedAt: null },
-        data: { revokedAt: expect.any(Date) },
+        data: { revokedAt: expect.any(Date), revocationReason: 'password_reset' },
       });
     });
 
@@ -632,22 +695,18 @@ describe('AuthService', () => {
       await expect(service.resetPassword('bogus-token', 'NewPassword1')).rejects.toThrow(
         BadRequestException,
       );
-      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
       expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
     });
 
     it('rejects an expired token', async () => {
-      prisma.user.findFirst.mockResolvedValue(
-        makeUser({
-          passwordResetTokenHash: 'hashed-reset-token',
-          passwordResetExpiresAt: new Date(Date.now() - 1000),
-        }),
-      );
+      // A real database applies passwordResetExpiresAt > now in the lookup.
+      prisma.user.findFirst.mockResolvedValue(null);
 
       await expect(service.resetPassword('raw-reset-token', 'NewPassword1')).rejects.toThrow(
         BadRequestException,
       );
-      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
     });
 
     it('reports the INVALID_RESET_TOKEN code for an invalid/expired token', async () => {
@@ -676,7 +735,7 @@ describe('AuthService', () => {
           passwordResetExpiresAt: new Date(Date.now() + 100_000),
         }),
       );
-      prisma.user.update.mockResolvedValue({});
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
       prisma.refreshToken.updateMany.mockResolvedValue({ count: 0 });
       await service.resetPassword('raw-reset-token', 'NewPassword1');
 
@@ -684,6 +743,24 @@ describe('AuthService', () => {
       await expect(service.resetPassword('raw-reset-token', 'AnotherPassword1')).rejects.toThrow(
         BadRequestException,
       );
+    });
+
+    it('allows exactly one of two concurrent submissions to consume the reset token', async () => {
+      const user = makeUser({
+        passwordResetTokenHash: 'hashed-reset-token',
+        passwordResetExpiresAt: new Date(Date.now() + 100_000),
+      });
+      prisma.user.findFirst.mockResolvedValueOnce(user).mockResolvedValueOnce(null);
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+
+      const results = await Promise.allSettled([
+        service.resetPassword('raw-reset-token', 'NewPassword1'),
+        service.resetPassword('raw-reset-token', 'OtherPassword1'),
+      ]);
+
+      expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledTimes(1);
     });
   });
 });

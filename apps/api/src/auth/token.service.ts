@@ -74,6 +74,22 @@ export class TokenService {
     };
   }
 
+  /**
+   * One deterministic child per presented parent token. This lets a bounded
+   * concurrent refresh return the already-created child without persisting
+   * raw tokens or creating a branching refresh-token tree.
+   */
+  deriveRotatedRefreshToken(
+    parentRaw: string,
+    family: string,
+    expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+  ): GeneratedRefreshToken {
+    const raw = createHmac('sha256', this.config.get('JWT_REFRESH_SECRET', { infer: true }))
+      .update(`rotation:${parentRaw}`)
+      .digest('hex');
+    return { raw, hash: this.hashRefreshToken(raw), family, expiresAt };
+  }
+
   hashRefreshToken(raw: string): string {
     return createHmac('sha256', this.config.get('JWT_REFRESH_SECRET', { infer: true }))
       .update(raw)

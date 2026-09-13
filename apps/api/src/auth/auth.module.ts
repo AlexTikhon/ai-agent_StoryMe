@@ -12,6 +12,7 @@ import { DevAuthGuard } from './dev-auth.guard';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { RequireVerifiedEmailGuard } from './require-verified-email.guard';
 import { TokenService } from './token.service';
+import { CookieCsrfGuard } from './cookie-csrf.guard';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { TokenService } from './token.service';
     JwtAuthGuard,
     AuthModeGuard,
     AuthRateLimitGuard,
+    CookieCsrfGuard,
     RequireVerifiedEmailGuard,
   ],
   // Re-export UsersModule alongside the guards: modules that only import
