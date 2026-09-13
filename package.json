@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@9.4.0",
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=20.9.0",
     "pnpm": ">=9.0.0"
   },
   "scripts": {
@@ -15,11 +15,11 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test && pnpm archive:clean:test",
+    "test": "turbo run test && pnpm archive:clean:test && node --test scripts/test-launcher.test.mjs",
     "test:e2e": "pnpm --filter @book/web test:e2e",
     "test:e2e:home": "node scripts/test-home-e2e.mjs",
-    "test:infra:up": "docker compose -p storyme-integration -f docker-compose.e2e.yml up -d --wait postgres-e2e redis-e2e",
-    "test:infra:down": "docker compose -p storyme-integration -f docker-compose.e2e.yml down -v --remove-orphans",
+    "test:infra:up": "node scripts/test-launcher.mjs infra-up",
+    "test:infra:down": "node scripts/test-launcher.mjs infra-down",
     "local:home:up": "docker compose -f docker-compose.e2e.yml up -d --wait",
     "local:home:down": "docker compose -f docker-compose.e2e.yml down",
     "migrate:deploy": "pnpm --filter @book/api prisma:migrate:deploy",

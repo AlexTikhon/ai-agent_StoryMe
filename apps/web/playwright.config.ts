@@ -5,10 +5,12 @@ const apiPort = 4100;
 const webBaseUrl = `http://127.0.0.1:${webPort}`;
 const apiBaseUrl = `http://127.0.0.1:${apiPort}/api`;
 
-process.env['DATABASE_URL'] ??= 'postgresql://storyme:storyme_e2e@127.0.0.1:5440/storyme_e2e';
-process.env['REDIS_URL'] ??= 'redis://127.0.0.1:6380/15';
-process.env['JWT_SECRET'] ??= 'storyme-e2e-jwt-secret-minimum-32-characters';
-process.env['JWT_REFRESH_SECRET'] ??= 'storyme-e2e-refresh-secret-minimum-32-characters';
+// Deliberately replace inherited developer/production settings. The safe
+// launcher independently validates these exact components before migration.
+process.env['DATABASE_URL'] = 'postgresql://storyme:storyme_e2e@127.0.0.1:5440/storyme_e2e';
+process.env['REDIS_URL'] = 'redis://127.0.0.1:6380/15';
+process.env['JWT_SECRET'] = 'storyme-e2e-jwt-secret-minimum-32-characters';
+process.env['JWT_REFRESH_SECRET'] = 'storyme-e2e-refresh-secret-minimum-32-characters';
 
 const sharedEnv = {
   ...process.env,
@@ -43,7 +45,7 @@ export default defineConfig({
   globalTeardown: './e2e/global-teardown.ts',
   webServer: [
     {
-      command: 'pnpm --filter @book/api start:e2e',
+      command: 'node scripts/test-launcher.mjs api-e2e',
       cwd: '../..',
       url: `http://127.0.0.1:${apiPort}/api/health`,
       timeout: 120_000,
