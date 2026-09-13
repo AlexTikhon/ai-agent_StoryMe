@@ -16,11 +16,12 @@ export function PublishedCoverThumbnail({ bookId, title, edition }: PublishedCov
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | null = null;
+    const controller = new AbortController();
 
     setImageUrl(null);
     setFailed(false);
     void booksApi
-      .downloadPublishedImage(bookId, 'cover', edition ?? undefined)
+      .downloadPublishedImage(bookId, 'cover', edition ?? undefined, controller.signal)
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -32,6 +33,7 @@ export function PublishedCoverThumbnail({ bookId, title, edition }: PublishedCov
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [bookId, edition]);
@@ -39,7 +41,13 @@ export function PublishedCoverThumbnail({ bookId, title, edition }: PublishedCov
   return (
     <div className="mb-4 flex aspect-[3/4] items-center justify-center overflow-hidden rounded-xl bg-violet-50">
       {imageUrl ? (
-        <img src={imageUrl} alt={`Cover of ${title}`} className="h-full w-full object-contain" />
+        <img
+          src={imageUrl}
+          alt={`Cover of ${title}`}
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-contain"
+        />
       ) : (
         <span
           role="img"

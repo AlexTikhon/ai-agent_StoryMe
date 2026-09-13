@@ -6,7 +6,12 @@ import type { UserDto } from '@book/types';
 import { apiFetch, AUTH_EXPIRED_EVENT } from '../api/client';
 import { authApi } from '../api/auth';
 import { getAuthMode, type AuthMode } from './mode';
-import { setAccessToken } from './token-store';
+import {
+  advanceSessionEpoch,
+  getSessionEpoch,
+  setAccessToken,
+  setAccessTokenForEpoch,
+} from './token-store';
 
 export type AuthStatus = 'loading' | 'authed' | 'anon';
 
@@ -32,15 +37,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // refresh cookie — the same silent-restore flow, with no separate call.
   useEffect(() => {
     let cancelled = false;
+    const epoch = getSessionEpoch();
     apiFetch<UserDto>('/auth/me')
       .then((me) => {
-        if (!cancelled) {
+        if (!cancelled && getSessionEpoch() === epoch) {
           setUser(me);
           setStatus('authed');
         }
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && getSessionEpoch() === epoch) {
           setUser(null);
           setStatus(authMode === 'dev' ? 'authed' : 'anon');
         }
@@ -66,27 +72,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
+    const epoch = advanceSessionEpoch();
     const res = await authApi.login(email, password);
-    setAccessToken(res.accessToken);
+    if (!setAccessTokenForEpoch(res.accessToken, epoch)) return;
     setUser(res.user);
     setStatus('authed');
   }, []);
 
   const register = useCallback(async (email: string, password: string, name?: string) => {
+    const epoch = advanceSessionEpoch();
     const res = await authApi.register(email, password, name);
-    setAccessToken(res.accessToken);
+    if (!setAccessTokenForEpoch(res.accessToken, epoch)) return;
     setUser(res.user);
     setStatus('authed');
   }, []);
 
   const logout = useCallback(async () => {
+    const epoch = advanceSessionEpoch();
+    setAccessToken(null);
+    setUser(null);
+    setStatus(authMode === 'dev' ? 'authed' : 'anon');
     try {
       await authApi.logout();
     } catch {
       // best-effort — clear local state regardless of server-side outcome
     }
-    setAccessToken(null);
-    setUser(null);
+    if (getSessionEpoch() !== epoch) return;
     // Dev mode has no real session to end (identity travels via header on
     // every request), so it stays "authed" rather than showing a login wall.
     setStatus(authMode === 'dev' ? 'authed' : 'anon');

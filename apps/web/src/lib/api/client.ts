@@ -1,5 +1,5 @@
 import { getAuthMode } from '../auth/mode';
-import { getAccessToken, setAccessToken } from '../auth/token-store';
+import { getAccessToken, getSessionEpoch, setAccessTokenForEpoch } from '../auth/token-store';
 import { ApiError, parseApiError } from './api-error';
 import { authApi } from './auth';
 import { getApiBase } from './config';
@@ -29,7 +29,7 @@ function notifyAuthExpired(): void {
 // one POST /api/auth/refresh per failed request. This only covers one JS
 // context — see the localStorage-based cross-tab coordination below for the
 // multi-tab case.
-let refreshInFlight: Promise<string | null> | null = null;
+let refreshInFlight: { epoch: number; promise: Promise<string | null> } | null = null;
 
 // Cross-tab coordination: when tab A is mid-refresh, tab B should wait for
 // A's result instead of firing its own POST /api/auth/refresh — both tabs
@@ -129,6 +129,7 @@ function identityHeaders(): Record<string, string> {
 
 /** Actually calls POST /api/auth/refresh, publishing the result for any tab waiting on `waitForCrossTabRefresh`. */
 function performOwnRefresh(): Promise<string | null> {
+  const epoch = getSessionEpoch();
   const lockId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   if (typeof window !== 'undefined') {
     writeJSON(REFRESH_LOCK_KEY, { id: lockId, startedAt: Date.now() } satisfies RefreshLock);
@@ -137,13 +138,16 @@ function performOwnRefresh(): Promise<string | null> {
   return authApi
     .refresh()
     .then((res) => {
-      setAccessToken(res.accessToken);
-      return res.accessToken;
+      return setAccessTokenForEpoch(res.accessToken, epoch) ? res.accessToken : null;
     })
-    .catch(() => {
-      setAccessToken(null);
-      notifyAuthExpired();
-      return null;
+    .catch((error: unknown) => {
+      // Only a definitive credential rejection ends the session. 429/503 and
+      // network failures are temporary and remain visible to the caller.
+      if (error instanceof ApiError && error.status === 401) {
+        if (setAccessTokenForEpoch(null, epoch)) notifyAuthExpired();
+        return null;
+      }
+      throw error;
     })
     .then((token) => {
       if (typeof window !== 'undefined') {
@@ -157,19 +161,20 @@ function performOwnRefresh(): Promise<string | null> {
 }
 
 function refreshOnce(): Promise<string | null> {
-  if (refreshInFlight) return refreshInFlight;
+  const epoch = getSessionEpoch();
+  if (refreshInFlight?.epoch === epoch) return refreshInFlight.promise;
 
   if (typeof window !== 'undefined') {
     const existingLock = readJSON<RefreshLock>(REFRESH_LOCK_KEY);
     if (existingLock && Date.now() - existingLock.startedAt < REFRESH_LOCK_TTL_MS) {
       // Another tab is already refreshing — wait for its result instead of
       // racing it with a second POST /api/auth/refresh.
-      refreshInFlight = waitForCrossTabRefresh(existingLock.id)
+      const promise = waitForCrossTabRefresh(existingLock.id)
         .then((token) => {
-          if (token) {
+          if (token && getSessionEpoch() === epoch) {
             // The token belongs to the other tab's in-memory store — this
             // tab needs its own copy for identityHeaders() to pick it up.
-            setAccessToken(token);
+            setAccessTokenForEpoch(token, epoch);
             return token;
           }
           // The other tab never published a result in time (or its refresh
@@ -178,16 +183,18 @@ function refreshOnce(): Promise<string | null> {
           return performOwnRefresh();
         })
         .finally(() => {
-          refreshInFlight = null;
+          if (refreshInFlight?.promise === promise) refreshInFlight = null;
         });
-      return refreshInFlight;
+      refreshInFlight = { epoch, promise };
+      return promise;
     }
   }
 
-  refreshInFlight = performOwnRefresh().finally(() => {
-    refreshInFlight = null;
+  const promise = performOwnRefresh().finally(() => {
+    if (refreshInFlight?.promise === promise) refreshInFlight = null;
   });
-  return refreshInFlight;
+  refreshInFlight = { epoch, promise };
+  return promise;
 }
 
 function rawFetch(

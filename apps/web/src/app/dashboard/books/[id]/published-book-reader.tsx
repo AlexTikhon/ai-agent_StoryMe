@@ -27,6 +27,25 @@ interface PublishedBookReaderProps {
   allowRevisions?: boolean;
 }
 
+const revisionStorageKey = (bookId: string, pageNumber: number) =>
+  `storyme:image-revision:${bookId}:${pageNumber}`;
+
+function rememberRevision(bookId: string, pageNumber: number, revisionId: string): void {
+  try {
+    window.sessionStorage.setItem(revisionStorageKey(bookId, pageNumber), revisionId);
+  } catch {
+    // Recovery is best-effort when storage is unavailable.
+  }
+}
+
+function forgetRevision(bookId: string, pageNumber: number): void {
+  try {
+    window.sessionStorage.removeItem(revisionStorageKey(bookId, pageNumber));
+  } catch {
+    // Recovery is best-effort when storage is unavailable.
+  }
+}
+
 export function PublishedBookReader({
   bookId,
   edition,
@@ -146,6 +165,7 @@ export function PublishedBookReader({
         imageQuote.id,
       );
       setImageRevision(revision);
+      rememberRevision(bookId, slide.pageNumber, revision.id);
     } catch (error) {
       setImageActionError(
         error instanceof Error ? error.message : 'Failed to start image regeneration.',
@@ -156,62 +176,113 @@ export function PublishedBookReader({
   };
 
   useEffect(() => {
+    if (!slide.pageNumber) return;
+    const pageNumber = slide.pageNumber;
+    let revisionId: string | null = null;
+    try {
+      revisionId = window.sessionStorage.getItem(revisionStorageKey(bookId, pageNumber));
+    } catch {
+      return;
+    }
+    if (!revisionId) return;
+
+    const controller = new AbortController();
+    void booksApi
+      .getPageImageRevision(bookId, revisionId, controller.signal)
+      .then((revision) => {
+        if (controller.signal.aborted) return;
+        if (revision.status === 'queued' || revision.status === 'running') {
+          setImageRevision(revision);
+          return;
+        }
+        forgetRevision(bookId, pageNumber);
+        if (revision.status === 'completed' && revision.book) {
+          onBookUpdated?.(revision.book);
+          setRetryNonce((value) => value + 1);
+        }
+      })
+      .catch(() => {
+        // A transient recovery failure must not erase the revision id. A
+        // later revisit can resume polling it.
+      });
+
+    return () => controller.abort();
+  }, [bookId, onBookUpdated, slide.pageNumber]);
+
+  useEffect(() => {
     if (!imageRevisionActive || !imageRevision) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+    let failures = 0;
+    const revisionId = imageRevision.id;
+    const pageNumber = imageRevision.pageNumber;
+
+    const schedule = (delayMs: number) => {
+      timer = setTimeout(() => void poll(), delayMs);
+    };
 
     const poll = async () => {
+      controller = new AbortController();
       try {
-        const current = await booksApi.getPageImageRevision(bookId, imageRevision.id);
+        const current = await booksApi.getPageImageRevision(bookId, revisionId, controller.signal);
         if (cancelled) return;
+        failures = 0;
+        setImageActionError(null);
         setImageRevision(current);
         if (current.status === 'completed' && current.book) {
+          forgetRevision(bookId, pageNumber);
           onBookUpdated?.(current.book);
           setImageQuote(null);
           setRetryNonce((value) => value + 1);
           return;
         }
         if (current.status === 'failed') {
+          forgetRevision(bookId, pageNumber);
           setImageActionError(
             current.errorMessage ??
               'The illustration could not be regenerated. Your credit was refunded.',
           );
           return;
         }
-        timer = setTimeout(() => void poll(), 1500);
+        schedule(1500);
       } catch (error) {
-        if (!cancelled) {
-          setImageActionError(
-            error instanceof Error ? error.message : 'Failed to check regeneration status.',
-          );
-        }
+        if (cancelled || controller.signal.aborted) return;
+        failures += 1;
+        setImageActionError(
+          error instanceof Error ? error.message : 'Failed to check regeneration status.',
+        );
+        const baseDelay = Math.min(10_000, 1000 * 2 ** Math.min(failures - 1, 4));
+        schedule(Math.round(baseDelay * (0.8 + Math.random() * 0.4)));
       }
     };
 
-    timer = setTimeout(() => void poll(), 500);
+    schedule(500);
     return () => {
       cancelled = true;
+      controller?.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [bookId, imageRevision, imageRevisionActive, onBookUpdated]);
+  }, [bookId, imageRevision?.id, imageRevision?.pageNumber, imageRevisionActive, onBookUpdated]);
 
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | null = null;
+    const controller = new AbortController();
 
     setImageUrl(null);
     setLoading(true);
     setLoadError(null);
 
     void booksApi
-      .downloadPublishedImage(bookId, slide.imageId, edition ?? undefined)
+      .downloadPublishedImage(bookId, slide.imageId, edition ?? undefined, controller.signal)
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
         setImageUrl(objectUrl);
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && !controller.signal.aborted) {
           setLoadError('This published page could not be loaded. Please try again.');
         }
       })
@@ -221,6 +292,7 @@ export function PublishedBookReader({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [bookId, edition, retryNonce, slide.imageId]);
@@ -263,6 +335,8 @@ export function PublishedBookReader({
             <img
               src={imageUrl}
               alt={`Illustration for ${slide.label.toLowerCase()}`}
+              loading="lazy"
+              decoding="async"
               className="max-h-[32rem] w-full object-contain"
             />
           )}

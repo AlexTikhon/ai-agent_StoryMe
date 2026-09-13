@@ -657,7 +657,13 @@ export interface CreateBookInput {
   childProfileId?: string | null;
 }
 
-export type UpdateBookInput = Partial<CreateBookInput>;
+/** Draft edits may deliberately clear nullable Book columns. Omission keeps a
+ * value unchanged; explicit null clears it. The API rejects edits once a run
+ * is active, so a cleared required generation input cannot mutate a run's
+ * immutable snapshot. */
+export type UpdateBookInput = {
+  [Key in keyof CreateBookInput]?: CreateBookInput[Key] | null;
+};
 
 /** Paginated response for GET /books */
 export type BookSummaryDto = Pick<

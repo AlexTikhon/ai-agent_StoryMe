@@ -47,8 +47,9 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     setBook(null);
     setProgress(null);
 
+    const controller = new AbortController();
     booksApi
-      .get(id)
+      .get(id, controller.signal)
       .then((data) => {
         if (!cancelled) {
           setBook(data);
@@ -68,6 +69,7 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [id, loadAttempt]);
 
@@ -79,68 +81,67 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
       setProgress(null);
       return;
     }
-    let cancelled = false;
     setProgress(null);
-    void booksApi
-      .getGenerationProgress(id)
-      .then((data) => {
-        if (!cancelled) setProgress(data);
-      })
-      .catch(() => {
-        // A generic in-progress message remains truthful if this optional
-        // projection cannot be loaded.
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [id, book?.status]);
 
-  // Poll while book is in a non-terminal generation state
+  // One cancellable in-flight loop. During generation it fetches only the
+  // compact durable progress projection; a terminal projection triggers one
+  // full-book read so content/publication changes arrive together.
   useEffect(() => {
     if (!book || !isGeneratingBookStatus(book.status)) return;
     let cancelled = false;
-    const timer = setInterval(() => {
-      void booksApi
-        .get(id)
-        .then((data) => {
-          if (cancelled) return;
-          // A user-initiated POST /:id/cancel response can land while this
-          // poll is already in flight. Reading `current` here (rather than
-          // the `book` closed over by this effect) always reflects the
-          // latest committed state, so a stale non-cancelled poll response
-          // can never clobber an already-applied cancellation.
-          setBook((current) => (current?.status === BookStatus.Cancelled ? current : data));
-        })
-        .catch(() => {});
-      void booksApi
-        .getGenerationProgress(id)
-        .then((data) => {
-          if (!cancelled) setProgress(data);
-        })
-        .catch(() => {});
-      if (enableDeveloperDiagnostics) {
-        void booksApi
-          .getGenerationDiagnostics(id)
-          .then((data) => {
-            if (!cancelled) {
-              setDiagnostics(data);
-              setDiagnosticsError(null);
-            }
-          })
-          .catch((err: unknown) => {
-            if (!cancelled) {
-              setDiagnosticsError(
-                err instanceof Error ? err.message : 'Failed to load diagnostics',
-              );
-            }
-          });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+    let failures = 0;
+    const schedule = (delay: number) => {
+      if (!cancelled) timer = setTimeout(() => void poll(), delay);
+    };
+    const poll = async () => {
+      if (cancelled) return;
+      if (document.visibilityState === 'hidden' || !navigator.onLine) {
+        schedule(POLL_INTERVAL_MS);
+        return;
       }
-    }, POLL_INTERVAL_MS);
+      controller = new AbortController();
+      try {
+        const data = await booksApi.getGenerationProgress(id, controller.signal);
+        if (cancelled) return;
+        failures = 0;
+        setProgress(data);
+        if (['complete', 'failed', 'cancelled'].includes(data.status)) {
+          const full = await booksApi.get(id, controller.signal);
+          if (cancelled || full.id !== id) return;
+          setBook((current) => {
+            if (!current || current.id !== full.id) return current;
+            if (current.status === BookStatus.Cancelled) return current;
+            return new Date(full.updatedAt) >= new Date(current.updatedAt) ? full : current;
+          });
+          return;
+        }
+        schedule(POLL_INTERVAL_MS);
+      } catch {
+        if (cancelled || controller.signal.aborted) return;
+        failures += 1;
+        const backoff = Math.min(30_000, POLL_INTERVAL_MS * 2 ** Math.min(failures, 3));
+        schedule(Math.round(backoff * (0.8 + Math.random() * 0.4)));
+      }
+    };
+    const recover = () => {
+      if (cancelled || document.visibilityState === 'hidden' || !navigator.onLine) return;
+      if (timer) clearTimeout(timer);
+      schedule(0);
+    };
+    document.addEventListener('visibilitychange', recover);
+    window.addEventListener('online', recover);
+    schedule(0);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
+      controller?.abort();
+      document.removeEventListener('visibilitychange', recover);
+      window.removeEventListener('online', recover);
     };
-  }, [id, book?.status, enableDeveloperDiagnostics]);
+  }, [id, book?.id, book?.status]);
 
   // Fetch diagnostics once generation has started (not for untouched drafts)
   useEffect(() => {

@@ -59,6 +59,7 @@ describe('PublishedBookReader', () => {
   let objectUrlCounter: number;
 
   beforeEach(() => {
+    window.sessionStorage.clear();
     objectUrlCounter = 0;
     vi.mocked(booksApi.downloadPublishedImage).mockResolvedValue(
       new Blob(['image'], { type: 'image/png' }),
@@ -85,12 +86,22 @@ describe('PublishedBookReader', () => {
       'src',
       'blob:reader-1',
     );
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover', undefined);
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith(
+      'book-1',
+      'cover',
+      undefined,
+      expect.any(AbortSignal),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     expect(await screen.findByAltText('Illustration for page 1')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'The First Step' })).toBeInTheDocument();
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'page-1', undefined);
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith(
+      'book-1',
+      'page-1',
+      undefined,
+      expect.any(AbortSignal),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     expect(await screen.findByAltText('Illustration for page 2')).toBeInTheDocument();
@@ -103,6 +114,7 @@ describe('PublishedBookReader', () => {
       'book-1',
       'back-cover',
       undefined,
+      expect.any(AbortSignal),
     );
   });
 
@@ -136,7 +148,12 @@ describe('PublishedBookReader', () => {
       />,
     );
     await screen.findByAltText('Illustration for cover');
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover', 'two');
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith(
+      'book-1',
+      'cover',
+      'two',
+      expect.any(AbortSignal),
+    );
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(oldBlob);
     expect(screen.getByRole('button', { name: 'Previous page' })).toBeDisabled();
   });
@@ -155,7 +172,12 @@ describe('PublishedBookReader', () => {
       expect(screen.getByAltText('Illustration for cover')).toBeInTheDocument();
     });
     expect(booksApi.downloadPublishedImage).toHaveBeenCalledTimes(2);
-    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith('book-1', 'cover', undefined);
+    expect(booksApi.downloadPublishedImage).toHaveBeenLastCalledWith(
+      'book-1',
+      'cover',
+      undefined,
+      expect.any(AbortSignal),
+    );
   });
 
   it('edits one story page with its optimistic version and returns the updated book', async () => {
@@ -254,10 +276,73 @@ describe('PublishedBookReader', () => {
     await waitFor(
       () => {
         expect(booksApi.confirmPageImageRevision).toHaveBeenCalledWith('book-1', 1, 'revision-1');
-        expect(booksApi.getPageImageRevision).toHaveBeenCalledWith('book-1', 'revision-1');
+        expect(booksApi.getPageImageRevision).toHaveBeenCalledWith(
+          'book-1',
+          'revision-1',
+          expect.any(AbortSignal),
+        );
         expect(onBookUpdated).toHaveBeenCalledWith(updatedBook);
       },
       { timeout: 2000 },
     );
+  });
+
+  it('recovers a saved active revision and keeps polling after a transient failure', async () => {
+    const onBookUpdated = vi.fn();
+    const updatedBook = {
+      id: 'book-1',
+      status: BookStatus.Complete,
+      bookPreview: PREVIEW,
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T03:00:00.000Z',
+    } as BookDto;
+    window.sessionStorage.setItem('storyme:image-revision:book-1:1', 'revision-recovered');
+    vi.mocked(booksApi.getPageImageRevision)
+      .mockResolvedValueOnce({
+        id: 'revision-recovered',
+        bookId: 'book-1',
+        pageNumber: 1,
+        status: 'running',
+        costCredits: 1,
+        provider: 'openai',
+      })
+      .mockRejectedValueOnce(new Error('temporary status outage'))
+      .mockResolvedValueOnce({
+        id: 'revision-recovered',
+        bookId: 'book-1',
+        pageNumber: 1,
+        status: 'completed',
+        costCredits: 1,
+        provider: 'openai',
+        book: updatedBook,
+      });
+
+    render(<PublishedBookReader bookId="book-1" preview={PREVIEW} onBookUpdated={onBookUpdated} />);
+    await screen.findByAltText('Illustration for cover');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+
+    await waitFor(
+      () => {
+        expect(booksApi.getPageImageRevision).toHaveBeenCalledTimes(3);
+        expect(onBookUpdated).toHaveBeenCalledWith(updatedBook);
+      },
+      { timeout: 4000 },
+    );
+    expect(window.sessionStorage.getItem('storyme:image-revision:book-1:1')).toBeNull();
+  });
+
+  it('aborts an obsolete image download when navigation changes the page', async () => {
+    vi.mocked(booksApi.downloadPublishedImage).mockImplementation(
+      () => new Promise<Blob>(() => undefined),
+    );
+
+    render(<PublishedBookReader bookId="book-1" preview={PREVIEW} />);
+    await waitFor(() => expect(booksApi.downloadPublishedImage).toHaveBeenCalledTimes(1));
+    const firstSignal = vi.mocked(booksApi.downloadPublishedImage).mock.calls[0]?.[3];
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+
+    await waitFor(() => expect(booksApi.downloadPublishedImage).toHaveBeenCalledTimes(2));
+    expect(firstSignal?.aborted).toBe(true);
   });
 });

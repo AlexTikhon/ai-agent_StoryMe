@@ -163,6 +163,33 @@ describe('AuthProvider', () => {
       expect(getAccessToken()).toBeNull();
     });
 
+    it('does not let a delayed session restore overwrite logout', async () => {
+      let resolveRestore: (response: Response) => void = () => {};
+      const restoreResponse = new Promise<Response>((resolve) => {
+        resolveRestore = resolve;
+      });
+      vi.mocked(fetch).mockImplementation((input) => {
+        if (String(input).endsWith('/auth/me')) return restoreResponse;
+        return Promise.resolve({ ok: true, status: 204 } as Response);
+      });
+
+      const user = userEvent.setup();
+      render(
+        <AuthProvider>
+          <Probe />
+        </AuthProvider>,
+      );
+
+      await user.click(screen.getByRole('button', { name: 'logout' }));
+      resolveRestore(mockOk(MOCK_USER));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('status').textContent).toBe('anon');
+        expect(screen.getByTestId('email').textContent).toBe('none');
+      });
+      expect(getAccessToken()).toBeNull();
+    });
+
     it('drops to anon when a later request dispatches storyme:auth-expired (refresh failed mid-session)', async () => {
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockUnauthorized())

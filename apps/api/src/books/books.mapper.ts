@@ -61,7 +61,25 @@ export function publishedEdition(
       : 'legacy';
 }
 
-export function toBookSummaryDto(book: Book): BookSummaryDto {
+type BookSummaryRecord = Pick<
+  Book,
+  | 'id'
+  | 'title'
+  | 'childName'
+  | 'childAge'
+  | 'language'
+  | 'theme'
+  | 'status'
+  | 'previewPdfUrl'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'publishedPdfRunId'
+  | 'publishedPdfFencingVersion'
+  | 'publishedRunId'
+  | 'publishedRunFencingVersion'
+>;
+
+export function toBookSummaryDto(book: BookSummaryRecord): BookSummaryDto {
   return {
     id: book.id,
     title: book.title,

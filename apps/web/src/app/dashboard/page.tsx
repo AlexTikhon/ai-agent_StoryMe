@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import type { BookSummaryDto } from '@book/types';
 import { BookStatus } from '@book/types';
 import { booksApi } from '@/lib/api/books';
@@ -24,19 +24,35 @@ export default function DashboardPage() {
   const [books, setBooks] = useState<BookSummaryDto[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadController = useRef<AbortController | null>(null);
+  const nextPage = useRef(1);
 
-  const loadBooks = useCallback(async () => {
+  const loadBooks = useCallback(async (reset = true) => {
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
     setLoadError(null);
+    if (!reset) setLoadingMore(true);
     try {
-      const data = await booksApi.list();
-      setBooks(data.items);
+      const page = reset ? 1 : nextPage.current;
+      const data = await booksApi.list(page, 20, controller.signal);
+      if (controller.signal.aborted) return;
+      setBooks((current) => (reset ? data.items : [...(current ?? []), ...data.items]));
+      setTotal(data.total);
+      nextPage.current = data.page + 1;
     } catch (err) {
+      if (controller.signal.aborted) return;
       setLoadError(err instanceof Error ? err.message : 'Failed to load books');
+    } finally {
+      if (!controller.signal.aborted) setLoadingMore(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadBooks();
+    void loadBooks(true);
+    return () => loadController.current?.abort();
   }, [loadBooks]);
 
   const handleDelete = async (id: string) => {
@@ -45,6 +61,7 @@ export default function DashboardPage() {
     try {
       await booksApi.remove(id);
       setBooks((prev) => prev?.filter((b) => b.id !== id) ?? null);
+      setTotal((value) => Math.max(0, value - 1));
     } catch (err) {
       window.alert(err instanceof Error ? err.message : 'Failed to delete book');
     } finally {
@@ -83,19 +100,33 @@ export default function DashboardPage() {
         {books !== null && books.length === 0 && <EmptyState />}
 
         {books !== null && books.length > 0 && (
-          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Book drafts">
-            {books.map((book) => (
-              <li key={book.id}>
-                <BookCard
-                  book={book}
-                  onDelete={() => {
-                    void handleDelete(book.id);
-                  }}
-                  deleting={deletingId === book.id}
-                />
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Book drafts">
+              {books.map((book) => (
+                <li key={book.id}>
+                  <BookCard
+                    book={book}
+                    onDelete={() => {
+                      void handleDelete(book.id);
+                    }}
+                    deleting={deletingId === book.id}
+                  />
+                </li>
+              ))}
+            </ul>
+            {books.length < total && (
+              <div className="mt-6 text-center">
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={() => void loadBooks(false)}
+                  className="rounded-xl border border-border-default px-5 py-2 text-sm font-semibold disabled:opacity-60"
+                >
+                  {loadingMore ? 'Loading…' : 'Load more'}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </main>

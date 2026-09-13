@@ -644,6 +644,22 @@ describe('BooksService', () => {
         orderBy: { createdAt: 'desc' },
         skip: 0,
         take: 20,
+        select: {
+          id: true,
+          title: true,
+          childName: true,
+          childAge: true,
+          language: true,
+          theme: true,
+          status: true,
+          previewPdfUrl: true,
+          createdAt: true,
+          updatedAt: true,
+          publishedPdfRunId: true,
+          publishedPdfFencingVersion: true,
+          publishedRunId: true,
+          publishedRunFencingVersion: true,
+        },
       });
       expect(result.items).toHaveLength(2);
       expect(result.items[0]?.id).toBe('b-1');

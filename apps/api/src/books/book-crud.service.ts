@@ -74,6 +74,22 @@ export class BookCrudService {
         orderBy: { createdAt: 'desc' },
         skip: (safePage - 1) * safeLimit,
         take: safeLimit,
+        select: {
+          id: true,
+          title: true,
+          childName: true,
+          childAge: true,
+          language: true,
+          theme: true,
+          status: true,
+          previewPdfUrl: true,
+          createdAt: true,
+          updatedAt: true,
+          publishedPdfRunId: true,
+          publishedPdfFencingVersion: true,
+          publishedRunId: true,
+          publishedRunFencingVersion: true,
+        },
       }),
     ]);
     return { items: books.map(toBookSummaryDto), page: safePage, limit: safeLimit, total };

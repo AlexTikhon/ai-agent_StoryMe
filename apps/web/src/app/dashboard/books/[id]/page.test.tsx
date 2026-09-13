@@ -1959,14 +1959,6 @@ describe('BookDetailPage', () => {
   // ── Polling ───────────────────────────────────────────────────────────────
 
   describe('Polling', () => {
-    // Only fake setInterval/clearInterval so waitFor (which uses setTimeout) still works.
-    beforeEach(() => {
-      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    });
-    afterEach(() => {
-      vi.useRealTimers();
-    });
-
     it('polls for updates when status is non-terminal and updates the UI', async () => {
       const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.PdfRender };
       const completeBook: BookDto = {
@@ -1978,17 +1970,12 @@ describe('BookDetailPage', () => {
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockOk(generatingBook))
         .mockResolvedValue(mockOk(completeBook));
+      queueProgress(mockOk({ status: 'complete', step: AgentStep.PdfRender }));
 
       render(<BookDetailPage />);
       await waitFor(() =>
         expect(screen.getByRole('heading', { name: /finishing your book/i })).toBeDefined(),
       );
-
-      await act(async () => {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(2500);
-        });
-      });
 
       await waitFor(() =>
         expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
@@ -2006,24 +1993,19 @@ describe('BookDetailPage', () => {
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockOk(generatingBook))
         .mockResolvedValueOnce(mockOk(completeBook));
+      queueProgress(mockOk({ status: 'complete', step: AgentStep.Layout }));
 
       render(<BookDetailPage />);
       await waitFor(() => expect(screen.getByText('layout')).toBeDefined());
 
-      await act(async () => {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(2500);
-        });
-      });
       await waitFor(() =>
         expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
       );
 
       const callCountAfterComplete = vi.mocked(fetch).mock.calls.length;
       await act(async () => {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(2500);
-        });
+        window.dispatchEvent(new Event('online'));
+        await Promise.resolve();
       });
       expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterComplete);
     });
@@ -2035,23 +2017,15 @@ describe('BookDetailPage', () => {
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockOk(generatingBook))
         .mockResolvedValueOnce(mockOk(failedBook));
-      queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
+      queueProgress(mockOk({ status: 'failed', step: AgentStep.StoryDraft }));
 
       render(<BookDetailPage />);
-      await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
-
-      await act(async () => {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(2500);
-        });
-      });
       await waitFor(() => expect(screen.getByText(/generation failed/i)).toBeDefined());
 
       const callCountAfterFailed = vi.mocked(fetch).mock.calls.length;
       await act(async () => {
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(2500);
-        });
+        window.dispatchEvent(new Event('online'));
+        await Promise.resolve();
       });
       expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterFailed);
     });
@@ -2072,7 +2046,8 @@ describe('BookDetailPage', () => {
 
       const callCountAfterLoad = vi.mocked(fetch).mock.calls.length;
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(5000);
+        window.dispatchEvent(new Event('online'));
+        await Promise.resolve();
       });
       expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterLoad);
     });
@@ -2269,13 +2244,6 @@ describe('BookDetailPage', () => {
     });
 
     describe('polling resumption', () => {
-      beforeEach(() => {
-        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-      });
-      afterEach(() => {
-        vi.useRealTimers();
-      });
-
       it('resumes status/diagnostics polling after a successful retry', async () => {
         const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
         const retriedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.StoryDraft };
@@ -2290,6 +2258,7 @@ describe('BookDetailPage', () => {
           .mockResolvedValueOnce(mockOk(failedBook))
           .mockResolvedValueOnce(mockOk({ book: retriedBook }))
           .mockResolvedValue(mockOk(completeBook));
+        queueProgress(mockOk({ status: 'complete', step: AgentStep.PdfRender }));
 
         render(<BookDetailPage />);
         await waitFor(() => screen.getByRole('button', { name: /retry generation/i }));
@@ -2297,12 +2266,6 @@ describe('BookDetailPage', () => {
         fireEvent.click(screen.getByRole('button', { name: /retry generation/i }));
 
         await waitFor(() => expect(screen.getByText('story_draft')).toBeDefined());
-
-        await act(async () => {
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(2500);
-          });
-        });
 
         await waitFor(() =>
           expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
@@ -3188,14 +3151,7 @@ describe('BookDetailPage', () => {
     });
 
     describe('polling', () => {
-      beforeEach(() => {
-        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-      });
-      afterEach(() => {
-        vi.useRealTimers();
-      });
-
-      it('refreshes diagnostics on each poll tick while generating', async () => {
+      it('keeps developer diagnostics separate from compact progress polling', async () => {
         const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.ImageGen };
         vi.mocked(fetch)
           .mockResolvedValueOnce(mockOk(generatingBook))
@@ -3212,18 +3168,8 @@ describe('BookDetailPage', () => {
             }),
           ),
         );
-        queueDiagnostics(
-          mockOk(
-            makeDiagnostics({
-              status: BookStatus.ImageGen,
-              generationMetadata: {
-                storyProvider: 'mock',
-                imageProvider: 'mock',
-                generatedPages: 3,
-              },
-            }),
-          ),
-        );
+        queueProgress(mockOk({ status: 'running', step: AgentStep.ImageGen }));
+        queueProgress(mockOk({ status: 'running', step: AgentStep.ImageGen }));
 
         render(<BookDetailPage />);
 
@@ -3233,15 +3179,19 @@ describe('BookDetailPage', () => {
         });
 
         await act(async () => {
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(2500);
-          });
+          window.dispatchEvent(new Event('online'));
         });
 
         await waitFor(() => {
-          const panel = within(screen.getByTestId('generation-diagnostics'));
-          expect(panel.getByText('3')).toBeDefined();
+          const progressCalls = fetchMock.fetchFn.mock.calls.filter(([input]) =>
+            String(input).includes('/generation-progress'),
+          );
+          expect(progressCalls.length).toBeGreaterThanOrEqual(2);
         });
+        const diagnosticsCalls = fetchMock.fetchFn.mock.calls.filter(([input]) =>
+          String(input).includes('/generation-diagnostics'),
+        );
+        expect(diagnosticsCalls).toHaveLength(1);
       });
 
       it('stops fetching diagnostics once status becomes terminal', async () => {
@@ -3260,27 +3210,17 @@ describe('BookDetailPage', () => {
             }),
           ),
         );
-        queueProgress(mockOk({ status: 'running', step: AgentStep.StoryPlan }));
+        queueProgress(mockOk({ status: 'failed', step: AgentStep.StoryDraft }));
 
         render(<BookDetailPage />);
-        await waitFor(() => expect(screen.getByText(/writing your story/i)).toBeDefined());
-
-        await act(async () => {
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(2500);
-          });
-        });
         await waitFor(() => expect(screen.getByText(/generation failed/i)).toBeDefined());
 
         // let any fetch triggered by the status transition itself settle before snapshotting
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(0);
-        });
+        await act(async () => Promise.resolve());
         const callCountAfterFailed = fetchMock.fetchFn.mock.calls.length;
         await act(async () => {
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(2500);
-          });
+          window.dispatchEvent(new Event('online'));
+          await Promise.resolve();
         });
         expect(fetchMock.fetchFn.mock.calls.length).toBe(callCountAfterFailed);
       });

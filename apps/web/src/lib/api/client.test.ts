@@ -6,7 +6,7 @@ import {
   AUTH_EXPIRED_EVENT,
   REFRESH_LOCK_KEY,
 } from './client';
-import { setAccessToken } from '../auth/token-store';
+import { getAccessToken, setAccessToken } from '../auth/token-store';
 
 const REFRESH_CHANNEL_NAME = 'storyme:refresh-result';
 
@@ -33,6 +33,14 @@ function mockUnauthorized(): Response {
     ok: false,
     status: 401,
     json: async () => ({ message: 'Unauthorized' }),
+  } as unknown as Response;
+}
+
+function mockError(status: number, message: string): Response {
+  return {
+    ok: false,
+    status,
+    json: async () => ({ message }),
   } as unknown as Response;
 }
 
@@ -134,6 +142,38 @@ describe('apiFetch / apiFetchBlob auth behavior', () => {
 
       expect(onExpired).not.toHaveBeenCalled();
       window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    });
+
+    it('preserves the session when refresh is temporarily unavailable', async () => {
+      setAccessToken('expired-token');
+      const onExpired = vi.fn();
+      window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockUnauthorized())
+        .mockResolvedValueOnce(mockError(503, 'Authentication temporarily unavailable'));
+
+      await expect(apiFetch('/books')).rejects.toMatchObject({ status: 503 });
+
+      expect(getAccessToken()).toBe('expired-token');
+      expect(onExpired).not.toHaveBeenCalled();
+      window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    });
+
+    it('coalesces concurrent 401 responses into one refresh request', async () => {
+      setAccessToken('expired-token');
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockUnauthorized())
+        .mockResolvedValueOnce(mockUnauthorized())
+        .mockResolvedValueOnce(mockOk({ accessToken: 'new-token', user: { id: 'u1' } }))
+        .mockResolvedValueOnce(mockOk({ request: 'one' }))
+        .mockResolvedValueOnce(mockOk({ request: 'two' }));
+
+      const results = await Promise.all([apiFetch('/books/one'), apiFetch('/books/two')]);
+
+      expect(results).toEqual([{ request: 'one' }, { request: 'two' }]);
+      expect(
+        vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/auth/refresh')),
+      ).toHaveLength(1);
     });
 
     describe('cross-tab refresh coordination', () => {

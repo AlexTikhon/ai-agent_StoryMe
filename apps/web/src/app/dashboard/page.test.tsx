@@ -98,6 +98,36 @@ describe('DashboardPage', () => {
     });
   });
 
+  it('loads and can delete a book beyond the first 20 results', async () => {
+    const firstPage = Array.from({ length: 20 }, (_, index) => ({
+      ...MOCK_BOOK,
+      id: `book-${index + 1}`,
+      title: `Story ${index + 1}`,
+    }));
+    const laterBook = { ...MOCK_BOOK, id: 'book-21', title: 'Story 21' };
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk({ items: firstPage, page: 1, limit: 20, total: 21 }))
+      .mockResolvedValueOnce(mockOk({ items: [laterBook], page: 2, limit: 20, total: 21 }))
+      .mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+
+    const user = userEvent.setup();
+    render(<DashboardPage />);
+    await screen.findByText('Story 20');
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText('Story 21');
+
+    const pageTwoCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([url]) => String(url).includes('/books?page=2&limit=20'));
+    expect(pageTwoCall).toBeDefined();
+
+    const card = screen.getByText('Story 21').closest('li');
+    expect(card).not.toBeNull();
+    await user.click(card!.querySelector('button')!);
+    await waitFor(() => expect(screen.queryByText('Story 21')).toBeNull());
+  });
+
   it('renders an error banner when the API fails', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockError(500, 'Server down'));
     render(<DashboardPage />);

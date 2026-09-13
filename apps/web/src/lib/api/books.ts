@@ -27,10 +27,11 @@ export function bookPdfPreviewUrl(bookId: string): string {
 }
 
 export const booksApi = {
-  list: (page = 1, limit = 20): Promise<BooksPageDto> =>
-    apiFetch(`/books?page=${page}&limit=${limit}`),
+  list: (page = 1, limit = 20, signal?: AbortSignal): Promise<BooksPageDto> =>
+    apiFetch(`/books?page=${page}&limit=${limit}`, signal ? { signal } : undefined),
 
-  get: (id: string): Promise<BookDto> => apiFetch(`/books/${id}`),
+  get: (id: string, signal?: AbortSignal): Promise<BookDto> =>
+    apiFetch(`/books/${id}`, signal ? { signal } : undefined),
 
   create: (data: CreateBookInput): Promise<BookDto> =>
     apiFetch('/books', { method: 'POST', body: JSON.stringify(data) }),
@@ -74,8 +75,12 @@ export const booksApi = {
       method: 'POST',
     }),
 
-  getPageImageRevision: (id: string, revisionId: string): Promise<PageImageRevisionDto> =>
-    apiFetch(`/books/${id}/page-image-revisions/${revisionId}`),
+  getPageImageRevision: (
+    id: string,
+    revisionId: string,
+    signal?: AbortSignal,
+  ): Promise<PageImageRevisionDto> =>
+    apiFetch(`/books/${id}/page-image-revisions/${revisionId}`, signal ? { signal } : undefined),
 
   generate: (id: string): Promise<GenerateBookResponse> =>
     apiFetch(`/books/${id}/generate`, { method: 'POST' }),
@@ -104,11 +109,11 @@ export const booksApi = {
       body: JSON.stringify({ confirmation: id }),
     }),
 
-  getGenerationDiagnostics: (id: string): Promise<GenerationDiagnosticsDto> =>
-    apiFetch(`/books/${id}/generation-diagnostics`),
+  getGenerationDiagnostics: (id: string, signal?: AbortSignal): Promise<GenerationDiagnosticsDto> =>
+    apiFetch(`/books/${id}/generation-diagnostics`, signal ? { signal } : undefined),
 
-  getGenerationProgress: (id: string): Promise<GenerationProgressDto> =>
-    apiFetch(`/books/${id}/generation-progress`),
+  getGenerationProgress: (id: string, signal?: AbortSignal): Promise<GenerationProgressDto> =>
+    apiFetch(`/books/${id}/generation-progress`, signal ? { signal } : undefined),
 
   downloadPdf: (id: string, edition?: string): Promise<Blob> =>
     apiFetchBlob(
@@ -119,8 +124,10 @@ export const booksApi = {
     id: string,
     imageId: PublishedBookImageId,
     edition?: string,
+    signal?: AbortSignal,
   ): Promise<Blob> =>
     apiFetchBlob(
       `/books/${id}/images/${imageId}${edition ? `?edition=${encodeURIComponent(edition)}` : ''}`,
+      signal ? { signal } : undefined,
     ),
 };

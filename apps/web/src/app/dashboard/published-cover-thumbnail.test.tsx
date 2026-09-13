@@ -30,7 +30,12 @@ describe('PublishedCoverThumbnail', () => {
       'src',
       'blob:cover',
     );
-    expect(booksApi.downloadPublishedImage).toHaveBeenCalledWith('book-1', 'cover', 'edition-1');
+    expect(booksApi.downloadPublishedImage).toHaveBeenCalledWith(
+      'book-1',
+      'cover',
+      'edition-1',
+      expect.any(AbortSignal),
+    );
   });
 
   it('revokes the Blob URL when the card unmounts', async () => {
