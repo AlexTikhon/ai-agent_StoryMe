@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import type { Env } from '../config/env.schema';
+import { redisControlOptions } from './redis-options';
 
 export const REDIS_CLIENT_TOKEN = 'REDIS_CLIENT';
 
@@ -21,10 +22,7 @@ export const REDIS_CLIENT_TOKEN = 'REDIS_CLIENT';
       provide: REDIS_CLIENT_TOKEN,
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>): Redis =>
-        new Redis(config.get('REDIS_URL', { infer: true }), {
-          maxRetriesPerRequest: null,
-          enableReadyCheck: false,
-        }),
+        new Redis(config.get('REDIS_URL', { infer: true }), redisControlOptions()),
     },
   ],
   exports: [REDIS_CLIENT_TOKEN],

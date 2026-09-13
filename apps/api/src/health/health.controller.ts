@@ -9,6 +9,7 @@ import {
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../cache/redis.service';
+import { operationalMetrics } from '../observability/operational-metrics';
 
 @Injectable()
 export class DbHealthIndicator extends HealthIndicator {
@@ -40,6 +41,7 @@ export class RedisHealthIndicator extends HealthIndicator {
       const isHealthy = result === 'PONG';
       return this.getStatus(key, isHealthy);
     } catch (error) {
+      operationalMetrics.increment('storyme_redis_failures_total', { surface: 'health' });
       return this.getStatus(key, false, {
         message: error instanceof Error ? error.message : 'unknown',
       });
@@ -59,8 +61,35 @@ export class HealthController {
   @HealthCheck()
   check(): Promise<HealthCheckResult> {
     return this.health.check([
-      () => this.dbHealth.isHealthy('db'),
-      () => this.redisHealth.isHealthy('redis'),
+      () => bounded(this.dbHealth.isHealthy('db')),
+      () => bounded(this.redisHealth.isHealthy('redis')),
     ]);
   }
+
+  @Get('ready')
+  @HealthCheck()
+  ready(): Promise<HealthCheckResult> {
+    return this.check();
+  }
+
+  @Get('live')
+  live(): { status: 'ok' } {
+    return { status: 'ok' };
+  }
+}
+
+function bounded<T>(promise: Promise<T>, timeoutMs = 2_500): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('health dependency timed out')), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }

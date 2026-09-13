@@ -20,6 +20,7 @@ export const EXECUTION_POLICY_KEYS = [
   'OPENAI_STORY_ESTIMATED_COST_USD',
   'OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD',
   'OPENAI_IMAGE_ESTIMATED_COST_USD',
+  'OPENAI_PRICING_ASSUMPTIONS_VERSION',
   'OPENAI_MAX_RETRIES',
   'OPENAI_IMAGE_TIMEOUT_MAX_RETRIES',
   'OPENAI_IMAGE_MAX_RETRIES',
@@ -59,6 +60,7 @@ export function executionPolicy(
       storyCostUsd: number('OPENAI_STORY_ESTIMATED_COST_USD'),
       characterProfileCostUsd: number('OPENAI_CHARACTER_PROFILE_ESTIMATED_COST_USD'),
       imageCostUsd: number('OPENAI_IMAGE_ESTIMATED_COST_USD'),
+      pricingAssumptionsVersion: env['OPENAI_PRICING_ASSUMPTIONS_VERSION'],
     },
     transport: {
       textRetries: number('OPENAI_MAX_RETRIES', 2)!,
@@ -141,19 +143,38 @@ export function assertAuthorizedOperations(
     const categoryOperations = operations.filter(
       (op) => op.provider === 'openai' && groups[key].includes(String(op.operation)),
     );
-    const logicalIdentities = new Set(
-      categoryOperations.map((op, index) =>
-        typeof op.operationId === 'string'
+    const byOperation = new Map<string, number>();
+    for (const op of categoryOperations) {
+      const identity =
+        typeof op.operationId === 'string' && op.operationId.length > 0
           ? op.operationId
-          : `legacy:${String(op.operation)}:${String(op.assetLabel ?? '')}:${index}`,
-      ),
-    );
-    if (logicalIdentities.size > logical[key]) {
+          : `legacy:${String(op.operation)}:${String(op.assetLabel ?? 'singleton')}`;
+      byOperation.set(identity, (byOperation.get(identity) ?? 0) + countAuthorizedDispatches(op));
+    }
+    if (byOperation.size > logical[key]) {
       throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
     }
-    const attempts = categoryOperations.reduce((sum, op) => sum + countAuthorizedDispatches(op), 0);
+    for (const attempts of byOperation.values()) {
+      if (attempts > perOperation[key]) {
+        throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
+      }
+    }
+    const attempts = [...byOperation.values()].reduce((sum, count) => sum + count, 0);
     if (attempts > logical[key] * perOperation[key])
       throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
+  }
+
+  const repairIdentities = new Set(
+    operations
+      .filter((op) => op.provider === 'openai' && op.operation === 'story_repair')
+      .map((op) =>
+        typeof op.operationId === 'string' && op.operationId.length > 0
+          ? op.operationId
+          : `legacy:story_repair:${String(op.assetLabel ?? 'singleton')}`,
+      ),
+  );
+  if (repairIdentities.size > (authorization.envelope?.repairAllowance ?? 0)) {
+    throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
   }
   const totalDispatches = operations
     .filter((op) => op.provider === 'openai')
@@ -163,6 +184,23 @@ export function assertAuthorizedOperations(
     (authorization.envelope?.maxDispatches ?? authorization.estimate.maximumProviderCalls)
   )
     throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
+
+  const exposureLimit = authorization.envelope?.maxEstimatedExposureUsd;
+  if (exposureLimit !== undefined) {
+    let exposure = 0;
+    for (const operation of operations.filter((op) => op.provider === 'openai')) {
+      const dispatches = countAuthorizedDispatches(operation);
+      if (dispatches === 0) continue;
+      const estimate = Number(operation.estimatedCostUsd);
+      if (!Number.isFinite(estimate) || estimate < 0) {
+        throw new GenerationControlError('budget_rejection', 'GENERATION_COST_EXPOSURE_UNKNOWN');
+      }
+      exposure += estimate * dispatches;
+    }
+    if (exposure > exposureLimit) {
+      throw new GenerationControlError('budget_rejection', 'GENERATION_HARD_BUDGET_EXCEEDED');
+    }
+  }
 }
 
 /** Explicit reserved_unsent is the only durable proof that no dispatch happened. */

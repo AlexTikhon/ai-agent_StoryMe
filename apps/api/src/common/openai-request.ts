@@ -158,7 +158,20 @@ export function safeOpenAIRequestFailureMessage(err: unknown): string {
 
 export interface FetchWithRetryOptions<T = never> {
   beforeDispatch?: (() => Promise<void>) | undefined;
+  /**
+   * Runs after the complete attempt, including response-body consumption,
+   * but before any retry backoff. Quota dispatchers use this to release a
+   * concurrency permit without releasing it as soon as headers arrive.
+   */
+  afterAttempt?: (() => Promise<void>) | undefined;
   fetchImpl: typeof fetch;
+  /**
+   * Optional dispatcher that performs pre-dispatch quota waiting. It must call
+   * onDispatch immediately before the actual network request; only then does
+   * the per-attempt timeout start. The timeout remains armed through response
+   * body consumption.
+   */
+  dispatchAttempt?: (url: string, init: RequestInit, onDispatch: () => void) => Promise<Response>;
   url: string;
   init: RequestInit;
   timeoutMs: number;
@@ -247,10 +260,14 @@ export async function fetchWithRetry<T>(
     throwIfAborted(signal);
     const controller = new AbortController();
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const armTimeout = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+    };
     let externallyAborted = false;
     const onExternalAbort = () => {
       externallyAborted = true;
@@ -266,7 +283,19 @@ export async function fetchWithRetry<T>(
     try {
       // Count only actual dispatches, immediately before fetch.
       onAttempt?.(attempt, maxAttemptsForDisplay);
-      response = await fetchImpl(url, { ...init, signal: controller.signal });
+      if (options.dispatchAttempt) {
+        response = await options.dispatchAttempt(
+          url,
+          { ...init, signal: controller.signal },
+          armTimeout,
+        );
+        // Defensive fallback for a custom dispatcher that returned without
+        // announcing dispatch; body consumption must still remain bounded.
+        armTimeout();
+      } else {
+        armTimeout();
+        response = await fetchImpl(url, { ...init, signal: controller.signal });
+      }
       if (
         !response.ok &&
         retryableStatusCodes.has(response.status) &&
@@ -318,8 +347,9 @@ export async function fetchWithRetry<T>(
         throw new OpenAIRequestError(message, reason, err);
       }
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onExternalAbort);
+      if (options.afterAttempt) await options.afterAttempt();
     }
 
     if (retryReason) {

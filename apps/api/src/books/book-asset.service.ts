@@ -24,6 +24,7 @@ import {
 import { toBookDto, publishedEdition } from './books.mapper';
 import { BookCrudService, EDITABLE_BOOK_STATUSES } from './book-crud.service';
 import { publishedImageKey } from './published-page-image-key';
+import { operationalMetrics } from '../observability/operational-metrics';
 
 export interface PublishedImageResult {
   buffer: Buffer;
@@ -43,6 +44,11 @@ const IMAGE_FILE_EXTENSIONS: Record<ImageAssetContentType, string> = {
   'image/svg+xml': 'svg',
   'image/webp': 'webp',
 };
+
+function publishedEditionChanged(asset: 'pdf' | 'image'): never {
+  operationalMetrics.increment('storyme_publication_conflicts_total', { asset });
+  throw new ConflictException('PUBLISHED_EDITION_CHANGED');
+}
 
 export function parsePublishedImageId(imageId: string): ParsedPublishedImageId {
   if (imageId === 'cover') return { id: imageId, kind: 'cover' };
@@ -137,8 +143,7 @@ export class BookAssetService {
     edition?: string,
   ): Promise<{ buffer: Buffer; contentType: 'application/pdf'; filename: string }> {
     const book = await this.crud.findOwnedOrThrow(bookId, userId);
-    if (edition && edition !== publishedEdition(book))
-      throw new ConflictException('PUBLISHED_EDITION_CHANGED');
+    if (edition && edition !== publishedEdition(book)) publishedEditionChanged('pdf');
     const namespace = resolvePublishedPdfNamespace(book);
     if (namespace.kind === 'not_ready') {
       throw new ConflictException('PDF not ready — book generation is not complete');
@@ -156,8 +161,7 @@ export class BookAssetService {
   ): Promise<PublishedImageResult> {
     const image = parsePublishedImageId(rawImageId);
     const book = await this.crud.findOwnedOrThrow(bookId, userId);
-    if (edition && edition !== publishedEdition(book))
-      throw new ConflictException('PUBLISHED_EDITION_CHANGED');
+    if (edition && edition !== publishedEdition(book)) publishedEditionChanged('image');
     const namespace = resolvePublishedImageNamespace(book);
     if (namespace.kind === 'not_ready') {
       throw new ConflictException('Images not ready â€” book generation is not complete');
@@ -183,7 +187,7 @@ export class BookAssetService {
     if (!buffer) throw new NotFoundException('Published image not found in storage');
 
     if (edition && edition !== publishedEdition(await this.crud.findOwnedOrThrow(bookId, userId)))
-      throw new ConflictException('PUBLISHED_EDITION_CHANGED');
+      publishedEditionChanged('image');
     const contentType = detectImageContentType(buffer);
     if (!contentType) {
       throw new InternalServerErrorException('Published image has an unsupported stored format');

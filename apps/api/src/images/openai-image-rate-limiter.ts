@@ -118,6 +118,15 @@ export interface OpenAIImageRateLimiterOptions extends Partial<OpenAIImageRateLi
   quotaScope?: string;
 }
 
+interface OpenAIImageRateLimiterScheduleOptions extends ProviderExecutionOptions {
+  /**
+   * Transfers ownership of the final attempt's permit to the caller. The
+   * caller must release it after consuming/cancelling the response body.
+   * Intermediate 429 attempts and thrown dispatches are released here.
+   */
+  deferFinalRelease?: ((release: () => Promise<void>) => void) | undefined;
+}
+
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return cancellableSleep(ms, signal);
 }
@@ -224,7 +233,7 @@ export class OpenAIImageRateLimiter {
   schedule<T extends Pick<Response, 'status'> & { headers?: Headers | undefined }>(
     label: string,
     dispatch: () => Promise<T>,
-    options: ProviderExecutionOptions = {},
+    options: OpenAIImageRateLimiterScheduleOptions = {},
   ): Promise<T> {
     this.diagnostics.requestsQueued++;
     const callMetrics: MutableCallMetrics = {
@@ -234,7 +243,7 @@ export class OpenAIImageRateLimiter {
       retryAfterHonoredCount: 0,
     };
     const run = this.queueTail.then(() =>
-      this.runSlot(label, dispatch, callMetrics, options.signal),
+      this.runSlot(label, dispatch, callMetrics, options.signal, options.deferFinalRelease),
     );
     // Keep the chain alive regardless of this request's outcome so a failure
     // never wedges every subsequent queued request.
@@ -252,6 +261,7 @@ export class OpenAIImageRateLimiter {
     dispatch: () => Promise<T>,
     metrics: MutableCallMetrics,
     signal?: AbortSignal,
+    deferFinalRelease?: (release: () => Promise<void>) => void,
   ): Promise<T> {
     throwIfAborted(signal);
     const maxAttempts = this.maxRetries + 1;
@@ -259,21 +269,32 @@ export class OpenAIImageRateLimiter {
       throwIfAborted(signal);
       const release = await this.waitForSpacing(label, metrics, signal);
       let response: T;
+      let releaseHere = true;
       try {
         throwIfAborted(signal);
         response = await dispatch();
-      } finally {
-        await release();
-      }
-      if (response.status !== 429) return response;
+        if (response.status !== 429) {
+          if (deferFinalRelease) {
+            deferFinalRelease(release);
+            releaseHere = false;
+          }
+          return response;
+        }
 
-      this.diagnostics.rateLimitHits++;
-      metrics.rateLimitHits++;
-      if (attempt === maxAttempts) {
-        this.logger.warn(
-          `${label}: exhausted ${this.maxRetries} rate-limit retries; still receiving HTTP 429`,
-        );
-        return response;
+        this.diagnostics.rateLimitHits++;
+        metrics.rateLimitHits++;
+        if (attempt === maxAttempts) {
+          this.logger.warn(
+            `${label}: exhausted ${this.maxRetries} rate-limit retries; still receiving HTTP 429`,
+          );
+          if (deferFinalRelease) {
+            deferFinalRelease(release);
+            releaseHere = false;
+          }
+          return response;
+        }
+      } finally {
+        if (releaseHere) await release();
       }
 
       this.diagnostics.retriesUsed++;

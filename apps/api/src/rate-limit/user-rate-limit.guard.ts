@@ -10,6 +10,7 @@ import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import type { Env } from '../config/env.schema';
+import { operationalMetrics } from '../observability/operational-metrics';
 import type { RequestWithUser } from '../auth/request-with-user';
 import { RATE_LIMITER_TOKEN, type RateLimiter } from './rate-limiter.interface';
 import { RATE_LIMIT_KEY, type RateLimitOptions } from './rate-limit.decorator';
@@ -54,7 +55,16 @@ export class UserRateLimitGuard implements CanActivate {
     }
 
     const scope = `${context.getClass().name}.${context.getHandler().name}`;
-    const result = await this.rateLimiter.consume(`${scope}:user:${userId}`, windowMs, maxAttempts);
+    let result;
+    try {
+      result = await this.rateLimiter.consume(`${scope}:user:${userId}`, windowMs, maxAttempts);
+    } catch {
+      operationalMetrics.increment('storyme_redis_failures_total', { surface: 'user_rate_limit' });
+      throw new HttpException(
+        { error: 'Request permission temporarily unavailable', code: 'RATE_LIMIT_UNAVAILABLE' },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
 
     if (!result.allowed) {
       response.setHeader('Retry-After', Math.ceil(result.retryAfterMs / 1000).toString());

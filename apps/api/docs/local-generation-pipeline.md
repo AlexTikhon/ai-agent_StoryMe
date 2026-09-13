@@ -609,6 +609,13 @@ Provider prices are deliberately not hardcoded. Operators may configure
 only when every paid call in that run has a configured estimate. These are
 operational estimates, not billing ledger entries.
 
+These values are conservative operator-maintained exposure estimates, not an
+exact provider bill. Set `OPENAI_PRICING_ASSUMPTIONS_VERSION` to the dated
+vendor pricing page or internal pricing-table revision used to derive
+`OPENAI_*_ESTIMATED_COST_USD`; the version is snapshotted into the immutable
+execution authorization. Actual token/image usage, unknown remote outcomes,
+and estimates remain distinct fields in durable telemetry.
+
 Story-provider output also passes deterministic cross-artifact validation
 before any illustration call: story and preview pages must be contiguous and
 match the requested count; the image plan must contain one cover, one image

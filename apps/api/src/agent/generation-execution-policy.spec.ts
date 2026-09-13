@@ -113,4 +113,64 @@ describe('worker budget authorization', () => {
       ]),
     ).not.toThrow();
   });
+
+  it('rejects five attempts for one story operation plus one repair even when the category aggregate fits', () => {
+    const policy = executionPolicy(providers, {
+      OPENAI_MAX_RETRIES: '2',
+      STORY_REPAIR_ENABLED: 'true',
+      REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN: '10',
+    });
+    const estimate = buildGenerationEstimate({ ...policy, kind: 'initial', pageCount: 4 });
+    const authorization = buildExecutionAuthorization(policy, estimate);
+    expect(() =>
+      assertAuthorizedOperations(authorization, [
+        {
+          provider: 'openai',
+          operation: 'story',
+          operationId: 'story:one',
+          httpAttempts: 5,
+        },
+        {
+          provider: 'openai',
+          operation: 'story_repair',
+          operationId: 'repair:one',
+          httpAttempts: 1,
+        },
+      ]),
+    ).toThrow('BUDGET');
+  });
+
+  it('aggregates repeated deliveries of one stable operation independently', () => {
+    const policy = executionPolicy(providers, {
+      OPENAI_MAX_RETRIES: '2',
+      REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN: '10',
+    });
+    const authorization = buildExecutionAuthorization(
+      policy,
+      buildGenerationEstimate({ ...policy, kind: 'initial', pageCount: 4 }),
+    );
+    expect(() =>
+      assertAuthorizedOperations(authorization, [
+        { provider: 'openai', operation: 'story', operationId: 'same', httpAttempts: 2 },
+        { provider: 'openai', operation: 'story', operationId: 'same', httpAttempts: 2 },
+      ]),
+    ).toThrow('BUDGET');
+  });
+
+  it('does not count known-unsent reservations as dispatch exposure but counts unknown outcomes', () => {
+    const policy = executionPolicy(providers, {
+      OPENAI_MAX_RETRIES: '0',
+      REAL_GENERATION_MAX_PROVIDER_CALLS_PER_RUN: '1',
+    });
+    const authorization = buildExecutionAuthorization(
+      policy,
+      buildGenerationEstimate({ ...policy, kind: 'initial', pageCount: 4 }),
+    );
+    expect(() =>
+      assertAuthorizedOperations(authorization, [
+        { provider: 'openai', operation: 'story', operationId: 'same', state: 'reserved_unsent' },
+        { provider: 'openai', operation: 'story', operationId: 'same', state: 'unknown' },
+      ]),
+    ).not.toThrow();
+  });
 });

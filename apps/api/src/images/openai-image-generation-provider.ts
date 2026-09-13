@@ -36,7 +36,7 @@ import {
 } from './openai-image-rate-limiter';
 import { PROMPT_VERSIONS } from '../agent/prompt-versions';
 
-const DEFAULT_MODEL = 'gpt-image-1';
+export const DEFAULT_OPENAI_IMAGE_MODEL = 'gpt-image-1';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_SIZE = '1024x1024';
 const DEFAULT_MAX_PAGES = 12;
@@ -229,7 +229,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       throw new ImageGenerationProviderError('OpenAIImageGenerationProvider requires an apiKey');
     }
     this.apiKey = options.apiKey;
-    this.model = options.model ?? DEFAULT_MODEL;
+    this.model = options.model ?? DEFAULT_OPENAI_IMAGE_MODEL;
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_OPENAI_IMAGE_REQUEST_TIMEOUT_MS;
@@ -382,11 +382,12 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
       rateLimitWaitMs: 0,
       retryAfterHonoredCount: 0,
     };
+    const totalAttempts = () => attempts + (limiterMetrics.retries ?? 0);
     const reportMetrics = () =>
       reportProviderMetrics(options, {
         ...limiterMetrics,
-        httpAttempts: attempts,
-        retries: Math.max(0, attempts - 1),
+        httpAttempts: totalAttempts(),
+        retries: Math.max(0, totalAttempts() - 1),
         timeoutCount,
       });
     const buildDetails = (
@@ -403,7 +404,7 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     ): ImageGenerationFailureDetails => {
       return {
         ...extra,
-        attempts,
+        attempts: totalAttempts(),
         limiterRetries: limiterMetrics.retries ?? 0,
         limiterWaitMs: limiterMetrics.rateLimitWaitMs ?? 0,
         characterReferenceSupplied,
@@ -415,52 +416,73 @@ export class OpenAIImageGenerationProvider implements ImageGenerationProvider {
     // actually leaves the spacing queue — so elapsedMs below never includes
     // limiterWaitMs (see OpenAIImageRateLimiter.schedule/runSlot).
     let requestPhaseStartedAt = 0;
+    let releaseAttemptPermit: (() => Promise<void>) | undefined;
     let response;
     try {
-      response = await this.rateLimiter.schedule(
-        logLabel,
-        () => {
-          requestPhaseStartedAt = Date.now();
-          return fetchWithRetry({
-            fetchImpl: this.fetchImpl,
-            url,
-            init,
-            timeoutMs: this.timeoutMs,
-            maxRetries: this.maxRetries,
-            timeoutMaxRetries: this.timeoutMaxRetries,
-            retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
-            signal: options.signal,
-            beforeDispatch: options.beforeDispatch,
-            onAttempt: (attempt, maxAttempts) => {
-              attempts++;
-              this.logger.log(
-                `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
-              );
+      response = await fetchWithRetry({
+        // Every transport attempt, including 5xx/network/timeout retries made
+        // inside fetchWithRetry, passes through the shared cross-process gate.
+        fetchImpl: this.fetchImpl,
+        dispatchAttempt: (requestUrl, requestInit, onDispatch) =>
+          this.rateLimiter.schedule(
+            logLabel,
+            () => {
+              onDispatch();
+              requestPhaseStartedAt = Date.now();
+              return this.fetchImpl(requestUrl, requestInit);
             },
-            onRetry: (attempt, reason) => {
-              if (reason === 'timeout') timeoutCount++;
-              this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
+            {
+              ...(options.signal && { signal: options.signal }),
+              deferFinalRelease: (release) => {
+                releaseAttemptPermit = release;
+              },
+              onMetrics: (metrics) => {
+                limiterMetrics = {
+                  ...limiterMetrics,
+                  rateLimitHits: (limiterMetrics.rateLimitHits ?? 0) + (metrics.rateLimitHits ?? 0),
+                  retries: (limiterMetrics.retries ?? 0) + (metrics.retries ?? 0),
+                  rateLimitWaitMs:
+                    (limiterMetrics.rateLimitWaitMs ?? 0) + (metrics.rateLimitWaitMs ?? 0),
+                  retryAfterHonoredCount:
+                    (limiterMetrics.retryAfterHonoredCount ?? 0) +
+                    (metrics.retryAfterHonoredCount ?? 0),
+                };
+              },
             },
-            consumeResponse: async (attemptResponse, attemptSignal) => {
-              if (attemptResponse.ok) {
-                return { payload: await attemptResponse.json() };
-              }
-              try {
-                return { bodyText: await attemptResponse.text() };
-              } catch (err) {
-                if (attemptSignal.aborted) throw err;
-                return { bodyText: '' };
-              }
-            },
-          });
+          ),
+        afterAttempt: async () => {
+          const release = releaseAttemptPermit;
+          releaseAttemptPermit = undefined;
+          if (release) await release();
         },
-        {
-          ...(options.signal && { signal: options.signal }),
-          onMetrics: (metrics) => {
-            limiterMetrics = { ...limiterMetrics, ...metrics };
-          },
+        url,
+        init,
+        timeoutMs: this.timeoutMs,
+        maxRetries: this.maxRetries,
+        timeoutMaxRetries: this.timeoutMaxRetries,
+        retryableStatusCodes: IMAGE_RETRYABLE_STATUS_CODES,
+        signal: options.signal,
+        beforeDispatch: options.beforeDispatch,
+        onAttempt: (attempt, maxAttempts) => {
+          attempts++;
+          this.logger.log(
+            `${logLabel} request: provider=openai model=${this.model} attempt=${attempt}/${maxAttempts}`,
+          );
         },
-      );
+        onRetry: (attempt, reason) => {
+          if (reason === 'timeout') timeoutCount++;
+          this.logger.warn(`${logLabel} attempt ${attempt} failed (${reason}); retrying`);
+        },
+        consumeResponse: async (attemptResponse, attemptSignal) => {
+          if (attemptResponse.ok) return { payload: await attemptResponse.json() };
+          try {
+            return { bodyText: await attemptResponse.text() };
+          } catch (err) {
+            if (attemptSignal.aborted) throw err;
+            return { bodyText: '' };
+          }
+        },
+      });
     } catch (err) {
       if (err instanceof OpenAIRequestError && err.reason === 'timeout') timeoutCount++;
       reportMetrics();

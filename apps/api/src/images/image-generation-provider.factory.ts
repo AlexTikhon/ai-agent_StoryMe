@@ -3,7 +3,10 @@ import {
   MockImageGenerationProvider,
   type ImageGenerationProvider,
 } from './image-generation-provider';
-import { OpenAIImageGenerationProvider } from './openai-image-generation-provider';
+import {
+  DEFAULT_OPENAI_IMAGE_MODEL,
+  OpenAIImageGenerationProvider,
+} from './openai-image-generation-provider';
 import { readOpenAIImageTimeoutConfig, readOpenAIRetryConfig } from '../common/openai-request';
 import {
   OpenAIImageRateLimiter,
@@ -52,6 +55,8 @@ export function createImageGenerationProvider(
   }
 
   const model = env['OPENAI_IMAGE_MODEL'];
+  const effectiveModel = model?.trim() || DEFAULT_OPENAI_IMAGE_MODEL;
+  const project = env['OPENAI_PROJECT_ID']?.trim() || 'default-project';
   // Network/5xx retries (maxRetries) still come from the shared
   // OPENAI_MAX_RETRIES config; timeoutMs/timeoutMaxRetries come from their
   // own image-specific env vars (OPENAI_IMAGE_REQUEST_TIMEOUT_MS /
@@ -64,8 +69,13 @@ export function createImageGenerationProvider(
   // sheet, cover, pages, back cover) — see OpenAIImageRateLimiter's class doc.
   const rateLimiter = new OpenAIImageRateLimiter({
     ...rateLimiterConfig,
+    // A permit protects one HTTP dispatch through bounded response-body
+    // consumption. Its lease therefore exceeds the longest single-attempt
+    // timeout; retries acquire their own permits and cannot consume the
+    // preceding lease.
+    concurrencyLeaseMs: Math.max(rateLimiterConfig.concurrencyLeaseMs, timeoutMs + 30_000),
     ...(sharedGate && { sharedGate }),
-    quotaScope: `openai:image:${model ?? 'default'}`,
+    quotaScope: `openai:${project}:image:${effectiveModel}`,
   });
   logger.log(
     `Image generation provider selected: openai model=${model ?? '(default)'} timeoutMs=${timeoutMs} maxRetries=${maxRetries} timeoutMaxRetries=${timeoutMaxRetries} maxPages=${maxPages} ` +
@@ -74,7 +84,7 @@ export function createImageGenerationProvider(
 
   return new OpenAIImageGenerationProvider({
     apiKey,
-    ...(model && { model }),
+    model: effectiveModel,
     timeoutMs,
     maxRetries,
     timeoutMaxRetries,

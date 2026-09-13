@@ -5,8 +5,11 @@ import { REDIS_CLIENT_TOKEN } from '../redis/redis.module';
 import {
   cancellableSleep,
   GenerationControlError,
+  ProviderCancellationError,
   throwIfAborted,
 } from '../common/provider-execution';
+import { REDIS_CONTROL_COMMAND_TIMEOUT_MS } from '../redis/redis-options';
+import { operationalMetrics } from '../observability/operational-metrics';
 
 export interface ProviderQuotaGate {
   acquire(
@@ -68,40 +71,27 @@ export class RedisProviderQuotaGate implements ProviderQuotaGate {
 
     for (;;) {
       throwIfAborted(signal);
-      let raw: unknown;
-      try {
-        raw = await this.redis.eval(
-          ACQUIRE_SCRIPT,
-          2,
-          rateKey,
-          concurrencyKey,
-          String(intervalMs),
-          String(concurrency),
-          String(boundedLeaseMs),
-          token,
-        );
-      } catch (cause) {
-        throw new GenerationControlError(
-          'provider_transient_failure',
-          'Provider quota authorization is temporarily unavailable.',
-          cause,
-        );
-      }
+      const raw = await this.acquireOnce(
+        rateKey,
+        concurrencyKey,
+        intervalMs,
+        concurrency,
+        boundedLeaseMs,
+        token,
+        signal,
+      );
       const values = Array.isArray(raw) ? raw : [];
       const acquired = Number(values[0]);
       const suggestedWaitMs = Number(values[1]);
       if (acquired === 1) {
+        operationalMetrics.observe('storyme_quota_wait_ms', totalWaitMs, { provider: 'openai' });
         let released = false;
         return {
           waitMs: totalWaitMs,
           release: async () => {
             if (released) return;
             released = true;
-            try {
-              await this.redis.eval(RELEASE_SCRIPT, 1, concurrencyKey, token);
-            } catch {
-              // The expiring lease is the crash/release-failure backstop.
-            }
+            await this.releaseBounded(concurrencyKey, token);
           },
         };
       }
@@ -123,5 +113,92 @@ export class RedisProviderQuotaGate implements ProviderQuotaGate {
       await cancellableSleep(waitMs, signal);
       totalWaitMs += waitMs;
     }
+  }
+
+  private acquireOnce(
+    rateKey: string,
+    concurrencyKey: string,
+    intervalMs: number,
+    concurrency: number,
+    leaseMs: number,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    throwIfAborted(signal);
+    const command = this.redis.eval(
+      ACQUIRE_SCRIPT,
+      2,
+      rateKey,
+      concurrencyKey,
+      String(intervalMs),
+      String(concurrency),
+      String(leaseMs),
+      token,
+    );
+
+    return new Promise((resolve, reject) => {
+      let waiting = true;
+      const finish = () => {
+        waiting = false;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const fail = (cause: unknown) => {
+        if (!waiting) return;
+        finish();
+        operationalMetrics.increment('storyme_redis_failures_total', { surface: 'quota' });
+        reject(
+          new GenerationControlError(
+            'provider_transient_failure',
+            'Provider quota authorization is temporarily unavailable.',
+            cause,
+          ),
+        );
+      };
+      const onAbort = () => {
+        if (!waiting) return;
+        finish();
+        reject(new ProviderCancellationError(signal?.reason));
+      };
+      const timer = setTimeout(
+        () => fail(new Error('Redis quota command timed out')),
+        REDIS_CONTROL_COMMAND_TIMEOUT_MS,
+      );
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      command.then(
+        (raw) => {
+          if (!waiting) {
+            // The client stopped waiting, but Redis may still have acquired a
+            // server-side lease. Compensate immediately so no orphan permit
+            // remains until TTL expiry.
+            if (Array.isArray(raw) && Number(raw[0]) === 1) {
+              void this.releaseBounded(concurrencyKey, token);
+            }
+            return;
+          }
+          finish();
+          resolve(raw);
+        },
+        (cause: unknown) => fail(cause),
+      );
+    });
+  }
+
+  private async releaseBounded(concurrencyKey: string, token: string): Promise<void> {
+    const command = this.redis.eval(RELEASE_SCRIPT, 1, concurrencyKey, token);
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, REDIS_CONTROL_COMMAND_TIMEOUT_MS);
+      command.then(
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+      );
+    });
   }
 }

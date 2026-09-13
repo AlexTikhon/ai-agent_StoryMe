@@ -1,4 +1,5 @@
 import { validateImage } from '../images/validated-image';
+import { operationalMetrics } from '../observability/operational-metrics';
 import type { GenerationExecutionService } from './generation-execution.service';
 import type { GenerationExecutionContext } from './generation-execution-context';
 import type { ExecutionPolicy } from './generation-execution-policy';
@@ -294,6 +295,13 @@ export class GenerationProviderTelemetry {
       return result;
     } catch (error) {
       const failureKind = classifyProviderFailure(error);
+      if (failureKind !== 'cancelled') {
+        operationalMetrics.increment('storyme_provider_errors_total', {
+          provider: input.provider,
+          operation: input.operation,
+          failure: failureKind,
+        });
+      }
       const failureReason: GenerationFailureReason = providerFailureReason(failureKind);
       if (reservation !== undefined && this.durable) {
         try {

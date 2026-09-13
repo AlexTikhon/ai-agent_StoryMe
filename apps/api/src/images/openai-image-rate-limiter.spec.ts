@@ -378,6 +378,26 @@ describe('OpenAIImageRateLimiter', () => {
     expect(limiter.getGlobalDiagnostics().totalWaitMs).toBe(7);
   });
 
+  it('can transfer the final permit so the caller holds it through body consumption', async () => {
+    const release = vi.fn().mockResolvedValue(undefined);
+    const acquire = vi.fn().mockResolvedValue({ waitMs: 0, release });
+    const limiter = new OpenAIImageRateLimiter({
+      minIntervalMs: 0,
+      sharedGate: { acquire },
+    });
+    let deferredRelease: (() => Promise<void>) | undefined;
+
+    await limiter.schedule('img', vi.fn().mockResolvedValue(okResponse()), {
+      deferFinalRelease: (ownedRelease) => {
+        deferredRelease = ownedRelease;
+      },
+    });
+
+    expect(release).not.toHaveBeenCalled();
+    await deferredRelease?.();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it('reacquires and releases the shared permit for every 429 retry dispatch', async () => {
     const firstRelease = vi.fn().mockResolvedValue(undefined);
     const secondRelease = vi.fn().mockResolvedValue(undefined);

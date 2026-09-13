@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { Env } from '../config/env.schema';
+import { operationalMetrics } from '../observability/operational-metrics';
 import {
   RATE_LIMITER_TOKEN,
   type RateLimiter,
@@ -55,16 +56,26 @@ export class AuthRateLimitGuard implements CanActivate {
     const ip = request.ip ?? 'unknown';
     const email = this.extractEmail(request.body);
 
-    const results: RateLimitResult[] = [
-      await this.rateLimiter.consume(`${scope}:ip:${ip}`, windowMs, ipMaxAttempts),
-    ];
-    if (email) {
-      results.push(
-        await this.rateLimiter.consume(
-          `${scope}:ip-email:${ip}:${this.hashEmail(email)}`,
-          windowMs,
-          maxAttempts,
-        ),
+    const results: RateLimitResult[] = [];
+    try {
+      results.push(await this.rateLimiter.consume(`${scope}:ip:${ip}`, windowMs, ipMaxAttempts));
+      if (email) {
+        results.push(
+          await this.rateLimiter.consume(
+            `${scope}:ip-email:${ip}:${this.hashEmail(email)}`,
+            windowMs,
+            maxAttempts,
+          ),
+        );
+      }
+    } catch {
+      operationalMetrics.increment('storyme_redis_failures_total', { surface: 'auth_rate_limit' });
+      throw new HttpException(
+        {
+          error: 'Authentication permission temporarily unavailable',
+          code: 'AUTH_GATE_UNAVAILABLE',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
 

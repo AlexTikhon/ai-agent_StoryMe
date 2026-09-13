@@ -17,15 +17,28 @@ describe('shared provider quota (real Redis, two worker processes, fake provider
       arrivals.push(Date.now());
       active++;
       maximumActive = Math.max(maximumActive, active);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      // Flush headers before delaying the body. This catches a concurrency
+      // permit that is incorrectly released as soon as fetch() resolves.
+      response.flushHeaders();
       setTimeout(() => {
         active--;
-        response.writeHead(200).end('ok');
+        response.end(
+          JSON.stringify({
+            data: [
+              {
+                b64_json:
+                  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+              },
+            ],
+          }),
+        );
       }, 100);
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Fake provider did not bind');
-    const providerUrl = `http://127.0.0.1:${address.port}/images`;
+    const providerUrl = `http://127.0.0.1:${address.port}`;
     const runWorker = () =>
       new Promise<number | null>((resolve, reject) => {
         const child = spawn(

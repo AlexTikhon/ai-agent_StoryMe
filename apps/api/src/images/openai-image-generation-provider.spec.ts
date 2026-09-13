@@ -505,6 +505,43 @@ describe('OpenAIImageGenerationProvider', () => {
     expect(scheduleSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('holds the shared concurrency permit until a delayed response body is consumed', async () => {
+    let resolveBody!: (value: { data: Array<{ b64_json: string }> }) => void;
+    const json = vi.fn(
+      () =>
+        new Promise<{ data: Array<{ b64_json: string }> }>((resolve) => {
+          resolveBody = resolve;
+        }),
+    );
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json,
+      text: async () => '',
+    });
+    const release = vi.fn().mockResolvedValue(undefined);
+    const rateLimiter = new OpenAIImageRateLimiter({
+      minIntervalMs: 0,
+      sharedGate: {
+        acquire: vi.fn().mockResolvedValue({ waitMs: 0, release }),
+      },
+    });
+    const provider = new OpenAIImageGenerationProvider({
+      apiKey: 'sk-test',
+      fetchImpl,
+      rateLimiter,
+    });
+
+    const pending = provider.generateImage(makeInput());
+    await vi.waitFor(() => expect(json).toHaveBeenCalledTimes(1));
+    expect(release).not.toHaveBeenCalled();
+
+    resolveBody({ data: [{ b64_json: TINY_PNG_BASE64 }] });
+    await expect(pending).resolves.toMatchObject({ contentType: 'image/png' });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it('retries on HTTP 500 and succeeds on the second attempt', async () => {
     vi.useFakeTimers();
     try {

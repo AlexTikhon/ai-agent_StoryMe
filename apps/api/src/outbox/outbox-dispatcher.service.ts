@@ -3,6 +3,7 @@ import type { OutboxEvent } from '@prisma/client';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { correlationFields, isRequestId } from '../common/correlation/correlation-context';
 import { OutboxService } from './outbox.service';
+import { operationalMetrics } from '../observability/operational-metrics';
 
 export const DEFAULT_OUTBOX_DISPATCH_INTERVAL_MS = 2_000;
 export const DEFAULT_OUTBOX_DISPATCH_BATCH_SIZE = 20;
@@ -75,6 +76,11 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async dispatchOne(event: OutboxEvent): Promise<void> {
+    operationalMetrics.observe(
+      'storyme_outbox_lag_ms',
+      Math.max(0, Date.now() - event.createdAt.getTime()),
+      { aggregate: event.aggregateType },
+    );
     if (
       event.aggregateType !== 'generation_run' &&
       event.aggregateType !== 'page_image_revision' &&
@@ -83,6 +89,7 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Skipping outbox event ${event.id} with unknown aggregateType "${event.aggregateType}".`,
       );
+      operationalMetrics.increment('storyme_unknown_dispatches_total', { reason: 'aggregate' });
       return;
     }
     const payload = event.payload as {
@@ -102,6 +109,7 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(
         `Outbox event ${event.id} has a malformed payload — skipping without dispatching.`,
       );
+      operationalMetrics.increment('storyme_unknown_dispatches_total', { reason: 'payload' });
       return;
     }
     const requestId = isRequestId(payload.requestId) ? payload.requestId : undefined;

@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.schema';
 import { QUEUES } from './queues.config';
+import { redisQueueOptions } from '../redis/redis-options';
 
 const ALL_QUEUES = Object.values(QUEUES).map((name) => ({ name }));
 
@@ -29,14 +30,20 @@ const DEFAULT_JOB_OPTIONS = {
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>) => {
+        const workerProcess = process.env['ENABLE_GENERATION_WORKER'] === 'true';
+        const redis = redisQueueOptions(workerProcess);
         return {
           // BullMQ forwards `url` straight to `new Redis(url, rest)`, so ioredis's own
           // parser handles rediss:// TLS, username, password, and db-in-path — unlike
           // manually picking apart the URL, which silently drops all of those.
           connection: {
             url: config.get('REDIS_URL'),
-            maxRetriesPerRequest: null,
-            enableReadyCheck: false,
+            connectTimeout: redis.connectTimeout,
+            ...('commandTimeout' in redis && { commandTimeout: redis.commandTimeout }),
+            maxRetriesPerRequest: redis.maxRetriesPerRequest,
+            enableReadyCheck: redis.enableReadyCheck,
+            enableOfflineQueue: redis.enableOfflineQueue,
+            retryStrategy: redis.retryStrategy,
           },
           defaultJobOptions: DEFAULT_JOB_OPTIONS,
         };

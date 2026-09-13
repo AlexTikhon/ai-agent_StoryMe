@@ -49,4 +49,82 @@ describe('RedisProviderQuotaGate', () => {
       reason: 'provider_transient_failure',
     });
   });
+
+  it('cancels a pending acquire and releases a permit that Redis grants late', async () => {
+    let resolveAcquire!: (value: unknown) => void;
+    const redis = {
+      eval: vi
+        .fn()
+        .mockImplementationOnce(() => new Promise((resolve) => (resolveAcquire = resolve)))
+        .mockResolvedValue(1),
+    };
+    const controller = new AbortController();
+    const pending = new RedisProviderQuotaGate(redis as never).acquire(
+      'openai:project:image:model',
+      0,
+      5000,
+      1,
+      300000,
+      controller.signal,
+    );
+    controller.abort('cancelled');
+    await expect(pending).rejects.toMatchObject({ name: 'ProviderCancellationError' });
+
+    resolveAcquire([1, 0]);
+    await vi.waitFor(() => expect(redis.eval).toHaveBeenCalledTimes(2));
+  });
+
+  it('times out a delayed Redis acquire and compensates a late reservation', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveAcquire!: (value: unknown) => void;
+      const redis = {
+        eval: vi
+          .fn()
+          .mockImplementationOnce(() => new Promise((resolve) => (resolveAcquire = resolve)))
+          .mockResolvedValue(1),
+      };
+      const pending = new RedisProviderQuotaGate(redis as never).acquire(
+        'openai:project:image:model',
+        0,
+        5000,
+        1,
+        300000,
+      );
+      const assertion = expect(pending).rejects.toMatchObject({
+        reason: 'provider_transient_failure',
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      await assertion;
+      resolveAcquire([1, 0]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(redis.eval).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds release when Redis never answers', async () => {
+    vi.useFakeTimers();
+    try {
+      const redis = {
+        eval: vi
+          .fn()
+          .mockResolvedValueOnce([1, 0])
+          .mockImplementationOnce(() => new Promise(() => undefined)),
+      };
+      const permit = await new RedisProviderQuotaGate(redis as never).acquire(
+        'openai:project:image:model',
+        0,
+        5000,
+        1,
+        300000,
+      );
+      const released = permit.release();
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(released).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
