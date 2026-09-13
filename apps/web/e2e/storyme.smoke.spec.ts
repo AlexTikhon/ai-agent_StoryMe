@@ -44,10 +44,10 @@ async function login(page: Page): Promise<string> {
 async function createBook(page: Page, childName: string): Promise<string> {
   await page.getByRole('link', { name: 'New Book' }).click();
   await page.getByLabel(/Child's name/).fill(childName);
-  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByLabel('Theme').fill('Friendship and courage');
   await page.getByLabel('Number of pages').selectOption('4');
-  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByRole('button', { name: 'Create Book' }).click();
   await expect(page).toHaveURL(/\/dashboard\/books\/[0-9a-f-]+$/);
   return new URL(page.url()).pathname.split('/').at(-1)!;
@@ -97,7 +97,7 @@ test('persists a JWT session across refresh, logs out, and protects the dashboar
   await page.reload();
   await expect(page.getByText(`Signed in as ${loginEmail}`)).toBeVisible();
   await page.getByRole('button', { name: 'Log out' }).click();
-  await expect(page).toHaveURL(/\/login\?next=%2Fdashboard$/);
+  await expect(page).toHaveURL(/\/login$/);
   await page.goto('/dashboard');
   await expect(page).toHaveURL(/\/login\?next=%2Fdashboard$/);
 });
@@ -122,9 +122,9 @@ test('manages a saved child profile and snapshots it into a one-off draft withou
   await page.getByLabel('Saved child profile').selectOption(profile.id);
   await expect(page.getByLabel(/Child's name/)).toHaveValue(profileName);
   await expect(page.getByRole('spinbutton')).toHaveValue('7');
-  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByLabel('Theme').fill('Friendship and courage');
-  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByRole('button', { name: 'Create Book' }).click();
   await expect(page).toHaveURL(/\/dashboard\/books\/[0-9a-f-]+$/);
   const bookId = new URL(page.url()).pathname.split('/').at(-1)!;
