@@ -422,6 +422,7 @@ export class BookGenerationService {
     const authorization = buildExecutionAuthorization(policy, estimate);
     const inputHash = hashInputSnapshot(params.inputSnapshot);
     const requestId = getRequestId();
+    const queueWaitMs = this.config.get('GENERATION_RUN_QUEUE_WAIT_MS', { infer: true });
 
     let created: { book: Book; run: GenerationRun };
     try {
@@ -436,6 +437,7 @@ export class BookGenerationService {
             executionAuthorization: JSON.parse(
               JSON.stringify(authorization),
             ) as Prisma.InputJsonValue,
+            queueExpiresAt: new Date(Date.now() + queueWaitMs),
             ...(params.retryOfRunId && { retryOfRunId: params.retryOfRunId }),
           },
         });

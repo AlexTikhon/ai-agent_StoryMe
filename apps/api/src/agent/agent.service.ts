@@ -3,6 +3,7 @@ import { estimatedPaidCalls } from './generation-estimate';
 import { Injectable, Logger } from '@nestjs/common';
 import { AgentStep, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
+import { extendCorrelation } from '../common/correlation/correlation-context';
 import { PrismaService } from '../database/prisma.service';
 import {
   CharacterReferenceStage,
@@ -41,6 +42,7 @@ export class AgentService {
   async startBookGeneration(ctx: GenerationExecutionContext): Promise<GenerationOutcome> {
     const book = await this.prisma.book.findUniqueOrThrow({ where: { id: ctx.bookId } });
     const traceId = randomUUID();
+    extendCorrelation({ traceId });
     const startedAt = Date.now();
     const prepared = this.preparation.prepare(ctx);
     const resolvedInput = prepared.input;

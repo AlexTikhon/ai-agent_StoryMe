@@ -28,6 +28,8 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     attempt: 1,
     leaseOwner: 'worker-a',
     leaseExpiresAt: new Date('2026-01-01T00:00:00.000Z'),
+    queueExpiresAt: null,
+    processingDeadlineAt: new Date('2026-01-01T00:45:00.000Z'),
     deliveryToken: 'token-a',
     fencingVersion: 2,
     errorCode: null,
@@ -195,9 +197,37 @@ describe('GenerationRunRecoveryService', () => {
     expect(prisma.generationRun.findMany).toHaveBeenCalledWith({
       where: {
         status: 'queued',
-        createdAt: { lt: new Date(now.getTime() - DEFAULT_GENERATION_RUN_QUEUED_STALE_MS) },
+        OR: [
+          { queueExpiresAt: { lt: now } },
+          {
+            queueExpiresAt: null,
+            createdAt: { lt: new Date(now.getTime() - DEFAULT_GENERATION_RUN_QUEUED_STALE_MS) },
+          },
+        ],
       },
     });
+  });
+
+  it('terminally expires an explicit queue deadline even if BullMQ still has the job', async () => {
+    const run = makeGenerationRun({
+      status: 'queued' as GenerationRun['status'],
+      queueExpiresAt: new Date(now.getTime() - 1),
+      processingDeadlineAt: null,
+    });
+    prisma.generationRun.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([run]);
+    generationQueueService.isJobStillPending.mockResolvedValue(true);
+
+    const summary = await service.recover(now);
+
+    expect(generationQueueService.isJobStillPending).not.toHaveBeenCalled();
+    expect(generationRunCoordinator.failAbandoned).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1', fromStatus: 'queued' }),
+      {
+        errorCode: 'GENERATION_QUEUE_WAIT_EXPIRED',
+        errorMessage: 'Generation waited too long for worker capacity. Please retry.',
+      },
+    );
+    expect(summary.recovered).toBe(1);
   });
 
   it('leaves a run alone (no DB write) when BullMQ still reports its job as pending', async () => {

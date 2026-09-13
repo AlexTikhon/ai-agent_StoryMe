@@ -6,6 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { operationalMetrics } from '../observability/operational-metrics';
 import { GenerationRunStatus, type GenerationRun } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { GenerationQueueService } from './generation-queue.service';
@@ -28,6 +29,8 @@ const RECOVERY_LEASE_ID = 'generation_run_recovery';
 
 /** States BullMQ can report where the job is genuinely gone/exhausted, not merely momentarily quiet. */
 const ABANDONED_ERROR_CODE = 'GENERATION_ABANDONED';
+const QUEUE_WAIT_EXPIRED_ERROR_CODE = 'GENERATION_QUEUE_WAIT_EXPIRED';
+const QUEUE_WAIT_EXPIRED_MESSAGE = 'Generation waited too long for worker capacity. Please retry.';
 
 export interface RunRecoverySummary {
   staleFound: number;
@@ -126,7 +129,22 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
   private async runPass(): Promise<void> {
     try {
       const summary = await this.recover();
-      if (summary.lockSkipped) return;
+      if (summary.lockSkipped) {
+        operationalMetrics.increment('storyme_recovery_outcomes_total', {
+          outcome: 'lock_skipped',
+        });
+        return;
+      }
+      for (const [outcome, count] of [
+        ['recovered', summary.recovered],
+        ['pending', summary.stillPendingInBullMq],
+        ['stale_fence', summary.staleFenceLost],
+        ['mirror_mismatch', summary.mirrorMismatch],
+        ['error', summary.errors],
+      ] as const) {
+        for (let index = 0; index < count; index += 1)
+          operationalMetrics.increment('storyme_recovery_outcomes_total', { outcome });
+      }
       this.logger.log(
         `Generation run recovery: found ${summary.staleFound} stale candidate(s), ` +
           `recovered ${summary.recovered}, ${summary.stillPendingInBullMq} still pending in BullMQ (left alone), ` +
@@ -222,7 +240,13 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
           where: { status: GenerationRunStatus.running, leaseExpiresAt: { lt: now } },
         }),
         this.prisma.generationRun.findMany({
-          where: { status: GenerationRunStatus.queued, createdAt: { lt: queuedCutoff } },
+          where: {
+            status: GenerationRunStatus.queued,
+            OR: [
+              { queueExpiresAt: { lt: now } },
+              { queueExpiresAt: null, createdAt: { lt: queuedCutoff } },
+            ],
+          },
         }),
       ]);
       const candidates = [...staleRunning, ...staleQueued];
@@ -246,7 +270,7 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
         }
         processed += 1;
         try {
-          const outcome = await this.recoverOne(run);
+          const outcome = await this.recoverOne(run, now);
           switch (outcome) {
             case 'recovered':
               recovered += 1;
@@ -348,8 +372,15 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
 
   private async recoverOne(
     run: GenerationRun,
+    now: Date,
   ): Promise<'recovered' | 'still_pending_bullmq' | 'stale_fence' | 'mirror_mismatch'> {
-    const stillPending = await this.generationQueueService.isJobStillPending(run.id);
+    const queueWaitExpired =
+      run.status === GenerationRunStatus.queued &&
+      run.queueExpiresAt !== null &&
+      run.queueExpiresAt < now;
+    const stillPending = queueWaitExpired
+      ? false
+      : await this.generationQueueService.isJobStillPending(run.id);
     if (stillPending) {
       this.logger.log(
         `Run ${run.id} (book ${run.bookId}) looks stale by DB lease/age but BullMQ still has its job pending — leaving it alone this pass.`,
@@ -373,7 +404,12 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
         fromStatus: run.status as
           typeof GenerationRunStatus.queued | typeof GenerationRunStatus.running,
       },
-      { errorCode: ABANDONED_ERROR_CODE, errorMessage: GENERATION_INTERRUPTED_MESSAGE },
+      queueWaitExpired
+        ? {
+            errorCode: QUEUE_WAIT_EXPIRED_ERROR_CODE,
+            errorMessage: QUEUE_WAIT_EXPIRED_MESSAGE,
+          }
+        : { errorCode: ABANDONED_ERROR_CODE, errorMessage: GENERATION_INTERRUPTED_MESSAGE },
     );
 
     if (result === 'applied') return 'recovered';

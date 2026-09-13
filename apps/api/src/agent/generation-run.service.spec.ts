@@ -19,6 +19,8 @@ function makeGenerationRun(overrides: Partial<GenerationRun> = {}): GenerationRu
     attempt: 1,
     leaseOwner: null,
     leaseExpiresAt: null,
+    queueExpiresAt: null,
+    processingDeadlineAt: null,
     deliveryToken: null,
     fencingVersion: 0,
     errorCode: null,
@@ -146,6 +148,7 @@ describe('GenerationRunService', () => {
           deliveryToken: 'token-1',
           leaseExpiresAt: new Date('2026-01-01T00:01:00.000Z'),
           startedAt: new Date('2026-01-01T00:00:00.000Z'),
+          processingDeadlineAt: new Date('2026-01-01T00:45:00.000Z'),
           fencingVersion: { increment: 1 },
         },
       });
@@ -153,12 +156,47 @@ describe('GenerationRunService', () => {
     });
 
     it('returns null (never throws) when the run is already terminal — updateMany matches zero rows', async () => {
-      prisma.generationRun.updateMany.mockResolvedValue({ count: 0 });
+      prisma.generationRun.findUnique.mockResolvedValue(
+        makeGenerationRun({ status: 'failed' as GenerationRun['status'] }),
+      );
 
       const result = await service.claim('run-1', 'token-1', 'worker-a', 60_000);
 
       expect(result).toBeNull();
-      expect(prisma.generationRun.findUnique).not.toHaveBeenCalled();
+      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('refuses an expired queued run before it can start provider work', async () => {
+      prisma.generationRun.findUnique.mockResolvedValue(
+        makeGenerationRun({ queueExpiresAt: new Date('2025-12-31T23:59:59.999Z') }),
+      );
+
+      await expect(service.claim('run-1', 'token-1', 'worker-a', 60_000)).resolves.toBeNull();
+      expect(prisma.generationRun.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('preserves the first processing deadline across a redelivery', async () => {
+      const originalDeadline = new Date('2026-01-01T00:20:00.000Z');
+      prisma.generationRun.findUnique.mockResolvedValue(
+        makeGenerationRun({
+          status: 'running' as GenerationRun['status'],
+          startedAt: new Date('2025-12-31T23:55:00.000Z'),
+          processingDeadlineAt: originalDeadline,
+          deliveryToken: 'token-2',
+        }),
+      );
+      prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.claim('run-1', 'token-2', 'worker-b', 60_000);
+
+      expect(prisma.generationRun.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            startedAt: new Date('2025-12-31T23:55:00.000Z'),
+            processingDeadlineAt: originalDeadline,
+          }),
+        }),
+      );
     });
 
     it('succeeds unconditionally (no OR-clause gate) for a run that is still queued/running, regardless of whether the same or a different worker/token held it before — every claim() call represents BullMQ itself asserting it holds the lock right now', async () => {

@@ -5,6 +5,8 @@ import { BookPageImageRevisionService } from '../books/book-page-image-revision.
 import { QUEUES } from '../queue/queues.config';
 import type { PageImageRevisionQueueJobData } from './generation-queue.service';
 import { asGenerationFailure } from '../common/provider-execution';
+import { extendCorrelation, runWithCorrelation } from '../common/correlation/correlation-context';
+import { operationalMetrics } from '../observability/operational-metrics';
 
 /** Dedicated capacity so whole-book generation cannot starve revisions. */
 @Processor(QUEUES.PAGE_IMAGE_REVISION)
@@ -15,10 +17,41 @@ export class PageImageRevisionQueueProcessor extends WorkerHost {
   }
 
   async process(job: Job<PageImageRevisionQueueJobData>, token?: string): Promise<void> {
+    return runWithCorrelation(
+      {
+        ...(job.data.requestId && { requestId: job.data.requestId }),
+        ...(job.id != null && { jobId: String(job.id) }),
+        bookId: job.data.bookId,
+        revisionId: job.data.revisionId,
+        attempt: job.attemptsMade + 1,
+      },
+      async () => {
+        const startedAt = Date.now();
+        operationalMetrics.observe(
+          'storyme_queue_wait_ms',
+          Math.max(0, (job.processedOn ?? startedAt) - job.timestamp),
+          { queue: 'page_revision' },
+        );
+        try {
+          await this.processCorrelated(job, token);
+        } finally {
+          operationalMetrics.observe('storyme_worker_processing_ms', Date.now() - startedAt, {
+            queue: 'page_revision',
+          });
+        }
+      },
+    );
+  }
+
+  private async processCorrelated(
+    job: Job<PageImageRevisionQueueJobData>,
+    token?: string,
+  ): Promise<void> {
     if (!token)
       throw new Error(`Page image revision ${job.data.revisionId} has no delivery token.`);
     const claimed = await this.revisions.claim(job.data.revisionId, token);
     if (!claimed) return;
+    extendCorrelation({ fence: claimed.fencingVersion });
     try {
       await this.revisions.executeClaimed(claimed.id, claimed.fencingVersion);
     } catch (error) {

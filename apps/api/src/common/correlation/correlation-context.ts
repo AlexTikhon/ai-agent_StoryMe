@@ -8,10 +8,14 @@ const SAFE_DURABLE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 
 export interface CorrelationIdentifiers {
   requestId?: string;
+  traceId?: string;
+  jobId?: string;
   bookId?: string;
   runId?: string;
   revisionId?: string;
   deletionRequestId?: string;
+  fence?: number;
+  attempt?: number;
 }
 
 const storage = new AsyncLocalStorage<Readonly<CorrelationIdentifiers>>();
@@ -34,21 +38,48 @@ export function sanitizeCorrelation(
   const requestId = isRequestId(identifiers.requestId)
     ? identifiers.requestId.toLowerCase()
     : undefined;
+  const traceId = safeDurableId(identifiers.traceId);
+  const jobId = safeDurableId(identifiers.jobId);
   const bookId = safeDurableId(identifiers.bookId);
   const runId = safeDurableId(identifiers.runId);
   const revisionId = safeDurableId(identifiers.revisionId);
   const deletionRequestId = safeDurableId(identifiers.deletionRequestId);
+  const fence =
+    Number.isSafeInteger(identifiers.fence) && identifiers.fence! >= 0
+      ? identifiers.fence
+      : undefined;
+  const attempt =
+    Number.isSafeInteger(identifiers.attempt) && identifiers.attempt! > 0
+      ? identifiers.attempt
+      : undefined;
   return {
     ...(requestId && { requestId }),
+    ...(traceId && { traceId }),
+    ...(jobId && { jobId }),
     ...(bookId && { bookId }),
     ...(runId && { runId }),
     ...(revisionId && { revisionId }),
     ...(deletionRequestId && { deletionRequestId }),
+    ...(fence !== undefined && { fence }),
+    ...(attempt !== undefined && { attempt }),
   };
 }
 
 export function runWithCorrelation<T>(identifiers: CorrelationIdentifiers, callback: () => T): T {
   return storage.run(sanitizeCorrelation(identifiers), callback);
+}
+
+/** Adds durable identifiers discovered after an async claim to the current
+ * worker context. Must only be called from inside runWithCorrelation. */
+export function extendCorrelation(identifiers: CorrelationIdentifiers): void {
+  const current = storage.getStore();
+  if (!current) return;
+  storage.enterWith(
+    sanitizeCorrelation({
+      ...current,
+      ...sanitizeCorrelation(identifiers),
+    }),
+  );
 }
 
 export function getCorrelation(): Readonly<CorrelationIdentifiers> {
@@ -76,6 +107,10 @@ export function correlationFields(identifiers: CorrelationIdentifiers = {}): str
     safe.runId && `runId=${safe.runId}`,
     safe.revisionId && `revisionId=${safe.revisionId}`,
     safe.deletionRequestId && `deletionRequestId=${safe.deletionRequestId}`,
+    safe.traceId && `traceId=${safe.traceId}`,
+    safe.jobId && `jobId=${safe.jobId}`,
+    safe.fence !== undefined && `fence=${safe.fence}`,
+    safe.attempt !== undefined && `attempt=${safe.attempt}`,
   ]
     .filter(Boolean)
     .join(' ');

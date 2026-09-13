@@ -5,12 +5,23 @@ import { GenerationControlError } from '../common/provider-execution';
 
 /** Generous default — real (paid) image generation can run for several minutes; a run's lease must comfortably outlive one full pipeline attempt so a slow-but-alive worker is never mistaken for abandoned. */
 export const DEFAULT_GENERATION_RUN_LEASE_MS = 30 * 60 * 1000;
+export const DEFAULT_GENERATION_RUN_PROCESSING_DEADLINE_MS = 45 * 60 * 1000;
 
 /** Reads GENERATION_RUN_LEASE_MS from env, falling back to a safe default when missing or malformed. */
 export function readGenerationRunLeaseMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env['GENERATION_RUN_LEASE_MS'];
   const n = raw ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_GENERATION_RUN_LEASE_MS;
+}
+
+export function readGenerationRunProcessingDeadlineMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env['GENERATION_RUN_DEADLINE_MS'];
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0
+    ? Math.floor(n)
+    : DEFAULT_GENERATION_RUN_PROCESSING_DEADLINE_MS;
 }
 
 /**
@@ -93,6 +104,20 @@ export class GenerationRunService {
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + leaseMs);
     return this.prisma.$transaction(async (tx) => {
+      const candidate = await tx.generationRun.findUnique({ where: { id: runId } });
+      if (
+        !candidate ||
+        (candidate.status !== GenerationRunStatus.queued &&
+          candidate.status !== GenerationRunStatus.running) ||
+        (candidate.status === GenerationRunStatus.queued &&
+          candidate.queueExpiresAt !== null &&
+          candidate.queueExpiresAt <= now)
+      ) {
+        return null;
+      }
+      const processingDeadlineAt =
+        candidate.processingDeadlineAt ??
+        new Date(now.getTime() + readGenerationRunProcessingDeadlineMs());
       const result = await tx.generationRun.updateMany({
         where: {
           id: runId,
@@ -106,7 +131,8 @@ export class GenerationRunService {
           // Overwritten on every (re-)claim, including a redelivery — this
           // loses the true original start time across a retry, a cosmetic
           // inaccuracy only; not worth a conditional-write round trip to avoid.
-          startedAt: now,
+          startedAt: candidate.startedAt ?? now,
+          processingDeadlineAt,
           fencingVersion: { increment: 1 },
         },
       });

@@ -4,7 +4,11 @@ import type { Job } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import { QUEUES } from '../queue/queues.config';
 import { BooksService } from '../books/books.service';
-import { GenerationRunService, readGenerationRunLeaseMs } from './generation-run.service';
+import {
+  GenerationRunService,
+  readGenerationRunLeaseMs,
+  readGenerationRunProcessingDeadlineMs,
+} from './generation-run.service';
 import { InvalidGenerationInputSnapshotError } from './generation-input-snapshot';
 import { GenerationInputSnapshotBackfillService } from './generation-input-snapshot-backfill.service';
 import {
@@ -19,7 +23,11 @@ import type {
   PageImageRevisionQueueJobData,
 } from './generation-queue.service';
 import { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
-import { correlationFields } from '../common/correlation/correlation-context';
+import {
+  correlationFields,
+  extendCorrelation,
+  runWithCorrelation,
+} from '../common/correlation/correlation-context';
 import { BookHardDeletionService } from '../books/book-hard-deletion.service';
 import {
   asGenerationFailure,
@@ -27,6 +35,7 @@ import {
   isGenerationControlError,
   isGenerationFailureError,
 } from '../common/provider-execution';
+import { operationalMetrics } from '../observability/operational-metrics';
 
 /** Safe, public-facing message for a run whose stored input_snapshot is permanently malformed — never the raw Zod issue list. */
 const INVALID_SNAPSHOT_PUBLIC_MESSAGE =
@@ -72,6 +81,37 @@ export class GenerationQueueProcessor extends WorkerHost {
   }
 
   async process(job: Job<BookWorkQueueJobData>, token?: string): Promise<void> {
+    const data = job.data;
+    const kind = data.kind ?? 'book_generation';
+    return runWithCorrelation(
+      {
+        ...(data.requestId && { requestId: data.requestId }),
+        ...(job.id != null && { jobId: String(job.id) }),
+        bookId: data.bookId,
+        attempt: job.attemptsMade + 1,
+        ...(data.kind === 'page_image_revision' && { revisionId: data.revisionId }),
+        ...(data.kind === 'book_deletion' && { deletionRequestId: data.deletionRequestId }),
+        ...(!data.kind || data.kind === 'book_generation' ? { runId: data.runId } : {}),
+      },
+      async () => {
+        const startedAt = Date.now();
+        operationalMetrics.observe(
+          'storyme_queue_wait_ms',
+          Math.max(0, (job.processedOn ?? startedAt) - job.timestamp),
+          { queue: kind },
+        );
+        try {
+          await this.processCorrelated(job, token);
+        } finally {
+          operationalMetrics.observe('storyme_worker_processing_ms', Date.now() - startedAt, {
+            queue: kind,
+          });
+        }
+      },
+    );
+  }
+
+  private async processCorrelated(job: Job<BookWorkQueueJobData>, token?: string): Promise<void> {
     if (job.data.kind === 'book_deletion') {
       return this.processBookDeletion(job as Job<BookDeletionQueueJobData>);
     }
@@ -110,6 +150,7 @@ export class GenerationQueueProcessor extends WorkerHost {
       );
       return;
     }
+    extendCorrelation({ fence: claimed.fencingVersion });
 
     let normalized;
     try {
@@ -152,8 +193,10 @@ export class GenerationQueueProcessor extends WorkerHost {
       250,
       Math.min(Number(process.env['GENERATION_HEARTBEAT_MS']) || 5000, Math.floor(leaseMs / 3)),
     );
-    const deadlineMs = Number(process.env['GENERATION_RUN_DEADLINE_MS']) || 45 * 60_000;
-    const remainingMs = deadlineMs - (Date.now() - claimed.createdAt.getTime());
+    const processingDeadlineAt =
+      claimed.processingDeadlineAt?.getTime() ??
+      claimed.createdAt.getTime() + readGenerationRunProcessingDeadlineMs();
+    const remainingMs = processingDeadlineAt - Date.now();
     const deadline = setTimeout(
       () =>
         abortController.abort(

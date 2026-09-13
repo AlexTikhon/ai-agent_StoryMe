@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   correlationFields,
+  extendCorrelation,
+  getCorrelation,
   getRequestId,
   isRequestId,
   resolveRequestId,
@@ -46,5 +48,20 @@ describe('correlation context', () => {
     expect(fields).toBe('runId=run-1');
     expect(fields).not.toContain('private');
     expect(fields).not.toContain('secret');
+  });
+
+  it('extends a worker context with safe job, trace, fence, and attempt identifiers', async () => {
+    await runWithCorrelation({ requestId: REQUEST_ID, jobId: 'job-1' }, async () => {
+      extendCorrelation({ traceId: 'trace-1', fence: 3, attempt: 2 });
+      await Promise.resolve();
+      expect(getCorrelation()).toMatchObject({
+        requestId: REQUEST_ID,
+        jobId: 'job-1',
+        traceId: 'trace-1',
+        fence: 3,
+        attempt: 2,
+      });
+      expect(correlationFields()).toContain('fence=3 attempt=2');
+    });
   });
 });
