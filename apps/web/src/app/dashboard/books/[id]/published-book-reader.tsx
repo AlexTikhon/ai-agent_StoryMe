@@ -102,7 +102,7 @@ export function PublishedBookReader({
 
   useEffect(() => {
     setCurrentIndex(0);
-  }, [bookId, edition, slides.length]);
+  }, [bookId, slides.length]);
 
   useEffect(() => {
     setEditingText(false);

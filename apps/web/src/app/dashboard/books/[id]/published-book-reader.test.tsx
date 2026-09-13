@@ -260,7 +260,14 @@ describe('PublishedBookReader', () => {
       book: updatedBook,
     });
 
-    render(<PublishedBookReader bookId="book-1" preview={PREVIEW} onBookUpdated={onBookUpdated} />);
+    const view = render(
+      <PublishedBookReader
+        bookId="book-1"
+        edition="edition-1"
+        preview={PREVIEW}
+        onBookUpdated={onBookUpdated}
+      />,
+    );
     await screen.findByAltText('Illustration for cover');
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     await screen.findByAltText('Illustration for page 1');
@@ -285,6 +292,17 @@ describe('PublishedBookReader', () => {
       },
       { timeout: 2000 },
     );
+
+    view.rerender(
+      <PublishedBookReader
+        bookId="book-1"
+        edition="edition-2"
+        preview={updatedBook.bookPreview!}
+        onBookUpdated={onBookUpdated}
+      />,
+    );
+    expect(screen.getByText('The new illustration and PDF are published.')).toBeInTheDocument();
+    await screen.findByAltText('Illustration for page 1');
   });
 
   it('recovers a saved active revision and keeps polling after a transient failure', async () => {
