@@ -3,7 +3,15 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**", "*.tsbuildinfo"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**", "*.tsbuildinfo"],
+      "env": [
+        "PRODUCT_MODE",
+        "NEXT_PUBLIC_PRODUCT_MODE",
+        "NEXT_PUBLIC_API_URL",
+        "NEXT_PUBLIC_AUTH_MODE",
+        "NEXT_PUBLIC_APP_URL",
+        "NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS"
+      ]
     },
     "typecheck": {
       "dependsOn": ["^build"],
@@ -16,7 +24,17 @@
     "test": {
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"],
-      "env": ["DATABASE_URL", "REDIS_URL", "JWT_SECRET", "JWT_REFRESH_SECRET"]
+      "env": [
+        "DATABASE_URL",
+        "REDIS_URL",
+        "JWT_SECRET",
+        "JWT_REFRESH_SECRET",
+        "PRODUCT_MODE",
+        "NEXT_PUBLIC_PRODUCT_MODE",
+        "NEXT_PUBLIC_API_URL",
+        "NEXT_PUBLIC_AUTH_MODE",
+        "NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS"
+      ]
     },
     "dev": {
       "dependsOn": ["^build"],

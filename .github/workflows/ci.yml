@@ -60,3 +60,27 @@ jobs:
       - run: pnpm --filter @book/api test:integration
       - if: always()
         run: pnpm test:infra:down
+  production-browser:
+    name: Production browser smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: production
+      PRODUCT_MODE: home
+      NEXT_PUBLIC_PRODUCT_MODE: home
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:4100/api
+      NEXT_PUBLIC_AUTH_MODE: jwt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @book/types build
+      - run: pnpm --filter @book/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @book/web build
+      - run: pnpm --filter @book/web test:e2e:production
