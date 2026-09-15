@@ -4,3 +4,12 @@ export * from './book.types';
 export * from './child-profile.types';
 export * from './credit.types';
 export * from './user.types';
+
+
+let controler
+
+async getData() {
+	controler?abort();
+
+
+}

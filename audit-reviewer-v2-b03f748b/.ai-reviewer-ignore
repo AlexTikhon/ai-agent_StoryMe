@@ -1,0 +1,8 @@
+# One pattern per line.
+# Supports comments, *, **, ?, trailing / for directories, and ! for re-includes.
+#
+# Examples:
+# dist/
+# coverage/
+# **/*.snap
+# !src/keep-me.ts
