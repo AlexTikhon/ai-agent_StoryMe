@@ -62,6 +62,7 @@ export interface BookDetailContentProps {
   generateInsufficientCredits: boolean;
   onRefresh: () => void;
   refreshing: boolean;
+  refreshError?: string | null;
   progress: GenerationProgressDto | null;
   diagnostics: GenerationDiagnosticsDto | null;
   diagnosticsError: string | null;
@@ -89,6 +90,7 @@ export function BookDetailContent({
   generateInsufficientCredits,
   onRefresh,
   refreshing,
+  refreshError = null,
   progress,
   diagnostics,
   diagnosticsError,
@@ -151,6 +153,11 @@ export function BookDetailContent({
           </button>
         )}
       </div>
+      {refreshError && (
+        <p role="alert" className="mb-4 text-xs text-red-600">
+          Couldn&apos;t refresh status: {refreshError}
+        </p>
+      )}
 
       <dl className="mb-6 divide-y divide-border-subtle text-sm">
         {book.childName != null && (

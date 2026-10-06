@@ -15,6 +15,7 @@ import {
   type ImageAssetStorage,
 } from '../images/image-asset-storage';
 import { ChildPhotoProcessor } from '../images/child-photo-processor';
+import { coverThumbnailKey, renderCoverThumbnail } from '../images/cover-thumbnail';
 import { PrismaService } from '../database/prisma.service';
 import { getPublishedPreviewPdf, PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import {
@@ -36,6 +37,8 @@ interface ParsedPublishedImageId {
   id: PublishedBookImageId;
   kind: 'cover' | 'page' | 'back_cover';
   pageNumber?: number;
+  /** Serve the small cover derivative instead of the full illustration. */
+  thumbnail?: boolean;
 }
 
 const IMAGE_FILE_EXTENSIONS: Record<ImageAssetContentType, string> = {
@@ -52,6 +55,7 @@ function publishedEditionChanged(asset: 'pdf' | 'image'): never {
 
 export function parsePublishedImageId(imageId: string): ParsedPublishedImageId {
   if (imageId === 'cover') return { id: imageId, kind: 'cover' };
+  if (imageId === 'cover-thumb') return { id: imageId, kind: 'cover', thumbnail: true };
   if (imageId === 'back-cover') return { id: imageId, kind: 'back_cover' };
 
   const pageMatch = /^page-([1-9]\d*)$/.exec(imageId);
@@ -183,7 +187,9 @@ export class BookAssetService {
         ? new Map([[image.pageNumber!, pageOverride.imageR2Key]])
         : new Map(),
     );
-    const buffer = await this.imageStorage.getImageAsset(key);
+    const buffer = image.thumbnail
+      ? await this.getOrCreateCoverThumbnail(key)
+      : await this.imageStorage.getImageAsset(key);
     if (!buffer) throw new NotFoundException('Published image not found in storage');
 
     if (edition && edition !== publishedEdition(await this.crud.findOwnedOrThrow(bookId, userId)))
@@ -197,5 +203,32 @@ export class BookAssetService {
       contentType,
       filename: `${image.id}.${IMAGE_FILE_EXTENSIONS[contentType]}`,
     };
+  }
+
+  /**
+   * The cover derivative lives beside its source key. That key is immutable
+   * per publication (it embeds the run claim, or is the legacy slot), so the
+   * derivative is too: a new edition resolves a different source key and
+   * therefore a different derivative. It is a cache, not a source of truth —
+   * if it is missing (first view, or swept as an unreferenced claim artifact)
+   * it is simply rebuilt from the source.
+   */
+  private async getOrCreateCoverThumbnail(coverKey: string): Promise<Buffer | undefined> {
+    const thumbKey = coverThumbnailKey(coverKey);
+    const cached = await this.imageStorage.getImageAsset(thumbKey);
+    if (cached) return cached;
+
+    const original = await this.imageStorage.getImageAsset(coverKey);
+    if (!original) return undefined;
+
+    const derived = await renderCoverThumbnail(original);
+    // Undecodable or vector covers are served as-is rather than failing the card.
+    if (!derived) return original;
+    try {
+      await this.imageStorage.saveImageAsset(thumbKey, derived.buffer, derived.contentType);
+    } catch {
+      // Caching is best-effort; the derivative is still valid for this response.
+    }
+    return derived.buffer;
   }
 }

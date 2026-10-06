@@ -627,7 +627,7 @@ export interface PageImageRevisionDto {
 }
 
 /** Public identifiers accepted by GET /api/books/:id/images/:imageId. */
-export type PublishedBookImageId = 'cover' | 'back-cover' | `page-${number}`;
+export type PublishedBookImageId = 'cover' | 'cover-thumb' | 'back-cover' | `page-${number}`;
 
 export type GenerationProgressStatus =
   'idle' | 'queued' | 'running' | 'complete' | 'failed' | 'cancelled';

@@ -1,9 +1,9 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { UserDto } from '@book/types';
-import { apiFetch, AUTH_EXPIRED_EVENT } from '../api/client';
+import { ApiError, apiFetch, AUTH_EXPIRED_EVENT } from '../api/client';
 import { authApi } from '../api/auth';
 import { getAuthMode, type AuthMode } from './mode';
 import {
@@ -13,7 +13,10 @@ import {
   setAccessTokenForEpoch,
 } from './token-store';
 
-export type AuthStatus = 'loading' | 'authed' | 'anon';
+// 'error' means session restoration failed for a temporary reason (network
+// failure, 429, 5xx) — the session may still be valid, so it must not be
+// treated as anonymous. Only a definitive 401 produces 'anon'.
+export type AuthStatus = 'loading' | 'authed' | 'anon' | 'error';
 
 export interface AuthContextValue {
   user: UserDto | null;
@@ -22,6 +25,8 @@ export interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name?: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Re-attempts session restoration after a temporary failure (status 'error'). */
+  retrySession: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -35,28 +40,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // mode (always succeeds) or no bearer token yet in jwt mode, which 401s and
   // triggers apiFetch's built-in refresh-once-on-401 using the HttpOnly
   // refresh cookie — the same silent-restore flow, with no separate call.
-  useEffect(() => {
-    let cancelled = false;
+  const restoreAttemptRef = useRef(0);
+
+  const restoreSession = useCallback(() => {
     const epoch = getSessionEpoch();
+    const attempt = ++restoreAttemptRef.current;
+    const isCurrent = () => restoreAttemptRef.current === attempt && getSessionEpoch() === epoch;
+    setStatus('loading');
     apiFetch<UserDto>('/auth/me')
       .then((me) => {
-        if (!cancelled && getSessionEpoch() === epoch) {
+        if (isCurrent()) {
           setUser(me);
           setStatus('authed');
         }
       })
-      .catch(() => {
-        if (!cancelled && getSessionEpoch() === epoch) {
-          setUser(null);
-          setStatus(authMode === 'dev' ? 'authed' : 'anon');
+      .catch((error: unknown) => {
+        if (!isCurrent()) return;
+        setUser(null);
+        if (authMode === 'dev') {
+          setStatus('authed');
+        } else if (error instanceof ApiError && error.status === 401) {
+          // Definitive credential rejection: the session really is gone.
+          setStatus('anon');
+        } else {
+          setStatus('error');
         }
       });
+  }, [authMode]);
+
+  useEffect(() => {
+    restoreSession();
+    const attemptRef = restoreAttemptRef;
     return () => {
-      cancelled = true;
+      // Invalidate any in-flight restore on unmount.
+      attemptRef.current += 1;
     };
-    // Intentionally runs once on mount only — authMode is an env-derived
-    // constant for the lifetime of the app, not reactive state.
-  }, []);
+  }, [restoreSession]);
 
   // A later request's silent refresh can also fail (refresh cookie expired or
   // revoked mid-session, after the initial restore already succeeded) — drop
@@ -104,7 +123,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [authMode]);
 
   return (
-    <AuthContext.Provider value={{ user, status, authMode, login, register, logout }}>
+    <AuthContext.Provider
+      value={{ user, status, authMode, login, register, logout, retrySession: restoreSession }}
+    >
       {children}
     </AuthContext.Provider>
   );

@@ -78,7 +78,9 @@ export class BooksModule {
         ProviderExecutionModule,
         GenerationModule,
       ],
-      controllers: [BooksController, BookDeletionController],
+      // BookDeletionController first: its static GET deletion-requests must win over
+      // BooksController's parameterised GET :id.
+      controllers: [BookDeletionController, BooksController],
       providers,
     };
   }

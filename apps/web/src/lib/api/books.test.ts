@@ -259,7 +259,7 @@ describe('booksApi', () => {
     });
   });
 
-  describe('remove()', () => {
+  describe('requestHardDelete()', () => {
     it('requests permanent deletion with the exact book-id confirmation', async () => {
       const deletion = {
         id: '11111111-1111-4111-8111-111111111111',
@@ -274,7 +274,7 @@ describe('booksApi', () => {
       };
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(deletion));
 
-      const result = await booksApi.remove('book-1');
+      const result = await booksApi.requestHardDelete('book-1');
 
       expect(fetch).toHaveBeenCalledOnce();
       const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
@@ -284,6 +284,30 @@ describe('booksApi', () => {
         body: JSON.stringify({ confirmation: 'book-1' }),
       });
       expect(result).toEqual(deletion);
+    });
+  });
+
+  describe('getDeletionStatus() / listPendingDeletions()', () => {
+    it('reads one deletion request by id', async () => {
+      const deletion = { id: 'req-1', bookId: 'book-1', status: 'processing' };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(deletion));
+
+      const result = await booksApi.getDeletionStatus('req-1');
+
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/deletion-requests/req-1');
+      expect(result).toEqual(deletion);
+    });
+
+    it('lists unfinished deletion requests for the caller', async () => {
+      const pending = [{ id: 'req-1', bookId: 'book-1', status: 'retry_pending' }];
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(pending));
+
+      const result = await booksApi.listPendingDeletions();
+
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://localhost:4000/api/books/deletion-requests');
+      expect(result).toEqual(pending);
     });
   });
 

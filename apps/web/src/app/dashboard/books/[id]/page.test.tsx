@@ -622,12 +622,27 @@ describe('BookDetailPage', () => {
 
   // ── Delete ────────────────────────────────────────────────────────────────
 
-  it('deletes the book and redirects to /dashboard', async () => {
+  it('requests permanent deletion and redirects to /dashboard, where progress is tracked', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
     vi.mocked(fetch)
       .mockResolvedValueOnce(mockOk(MOCK_BOOK))
-      .mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+      .mockResolvedValueOnce(
+        mockOk(
+          {
+            id: 'req-1',
+            bookId: MOCK_BOOK.id,
+            status: 'requested',
+            attemptCount: 0,
+            deletedArtifactCount: 0,
+            remainingArtifactCount: 0,
+            lastErrorCode: null,
+            requestedAt: '2026-07-31T00:00:00.000Z',
+            completedAt: null,
+          },
+          202,
+        ),
+      );
 
     render(<BookDetailPage />);
     await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
@@ -637,6 +652,30 @@ describe('BookDetailPage', () => {
     await waitFor(() => {
       expect(pushMock).toHaveBeenCalledWith('/dashboard');
     });
+    const [url, init] = vi.mocked(fetch).mock.calls[1] as [string, RequestInit];
+    expect(url.endsWith(`/books/${MOCK_BOOK.id}/hard-delete`)).toBe(true);
+    expect(init.method).toBe('POST');
+  });
+
+  it('stays on the page and reports the error when the deletion request is rejected', async () => {
+    const user = userEvent.setup();
+    const alertSpy = vi.fn();
+    vi.stubGlobal('alert', alertSpy);
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockOk(MOCK_BOOK))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        json: async () => ({ message: 'Too many deletion requests' }),
+      } as unknown as Response);
+
+    render(<BookDetailPage />);
+    await waitFor(() => screen.getByRole('heading', { level: 1, name: "Emma's Story" }));
+    await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Too many deletion requests'));
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
   // ── Generate Story ────────────────────────────────────────────────────────

@@ -135,6 +135,18 @@ function performOwnRefresh(): Promise<string | null> {
     writeJSON(REFRESH_LOCK_KEY, { id: lockId, startedAt: Date.now() } satisfies RefreshLock);
   }
 
+  // Publishes the outcome and releases the lock whether the refresh succeeded,
+  // was definitively rejected, or failed temporarily — otherwise a transient
+  // failure would leave the lock held and make other tabs wait out its TTL.
+  const release = (token: string | null) => {
+    if (typeof window !== 'undefined') {
+      const channel = openRefreshChannel();
+      channel?.postMessage({ lockId, token } satisfies RefreshResultMessage);
+      channel?.close();
+      removeKey(REFRESH_LOCK_KEY);
+    }
+  };
+
   return authApi
     .refresh()
     .then((res) => {
@@ -147,15 +159,11 @@ function performOwnRefresh(): Promise<string | null> {
         if (setAccessTokenForEpoch(null, epoch)) notifyAuthExpired();
         return null;
       }
+      release(null);
       throw error;
     })
     .then((token) => {
-      if (typeof window !== 'undefined') {
-        const channel = openRefreshChannel();
-        channel?.postMessage({ lockId, token } satisfies RefreshResultMessage);
-        channel?.close();
-        removeKey(REFRESH_LOCK_KEY);
-      }
+      release(token);
       return token;
     });
 }

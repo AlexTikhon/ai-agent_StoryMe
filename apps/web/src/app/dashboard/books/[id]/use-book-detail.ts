@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { SetStateAction } from 'react';
 import { BookStatus } from '@book/types';
 import type { BookDto, GenerationDiagnosticsDto, GenerationProgressDto } from '@book/types';
 import { booksApi } from '@/lib/api/books';
@@ -20,6 +21,21 @@ export function isGeneratingBookStatus(status: BookStatus): boolean {
 }
 
 /**
+ * Freshness rule shared by every book response (initial load, polling, manual
+ * refresh): a response for another book, or one older than what is on screen,
+ * never replaces the current book. A cancelled book is only replaced by a
+ * strictly newer record so a response that raced the cancellation can't undo it.
+ */
+export function shouldAcceptBook(current: BookDto | null, incoming: BookDto): boolean {
+  if (!current) return true;
+  if (current.id !== incoming.id) return false;
+  const currentAt = Date.parse(current.updatedAt);
+  const incomingAt = Date.parse(incoming.updatedAt);
+  if (Number.isNaN(currentAt) || Number.isNaN(incomingAt)) return true;
+  return current.status === BookStatus.Cancelled ? incomingAt > currentAt : incomingAt >= currentAt;
+}
+
+/**
  * Owns fetching a book by id, polling it while actively generating, optional
  * developer-diagnostics reads, and the manual "Refresh status" action. Other
  * mutations (edit/generate/regenerate/delete) live in the page component and
@@ -27,7 +43,7 @@ export function isGeneratingBookStatus(status: BookStatus): boolean {
  * own API call, rather than re-fetching here.
  */
 export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
-  const [book, setBook] = useState<BookDto | null>(null);
+  const [book, setBookState] = useState<BookDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -38,9 +54,40 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
   const [progress, setProgress] = useState<GenerationProgressDto | null>(null);
 
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
+  // Request coordinator. `bookRef` mirrors the on-screen book synchronously so
+  // freshness checks never read a stale render closure; `routeRef` is bumped
+  // whenever the route (or load attempt) changes so late responses for a
+  // previous route are dropped; `refreshControllerRef` is both the in-flight
+  // guard and the cancellation handle for the manual refresh.
+  const bookRef = useRef<BookDto | null>(null);
+  const routeRef = useRef(0);
+  const refreshControllerRef = useRef<AbortController | null>(null);
+
+  const setBook = useCallback((value: SetStateAction<BookDto | null>) => {
+    const next = typeof value === 'function' ? value(bookRef.current) : value;
+    bookRef.current = next;
+    setBookState(next);
+  }, []);
+
+  /** The single entry point for fetched (non-mutation) book responses. */
+  const applyBook = useCallback(
+    (incoming: BookDto): boolean => {
+      if (!shouldAcceptBook(bookRef.current, incoming)) return false;
+      setBook(incoming);
+      return true;
+    },
+    [setBook],
+  );
 
   useEffect(() => {
     let cancelled = false;
+    routeRef.current += 1;
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = null;
+    setRefreshing(false);
+    setRefreshError(null);
     setLoading(true);
     setLoadError(null);
     setNotFound(false);
@@ -69,9 +116,12 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
 
     return () => {
       cancelled = true;
+      routeRef.current += 1;
       controller.abort();
+      refreshControllerRef.current?.abort();
+      refreshControllerRef.current = null;
     };
-  }, [id, loadAttempt]);
+  }, [id, loadAttempt, setBook]);
 
   // The Book status intentionally remains coarse. Fetch the authoritative
   // GenerationRun projection as soon as an active run appears so ordinary
@@ -91,44 +141,48 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     if (!book || !isGeneratingBookStatus(book.status)) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let controller: AbortController | undefined;
+    // At most one poll request is ever in flight; the chain reschedules itself
+    // when the request settles, so recovery events must not start a second one.
+    let inFlight: AbortController | undefined;
     let failures = 0;
     const schedule = (delay: number) => {
-      if (!cancelled) timer = setTimeout(() => void poll(), delay);
+      if (cancelled) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void poll(), delay);
     };
     const poll = async () => {
-      if (cancelled) return;
+      if (cancelled || inFlight) return;
       if (document.visibilityState === 'hidden' || !navigator.onLine) {
         schedule(POLL_INTERVAL_MS);
         return;
       }
-      controller = new AbortController();
+      const requestController = new AbortController();
+      inFlight = requestController;
       try {
-        const data = await booksApi.getGenerationProgress(id, controller.signal);
+        const data = await booksApi.getGenerationProgress(id, requestController.signal);
         if (cancelled) return;
         failures = 0;
         setProgress(data);
         if (['complete', 'failed', 'cancelled'].includes(data.status)) {
-          const full = await booksApi.get(id, controller.signal);
+          const full = await booksApi.get(id, requestController.signal);
           if (cancelled || full.id !== id) return;
-          setBook((current) => {
-            if (!current || current.id !== full.id) return current;
-            if (current.status === BookStatus.Cancelled) return current;
-            return new Date(full.updatedAt) >= new Date(current.updatedAt) ? full : current;
-          });
+          applyBook(full);
           return;
         }
         schedule(POLL_INTERVAL_MS);
       } catch {
-        if (cancelled || controller.signal.aborted) return;
+        if (cancelled || requestController.signal.aborted) return;
         failures += 1;
         const backoff = Math.min(30_000, POLL_INTERVAL_MS * 2 ** Math.min(failures, 3));
         schedule(Math.round(backoff * (0.8 + Math.random() * 0.4)));
+      } finally {
+        if (inFlight === requestController) inFlight = undefined;
       }
     };
     const recover = () => {
-      if (cancelled || document.visibilityState === 'hidden' || !navigator.onLine) return;
-      if (timer) clearTimeout(timer);
+      if (cancelled || inFlight || document.visibilityState === 'hidden' || !navigator.onLine) {
+        return;
+      }
       schedule(0);
     };
     document.addEventListener('visibilitychange', recover);
@@ -137,11 +191,11 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
-      controller?.abort();
+      inFlight?.abort();
       document.removeEventListener('visibilitychange', recover);
       window.removeEventListener('online', recover);
     };
-  }, [id, book?.id, book?.status]);
+  }, [id, book?.id, book?.status, applyBook]);
 
   // Fetch diagnostics once generation has started (not for untouched drafts)
   useEffect(() => {
@@ -165,15 +219,27 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     };
   }, [id, book?.status, enableDeveloperDiagnostics]);
 
-  const handleRefresh = async () => {
+  const handleRefresh = useCallback(async () => {
+    if (refreshControllerRef.current) return;
+    const controller = new AbortController();
+    refreshControllerRef.current = controller;
+    const route = routeRef.current;
+    const owns = () => routeRef.current === route && !controller.signal.aborted;
     setRefreshing(true);
+    setRefreshError(null);
     try {
-      const data = await booksApi.get(id);
-      setBook(data);
+      const data = await booksApi.get(id, controller.signal);
+      if (!owns()) return;
+      // A response older than what is on screen (e.g. a mutation landed while
+      // this request was in flight) is dropped along with its derived reads.
+      if (!applyBook(data)) return;
       if (isGeneratingBookStatus(data.status)) {
         try {
-          setProgress(await booksApi.getGenerationProgress(id));
+          const progressData = await booksApi.getGenerationProgress(id, controller.signal);
+          if (!owns()) return;
+          setProgress(progressData);
         } catch {
+          if (!owns()) return;
           setProgress(null);
         }
       } else {
@@ -181,25 +247,33 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
       }
       if (enableDeveloperDiagnostics) {
         try {
-          const diagnosticsData = await booksApi.getGenerationDiagnostics(id);
+          const diagnosticsData = await booksApi.getGenerationDiagnostics(id, controller.signal);
+          if (!owns()) return;
           setDiagnostics(diagnosticsData);
           setDiagnosticsError(null);
         } catch (err) {
+          if (!owns()) return;
           setDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
         }
       }
-    } catch {
-      // silent — manual retry; load errors handled by main effect
+    } catch (err) {
+      if (owns()) {
+        setRefreshError(err instanceof Error ? err.message : 'Failed to refresh status');
+      }
     } finally {
-      setRefreshing(false);
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null;
+        setRefreshing(false);
+      }
     }
-  };
+  }, [id, enableDeveloperDiagnostics, applyBook]);
 
   const retryLoad = () => setLoadAttempt((n) => n + 1);
 
   return {
     book,
     setBook,
+    applyBook,
     loading,
     loadError,
     notFound,
@@ -208,6 +282,7 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
     diagnostics,
     diagnosticsError,
     refreshing,
+    refreshError,
     handleRefresh,
   };
 }

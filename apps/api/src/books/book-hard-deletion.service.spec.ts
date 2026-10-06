@@ -102,6 +102,33 @@ describe('BookHardDeletionService', () => {
     expect(h.queue.removeBookWorkIfSafe).not.toHaveBeenCalled();
   });
 
+  it("lists only the caller's unfinished deletion requests, newest first", async () => {
+    const h = harness();
+    h.prisma.bookDeletionRequest.findMany.mockResolvedValue([
+      deletion({
+        status: BookDeletionStatus.retry_pending,
+        lastErrorCode: 'ARTIFACT_DELETE_FAILED',
+      }),
+    ]);
+
+    const result = await h.service.listPending(USER_ID);
+
+    expect(h.prisma.bookDeletionRequest.findMany).toHaveBeenCalledWith({
+      where: { ownerHash: hashOwner(), status: { not: BookDeletionStatus.completed } },
+      orderBy: { requestedAt: 'desc' },
+      take: 50,
+    });
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: REQUEST_ID,
+        bookId: BOOK_ID,
+        status: 'retry_pending',
+        lastErrorCode: 'ARTIFACT_DELETE_FAILED',
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain(hashOwner());
+  });
+
   it('atomically hides the book, fences both active work types, and emits a private-data-free outbox event', async () => {
     const h = harness();
     const request = deletion();

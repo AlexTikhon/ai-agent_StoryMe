@@ -103,11 +103,24 @@ export const booksApi = {
   cancelGeneration: (id: string): Promise<CancelGenerationResponse> =>
     apiFetch(`/books/${id}/cancel`, { method: 'POST' }),
 
-  remove: (id: string): Promise<BookDeletionRequestDto> =>
+  /**
+   * Requests permanent deletion. The API answers 202 with a tracking request:
+   * the book is tombstoned immediately, but erasing its data and stored
+   * artifacts is asynchronous and can stall in `retry_pending`. Calling this
+   * again for the same book is idempotent and re-queues a stalled request.
+   */
+  requestHardDelete: (id: string): Promise<BookDeletionRequestDto> =>
     apiFetch(`/books/${id}/hard-delete`, {
       method: 'POST',
       body: JSON.stringify({ confirmation: id }),
     }),
+
+  getDeletionStatus: (requestId: string, signal?: AbortSignal): Promise<BookDeletionRequestDto> =>
+    apiFetch(`/books/deletion-requests/${requestId}`, signal ? { signal } : undefined),
+
+  /** The caller's unfinished deletion requests — restores tracking after a reload. */
+  listPendingDeletions: (signal?: AbortSignal): Promise<BookDeletionRequestDto[]> =>
+    apiFetch('/books/deletion-requests', signal ? { signal } : undefined),
 
   getGenerationDiagnostics: (id: string, signal?: AbortSignal): Promise<GenerationDiagnosticsDto> =>
     apiFetch(`/books/${id}/generation-diagnostics`, signal ? { signal } : undefined),

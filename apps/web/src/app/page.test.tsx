@@ -15,6 +15,7 @@ function mockAuth(status: 'loading' | 'authed' | 'anon') {
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),
+    retrySession: vi.fn(),
   });
 }
 

@@ -5,7 +5,9 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import type { BookSummaryDto } from '@book/types';
 import { BookStatus } from '@book/types';
 import { booksApi } from '@/lib/api/books';
+import { DeletionStatusPanel } from './deletion-status-panel';
 import { PublishedCoverThumbnail } from './published-cover-thumbnail';
+import { useBookDeletions } from './use-book-deletions';
 
 /** Books not actively running the generation pipeline — safe to edit/delete. Mirrors the API's EDITABLE_BOOK_STATUSES gate. */
 function isBookEditable(status: BookStatus): boolean {
@@ -24,6 +26,8 @@ export default function DashboardPage() {
   const [books, setBooks] = useState<BookSummaryDto[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [retryingBookId, setRetryingBookId] = useState<string | null>(null);
+  const { deletions, restoreError, requestDeletion, dismiss } = useBookDeletions();
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const loadController = useRef<AbortController | null>(null);
@@ -59,13 +63,28 @@ export default function DashboardPage() {
     if (!window.confirm('Permanently delete this book? This cannot be undone.')) return;
     setDeletingId(id);
     try {
-      await booksApi.remove(id);
+      // 202 Accepted: the API has hidden the book and queued the erasure. The
+      // card leaves the list now, while the request stays tracked below until
+      // its data and stored files are actually gone.
+      const title = books?.find((b) => b.id === id)?.title ?? null;
+      await requestDeletion(id, title);
       setBooks((prev) => prev?.filter((b) => b.id !== id) ?? null);
       setTotal((value) => Math.max(0, value - 1));
     } catch (err) {
       window.alert(err instanceof Error ? err.message : 'Failed to delete book');
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleRetryDeletion = async (bookId: string, title: string | null) => {
+    setRetryingBookId(bookId);
+    try {
+      await requestDeletion(bookId, title);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Failed to retry deletion');
+    } finally {
+      setRetryingBookId(null);
     }
   };
 
@@ -84,6 +103,20 @@ export default function DashboardPage() {
             <span aria-hidden="true">+</span> New Book
           </Link>
         </div>
+
+        {restoreError && (
+          <p role="alert" className="mb-4 text-xs text-danger-base">
+            Couldn&apos;t check for deletions in progress: {restoreError}
+          </p>
+        )}
+        <DeletionStatusPanel
+          deletions={deletions}
+          retryingBookId={retryingBookId}
+          onRetry={(bookId, title) => {
+            void handleRetryDeletion(bookId, title);
+          }}
+          onDismiss={dismiss}
+        />
 
         {/* ── List states ── */}
         {books === null && !loadError && <BookListSkeleton />}

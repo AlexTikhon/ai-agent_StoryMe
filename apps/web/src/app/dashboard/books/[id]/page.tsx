@@ -45,6 +45,7 @@ export default function BookDetailPage() {
   const {
     book,
     setBook,
+    applyBook,
     loading,
     loadError,
     notFound,
@@ -53,6 +54,7 @@ export default function BookDetailPage() {
     diagnostics,
     diagnosticsError,
     refreshing,
+    refreshError,
     handleRefresh,
   } = useBookDetail(id, showDeveloperDiagnostics);
 
@@ -129,7 +131,10 @@ export default function BookDetailPage() {
     if (!window.confirm('Permanently delete this book? This cannot be undone.')) return;
     setDeleting(true);
     try {
-      await booksApi.remove(id);
+      // 202 Accepted — erasure continues in the background. The dashboard
+      // restores and tracks the pending request, so land there rather than
+      // implying the book is already gone.
+      await booksApi.requestHardDelete(id);
       router.push('/dashboard');
     } catch (err) {
       window.alert(err instanceof Error ? err.message : 'Failed to delete book');
@@ -215,7 +220,7 @@ export default function BookDetailPage() {
     } catch (err) {
       if (err instanceof ApiError && err.code === 'BOOK_ALREADY_CANCELLED') {
         try {
-          setBook(await booksApi.get(id));
+          applyBook(await booksApi.get(id));
         } catch {
           // Refetch failed — leave the on-screen book as-is; the message
           // below is accurate regardless of whether it succeeded.
@@ -225,7 +230,7 @@ export default function BookDetailPage() {
         let refreshed: BookDto | null = null;
         try {
           refreshed = await booksApi.get(id);
-          setBook(refreshed);
+          applyBook(refreshed);
         } catch {
           // Refetch failed — fall back to a status-agnostic message below.
         }
@@ -321,6 +326,7 @@ export default function BookDetailPage() {
                     void handleRefresh();
                   }}
                   refreshing={refreshing}
+                  refreshError={refreshError}
                   progress={progress}
                   diagnostics={diagnostics}
                   diagnosticsError={diagnosticsError}

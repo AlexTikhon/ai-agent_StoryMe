@@ -248,6 +248,23 @@ export class BookHardDeletionService {
     return this.toDto(request);
   }
 
+  /**
+   * The caller's unfinished deletion requests, newest first. Lets the client
+   * restore "deletion pending" / retry controls after a reload, since the
+   * tombstoned book no longer appears in the normal book list.
+   */
+  async listPending(userId: string): Promise<BookDeletionRequestDto[]> {
+    const requests = await this.prisma.bookDeletionRequest.findMany({
+      where: {
+        ownerHash: ownerHash(userId),
+        status: { not: BookDeletionStatus.completed },
+      },
+      orderBy: { requestedAt: 'desc' },
+      take: 50,
+    });
+    return requests.map((request) => this.toDto(request));
+  }
+
   async process(requestId: string): Promise<void> {
     const claimed = await this.prisma.bookDeletionRequest.updateMany({
       where: {

@@ -37,6 +37,13 @@ export class BookDeletionController {
     return this.deletionService.request(user.id, user.role, bookId, dto.confirmation);
   }
 
+  // Declared before BooksController's GET :id in the module so this static
+  // path is never captured as a book id.
+  @Get('deletion-requests')
+  listPending(@CurrentUser() user: User): Promise<BookDeletionRequestDto[]> {
+    return this.deletionService.listPending(user.id);
+  }
+
   @Get('deletion-requests/:requestId')
   getStatus(
     @CurrentUser() user: User,

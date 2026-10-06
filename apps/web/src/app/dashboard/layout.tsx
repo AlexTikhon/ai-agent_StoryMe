@@ -15,7 +15,7 @@ interface DashboardLayoutProps {
 }
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
-  const { status, user, authMode, logout } = useAuth();
+  const { status, user, authMode, logout, retrySession } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const homeMode = isHomeProductMode();
@@ -80,6 +80,27 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   if (gated && status === 'anon') {
     return null;
+  }
+
+  // A temporary outage (network failure, 429, 5xx) is not a logged-out
+  // session: show a recoverable error without mounting authenticated content.
+  if (gated && status === 'error') {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-bg-base">
+        <div role="alert" className="max-w-sm space-y-3 text-center">
+          <p className="text-sm text-text-secondary">
+            We couldn&apos;t reach the service to restore your session. Your account is still signed
+            in — please try again.
+          </p>
+          <button
+            onClick={retrySession}
+            className="font-medium text-violet-600 hover:text-violet-500"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
   }
 
   const handleLogout = () => {

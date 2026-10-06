@@ -1,7 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { booksApi } from '@/lib/api/books';
+import { createAsyncLimiter } from '@/lib/async-limiter';
+
+/** Start fetching a little before the card scrolls into view. */
+const VIEWPORT_MARGIN = '200px';
+/** Covers on screen at once — keeps a fast scroll from flooding the API/object store. */
+const MAX_CONCURRENT_COVER_LOADS = 4;
+
+const coverLoadLimiter = createAsyncLimiter(MAX_CONCURRENT_COVER_LOADS);
 
 interface PublishedCoverThumbnailProps {
   edition?: string | null | undefined;
@@ -10,18 +18,55 @@ interface PublishedCoverThumbnailProps {
 }
 
 export function PublishedCoverThumbnail({ bookId, title, edition }: PublishedCoverThumbnailProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [nearViewport, setNearViewport] = useState(false);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
+  // Latches true the first time the card approaches the viewport. Without
+  // IntersectionObserver there is nothing to defer on, so load straight away.
   useEffect(() => {
+    const node = containerRef.current;
+    if (typeof IntersectionObserver === 'undefined' || !node) {
+      setNearViewport(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: VIEWPORT_MARGIN },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  // Fetches the small cover derivative (not the full illustration). A new
+  // edition re-runs this: the cleanup aborts any in-flight request and revokes
+  // the previous Blob URL before the next one is created.
+  useEffect(() => {
+    setImageUrl(null);
+    setFailed(false);
+    if (!nearViewport) return;
+
     let cancelled = false;
     let objectUrl: string | null = null;
     const controller = new AbortController();
 
-    setImageUrl(null);
-    setFailed(false);
-    void booksApi
-      .downloadPublishedImage(bookId, 'cover', edition ?? undefined, controller.signal)
+    void coverLoadLimiter
+      .run(
+        () =>
+          booksApi.downloadPublishedImage(
+            bookId,
+            'cover-thumb',
+            edition ?? undefined,
+            controller.signal,
+          ),
+        controller.signal,
+      )
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -36,15 +81,17 @@ export function PublishedCoverThumbnail({ bookId, title, edition }: PublishedCov
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [bookId, edition]);
+  }, [bookId, edition, nearViewport]);
 
   return (
-    <div className="mb-4 flex aspect-[3/4] items-center justify-center overflow-hidden rounded-xl bg-violet-50">
+    <div
+      ref={containerRef}
+      className="mb-4 flex aspect-[3/4] items-center justify-center overflow-hidden rounded-xl bg-violet-50"
+    >
       {imageUrl ? (
         <img
           src={imageUrl}
           alt={`Cover of ${title}`}
-          loading="lazy"
           decoding="async"
           className="h-full w-full object-contain"
         />

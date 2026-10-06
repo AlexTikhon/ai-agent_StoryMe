@@ -6,7 +6,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { Book } from '@prisma/client';
+import sharp from 'sharp';
 import type { ImageAssetStorage } from '../images/image-asset-storage';
+import { COVER_THUMBNAIL_MAX_HEIGHT, COVER_THUMBNAIL_MAX_WIDTH } from '../images/cover-thumbnail';
 import type { PdfStorage } from '../pdf/pdf-storage';
 import type { ChildPhotoProcessor } from '../images/child-photo-processor';
 import type { PrismaService } from '../database/prisma.service';
@@ -39,6 +41,7 @@ function createHarness(book: Book | null = makeBook()) {
   } as unknown as jest.Mocked<BookCrudService>;
   const imageStorage = {
     getImageAsset: vi.fn(),
+    saveImageAsset: vi.fn().mockResolvedValue(undefined),
   } as unknown as jest.Mocked<ImageAssetStorage>;
   const prisma = {
     bookPage: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -56,6 +59,7 @@ function createHarness(book: Book | null = makeBook()) {
 describe('parsePublishedImageId', () => {
   it.each([
     ['cover', { id: 'cover', kind: 'cover' }],
+    ['cover-thumb', { id: 'cover-thumb', kind: 'cover', thumbnail: true }],
     ['back-cover', { id: 'back-cover', kind: 'back_cover' }],
     ['page-1', { id: 'page-1', kind: 'page', pageNumber: 1 }],
     ['page-12', { id: 'page-12', kind: 'page', pageNumber: 12 }],
@@ -157,5 +161,107 @@ describe('BookAssetService.getPublishedImage', () => {
     await expect(service.getPublishedImage('b-1', 'u-1', 'cover')).rejects.toThrow(
       InternalServerErrorException,
     );
+  });
+});
+
+describe('BookAssetService.getPublishedImage cover-thumb', () => {
+  const COVER_KEY = 'books/b-1/runs/run-9/claims/2/cover';
+  const THUMB_KEY = `${COVER_KEY}-thumb`;
+
+  function largeCover(): Promise<Buffer> {
+    return sharp({
+      create: { width: 2400, height: 3200, channels: 3, background: { r: 120, g: 80, b: 200 } },
+    })
+      .png()
+      .toBuffer();
+  }
+
+  it('builds a bounded WebP derivative from the immutable cover and caches it beside it', async () => {
+    const { service, imageStorage } = createHarness();
+    const original = await largeCover();
+    imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === COVER_KEY ? original : undefined,
+    );
+
+    const result = await service.getPublishedImage('b-1', 'u-1', 'cover-thumb');
+
+    expect(result.contentType).toBe('image/webp');
+    expect(result.filename).toBe('cover-thumb.webp');
+    const meta = await sharp(result.buffer).metadata();
+    expect(meta.width).toBeLessThanOrEqual(COVER_THUMBNAIL_MAX_WIDTH);
+    expect(meta.height).toBeLessThanOrEqual(COVER_THUMBNAIL_MAX_HEIGHT);
+    expect(result.buffer.length).toBeLessThan(original.length);
+    expect(imageStorage.saveImageAsset).toHaveBeenCalledWith(
+      THUMB_KEY,
+      result.buffer,
+      'image/webp',
+    );
+  });
+
+  it('serves a cached derivative without touching the full illustration', async () => {
+    const { service, imageStorage } = createHarness();
+    const cachedThumb = await sharp({
+      create: { width: 90, height: 120, channels: 3, background: '#fff' },
+    })
+      .webp()
+      .toBuffer();
+    imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === THUMB_KEY ? cachedThumb : undefined,
+    );
+
+    const result = await service.getPublishedImage('b-1', 'u-1', 'cover-thumb');
+
+    expect(result.buffer).toBe(cachedThumb);
+    expect(imageStorage.getImageAsset).not.toHaveBeenCalledWith(COVER_KEY);
+    expect(imageStorage.saveImageAsset).not.toHaveBeenCalled();
+  });
+
+  it('resolves a different derivative key for a different publication edition', async () => {
+    const { service, imageStorage } = createHarness(
+      makeBook({ publishedRunId: 'run-10', publishedRunFencingVersion: 1 }),
+    );
+    imageStorage.getImageAsset.mockResolvedValue(undefined);
+
+    await expect(service.getPublishedImage('b-1', 'u-1', 'cover-thumb')).rejects.toThrow(
+      NotFoundException,
+    );
+
+    expect(imageStorage.getImageAsset).toHaveBeenCalledWith(
+      'books/b-1/runs/run-10/claims/1/cover-thumb',
+    );
+    expect(imageStorage.getImageAsset).toHaveBeenCalledWith('books/b-1/runs/run-10/claims/1/cover');
+  });
+
+  it('keeps ownership and edition checks ahead of any storage read', async () => {
+    const notOwned = createHarness(null);
+    await expect(
+      notOwned.service.getPublishedImage('b-1', 'u-other', 'cover-thumb'),
+    ).rejects.toThrow(NotFoundException);
+    expect(notOwned.imageStorage.getImageAsset).not.toHaveBeenCalled();
+
+    const stale = createHarness();
+    await expect(
+      stale.service.getPublishedImage('b-1', 'u-1', 'cover-thumb', 'some-old-edition'),
+    ).rejects.toThrow(ConflictException);
+    expect(stale.imageStorage.getImageAsset).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the original for vector covers and still serves when caching fails', async () => {
+    const svg = createHarness();
+    svg.imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === COVER_KEY ? SVG_BYTES : undefined,
+    );
+    const svgResult = await svg.service.getPublishedImage('b-1', 'u-1', 'cover-thumb');
+    expect(svgResult.contentType).toBe('image/svg+xml');
+    expect(svg.imageStorage.saveImageAsset).not.toHaveBeenCalled();
+
+    const failing = createHarness();
+    const original = await largeCover();
+    failing.imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === COVER_KEY ? original : undefined,
+    );
+    failing.imageStorage.saveImageAsset.mockRejectedValue(new Error('storage down'));
+    const result = await failing.service.getPublishedImage('b-1', 'u-1', 'cover-thumb');
+    expect(result.contentType).toBe('image/webp');
   });
 });

@@ -80,6 +80,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -102,6 +103,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -116,6 +118,33 @@ describe('DashboardLayout', () => {
     await waitFor(() => expect(creditsApi.getBalance).toHaveBeenCalled());
   });
 
+  it('shows a recoverable error, without redirecting or mounting content, when restoration failed temporarily', async () => {
+    const retrySession = vi.fn();
+    vi.mocked(useAuth).mockReturnValue({
+      user: null,
+      status: 'error',
+      authMode: 'jwt',
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: logoutMock,
+      retrySession,
+    });
+
+    render(
+      <DashboardLayout>
+        <p>Protected content</p>
+      </DashboardLayout>,
+    );
+
+    expect(screen.getByRole('alert')).toBeDefined();
+    expect(screen.queryByText('Protected content')).toBeNull();
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(creditsApi.getBalance).not.toHaveBeenCalled();
+
+    screen.getByRole('button', { name: 'Try again' }).click();
+    expect(retrySession).toHaveBeenCalledTimes(1);
+  });
+
   it('shows a loading state instead of redirecting while the session is being restored', () => {
     vi.mocked(useAuth).mockReturnValue({
       user: null,
@@ -124,6 +153,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -144,6 +174,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -165,6 +196,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     const user = userEvent.setup();
@@ -191,6 +223,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     const user = userEvent.setup();
@@ -216,6 +249,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -236,6 +270,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -256,6 +291,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -282,6 +318,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -304,6 +341,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(
@@ -326,6 +364,7 @@ describe('DashboardLayout', () => {
       login: vi.fn(),
       register: vi.fn(),
       logout: logoutMock,
+      retrySession: vi.fn(),
     });
 
     render(

@@ -94,6 +94,75 @@ describe('AuthProvider', () => {
       });
     });
 
+    describe('temporary restoration failures', () => {
+      function mockStatus(status: number): Response {
+        return {
+          ok: false,
+          status,
+          json: async () => ({ message: 'Temporarily unavailable' }),
+        } as unknown as Response;
+      }
+
+      function renderProbe() {
+        render(
+          <AuthProvider>
+            <Probe />
+          </AuthProvider>,
+        );
+      }
+
+      it('enters error (not anon) on a network failure', async () => {
+        vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+        renderProbe();
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('error'));
+        expect(screen.getByTestId('email').textContent).toBe('none');
+      });
+
+      it('enters error when /auth/me is rate limited (429)', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(mockStatus(429));
+        renderProbe();
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('error'));
+      });
+
+      it('enters error when /auth/me is unavailable (503)', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(mockStatus(503));
+        renderProbe();
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('error'));
+      });
+
+      it('enters error when the silent refresh hits a 503 after a 401', async () => {
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(mockUnauthorized()) // GET /auth/me
+          .mockResolvedValueOnce(mockStatus(503)); // POST /auth/refresh
+        renderProbe();
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('error'));
+      });
+
+      it('retrySession() recovers once the service is back', async () => {
+        vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+        const user = userEvent.setup();
+        function RetryProbe() {
+          const { retrySession } = useAuth();
+          return <button onClick={retrySession}>retry</button>;
+        }
+        render(
+          <AuthProvider>
+            <Probe />
+            <RetryProbe />
+          </AuthProvider>,
+        );
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('error'));
+
+        vi.mocked(fetch).mockResolvedValueOnce(mockOk(MOCK_USER));
+        await user.click(screen.getByRole('button', { name: 'retry' }));
+
+        await waitFor(() => {
+          expect(screen.getByTestId('status').textContent).toBe('authed');
+          expect(screen.getByTestId('email').textContent).toBe('emma@example.com');
+        });
+      });
+    });
+
     it('login() sets the access token and user, and marks status authed', async () => {
       vi.mocked(fetch)
         .mockResolvedValueOnce(mockUnauthorized()) // GET /auth/me
