@@ -38,6 +38,7 @@ import {
   type ImageAssetStorage,
 } from '../../images/image-asset-storage';
 import { ChildPhotoProcessor } from '../../images/child-photo-processor';
+import { BookArtifactWriteCoordinator } from '../../storage/book-artifact-write-coordinator';
 import {
   IMAGE_GENERATION_PROVIDER_TOKEN,
   type ImageGenerationProvider,
@@ -117,6 +118,7 @@ export class BooksService {
         pdfStorage,
         imageAssetStorage,
         childPhotoProcessor,
+        new BookArtifactWriteCoordinator(prisma, imageAssetStorage, pdfStorage),
       );
     this.diagnosticsService =
       diagnosticsService ??
@@ -152,7 +154,13 @@ export class BooksService {
       );
     this.pageChangeService =
       pageChangeService ??
-      new BookPageChangeService(this.crudService, prisma, pdfStorage, imageAssetStorage);
+      new BookPageChangeService(
+        this.crudService,
+        prisma,
+        pdfStorage,
+        imageAssetStorage,
+        new BookArtifactWriteCoordinator(prisma, imageAssetStorage, pdfStorage),
+      );
     this.pageImageRevisionService =
       pageImageRevisionService ??
       new BookPageImageRevisionService(

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import {
@@ -6,6 +6,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import {
   claimArtifactBasePath,
@@ -66,6 +67,11 @@ export interface PdfStorage {
     namespace: ClaimArtifactNamespace,
   ): Promise<PreviewPdfResult | null>;
   claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean>;
+  /**
+   * Idempotently removes one exact claim PDF. A missing object is success; any
+   * other failure propagates. Callers verify with claimPreviewPdfExists.
+   */
+  deleteClaimPreviewPdf(bookId: string, namespace: ClaimArtifactNamespace): Promise<void>;
 
   /**
    * Phase C — lists raw, driver-native keys of every claim-scoped PDF this
@@ -109,13 +115,16 @@ function validateBookId(bookId: string): void {
 export class LocalPdfStorage implements PdfStorage {
   readonly driver = 'local' as const;
 
+  /** `root` is overridable so tests can use a real, disposable directory. */
+  constructor(private readonly root: string = TMP_ROOT) {}
+
   private legacyPath(bookId: string): string {
-    return join(TMP_ROOT, 'books', bookId, 'storybook.pdf');
+    return join(this.root, 'books', bookId, 'storybook.pdf');
   }
 
   /** claimPreviewPdfKey already validates bookId + namespace before returning a key. */
   private claimPath(bookId: string, namespace: ClaimArtifactNamespace): string {
-    return join(TMP_ROOT, ...claimPreviewPdfKey(bookId, namespace).split('/'));
+    return join(this.root, ...claimPreviewPdfKey(bookId, namespace).split('/'));
   }
 
   private async writePdfFile(path: string, buffer: Buffer): Promise<{ path: string }> {
@@ -167,18 +176,26 @@ export class LocalPdfStorage implements PdfStorage {
     return existsSync(this.claimPath(bookId, namespace));
   }
 
+  async deleteClaimPreviewPdf(bookId: string, namespace: ClaimArtifactNamespace): Promise<void> {
+    try {
+      await unlink(this.claimPath(bookId, namespace));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+
   async listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage> {
-    const booksRoot = join(TMP_ROOT, 'books');
+    const booksRoot = join(this.root, 'books');
     return listLocalClaimArtifacts(booksRoot, '', params);
   }
 
   async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
-    return deleteLocalClaimArtifacts(TMP_ROOT, keys);
+    return deleteLocalClaimArtifacts(this.root, keys);
   }
 
   async deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult> {
     validateBookId(bookId);
-    return deleteLocalBookArtifactRoots(TMP_ROOT, [['books', bookId]]);
+    return deleteLocalBookArtifactRoots(this.root, [['books', bookId]]);
   }
 }
 
@@ -355,6 +372,15 @@ export class CloudPdfStorage implements PdfStorage {
 
   async claimPreviewPdfExists(bookId: string, namespace: ClaimArtifactNamespace): Promise<boolean> {
     return this.pdfObjectExists(claimPreviewPdfKey(bookId, namespace));
+  }
+
+  async deleteClaimPreviewPdf(bookId: string, namespace: ClaimArtifactNamespace): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: claimPreviewPdfKey(bookId, namespace),
+      }),
+    );
   }
 
   async listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage> {

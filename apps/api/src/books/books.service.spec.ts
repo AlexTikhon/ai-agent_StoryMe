@@ -375,6 +375,8 @@ describe('BooksService', () => {
     // inside BooksService.createRunAndSchedule behave exactly like their
     // non-transactional counterparts in these tests.
     prisma.$transaction.mockImplementation((cb: (tx: MockPrisma) => unknown) => cb(prisma));
+    // Live-book admission lock (BookArtifactWriteCoordinator.admit) finds the book.
+    prisma.$queryRaw.mockResolvedValue([{ id: 'b-1' }]);
     prisma.generationRun.create.mockResolvedValue(makeGenerationRun());
     prisma.generationRun.updateMany.mockResolvedValue({ count: 1 });
     prisma.book.updateMany.mockResolvedValue({ count: 1 });

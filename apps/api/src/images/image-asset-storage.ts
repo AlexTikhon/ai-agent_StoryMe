@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, copyFile, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
@@ -7,6 +7,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   CopyObjectCommand,
+  DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import type { BookLayoutEntry } from '@book/types';
 import type { ImageBufferResolver } from '../pdf/pdf-renderer';
@@ -61,6 +62,12 @@ export interface ImageAssetStorage {
     contentType: ImageAssetContentType,
   ): Promise<ImageAssetRef>;
   getImageAsset(key: string): Promise<Buffer | undefined>;
+  /**
+   * Idempotently removes one exact logical key under every supported extension.
+   * A missing object is success; any other failure propagates. Callers verify
+   * with getImageAsset — a resolved promise alone is not proof of absence.
+   */
+  deleteImageAsset(key: string): Promise<void>;
   /**
    * Server-/filesystem-native copy of an already-saved asset to a new key,
    * without the API process ever holding the full bytes in memory purely to
@@ -126,6 +133,22 @@ function extensionFor(contentType: ImageAssetContentType): string {
  * "read them back by stable key/id" requirement.
  */
 export class LocalImageAssetStorage implements ImageAssetStorage {
+  /** `root` is overridable so tests can use a real, disposable directory. */
+  constructor(private readonly root: string = TMP_ROOT) {}
+
+  async deleteImageAsset(key: string): Promise<void> {
+    const segments = validateImageAssetKey(key);
+    const dir = join(this.root, 'images', ...segments.slice(0, -1));
+    const base = segments[segments.length - 1]!;
+    for (const ext of Object.values(CONTENT_TYPE_EXTENSIONS)) {
+      try {
+        await unlink(join(dir, `${base}.${ext}`));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+  }
+
   async saveImageAsset(
     key: string,
     buffer: Buffer,
@@ -133,7 +156,7 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
   ): Promise<ImageAssetRef> {
     const segments = validateImageAssetKey(key);
     const ext = extensionFor(contentType);
-    const dir = join(TMP_ROOT, 'images', ...segments.slice(0, -1));
+    const dir = join(this.root, 'images', ...segments.slice(0, -1));
     await mkdir(dir, { recursive: true });
     const path = join(dir, `${segments[segments.length - 1]}.${ext}`);
     await writeFile(path, buffer);
@@ -142,7 +165,7 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
 
   async getImageAsset(key: string): Promise<Buffer | undefined> {
     const segments = validateImageAssetKey(key);
-    const dir = join(TMP_ROOT, 'images', ...segments.slice(0, -1));
+    const dir = join(this.root, 'images', ...segments.slice(0, -1));
     const base = segments[segments.length - 1]!;
     for (const ext of Object.values(CONTENT_TYPE_EXTENSIONS)) {
       const path = join(dir, `${base}.${ext}`);
@@ -165,7 +188,7 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
     const sourceSegments = validateImageAssetKey(sourceKey);
     const destinationSegments = validateImageAssetKey(destinationKey);
 
-    const sourceDir = join(TMP_ROOT, 'images', ...sourceSegments.slice(0, -1));
+    const sourceDir = join(this.root, 'images', ...sourceSegments.slice(0, -1));
     const sourceBase = sourceSegments[sourceSegments.length - 1]!;
     const found = (
       Object.entries(CONTENT_TYPE_EXTENSIONS) as [ImageAssetContentType, string][]
@@ -174,7 +197,7 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
     const [contentType, ext] = found;
     const sourcePath = join(sourceDir, `${sourceBase}.${ext}`);
 
-    const destinationDir = join(TMP_ROOT, 'images', ...destinationSegments.slice(0, -1));
+    const destinationDir = join(this.root, 'images', ...destinationSegments.slice(0, -1));
     const destinationPath = join(
       destinationDir,
       `${destinationSegments[destinationSegments.length - 1]}.${ext}`,
@@ -192,17 +215,17 @@ export class LocalImageAssetStorage implements ImageAssetStorage {
   }
 
   async listClaimArtifacts(params: ClaimArtifactListParams): Promise<ClaimArtifactListPage> {
-    const booksRoot = join(TMP_ROOT, 'images', 'books');
+    const booksRoot = join(this.root, 'images', 'books');
     return listLocalClaimArtifacts(booksRoot, 'images', params);
   }
 
   async deleteClaimArtifacts(keys: readonly string[]): Promise<ClaimArtifactDeleteOutcome[]> {
-    return deleteLocalClaimArtifacts(TMP_ROOT, keys);
+    return deleteLocalClaimArtifacts(this.root, keys);
   }
 
   async deleteBookArtifacts(bookId: string): Promise<BookArtifactDeletionResult> {
     validateImageAssetKey(bookId);
-    return deleteLocalBookArtifactRoots(TMP_ROOT, [
+    return deleteLocalBookArtifactRoots(this.root, [
       ['images', bookId],
       ['images', 'books', bookId],
     ]);
@@ -295,6 +318,24 @@ export class CloudImageAssetStorage implements ImageAssetStorage {
       }),
     );
     return { key, path: cloudKey, contentType };
+  }
+
+  async deleteImageAsset(key: string): Promise<void> {
+    const segments = validateImageAssetKey(key);
+    const result = await this.client.send(
+      new DeleteObjectsCommand({
+        Bucket: this.bucket,
+        Delete: {
+          Objects: Object.values(CONTENT_TYPE_EXTENSIONS).map((ext) => ({
+            Key: `images/${segments.join('/')}.${ext}`,
+          })),
+          Quiet: true,
+        },
+      }),
+    );
+    if (result.Errors && result.Errors.length > 0) {
+      throw new Error('Image asset delete reported per-object errors');
+    }
   }
 
   async getImageAsset(key: string): Promise<Buffer | undefined> {
