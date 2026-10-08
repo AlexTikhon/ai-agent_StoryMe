@@ -11,6 +11,7 @@ function describeFailure(request: BookDeletionRequestDto): string {
         : 'Some stored files could not be removed yet.';
     }
     case 'BOOK_WORK_STILL_ACTIVE':
+    case 'BOOK_WRITERS_STILL_ACTIVE':
     case 'DATABASE_FINALIZATION_BLOCKED':
       return 'Background work for this book is still stopping.';
     default:

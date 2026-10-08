@@ -26,6 +26,13 @@ import { toBookDto, publishedEdition } from './books.mapper';
 import { BookCrudService, EDITABLE_BOOK_STATUSES } from './book-crud.service';
 import { publishedImageKey } from './published-page-image-key';
 import { operationalMetrics } from '../observability/operational-metrics';
+import {
+  BookArtifactWriteCoordinator,
+  BookArtifactWritesClosedError,
+  BookArtifactWriteFencedError,
+  type BookArtifactRef,
+  type BookArtifactWriteHandle,
+} from '../storage/book-artifact-write-coordinator';
 
 export interface PublishedImageResult {
   buffer: Buffer;
@@ -105,6 +112,7 @@ export class BookAssetService {
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
     @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageStorage: ImageAssetStorage,
     private readonly childPhotoProcessor: ChildPhotoProcessor,
+    private readonly artifactWrites: BookArtifactWriteCoordinator,
   ) {}
 
   async uploadChildPhoto(
@@ -125,18 +133,40 @@ export class BookAssetService {
     const { buffer, contentType } = await this.childPhotoProcessor.process(file.buffer);
     const sha256 = createHash('sha256').update(buffer).digest('hex');
     const key = childPhotoAssetKey(bookId, randomUUID());
-    await this.imageStorage.saveImageAsset(key, buffer, contentType);
-    const result = await this.prisma.book.updateMany({
-      where: { id: bookId, userId, deletedAt: null, status: { in: [...EDITABLE_BOOK_STATUSES] } },
-      data: {
-        childPhotoAssetKey: key,
-        childPhotoContentType: contentType,
-        childPhotoSha256: sha256,
-        childPhotoSizeBytes: buffer.length,
-      },
-    });
-    if (result.count === 0) {
-      throw new ConflictException('Child photo cannot be uploaded while generation is in progress');
+    // Admission is durable and ordered against permanent deletion. The intent is
+    // consumed in the same transaction that publishes the key, so every other
+    // exit (lost fence, storage or database failure) leaves a cleanup record.
+    const intent = await this.admitUploadWriter(bookId, key);
+    try {
+      await this.imageStorage.saveImageAsset(key, buffer, contentType);
+      await this.prisma.$transaction(async (tx) => {
+        const result = await tx.book.updateMany({
+          where: {
+            id: bookId,
+            userId,
+            deletedAt: null,
+            status: { in: [...EDITABLE_BOOK_STATUSES] },
+          },
+          data: {
+            childPhotoAssetKey: key,
+            childPhotoContentType: contentType,
+            childPhotoSha256: sha256,
+            childPhotoSizeBytes: buffer.length,
+          },
+        });
+        if (result.count === 0) {
+          throw new ConflictException(
+            'Child photo cannot be uploaded while generation is in progress',
+          );
+        }
+        await this.artifactWrites.releaseInTransaction(tx, intent);
+      });
+    } catch (err) {
+      await this.artifactWrites.discard(intent);
+      if (err instanceof BookArtifactWriteFencedError) {
+        throw new ConflictException('Child photo cannot be uploaded right now');
+      }
+      throw err;
     }
     return toBookDto(await this.crud.findOwnedOrThrow(bookId, userId));
   }
@@ -188,7 +218,7 @@ export class BookAssetService {
         : new Map(),
     );
     const buffer = image.thumbnail
-      ? await this.getOrCreateCoverThumbnail(key)
+      ? await this.getOrCreateCoverThumbnail(bookId, key)
       : await this.imageStorage.getImageAsset(key);
     if (!buffer) throw new NotFoundException('Published image not found in storage');
 
@@ -213,7 +243,10 @@ export class BookAssetService {
    * if it is missing (first view, or swept as an unreferenced claim artifact)
    * it is simply rebuilt from the source.
    */
-  private async getOrCreateCoverThumbnail(coverKey: string): Promise<Buffer | undefined> {
+  private async getOrCreateCoverThumbnail(
+    bookId: string,
+    coverKey: string,
+  ): Promise<Buffer | undefined> {
     const thumbKey = coverThumbnailKey(coverKey);
     const cached = await this.imageStorage.getImageAsset(thumbKey);
     if (cached) return cached;
@@ -224,11 +257,34 @@ export class BookAssetService {
     const derived = await renderCoverThumbnail(original);
     // Undecodable or vector covers are served as-is rather than failing the card.
     if (!derived) return original;
+    // Caching is best-effort: a book being permanently deleted admits no new
+    // writer, and the derivative is still valid for this response either way.
+    let intent: BookArtifactWriteHandle;
+    try {
+      intent = await this.artifactWrites.admit(bookId, 'cover_thumbnail', [
+        { store: 'image', key: thumbKey },
+      ]);
+    } catch {
+      return derived.buffer;
+    }
     try {
       await this.imageStorage.saveImageAsset(thumbKey, derived.buffer, derived.contentType);
+      await this.artifactWrites.release(intent);
     } catch {
-      // Caching is best-effort; the derivative is still valid for this response.
+      await this.artifactWrites.discard(intent);
     }
     return derived.buffer;
+  }
+
+  private async admitUploadWriter(bookId: string, key: string): Promise<BookArtifactWriteHandle> {
+    const artifacts: BookArtifactRef[] = [{ store: 'image', key }];
+    try {
+      return await this.artifactWrites.admit(bookId, 'child_photo', artifacts);
+    } catch (err) {
+      if (err instanceof BookArtifactWritesClosedError) {
+        throw new NotFoundException('Book not found');
+      }
+      throw err;
+    }
   }
 }

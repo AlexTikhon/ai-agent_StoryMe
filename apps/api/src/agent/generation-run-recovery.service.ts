@@ -12,6 +12,7 @@ import { PrismaService } from '../database/prisma.service';
 import { GenerationQueueService } from './generation-queue.service';
 import { GenerationRunCoordinator } from './generation-run-coordinator.service';
 import { BookPageImageRevisionService } from '../books/book-page-image-revision.service';
+import { BookArtifactWriteCoordinator } from '../storage/book-artifact-write-coordinator';
 
 export const DEFAULT_GENERATION_RUN_QUEUED_STALE_MS = 5 * 60 * 1000;
 export const DEFAULT_GENERATION_RUN_RECOVERY_INTERVAL_MS = 60 * 1000;
@@ -107,6 +108,7 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
     private readonly generationQueueService: GenerationQueueService,
     private readonly generationRunCoordinator: GenerationRunCoordinator,
     @Optional() private readonly pageImageRevisions?: BookPageImageRevisionService,
+    @Optional() private readonly artifactWrites?: BookArtifactWriteCoordinator,
   ) {}
 
   /** Never throws — a recovery failure is logged and the app still boots/keeps running. */
@@ -294,6 +296,17 @@ export class GenerationRunRecoveryService implements OnApplicationBootstrap, OnM
 
       if (this.pageImageRevisions && (await this.stillHoldsLease(generation))) {
         await this.recoverPageImageRevisions(now);
+      }
+
+      // Retries durable cleanup records left by failed API-side artifact writes
+      // and fences/cleans writers whose lease expired (crashed processes).
+      if (this.artifactWrites && (await this.stillHoldsLease(generation))) {
+        try {
+          await this.artifactWrites.recoverStale({ now });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Book artifact write recovery failed: ${message}`);
+        }
       }
 
       return {

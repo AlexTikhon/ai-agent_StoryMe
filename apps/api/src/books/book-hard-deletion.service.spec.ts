@@ -8,6 +8,7 @@ import {
 import { createHash } from 'node:crypto';
 import { NotFoundException } from '@nestjs/common';
 import { createMockPrisma } from '../common/test-utils/mock-prisma';
+import { createFakeArtifactWrites } from '../common/test-utils/fake-artifact-writes';
 import { BookDeletionRetryableError, BookHardDeletionService } from './book-hard-deletion.service';
 
 const BOOK_ID = '11111111-1111-4111-8111-111111111111';
@@ -67,14 +68,16 @@ function harness() {
       errorCode: null,
     }),
   };
+  const artifactWrites = createFakeArtifactWrites();
   const service = new BookHardDeletionService(
     prisma as never,
     credits as never,
     queue as never,
     imageStorage as never,
     pdfStorage as never,
+    artifactWrites as never,
   );
-  return { service, prisma, credits, queue, imageStorage, pdfStorage };
+  return { service, prisma, credits, queue, imageStorage, pdfStorage, artifactWrites };
 }
 
 describe('BookHardDeletionService', () => {
@@ -303,5 +306,51 @@ describe('BookHardDeletionService', () => {
         remainingArtifactCount: 0,
       },
     });
+  });
+
+  it('does not sweep storage while an API-side artifact writer may still be running', async () => {
+    const h = harness();
+    h.prisma.bookDeletionRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.prisma.bookDeletionRequest.findUnique.mockResolvedValue(
+      deletion({ status: BookDeletionStatus.processing }),
+    );
+    h.artifactWrites.countBlockingWriters.mockResolvedValue(1);
+
+    await expect(h.service.process(REQUEST_ID)).rejects.toEqual(
+      expect.objectContaining<BookDeletionRetryableError>({ code: 'BOOK_WRITERS_STILL_ACTIVE' }),
+    );
+
+    expect(h.artifactWrites.countBlockingWriters).toHaveBeenCalledWith(BOOK_ID);
+    expect(h.imageStorage.deleteBookArtifacts).not.toHaveBeenCalled();
+    expect(h.pdfStorage.deleteBookArtifacts).not.toHaveBeenCalled();
+    expect(h.prisma.book.deleteMany).not.toHaveBeenCalled();
+    expect(h.prisma.bookDeletionRequest.updateMany).toHaveBeenLastCalledWith({
+      where: { id: REQUEST_ID, status: BookDeletionStatus.processing },
+      data: {
+        status: BookDeletionStatus.retry_pending,
+        lastErrorCode: 'BOOK_WRITERS_STILL_ACTIVE',
+        remainingArtifactCount: 0,
+      },
+    });
+  });
+
+  it('refuses to finalize when a writer is still active at the finalization transaction', async () => {
+    const h = harness();
+    h.prisma.bookDeletionRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.prisma.bookDeletionRequest.findUnique.mockResolvedValue(
+      deletion({ status: BookDeletionStatus.processing }),
+    );
+    h.prisma.generationRun.count.mockResolvedValue(0);
+    h.prisma.pageImageRevision.count.mockResolvedValue(0);
+    h.artifactWrites.settleForDeletion.mockResolvedValue(1);
+
+    await expect(h.service.process(REQUEST_ID)).rejects.toEqual(
+      expect.objectContaining<BookDeletionRetryableError>({
+        code: 'DATABASE_FINALIZATION_BLOCKED',
+      }),
+    );
+
+    expect(h.prisma.book.deleteMany).not.toHaveBeenCalled();
+    expect(h.prisma.bookDeletionRequest.update).not.toHaveBeenCalled();
   });
 });

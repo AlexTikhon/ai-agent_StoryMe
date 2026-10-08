@@ -169,6 +169,51 @@ The library returns `BookSummaryDto`. Reader responses include `publishedEdition
 requests can pin that edition and receive a conflict if it changed. The web reader revokes old
 image blobs, reloads on edition change, and bounds its page index after page-count changes.
 
+### Artifact writes and permanent deletion
+
+Worker writers (generation, page-image revision, snapshot backfill) are covered by run/revision
+fencing plus the `hasActiveBookWork` check. Three API-side writers had no such coordination and now
+register in `book_artifact_write_intents` through `BookArtifactWriteCoordinator`: the lazily built
+cover thumbnail, the child-photo upload, and the text-edit candidate PDF.
+
+- **Admission.** `admit()` inserts an `active` intent in a short transaction that first takes
+  `SELECT … FOR SHARE` on the live (`deleted_at IS NULL`) Book row. Hard-delete `request()`
+  tombstones that same row, so admission and tombstone are totally ordered: an intent either
+  committed first (and deletion must account for it) or admission fails with
+  `BookArtifactWritesClosedError` (the thumbnail is then served uncached; upload and text edit
+  answer 404). A second database check before writing would not be enough; the lock is.
+- **Publication.** Storage I/O runs outside any transaction. The intent is consumed
+  (`deleteMany … state = active`, must affect one row) inside the same transaction that publishes
+  the artifact, so a reaped (fenced) writer can never publish and a committed publication leaves no
+  record.
+- **Cleanup.** A writer that did not publish calls `discard()`: the intent becomes
+  `cleanup_pending` (the durable cleanup record), the exact artifacts are deleted and verified
+  absent, then the record is removed. If the record is already gone, nothing is deleted, so an
+  ambiguous commit acknowledgement cannot delete a published artifact. Storage failure leaves the
+  record; `recoverStale()` retries it from the leased `GenerationRunRecoveryService` pass.
+- **Deletion.** `process()` requires `countBlockingWriters() == 0` **before** the storage sweep
+  (otherwise `retry_pending` with `BOOK_WRITERS_STILL_ACTIVE`). Because admission is closed, that
+  count can only fall. The existing sweep deletes and re-lists both drivers; only after it reports
+  complete does the finalization transaction delete the redundant cleanup records and the Book.
+  Idempotent requests, ownership checks, `retry_pending` retry and refund semantics are unchanged.
+- **Crashes and stalls.** A crashed writer leaves an `active` intent. Until its lease
+  (`BOOK_ARTIFACT_WRITE_LEASE_MS`, default 10 minutes) expires, deletion stays `retry_pending`.
+  After expiry the intent is _reaped_: fenced into `cleanup_pending`, so its publication
+  transaction can no longer succeed, and the sweep or recovery removes its artifacts.
+  A crashed deletion simply resumes from `processing`.
+- **Limitations.** Reaping is a liveness decision, not proof that a stalled process stopped. A
+  writer stalled beyond the lease whose storage request lands _after_ the reaper's verified cleanup
+  (or after deletion completes) can still leave one orphan object; its own post-write fence check
+  removes it only if that process survives and the record still exists. Cloud storage has no
+  cross-object transaction, so "absent" means a fresh verification at that moment. No
+  application-level cap on a single storage request's duration is added here. Recovery is
+  periodic (the existing recovery interval) and also runs inside every deletion retry; there is no
+  dedicated scheduler.
+
+Operational notes: apply the additive migration `20260914090000_book_artifact_write_intents` before
+starting the updated API/worker. The old binary does not write intents, so during a rolling
+deploy an old API instance is not coordinated with deletion until it is replaced.
+
 ### Quality scope and provider output
 
 Story and character Chat Completions use strict Structured Outputs with local schema/business

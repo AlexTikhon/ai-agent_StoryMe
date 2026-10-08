@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ChildPhotoProcessor } from '../images/child-photo-processor';
 import { createImageAssetStorage, IMAGE_ASSET_STORAGE_TOKEN } from '../images/image-asset-storage';
 import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
+import { BookArtifactWriteCoordinator } from './book-artifact-write-coordinator';
 
 /** Owns artifact-driver construction. Feature and generation modules consume
  * only the storage interfaces/tokens exported here. */
@@ -16,7 +17,13 @@ import { createPdfStorage, PDF_STORAGE_TOKEN } from '../pdf/pdf-storage';
       useFactory: () => createImageAssetStorage(process.env['IMAGE_STORAGE_DRIVER']),
     },
     ChildPhotoProcessor,
+    BookArtifactWriteCoordinator,
   ],
-  exports: [PDF_STORAGE_TOKEN, IMAGE_ASSET_STORAGE_TOKEN, ChildPhotoProcessor],
+  exports: [
+    PDF_STORAGE_TOKEN,
+    IMAGE_ASSET_STORAGE_TOKEN,
+    ChildPhotoProcessor,
+    BookArtifactWriteCoordinator,
+  ],
 })
 export class ArtifactStorageModule {}

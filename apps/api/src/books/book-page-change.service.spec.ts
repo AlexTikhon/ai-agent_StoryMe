@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { generateMockImagePng } from '../images/mock-image-producer';
 import { BookStatus, type Book } from '@prisma/client';
 import type { BookPreview, ImageGenerationResult } from '@book/types';
@@ -9,6 +9,11 @@ import type { PdfStorage } from '../pdf/pdf-storage';
 import type { PrismaService } from '../database/prisma.service';
 import type { BookCrudService } from './book-crud.service';
 import { BookPageChangeService } from './book-page-change.service';
+import { createFakeArtifactWrites } from '../common/test-utils/fake-artifact-writes';
+import {
+  BookArtifactWriteFencedError,
+  BookArtifactWritesClosedError,
+} from '../storage/book-artifact-write-coordinator';
 
 vi.mock('../pdf/pdf-renderer', () => ({
   renderStorybookPdf: vi.fn(),
@@ -134,9 +139,17 @@ function createHarness(book = makeBook()) {
   const imageStorage = {
     getImageAsset: vi.fn().mockResolvedValue(generateMockImagePng('published')),
   } as unknown as ImageAssetStorage;
-  const service = new BookPageChangeService(crud, prisma, pdfStorage, imageStorage);
+  const artifactWrites = createFakeArtifactWrites();
+  const service = new BookPageChangeService(
+    crud,
+    prisma,
+    pdfStorage,
+    imageStorage,
+    artifactWrites as never,
+  );
   return {
     service,
+    artifactWrites,
     prisma,
     pdfStorage,
     imageStorage,
@@ -184,6 +197,11 @@ describe('BookPageChangeService', () => {
       }),
     );
     expect(result.bookPreview?.pages[0]).toMatchObject({ text: 'New text', version: 2 });
+    expect(harness.artifactWrites.admit).toHaveBeenCalledWith('b-1', 'page_edit_pdf', [
+      { store: 'pdf', runId: expect.any(String), fencingVersion: 1 },
+    ]);
+    expect(harness.artifactWrites.releaseInTransaction).toHaveBeenCalledOnce();
+    expect(harness.artifactWrites.discard).not.toHaveBeenCalled();
   });
 
   it('rejects a stale expectedVersion before rendering or storing a candidate', async () => {
@@ -216,6 +234,7 @@ describe('BookPageChangeService', () => {
       }),
     ).rejects.toThrow('storage unavailable');
 
+    expect(harness.artifactWrites.discard).toHaveBeenCalledOnce();
     expect(harness.bookUpdateMany).not.toHaveBeenCalled();
     expect(harness.bookPageUpsert).not.toHaveBeenCalled();
   });
@@ -233,6 +252,35 @@ describe('BookPageChangeService', () => {
     ).rejects.toThrow(ConflictException);
 
     expect(harness.pdfStorage.saveClaimPreviewPdf).toHaveBeenCalledOnce();
+    expect(harness.artifactWrites.discard).toHaveBeenCalledOnce();
+    expect(harness.artifactWrites.releaseInTransaction).not.toHaveBeenCalled();
     expect(harness.bookPageUpsert).not.toHaveBeenCalled();
+  });
+
+  it('stores nothing when the book no longer admits artifact writers', async () => {
+    const harness = createHarness();
+    harness.pageFindUnique.mockResolvedValueOnce(null);
+    harness.artifactWrites.admit.mockRejectedValue(new BookArtifactWritesClosedError());
+
+    await expect(
+      harness.service.updatePageText('u-1', 'b-1', 1, { text: 'New text', expectedVersion: 1 }),
+    ).rejects.toThrow(NotFoundException);
+
+    expect(harness.pdfStorage.saveClaimPreviewPdf).not.toHaveBeenCalled();
+    expect(harness.bookUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('reports a conflict and discards the candidate when its intent was fenced before publication', async () => {
+    const harness = createHarness();
+    harness.pageFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    harness.artifactWrites.releaseInTransaction.mockRejectedValue(
+      new BookArtifactWriteFencedError(),
+    );
+
+    await expect(
+      harness.service.updatePageText('u-1', 'b-1', 1, { text: 'New text', expectedVersion: 1 }),
+    ).rejects.toThrow(ConflictException);
+
+    expect(harness.artifactWrites.discard).toHaveBeenCalledOnce();
   });
 });

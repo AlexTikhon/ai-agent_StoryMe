@@ -12,6 +12,7 @@ import {
   BookDeletionRetryableError,
   BookHardDeletionService,
 } from '../../src/books/book-hard-deletion.service';
+import { BookArtifactWriteCoordinator } from '../../src/storage/book-artifact-write-coordinator';
 
 describe('Book hard deletion (Slice 6C, real Postgres)', () => {
   const prisma = new PrismaService();
@@ -35,6 +36,7 @@ describe('Book hard deletion (Slice 6C, real Postgres)', () => {
     queue as never,
     imageStorage as never,
     pdfStorage as never,
+    new BookArtifactWriteCoordinator(prisma, imageStorage as never, pdfStorage as never),
   );
 
   beforeAll(async () => {

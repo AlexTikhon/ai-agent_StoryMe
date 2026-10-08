@@ -14,6 +14,8 @@ import type { ChildPhotoProcessor } from '../images/child-photo-processor';
 import type { PrismaService } from '../database/prisma.service';
 import { BookAssetService, parsePublishedImageId } from './book-asset.service';
 import type { BookCrudService } from './book-crud.service';
+import { createFakeArtifactWrites } from '../common/test-utils/fake-artifact-writes';
+import { BookArtifactWritesClosedError } from '../storage/book-artifact-write-coordinator';
 
 const PNG_BYTES = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00,
@@ -46,14 +48,16 @@ function createHarness(book: Book | null = makeBook()) {
   const prisma = {
     bookPage: { findUnique: vi.fn().mockResolvedValue(null) },
   } as unknown as PrismaService;
+  const artifactWrites = createFakeArtifactWrites();
   const service = new BookAssetService(
     crud,
     prisma,
     {} as PdfStorage,
     imageStorage,
     {} as ChildPhotoProcessor,
+    artifactWrites as never,
   );
-  return { service, crud, imageStorage, prisma };
+  return { service, crud, imageStorage, prisma, artifactWrites };
 }
 
 describe('parsePublishedImageId', () => {
@@ -177,7 +181,7 @@ describe('BookAssetService.getPublishedImage cover-thumb', () => {
   }
 
   it('builds a bounded WebP derivative from the immutable cover and caches it beside it', async () => {
-    const { service, imageStorage } = createHarness();
+    const { service, imageStorage, artifactWrites } = createHarness();
     const original = await largeCover();
     imageStorage.getImageAsset.mockImplementation(async (key: string) =>
       key === COVER_KEY ? original : undefined,
@@ -196,6 +200,41 @@ describe('BookAssetService.getPublishedImage cover-thumb', () => {
       result.buffer,
       'image/webp',
     );
+    expect(artifactWrites.admit).toHaveBeenCalledWith('b-1', 'cover_thumbnail', [
+      { store: 'image', key: THUMB_KEY },
+    ]);
+    expect(artifactWrites.release).toHaveBeenCalledOnce();
+    expect(artifactWrites.discard).not.toHaveBeenCalled();
+  });
+
+  it('serves the derivative without caching when the book no longer admits artifact writers', async () => {
+    const { service, imageStorage, artifactWrites } = createHarness();
+    const original = await largeCover();
+    imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === COVER_KEY ? original : undefined,
+    );
+    artifactWrites.admit.mockRejectedValue(new BookArtifactWritesClosedError());
+
+    const result = await service.getPublishedImage('b-1', 'u-1', 'cover-thumb');
+
+    expect(result.contentType).toBe('image/webp');
+    expect(imageStorage.saveImageAsset).not.toHaveBeenCalled();
+    expect(artifactWrites.release).not.toHaveBeenCalled();
+  });
+
+  it('discards the intent when caching the derivative fails', async () => {
+    const { service, imageStorage, artifactWrites } = createHarness();
+    const original = await largeCover();
+    imageStorage.getImageAsset.mockImplementation(async (key: string) =>
+      key === COVER_KEY ? original : undefined,
+    );
+    imageStorage.saveImageAsset.mockRejectedValue(new Error('disk full'));
+
+    const result = await service.getPublishedImage('b-1', 'u-1', 'cover-thumb');
+
+    expect(result.contentType).toBe('image/webp');
+    expect(artifactWrites.discard).toHaveBeenCalledOnce();
+    expect(artifactWrites.release).not.toHaveBeenCalled();
   });
 
   it('serves a cached derivative without touching the full illustration', async () => {

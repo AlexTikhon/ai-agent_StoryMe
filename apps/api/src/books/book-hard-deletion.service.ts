@@ -22,11 +22,13 @@ import { IMAGE_ASSET_STORAGE_TOKEN, type ImageAssetStorage } from '../images/ima
 import { OUTBOX_STATUS_CANCELLED, OUTBOX_STATUS_PENDING } from '../outbox/outbox.service';
 import { PDF_STORAGE_TOKEN, type PdfStorage } from '../pdf/pdf-storage';
 import { GenerationQueueService } from '../agent/generation-queue.service';
+import { BookArtifactWriteCoordinator } from '../storage/book-artifact-write-coordinator';
 
 export const HARD_DELETE_CONFIRMATION_CODE = 'HARD_DELETE_CONFIRMATION_MISMATCH';
 
 type RetryCode =
   | 'BOOK_WORK_STILL_ACTIVE'
+  | 'BOOK_WRITERS_STILL_ACTIVE'
   | 'ARTIFACT_LIST_FAILED'
   | 'ARTIFACT_DELETE_FAILED'
   | 'DATABASE_FINALIZATION_BLOCKED'
@@ -66,6 +68,7 @@ export class BookHardDeletionService {
     private readonly queue: GenerationQueueService,
     @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageStorage: ImageAssetStorage,
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
+    private readonly artifactWrites: BookArtifactWriteCoordinator,
   ) {}
 
   async request(
@@ -292,6 +295,12 @@ export class BookHardDeletionService {
       if (await this.queue.hasActiveBookWork(request.bookId, request.id)) {
         throw new BookDeletionRetryableError('BOOK_WORK_STILL_ACTIVE');
       }
+      // The tombstone closed admission, so this count can only fall. It must be
+      // zero BEFORE the sweep: only then can no API-side writer add an artifact
+      // after the storage verification below.
+      if ((await this.artifactWrites.countBlockingWriters(request.bookId)) > 0) {
+        throw new BookDeletionRetryableError('BOOK_WRITERS_STILL_ACTIVE');
+      }
 
       const [images, pdfs] = await Promise.all([
         this.imageStorage.deleteBookArtifacts(request.bookId),
@@ -323,6 +332,11 @@ export class BookHardDeletionService {
           },
         });
         if (activeRuns > 0 || activeRevisions > 0) {
+          throw new BookDeletionRetryableError('DATABASE_FINALIZATION_BLOCKED');
+        }
+        // The sweep above was freshly verified after writers drained, so any
+        // remaining cleanup records are redundant; an `active` one is not.
+        if ((await this.artifactWrites.settleForDeletion(tx, request.bookId)) > 0) {
           throw new BookDeletionRetryableError('DATABASE_FINALIZATION_BLOCKED');
         }
 

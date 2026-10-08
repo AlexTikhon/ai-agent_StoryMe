@@ -52,6 +52,13 @@ export function createMockPrisma(): DeepMockOf<PrismaService> {
     generationRun: mockModel(),
     outboxEvent: mockModel(),
     bookDeletionRequest: mockModel(),
+    bookArtifactWriteIntent: {
+      ...mockModel(),
+      create: vi.fn().mockResolvedValue({ id: 'intent-1' }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     recoveryLease: mockModel(),
     userBookState: mockModel(),
     notification: mockModel(),

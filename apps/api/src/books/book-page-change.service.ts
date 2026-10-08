@@ -2,7 +2,7 @@ import { validateImage } from '../images/validated-image';
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { BookDto, BookPreview, ImageGenerationResult, StoryPlan } from '@book/types';
-import { BookStatus, Prisma } from '@prisma/client';
+import { BookStatus, Prisma, type Book } from '@prisma/client';
 import { bookLayoutStage } from '../agent/book-layout.stage';
 import {
   claimNamespace,
@@ -17,6 +17,11 @@ import { bookPreviewSchema, imageGenerationResultSchema, storyPlanSchema } from 
 import { BookCrudService } from './book-crud.service';
 import type { UpdateBookPageTextDto } from './dto/update-book-page-text.dto';
 import { publishedImageKey } from './published-page-image-key';
+import {
+  BookArtifactWriteCoordinator,
+  BookArtifactWritesClosedError,
+  BookArtifactWriteFencedError,
+} from '../storage/book-artifact-write-coordinator';
 
 const PAGE_EDIT_FENCING_VERSION = 1;
 
@@ -48,6 +53,7 @@ export class BookPageChangeService {
     private readonly prisma: PrismaService,
     @Inject(PDF_STORAGE_TOKEN) private readonly pdfStorage: PdfStorage,
     @Inject(IMAGE_ASSET_STORAGE_TOKEN) private readonly imageStorage: ImageAssetStorage,
+    private readonly artifactWrites: BookArtifactWriteCoordinator,
   ) {}
 
   async updatePageText(
@@ -147,101 +153,133 @@ export class BookPageChangeService {
       resolveImageBuffer: (_imageBlock, entry) => imageBuffers.get(entry.id),
     });
     const candidateNamespace = claimNamespace(randomUUID(), PAGE_EDIT_FENCING_VERSION);
-    const savedPdf = await this.pdfStorage.saveClaimPreviewPdf(
-      bookId,
-      candidateNamespace,
-      pdfBuffer,
-    );
-
-    const updatedBook = await this.prisma.$transaction(async (tx) => {
-      const currentPage = await tx.bookPage.findUnique({
-        where: { bookId_pageNumber: { bookId, pageNumber } },
-        select: { version: true },
-      });
-      const transactionVersion = currentPage?.version ?? previewPage.version ?? 1;
-      if (transactionVersion !== dto.expectedVersion) {
-        throw new ConflictException({
-          code: 'PAGE_VERSION_CONFLICT',
-          message: 'This page changed after it was opened. Refresh the book and try again.',
-          currentVersion: transactionVersion,
-        });
+    // Admission is durable and ordered against permanent deletion. It is taken
+    // after the (long) render, so the lease only spans the storage write and the
+    // publication transaction, and the intent is consumed by that transaction.
+    let intent;
+    try {
+      intent = await this.artifactWrites.admit(bookId, 'page_edit_pdf', [
+        {
+          store: 'pdf',
+          runId: candidateNamespace.runId,
+          fencingVersion: candidateNamespace.fencingVersion,
+        },
+      ]);
+    } catch (err) {
+      if (err instanceof BookArtifactWritesClosedError) {
+        throw new NotFoundException('Book not found');
       }
+      throw err;
+    }
 
-      const changed = await tx.book.updateMany({
-        where: {
-          id: bookId,
-          userId,
-          deletedAt: null,
-          status: BookStatus.complete,
-          activeRunId: null,
-          activePageImageRevisionId: null,
-          updatedAt: book.updatedAt,
-          publishedRunId: book.publishedRunId,
-          publishedRunFencingVersion: book.publishedRunFencingVersion,
-          publishedPdfRunId: book.publishedPdfRunId,
-          publishedPdfFencingVersion: book.publishedPdfFencingVersion,
-        },
-        data: {
-          bookPreview: nextPreview as unknown as Prisma.InputJsonValue,
-          bookLayout: nextLayout as unknown as Prisma.InputJsonValue,
-          ...(nextStoryPlan && {
-            storyPlan: nextStoryPlan as unknown as Prisma.InputJsonValue,
-          }),
-          previewPdfUrl: savedPdf.url,
-          publishedPdfRunId: candidateNamespace.runId,
-          publishedPdfFencingVersion: candidateNamespace.fencingVersion,
-        },
+    let updatedBook: Book;
+    try {
+      const savedPdf = await this.pdfStorage.saveClaimPreviewPdf(
+        bookId,
+        candidateNamespace,
+        pdfBuffer,
+      );
+      updatedBook = await this.prisma.$transaction(async (tx) => {
+        const currentPage = await tx.bookPage.findUnique({
+          where: { bookId_pageNumber: { bookId, pageNumber } },
+          select: { version: true },
+        });
+        const transactionVersion = currentPage?.version ?? previewPage.version ?? 1;
+        if (transactionVersion !== dto.expectedVersion) {
+          throw new ConflictException({
+            code: 'PAGE_VERSION_CONFLICT',
+            message: 'This page changed after it was opened. Refresh the book and try again.',
+            currentVersion: transactionVersion,
+          });
+        }
+
+        const changed = await tx.book.updateMany({
+          where: {
+            id: bookId,
+            userId,
+            deletedAt: null,
+            status: BookStatus.complete,
+            activeRunId: null,
+            activePageImageRevisionId: null,
+            updatedAt: book.updatedAt,
+            publishedRunId: book.publishedRunId,
+            publishedRunFencingVersion: book.publishedRunFencingVersion,
+            publishedPdfRunId: book.publishedPdfRunId,
+            publishedPdfFencingVersion: book.publishedPdfFencingVersion,
+          },
+          data: {
+            bookPreview: nextPreview as unknown as Prisma.InputJsonValue,
+            bookLayout: nextLayout as unknown as Prisma.InputJsonValue,
+            ...(nextStoryPlan && {
+              storyPlan: nextStoryPlan as unknown as Prisma.InputJsonValue,
+            }),
+            previewPdfUrl: savedPdf.url,
+            publishedPdfRunId: candidateNamespace.runId,
+            publishedPdfFencingVersion: candidateNamespace.fencingVersion,
+          },
+        });
+        if (changed.count === 0) {
+          throw new ConflictException(
+            'The book changed while this page was being rebuilt. Refresh and try again.',
+          );
+        }
+        // Consumes the intent in the publishing transaction: a fenced (reaped)
+        // writer cannot publish, and a committed publication leaves no record.
+        await this.artifactWrites.releaseInTransaction(tx, intent);
+
+        const pageLayout = nextLayout.entries.find(
+          (entry) => entry.kind === 'page' && entry.pageNumber === pageNumber,
+        );
+        const image = imageResult.images.find(
+          (entry) => entry.kind === 'page' && entry.pageNumber === pageNumber,
+        );
+        await tx.bookPage.upsert({
+          where: { bookId_pageNumber: { bookId, pageNumber } },
+          create: {
+            bookId,
+            pageNumber,
+            textContent: dto.text,
+            version: nextVersion,
+            textRegenCount: 1,
+            ...(image && {
+              imagePrompt: {
+                prompt: image.prompt,
+                negativePrompt: image.negativePrompt ?? null,
+              } as Prisma.InputJsonValue,
+              imageR2Key: publishedImageKey(
+                bookId,
+                imageNamespace,
+                'page',
+                pageNumber,
+                imageOverrides,
+              ),
+              imageUrl: image.imageUrl,
+            }),
+            ...(pageLayout && {
+              layoutSpec: pageLayout as unknown as Prisma.InputJsonValue,
+            }),
+          },
+          update: {
+            textContent: dto.text,
+            version: nextVersion,
+            textRegenCount: { increment: 1 },
+            ...(pageLayout && {
+              layoutSpec: pageLayout as unknown as Prisma.InputJsonValue,
+            }),
+          },
+        });
+
+        return tx.book.findUniqueOrThrow({ where: { id: bookId } });
       });
-      if (changed.count === 0) {
+    } catch (err) {
+      await this.artifactWrites.discard(intent);
+      if (err instanceof BookArtifactWriteFencedError) {
         throw new ConflictException(
           'The book changed while this page was being rebuilt. Refresh and try again.',
         );
       }
-
-      const pageLayout = nextLayout.entries.find(
-        (entry) => entry.kind === 'page' && entry.pageNumber === pageNumber,
-      );
-      const image = imageResult.images.find(
-        (entry) => entry.kind === 'page' && entry.pageNumber === pageNumber,
-      );
-      await tx.bookPage.upsert({
-        where: { bookId_pageNumber: { bookId, pageNumber } },
-        create: {
-          bookId,
-          pageNumber,
-          textContent: dto.text,
-          version: nextVersion,
-          textRegenCount: 1,
-          ...(image && {
-            imagePrompt: {
-              prompt: image.prompt,
-              negativePrompt: image.negativePrompt ?? null,
-            } as Prisma.InputJsonValue,
-            imageR2Key: publishedImageKey(
-              bookId,
-              imageNamespace,
-              'page',
-              pageNumber,
-              imageOverrides,
-            ),
-            imageUrl: image.imageUrl,
-          }),
-          ...(pageLayout && {
-            layoutSpec: pageLayout as unknown as Prisma.InputJsonValue,
-          }),
-        },
-        update: {
-          textContent: dto.text,
-          version: nextVersion,
-          textRegenCount: { increment: 1 },
-          ...(pageLayout && {
-            layoutSpec: pageLayout as unknown as Prisma.InputJsonValue,
-          }),
-        },
-      });
-
-      return tx.book.findUniqueOrThrow({ where: { id: bookId } });
-    });
+      throw err;
+    }
 
     return toBookDto(updatedBook);
   }
