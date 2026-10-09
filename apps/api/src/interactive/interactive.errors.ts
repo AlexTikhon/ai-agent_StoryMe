@@ -32,6 +32,12 @@ export const sessionBusy = () =>
     message: 'The session is busy; retry shortly',
   });
 
+export const sessionLimitReached = () =>
+  new ConflictException({
+    code: 'SESSION_LIMIT_REACHED',
+    message: 'You have reached the maximum number of stories',
+  });
+
 export const unknownScenario = () =>
   new UnprocessableEntityException({
     code: 'UNKNOWN_SCENARIO',

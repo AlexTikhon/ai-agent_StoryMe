@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { HttpException, Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { InteractiveSessionListDto, InteractiveSessionSummaryDto } from '@book/types';
 import type { InteractiveSession, Prisma } from '@prisma/client';
 import { canonicalHash } from './domain/canonical';
 import {
@@ -18,6 +20,7 @@ import {
   revisionConflict,
   scenarioVersionUnavailable,
   sessionBusy,
+  sessionLimitReached,
   sessionNotFound,
   sessionStateInvalid,
   toHttpError,
@@ -29,9 +32,15 @@ import {
   prepareNarration,
   type NarratorProvider,
 } from './narrator/narrator';
+import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
 import { buildPublicView, publicSessionViewSchema, type PublicSessionView } from './public-view';
-import type { SubmitChoiceBody } from './requests';
+import {
+  encodeListCursor,
+  type CreateSessionBody,
+  type ListSessionsQuery,
+  type SubmitChoiceBody,
+} from './requests';
 import { getLatestScenario, getScenario } from './scenarios';
 
 /** Bounds how long a choice may wait for the session row lock or run in total. */
@@ -62,42 +71,150 @@ export class InteractiveService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(NARRATOR_PROVIDER) private readonly narrator: NarratorProvider,
+    @Inject(ConfigService) private readonly config: ConfigService<Env, true>,
   ) {}
 
-  async createSession(userId: string, scenarioId: string): Promise<PublicSessionView> {
-    const scenario = getLatestScenario(scenarioId);
+  /**
+   * Creates a session, or replays the one a previous identical request created.
+   *
+   * Order matters: (1) an existing creation identity is resolved before any
+   * narration is prepared, so a retry never narrates again and never depends on
+   * the latest scenario version; (2) narration is prepared outside any
+   * transaction; (3) the identity is re-checked inside the write transaction,
+   * under the owner's admission lock, before the session cap is evaluated, so an
+   * accepted retry still succeeds at the cap.
+   */
+  async createSession(userId: string, command: CreateSessionBody): Promise<PublicSessionView> {
+    const requestHash = canonicalHash({ scenarioId: command.scenarioId });
+
+    const existing = await this.findCreation(this.prisma, userId, command.idempotencyKey);
+    if (existing) return this.replayCreation(this.prisma, existing, requestHash);
+
+    const scenario = getLatestScenario(command.scenarioId);
     if (!scenario) throw unknownScenario();
 
     const genesis = startSession(scenario);
-    // Narration is prepared before, and never inside, the write transaction.
     const narration = await this.narrate(scenario, genesis.state);
     const sessionId = randomUUID();
     const view = buildPublicView({ sessionId, scenario, state: genesis.state, narration });
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.interactiveSession.create({
-        data: {
-          id: sessionId,
-          userId,
-          scenarioId: scenario.id,
-          scenarioVersion: scenario.version,
-          revision: genesis.state.revision,
-          state: json(genesis.state),
-        },
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT_MS}ms'`);
+        await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
+
+        // Serializes session admission for this owner. FOR NO KEY UPDATE conflicts
+        // with other admissions (and other writers of the user row) but not with
+        // foreign-key checks, so unrelated inserts that merely reference the user
+        // (books, events, ...) are not blocked. Held only for this short
+        // transaction; narration was prepared before it began.
+        const locked = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM users WHERE id = ${userId}::uuid FOR NO KEY UPDATE`;
+        if (locked.length === 0) throw sessionNotFound();
+
+        // Identity first, then the cap: an accepted retry must work at the cap.
+        const raced = await this.findCreation(tx, userId, command.idempotencyKey);
+        if (raced) return this.replayCreation(tx, raced, requestHash);
+
+        // Counted under the lock and inserted in the same transaction: there is no
+        // window between the count and the insert for a concurrent creation.
+        const retained = await tx.interactiveSession.count({ where: { userId } });
+        if (retained >= this.maxSessionsPerUser()) throw sessionLimitReached();
+
+        await tx.interactiveSession.create({
+          data: {
+            id: sessionId,
+            userId,
+            scenarioId: scenario.id,
+            scenarioVersion: scenario.version,
+            revision: genesis.state.revision,
+            state: json(genesis.state),
+            creationIdempotencyKey: command.idempotencyKey,
+            creationRequestHash: requestHash,
+          },
+        });
+        await tx.sessionEvent.create({
+          data: {
+            sessionId,
+            seq: genesis.event.seq,
+            type: genesis.event.type,
+            schemaVersion: genesis.event.version,
+            payload: json(genesis.event.payload),
+            stateHash: genesis.event.stateHash,
+            response: json(view),
+          },
+        });
+        return view;
+      }, TRANSACTION_OPTIONS);
+    } catch (error) {
+      throw this.translate(error);
+    }
+  }
+
+  /**
+   * One page of the caller's sessions, newest first. Every query is filtered by
+   * the owner; summaries are built only from the stored public view of each
+   * session's current revision (never from state, payloads or hashes).
+   */
+  async listSessions(userId: string, query: ListSessionsQuery): Promise<InteractiveSessionListDto> {
+    const { limit, cursor } = query;
+    const rows = await this.prisma.interactiveSession.findMany({
+      where: {
+        userId,
+        ...(cursor
+          ? {
+              OR: [
+                { createdAt: { lt: cursor.createdAt } },
+                { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      select: {
+        id: true,
+        scenarioId: true,
+        scenarioVersion: true,
+        revision: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor =
+      rows.length > limit && last
+        ? encodeListCursor({ createdAt: last.createdAt, id: last.id })
+        : null;
+    if (page.length === 0) return { sessions: [], nextCursor };
+
+    const events = await this.prisma.sessionEvent.findMany({
+      where: { OR: page.map((row) => ({ sessionId: row.id, seq: row.revision })) },
+      select: { sessionId: true, response: true },
+    });
+    const responses = new Map(events.map((event) => [event.sessionId, event.response]));
+
+    const sessions: InteractiveSessionSummaryDto[] = [];
+    for (const row of page) {
+      const parsed = publicSessionViewSchema.safeParse(responses.get(row.id));
+      if (!parsed.success) {
+        this.logger.error(`Session ${row.id} has no valid event for revision ${row.revision}`);
+        continue;
+      }
+      const view = parsed.data;
+      sessions.push({
+        sessionId: row.id,
+        scenarioId: row.scenarioId,
+        scenarioVersion: row.scenarioVersion,
+        sceneTitle: view.scene.title,
+        status: view.status,
+        endingTitle: view.ending?.title ?? null,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
       });
-      await tx.sessionEvent.create({
-        data: {
-          sessionId,
-          seq: genesis.event.seq,
-          type: genesis.event.type,
-          schemaVersion: genesis.event.version,
-          payload: json(genesis.event.payload),
-          stateHash: genesis.event.stateHash,
-          response: json(view),
-        },
-      });
-    }, TRANSACTION_OPTIONS);
-    return view;
+    }
+    return { sessions, nextCursor };
   }
 
   async getSession(userId: string, sessionId: string): Promise<PublicSessionView> {
@@ -275,6 +392,34 @@ export class InteractiveService {
     } catch (error) {
       throw this.translate(error);
     }
+  }
+
+  private maxSessionsPerUser(): number {
+    return this.config.get('INTERACTIVE_MAX_SESSIONS_PER_USER', { infer: true });
+  }
+
+  private findCreation(db: Prisma.TransactionClient, userId: string, key: string) {
+    return db.interactiveSession.findUnique({
+      where: { userId_creationIdempotencyKey: { userId, creationIdempotencyKey: key } },
+      select: { id: true, creationRequestHash: true },
+    });
+  }
+
+  /** Same fingerprint: the stored genesis response, even if the session has since advanced. */
+  private async replayCreation(
+    db: Prisma.TransactionClient,
+    existing: { id: string; creationRequestHash: string | null },
+    requestHash: string,
+  ): Promise<PublicSessionView> {
+    if (existing.creationRequestHash !== requestHash) throw idempotencyKeyReused();
+    const genesis = await db.sessionEvent.findUnique({
+      where: { sessionId_seq: { sessionId: existing.id, seq: 0 } },
+    });
+    if (!genesis) {
+      this.logger.error(`Session ${existing.id} has no genesis event`);
+      throw sessionStateInvalid();
+    }
+    return this.parseStoredView(genesis.response);
   }
 
   private async loadOwned(userId: string, sessionId: string): Promise<InteractiveSession> {

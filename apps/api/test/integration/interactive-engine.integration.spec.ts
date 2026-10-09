@@ -8,6 +8,8 @@ import { PrismaService } from '../../src/database/prisma.service';
 import {
   InteractiveTestKit,
   SCENARIO_ID,
+  configWithCap,
+  startCommand,
   withTransactionFault,
 } from './fixtures/interactive-helpers';
 
@@ -33,7 +35,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
   it('creates the session and its genesis event atomically', async () => {
     const userId = await kit.createUser();
-    const view = await kit.service.createSession(userId, SCENARIO_ID);
+    const view = await kit.start(userId);
 
     expect(view).toMatchObject({
       revision: 0,
@@ -68,8 +70,9 @@ describe('Interactive engine persistence (real Postgres)', () => {
     const faulty = new InteractiveService(
       withTransactionFault(kit.prisma, { model: 'sessionEvent', method: 'create' }),
       kit.narrator,
+      configWithCap(50),
     );
-    await expect(faulty.createSession(userId, SCENARIO_ID)).rejects.toThrow(
+    await expect(faulty.createSession(userId, startCommand())).rejects.toThrow(
       'injected write failure',
     );
     expect(await kit.prisma.interactiveSession.count({ where: { userId } })).toBe(0);
@@ -77,9 +80,9 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
   it('rejects an unknown scenario without writing anything', async () => {
     const userId = await kit.createUser();
-    expect(await failureCode(kit.service.createSession(userId, 'no-such-scenario'))).toBe(
-      'UNKNOWN_SCENARIO',
-    );
+    expect(
+      await failureCode(kit.service.createSession(userId, startCommand('no-such-scenario'))),
+    ).toBe('UNKNOWN_SCENARIO');
     expect(await kit.prisma.interactiveSession.count({ where: { userId } })).toBe(0);
   });
 
@@ -87,7 +90,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
     const userId = await kit.createUser();
     const endings = new Set<string>();
     for (const route of Object.values(WARSAW_ROUTES)) {
-      let view = await kit.service.createSession(userId, SCENARIO_ID);
+      let view = await kit.start(userId);
       for (const [index, choiceId] of route.entries()) {
         expect(view.choices.map((c) => c.id)).toContain(choiceId);
         view = await kit.choose(userId, view, choiceId);
@@ -107,7 +110,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
   it('rejects choices that are unknown, locked, or after an ending, leaving state untouched', async () => {
     const userId = await kit.createUser();
-    let view = await kit.service.createSession(userId, SCENARIO_ID);
+    let view = await kit.start(userId);
     const attempt = (choiceId: string) => kit.choose(userId, view, choiceId);
 
     expect(await failureCode(attempt('c-invented'))).toBe('UNKNOWN_CHOICE');
@@ -118,7 +121,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
     expect(await failureCode(attempt('c-ask-caretaker'))).toBe('SESSION_TERMINAL');
 
     // Locked branch: the mailbox route has no entry card.
-    let other = await kit.service.createSession(userId, SCENARIO_ID);
+    let other = await kit.start(userId);
     other = await kit.choose(userId, other, 'c-read-mailboxes');
     other = await kit.choose(userId, other, 'c-climb-from-mailboxes');
     expect(other.choices.map((c) => c.id)).not.toContain('c-use-card');
@@ -133,7 +136,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
   describe('idempotency', () => {
     it('returns the original response for an exact retry, even after later choices', async () => {
       const userId = await kit.createUser();
-      const start = await kit.service.createSession(userId, SCENARIO_ID);
+      const start = await kit.start(userId);
       const command = {
         choiceId: 'c-ask-caretaker',
         expectedRevision: 0,
@@ -156,7 +159,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
     it('rejects the same key with a different command fingerprint', async () => {
       const userId = await kit.createUser();
-      const start = await kit.service.createSession(userId, SCENARIO_ID);
+      const start = await kit.start(userId);
       const key = 'reused-key-1';
       await kit.service.submitChoice(userId, start.sessionId, {
         choiceId: 'c-ask-caretaker',
@@ -182,8 +185,8 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
     it('accepts equal keys in different sessions', async () => {
       const userId = await kit.createUser();
-      const a = await kit.service.createSession(userId, SCENARIO_ID);
-      const b = await kit.service.createSession(userId, SCENARIO_ID);
+      const a = await kit.start(userId);
+      const b = await kit.start(userId);
       const command = {
         choiceId: 'c-read-mailboxes',
         expectedRevision: 0,
@@ -201,7 +204,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
     it('does not reserve a key for a failed command', async () => {
       const userId = await kit.createUser();
-      const start = await kit.service.createSession(userId, SCENARIO_ID);
+      const start = await kit.start(userId);
       const key = 'failed-then-ok-1';
 
       expect(
@@ -233,7 +236,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
     it('reports a stale revision as REVISION_CONFLICT for a fresh key', async () => {
       const userId = await kit.createUser();
-      const start = await kit.service.createSession(userId, SCENARIO_ID);
+      const start = await kit.start(userId);
       await kit.choose(userId, start, 'c-ask-caretaker');
       expect(await failureCode(kit.choose(userId, start, 'c-read-mailboxes'))).toBe(
         'REVISION_CONFLICT',
@@ -245,7 +248,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
   describe('failure handling', () => {
     it('rolls back both the event and the state when the write fails after the insert', async () => {
       const userId = await kit.createUser();
-      const start = await kit.service.createSession(userId, SCENARIO_ID);
+      const start = await kit.start(userId);
       const before = await kit.prisma.interactiveSession.findUniqueOrThrow({
         where: { id: start.sessionId },
       });
@@ -253,6 +256,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
       const faulty = new InteractiveService(
         withTransactionFault(kit.prisma, { model: 'interactiveSession', method: 'updateMany' }),
         kit.narrator,
+        configWithCap(50),
       );
       await expect(
         faulty.submitChoice(userId, start.sessionId, {
@@ -282,7 +286,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
     it('changes neither state nor event count when narration is invalid', async () => {
       const userId = await kit.createUser();
-      const start = await kit.service.createSession(userId, SCENARIO_ID);
+      const start = await kit.start(userId);
 
       kit.narrator.mode = 'invalid-text';
       expect(await failureCode(kit.choose(userId, start, 'c-ask-caretaker', 'bad-narr-1'))).toBe(
@@ -304,7 +308,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
     it('rejects an invalid choice before any narration is requested', async () => {
       const userId = await kit.createUser();
-      const start = await kit.service.createSession(userId, SCENARIO_ID);
+      const start = await kit.start(userId);
       const before = kit.narrator.calls;
       await failureCode(kit.choose(userId, start, 'c-use-card'));
       expect(kit.narrator.calls).toBe(before);
@@ -315,7 +319,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
     it('hides other users sessions: same 404 for read, choose, and cached responses', async () => {
       const ownerId = await kit.createUser();
       const intruderId = await kit.createUser();
-      const start = await kit.service.createSession(ownerId, SCENARIO_ID);
+      const start = await kit.start(ownerId);
       const command = {
         choiceId: 'c-ask-caretaker',
         expectedRevision: 0,
@@ -362,13 +366,13 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
   it('resumes the same session through a new service instance', async () => {
     const userId = await kit.createUser();
-    let view = await kit.service.createSession(userId, SCENARIO_ID);
+    let view = await kit.start(userId);
     view = await kit.choose(userId, view, 'c-ask-caretaker');
 
     const freshPrisma = new PrismaService();
     await freshPrisma.$connect();
     try {
-      const fresh = new InteractiveService(freshPrisma, kit.narrator);
+      const fresh = new InteractiveService(freshPrisma, kit.narrator, configWithCap(50));
       expect(await fresh.getSession(userId, view.sessionId)).toEqual(view);
       const next = await fresh.submitChoice(userId, view.sessionId, {
         choiceId: 'c-climb-from-caretaker',
@@ -384,7 +388,7 @@ describe('Interactive engine persistence (real Postgres)', () => {
 
   it('keeps sessions pinned to their scenario version', async () => {
     const userId = await kit.createUser();
-    const view = await kit.service.createSession(userId, SCENARIO_ID);
+    const view = await kit.start(userId);
     const session = await kit.prisma.interactiveSession.findUniqueOrThrow({
       where: { id: view.sessionId },
     });

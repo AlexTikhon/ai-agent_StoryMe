@@ -1,7 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_LIST_LIMIT,
   createSessionBodySchema,
+  encodeListCursor,
+  listSessionsQuerySchema,
   parseRequest,
   sessionIdSchema,
   submitChoiceBodySchema,
@@ -27,9 +30,8 @@ function rejects(schema: Parameters<typeof parseRequest>[0], value: unknown): bo
 describe('interactive request validation', () => {
   it('accepts a well-formed choice command and session creation body', () => {
     expect(parseRequest(submitChoiceBodySchema, valid)).toEqual(valid);
-    expect(parseRequest(createSessionBodySchema, { scenarioId: 'warsaw-last-delivery' })).toEqual({
-      scenarioId: 'warsaw-last-delivery',
-    });
+    const create = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-1234-abcd' };
+    expect(parseRequest(createSessionBodySchema, create)).toEqual(create);
     expect(parseRequest(sessionIdSchema, '3f2504e0-4f89-41d3-9a0c-0305e82c3301')).toBeTruthy();
   });
 
@@ -53,7 +55,11 @@ describe('interactive request validation', () => {
       true,
     );
     expect(rejects(submitChoiceBodySchema, { ...valid, idempotencyKey: 'has space' })).toBe(true);
-    expect(rejects(createSessionBodySchema, { scenarioId: '../etc' })).toBe(true);
+    const create = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-1234-abcd' };
+    expect(rejects(createSessionBodySchema, { ...create, scenarioId: '../etc' })).toBe(true);
+    for (const key of ['', 'k'.repeat(129), 'has space', 42, null]) {
+      expect(rejects(createSessionBodySchema, { ...create, idempotencyKey: key })).toBe(true);
+    }
   });
 
   it('rejects missing fields and non-object bodies', () => {
@@ -61,6 +67,8 @@ describe('interactive request validation', () => {
     expect(rejects(submitChoiceBodySchema, 'choice')).toBe(true);
     expect(rejects(submitChoiceBodySchema, { choiceId: valid.choiceId })).toBe(true);
     expect(rejects(createSessionBodySchema, {})).toBe(true);
+    // The idempotency key is required for creation.
+    expect(rejects(createSessionBodySchema, { scenarioId: 'warsaw-last-delivery' })).toBe(true);
   });
 
   it('refuses client-supplied events, state, effects, narration or owner', () => {
@@ -73,8 +81,57 @@ describe('interactive request validation', () => {
     ]) {
       expect(rejects(submitChoiceBodySchema, { ...valid, ...extra })).toBe(true);
       expect(
-        rejects(createSessionBodySchema, { scenarioId: 'warsaw-last-delivery', ...extra }),
+        rejects(createSessionBodySchema, {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: 'start-1234-abcd',
+          ...extra,
+        }),
       ).toBe(true);
     }
+  });
+
+  describe('session list query', () => {
+    const cursorValue = encodeListCursor({
+      createdAt: new Date('2026-10-09T10:11:12.345Z'),
+      id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+    });
+
+    it('defaults the limit and accepts a round-tripped cursor', () => {
+      expect(parseRequest(listSessionsQuerySchema, {})).toEqual({
+        limit: DEFAULT_LIST_LIMIT,
+        cursor: null,
+      });
+      const parsed = parseRequest(listSessionsQuerySchema, { limit: '50', cursor: cursorValue });
+      expect(parsed.limit).toBe(50);
+      expect(parsed.cursor).toEqual({
+        createdAt: new Date('2026-10-09T10:11:12.345Z'),
+        id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+      });
+    });
+
+    it('rejects out-of-range, non-numeric and repeated limits', () => {
+      for (const limit of ['0', '51', '-1', '1.5', '1e1', ' 5', '007', 'abc', '', ['1', '2']]) {
+        expect(rejects(listSessionsQuerySchema, { limit }), String(limit)).toBe(true);
+      }
+    });
+
+    it('rejects malformed, forged and oversized cursors', () => {
+      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const bad = [
+        '',
+        'not base64!',
+        'a'.repeat(201),
+        encode({ t: 'yesterday', i: '3f2504e0-4f89-41d3-9a0c-0305e82c3301' }),
+        encode({ t: '2026-10-09T10:11:12.345Z', i: "1' OR '1'='1" }),
+        encode({ t: '2026-10-09T10:11:12.345Z', i: '3f2504e0-4f89-41d3-9a0c-0305e82c3301', x: 1 }),
+        encode('plain string'),
+        Buffer.from('{not json').toString('base64url'),
+      ];
+      for (const cursor of bad) expect(rejects(listSessionsQuerySchema, { cursor })).toBe(true);
+    });
+
+    it('rejects unknown query parameters such as an owner id', () => {
+      expect(rejects(listSessionsQuerySchema, { userId: 'someone-else' })).toBe(true);
+    });
   });
 });

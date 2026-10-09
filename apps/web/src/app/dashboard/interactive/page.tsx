@@ -1,10 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import { StoryLibrary } from './story-library';
 import { useStartStory } from './use-start-story';
 
 export default function InteractiveIntroPage() {
-  const { start, starting, error } = useStartStory();
+  const { start, starting, error, pending } = useStartStory();
 
   return (
     <main className="min-h-dvh bg-stone-950 px-4 py-10 text-stone-100">
@@ -52,8 +53,10 @@ export default function InteractiveIntroPage() {
           disabled={starting}
           className="mt-8 rounded-lg bg-amber-400 px-6 py-3 text-base font-semibold text-stone-950 hover:bg-amber-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {starting ? 'Starting…' : 'Start story'}
+          {starting ? 'Starting…' : pending ? 'Try again' : 'Start story'}
         </button>
+
+        <StoryLibrary />
       </div>
     </main>
   );

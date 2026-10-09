@@ -994,12 +994,17 @@ model InteractiveSession {
   scenarioVersion Int      @map("scenario_version")
   revision        Int      @default(0)
   state           Json
+  // Creation identity. Nullable: sessions created before it existed have none.
+  // `creationRequestHash` fingerprints the validated creation command without the key.
+  creationIdempotencyKey String?  @map("creation_idempotency_key")
+  creationRequestHash    String?  @map("creation_request_hash")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   events SessionEvent[]
 
+  @@unique([userId, creationIdempotencyKey])
   @@index([userId, createdAt])
   @@map("interactive_sessions")
 }

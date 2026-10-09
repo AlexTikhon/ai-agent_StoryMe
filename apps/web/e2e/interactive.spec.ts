@@ -206,3 +206,138 @@ test.describe('interactive story — browser-injected transport failures (not a 
     expect(((await response.json()) as { revision: number }).revision).toBe(1);
   });
 });
+
+// ── Session library (Phase 3) ───────────────────────────────────────────────
+
+const libraryRegion = (page: Page) => page.getByRole('region', { name: 'Your stories' });
+const BACK_TO_LIBRARY = '← Interactive story';
+
+test.describe('interactive story library — real API journeys', () => {
+  test('starts, returns to the library, resumes mid-story and completes it', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const createRequests: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url() === `${apiBaseUrl}/interactive/sessions`) {
+        createRequests.push(request.url());
+      }
+    });
+    const sessionId = await startStory(page);
+    await choose(page, 'Check the mailboxes by the stairwell', 'Behind the mailboxes');
+
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    await expect(page).toHaveURL(/\/dashboard\/interactive$/);
+    const stories = libraryRegion(page).getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+    await expect(stories.getByText('In progress')).toBeVisible();
+    await expect(stories.getByText('At: Behind the mailboxes')).toBeVisible();
+
+    // Resume: the reader shows the *current* scene, not the opening one.
+    await stories.getByRole('link', { name: /Continue/ }).click();
+    await expect(page).toHaveURL(new RegExp(`${sessionId}$`));
+    await expect(page.getByRole('heading', { name: 'Behind the mailboxes' })).toBeVisible();
+    expect(createRequests).toHaveLength(1); // the library and resume created nothing
+
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await choose(
+      page,
+      'Slip a delivery slip under the door and leave the parcel',
+      'A quiet delivery',
+    );
+
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    await expect(stories).toHaveCount(1);
+    await expect(stories.getByText('Completed')).toBeVisible();
+    await expect(stories.getByText('Ending: A Quiet Delivery')).toBeVisible();
+    await expect(stories.getByRole('link', { name: /Read again/ })).toBeVisible();
+    expect(createRequests).toHaveLength(1);
+    await page.context().close();
+  });
+
+  test('keeps each account’s stories private', async ({ browser }) => {
+    const owner = await registerFreshUser(browser);
+    await startStory(owner);
+
+    const other = await registerFreshUser(browser);
+    await other.getByRole('link', { name: 'Interactive story' }).click();
+    await expect(libraryRegion(other).getByText(/No stories yet/)).toBeVisible();
+    await expect(libraryRegion(other).getByRole('listitem')).toHaveCount(0);
+    await owner.context().close();
+    await other.context().close();
+  });
+});
+
+test.describe('interactive story library — browser-injected transport failures (not a real network fault)', () => {
+  /** The server really creates the session; the browser never receives the answer. */
+  async function dropFirstCreationResponse(page: Page): Promise<string[]> {
+    const bodies: string[] = [];
+    let dropped = false;
+    await page.route(`${apiBaseUrl}/interactive/sessions`, async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.fallback();
+        return;
+      }
+      bodies.push(route.request().postData() ?? '');
+      if (!dropped) {
+        dropped = true;
+        await route.fetch();
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    });
+    return bodies;
+  }
+
+  test('a lost creation response is recovered by retrying the identical command: one session', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const bodies = await dropFirstCreationResponse(page);
+    await page.getByRole('link', { name: 'Interactive story' }).click();
+
+    await page.getByRole('button', { name: 'Start story' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: /couldn.t confirm/i })).toBeVisible();
+    expect(bodies).toHaveLength(1); // nothing was retried automatically
+
+    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await expect(page).toHaveURL(SESSION_URL);
+    await expect(page.getByRole('heading', { name: 'Praga courtyard', exact: true })).toBeVisible();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]); // same body, same idempotency key
+    const sessionId = new URL(page.url()).pathname.split('/').at(-1)!;
+
+    // The server holds exactly one session, and it is the one the retry opened.
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    const stories = libraryRegion(page).getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+    await expect(stories.getByRole('link', { name: /Continue/ })).toHaveAttribute(
+      'href',
+      `/dashboard/interactive/${sessionId}`,
+    );
+    await page.context().close();
+  });
+
+  test('a lost creation response leaves a committed session that the library reveals and resumes', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const bodies = await dropFirstCreationResponse(page);
+    await page.getByRole('link', { name: 'Interactive story' }).click();
+    await expect(libraryRegion(page).getByText(/No stories yet/)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Start story' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: /couldn.t confirm/i })).toBeVisible();
+
+    await libraryRegion(page).getByRole('button', { name: 'Refresh' }).click();
+    const stories = libraryRegion(page).getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+    await stories.getByRole('link', { name: /Continue/ }).click();
+
+    await expect(page).toHaveURL(SESSION_URL);
+    await expect(page.getByRole('heading', { name: 'Praga courtyard', exact: true })).toBeVisible();
+    expect(bodies).toHaveLength(1); // resuming from the library sent no second creation
+    await page.context().close();
+  });
+});

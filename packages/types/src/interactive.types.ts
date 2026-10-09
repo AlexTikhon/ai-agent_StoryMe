@@ -8,6 +8,11 @@
 /** POST /api/interactive/sessions body. */
 export interface CreateInteractiveSessionInput {
   scenarioId: string;
+  /**
+   * Client-generated key identifying one deliberate "start story" action.
+   * Resending the identical command with it returns the original session.
+   */
+  idempotencyKey: string;
 }
 
 /** POST /api/interactive/sessions/:id/choices body. */
@@ -50,6 +55,28 @@ export interface InteractiveSessionViewDto {
   ending: InteractiveEndingDto | null;
 }
 
+/** One entry of the session library: an allow-listed summary, never state or history. */
+export interface InteractiveSessionSummaryDto {
+  sessionId: string;
+  scenarioId: string;
+  scenarioVersion: number;
+  /** Title of the scene the session is currently at. */
+  sceneTitle: string;
+  status: 'in_progress' | 'ended';
+  /** Title of the reached ending, once `status` is `ended`. */
+  endingTitle: string | null;
+  /** ISO-8601 timestamps. */
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/interactive/sessions?limit=&cursor= response, newest session first. */
+export interface InteractiveSessionListDto {
+  sessions: InteractiveSessionSummaryDto[];
+  /** Opaque; pass back as `cursor` for the next page. `null` on the last page. */
+  nextCursor: string | null;
+}
+
 /** Stable `code` values the interactive endpoints return on failure. */
 export type InteractiveErrorCode =
   | 'INVALID_REQUEST'
@@ -62,4 +89,7 @@ export type InteractiveErrorCode =
   | 'SESSION_TERMINAL'
   | 'NARRATION_INVALID'
   | 'NARRATION_PROVIDER_FAILED'
-  | 'SESSION_BUSY';
+  | 'SESSION_BUSY'
+  | 'SESSION_LIMIT_REACHED'
+  | 'RATE_LIMITED'
+  | 'RATE_LIMIT_UNAVAILABLE';

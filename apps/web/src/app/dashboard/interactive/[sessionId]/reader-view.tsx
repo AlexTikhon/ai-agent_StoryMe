@@ -10,6 +10,8 @@ interface StartAnother {
   start: () => void;
   starting: boolean;
   error: string | null;
+  /** The previous start's outcome is unresolved; the next click resends the same command. */
+  pending?: boolean;
 }
 
 const FOCUS_RING =
@@ -270,7 +272,11 @@ export function InteractiveReaderView({
             disabled={startAnother.starting}
             className={`mt-5 ${PRIMARY_BUTTON}`}
           >
-            {startAnother.starting ? 'Starting…' : 'Start another story'}
+            {startAnother.starting
+              ? 'Starting…'
+              : startAnother.pending
+                ? 'Try again'
+                : 'Start another story'}
           </button>
         </section>
       )}

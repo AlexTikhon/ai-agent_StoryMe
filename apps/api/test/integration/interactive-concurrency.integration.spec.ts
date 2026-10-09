@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../../src/database/prisma.service';
 import { InteractiveService } from '../../src/interactive/interactive.service';
 import type { PublicSessionView } from '../../src/interactive/public-view';
-import { Barrier, InteractiveTestKit, SCENARIO_ID } from './fixtures/interactive-helpers';
+import { Barrier, InteractiveTestKit, configWithCap } from './fixtures/interactive-helpers';
 
 type Settled = { ok: true; view: PublicSessionView } | { ok: false; code: string | undefined };
 
@@ -36,7 +36,7 @@ describe('Interactive engine concurrency (real Postgres)', () => {
 
   it('lets exactly one of two competing different-key requests transition', async () => {
     const userId = await kit.createUser();
-    const start = await kit.service.createSession(userId, SCENARIO_ID);
+    const start = await kit.start(userId);
     kit.narrator.barrier = new Barrier(2);
 
     const results = await Promise.all([
@@ -70,7 +70,7 @@ describe('Interactive engine concurrency (real Postgres)', () => {
 
   it('serializes many different-key racers into a single transition', async () => {
     const userId = await kit.createUser();
-    const start = await kit.service.createSession(userId, SCENARIO_ID);
+    const start = await kit.start(userId);
     const racers = 6;
     kit.narrator.barrier = new Barrier(racers);
 
@@ -95,7 +95,7 @@ describe('Interactive engine concurrency (real Postgres)', () => {
 
   it('produces one event and equal responses for two concurrent identical requests', async () => {
     const userId = await kit.createUser();
-    const start = await kit.service.createSession(userId, SCENARIO_ID);
+    const start = await kit.start(userId);
     kit.narrator.barrier = new Barrier(2);
     const command = {
       choiceId: 'c-ask-caretaker',
@@ -106,7 +106,7 @@ describe('Interactive engine concurrency (real Postgres)', () => {
     // A second service with its own connection pool models a second API process.
     const otherPrisma = new PrismaService();
     await otherPrisma.$connect();
-    const second = new InteractiveService(otherPrisma, kit.narrator);
+    const second = new InteractiveService(otherPrisma, kit.narrator, configWithCap(50));
     let results: Settled[];
     try {
       results = await Promise.all([
@@ -127,8 +127,8 @@ describe('Interactive engine concurrency (real Postgres)', () => {
 
   it('keeps concurrent sessions of one user independent', async () => {
     const userId = await kit.createUser();
-    const a = await kit.service.createSession(userId, SCENARIO_ID);
-    const b = await kit.service.createSession(userId, SCENARIO_ID);
+    const a = await kit.start(userId);
+    const b = await kit.start(userId);
     kit.narrator.barrier = new Barrier(2);
 
     const [ra, rb] = await Promise.all([
@@ -154,7 +154,7 @@ describe('Interactive engine concurrency (real Postgres)', () => {
 
   it('re-prepares narration when the session catches up to the requested revision mid-request', async () => {
     const userId = await kit.createUser();
-    const start = await kit.service.createSession(userId, SCENARIO_ID);
+    const start = await kit.start(userId);
 
     // Request X asks for revision 1 while the session is still at revision 0, so its
     // first read skips narration. A gate holds X after that read until Y has committed.
@@ -188,7 +188,7 @@ describe('Interactive engine concurrency (real Postgres)', () => {
           : value;
       },
     });
-    const serviceX = new InteractiveService(slowPrisma, kit.narrator);
+    const serviceX = new InteractiveService(slowPrisma, kit.narrator, configWithCap(50));
 
     const pendingX = settle(
       serviceX.submitChoice(userId, start.sessionId, {

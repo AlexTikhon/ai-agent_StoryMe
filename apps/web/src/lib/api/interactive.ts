@@ -1,5 +1,6 @@
 import type {
   CreateInteractiveSessionInput,
+  InteractiveSessionListDto,
   InteractiveSessionViewDto,
   SubmitInteractiveChoiceInput,
 } from '@book/types';
@@ -7,16 +8,31 @@ import { apiFetch } from './client';
 
 export const interactiveApi = {
   /**
-   * Not idempotent on the server: every call that reaches it creates a
-   * session, so callers must never retry it automatically.
+   * Idempotent on `command.idempotencyKey`: resending the identical command
+   * returns the original session, so an ambiguous result may be retried with
+   * the same command (never with a new key). The response is the session's
+   * *creation* view, not necessarily its current state.
    */
-  createSession: (scenarioId: string, signal?: AbortSignal): Promise<InteractiveSessionViewDto> => {
-    const body: CreateInteractiveSessionInput = { scenarioId };
-    return apiFetch('/interactive/sessions', {
+  createSession: (
+    command: CreateInteractiveSessionInput,
+    signal?: AbortSignal,
+  ): Promise<InteractiveSessionViewDto> =>
+    apiFetch('/interactive/sessions', {
       method: 'POST',
-      body: JSON.stringify(body),
+      body: JSON.stringify(command),
       signal,
-    });
+    }),
+
+  /** The caller's sessions, newest first. `cursor` is the opaque `nextCursor` of the previous page. */
+  listSessions: (
+    params: { limit?: number; cursor?: string | null } = {},
+    signal?: AbortSignal,
+  ): Promise<InteractiveSessionListDto> => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.cursor) query.set('cursor', params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return apiFetch(`/interactive/sessions${suffix}`, { signal });
   },
 
   getSession: (sessionId: string, signal?: AbortSignal): Promise<InteractiveSessionViewDto> =>

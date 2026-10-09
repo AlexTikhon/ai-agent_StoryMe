@@ -3,6 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
+import { RATE_LIMIT_KEY } from '../rate-limit/rate-limit.decorator';
 import { UserRateLimitGuard } from '../rate-limit/user-rate-limit.guard';
 import { InteractiveController } from './interactive.controller';
 import type { InteractiveService } from './interactive.service';
@@ -13,6 +14,7 @@ const SESSION_ID = '9b2e7a9e-0f1c-4d5b-8a53-2f0f6a2e7c11';
 function setup() {
   const service = {
     createSession: vi.fn().mockResolvedValue({ ok: 'create' }),
+    listSessions: vi.fn().mockResolvedValue({ sessions: [], nextCursor: null }),
     getSession: vi.fn().mockResolvedValue({ ok: 'get' }),
     submitChoice: vi.fn().mockResolvedValue({ ok: 'choose' }),
   };
@@ -33,8 +35,12 @@ describe('InteractiveController', () => {
 
   it('takes the owner only from the authenticated user', async () => {
     const { controller, service } = setup();
-    await controller.create(USER, { scenarioId: 'warsaw-last-delivery' });
-    expect(service.createSession).toHaveBeenCalledWith(USER.id, 'warsaw-last-delivery');
+    const creation = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-00001' };
+    await controller.create(USER, creation);
+    expect(service.createSession).toHaveBeenCalledWith(USER.id, creation);
+
+    await controller.list(USER, { limit: '5' });
+    expect(service.listSessions).toHaveBeenCalledWith(USER.id, { limit: 5, cursor: null });
 
     await controller.findOne(USER, SESSION_ID);
     expect(service.getSession).toHaveBeenCalledWith(USER.id, SESSION_ID);
@@ -51,8 +57,17 @@ describe('InteractiveController', () => {
   it('rejects an owner id supplied in the body and never reaches the service', () => {
     const { controller, service } = setup();
     expect(() =>
-      controller.create(USER, { scenarioId: 'warsaw-last-delivery', userId: 'someone-else' }),
+      controller.create(USER, {
+        scenarioId: 'warsaw-last-delivery',
+        idempotencyKey: 'start-00001',
+        userId: 'someone-else',
+      }),
     ).toThrow(BadRequestException);
+    expect(() => controller.create(USER, { scenarioId: 'warsaw-last-delivery' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => controller.list(USER, { userId: 'someone-else' })).toThrow(BadRequestException);
+    expect(() => controller.list(USER, { limit: '500' })).toThrow(BadRequestException);
     expect(() => controller.findOne(USER, 'not-a-uuid')).toThrow(BadRequestException);
     expect(() =>
       controller.choose(USER, SESSION_ID, {
@@ -63,7 +78,27 @@ describe('InteractiveController', () => {
       }),
     ).toThrow(BadRequestException);
     expect(service.createSession).not.toHaveBeenCalled();
+    expect(service.listSessions).not.toHaveBeenCalled();
     expect(service.getSession).not.toHaveBeenCalled();
     expect(service.submitChoice).not.toHaveBeenCalled();
+  });
+
+  it('applies the configured request budgets to every endpoint', () => {
+    const budget = (handler: keyof InteractiveController) =>
+      Reflect.getMetadata(RATE_LIMIT_KEY, InteractiveController.prototype[handler]);
+    expect(budget('create')).toEqual({
+      windowMsEnvKey: 'INTERACTIVE_CREATE_RATE_LIMIT_WINDOW_MS',
+      maxAttemptsEnvKey: 'INTERACTIVE_CREATE_RATE_LIMIT_MAX_ATTEMPTS',
+    });
+    expect(budget('choose')).toEqual({
+      windowMsEnvKey: 'INTERACTIVE_CHOICE_RATE_LIMIT_WINDOW_MS',
+      maxAttemptsEnvKey: 'INTERACTIVE_CHOICE_RATE_LIMIT_MAX_ATTEMPTS',
+    });
+    const read = {
+      windowMsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_WINDOW_MS',
+      maxAttemptsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_MAX_ATTEMPTS',
+    };
+    expect(budget('findOne')).toEqual(read);
+    expect(budget('list')).toEqual(read);
   });
 });

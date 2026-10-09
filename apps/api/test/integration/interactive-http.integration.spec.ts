@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
 import type { CanActivate, ExecutionContext, INestApplication } from '@nestjs/common';
 import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { AuthModeGuard } from '../../src/auth/auth-mode.guard';
@@ -44,6 +45,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
   let baseUrl: string;
   let prisma: PrismaService;
   const userIds: string[] = [];
+  let sessionCap = 50;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -51,6 +53,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
       providers: [
         PrismaService,
         InteractiveService,
+        { provide: ConfigService, useValue: { get: () => sessionCap } },
         { provide: NARRATOR_PROVIDER, useClass: MockNarratorProvider },
       ],
     })
@@ -74,6 +77,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
   });
 
   afterEach(async () => {
+    sessionCap = 50;
     if (userIds.length === 0) return;
     await prisma.interactiveSession.deleteMany({ where: { userId: { in: userIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
@@ -117,7 +121,10 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
 
   it('walks create -> read -> choose -> resume over HTTP', async () => {
     const userId = await newUser();
-    const created = await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery' });
+    const created = await call('POST', '', userId, {
+      scenarioId: 'warsaw-last-delivery',
+      idempotencyKey: 'http-start-0001',
+    });
     expect(created.status).toBe(201);
     expect(created.json).toMatchObject({ revision: 0, status: 'in_progress' });
     const id = created.json.sessionId as string;
@@ -149,7 +156,10 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
 
   it('never puts hidden state on the wire', async () => {
     const userId = await newUser();
-    const created = await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery' });
+    const created = await call('POST', '', userId, {
+      scenarioId: 'warsaw-last-delivery',
+      idempotencyKey: 'http-start-0002',
+    });
     for (const text of [created.text]) {
       for (const leaked of [
         'npcKnowledge',
@@ -170,7 +180,10 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
   it('returns identical 404s for missing sessions and other users sessions', async () => {
     const ownerId = await newUser();
     const intruderId = await newUser();
-    const created = await call('POST', '', ownerId, { scenarioId: 'warsaw-last-delivery' });
+    const created = await call('POST', '', ownerId, {
+      scenarioId: 'warsaw-last-delivery',
+      idempotencyKey: 'http-start-0003',
+    });
     const id = created.json.sessionId as string;
     const command = {
       choiceId: 'c-ask-caretaker',
@@ -199,7 +212,10 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
 
   it('answers malformed input with the stable INVALID_REQUEST code', async () => {
     const userId = await newUser();
-    const created = await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery' });
+    const created = await call('POST', '', userId, {
+      scenarioId: 'warsaw-last-delivery',
+      idempotencyKey: 'http-start-0004',
+    });
     const id = created.json.sessionId as string;
     const valid = {
       choiceId: 'c-ask-caretaker',
@@ -209,7 +225,22 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
 
     const bad: Array<[string, string, unknown]> = [
       ['POST', '', {}],
-      ['POST', '', { scenarioId: 'warsaw-last-delivery', userId: randomUUID() }],
+      ['POST', '', { scenarioId: 'warsaw-last-delivery' }],
+      ['POST', '', { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'has space' }],
+      ['GET', '?limit=0', undefined],
+      ['GET', '?limit=51', undefined],
+      ['GET', '?limit=2&limit=3', undefined],
+      ['GET', '?cursor=not-a-cursor', undefined],
+      ['GET', '?userId=someone-else', undefined],
+      [
+        'POST',
+        '',
+        {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: 'http-start-bad1',
+          userId: randomUUID(),
+        },
+      ],
       ['GET', '/not-a-uuid', undefined],
       ['POST', '/not-a-uuid/choices', valid],
       ['POST', `/${id}/choices`, { ...valid, expectedRevision: -1 }],
@@ -224,16 +255,20 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
       expect(result.status, `${method} ${path} ${JSON.stringify(body)}`).toBe(400);
       if (result.json.code !== undefined) expect(result.json.code).toBe('INVALID_REQUEST');
     }
-    expect((await call('POST', '', userId, { scenarioId: 'nope' })).json.code).toBe(
-      'UNKNOWN_SCENARIO',
-    );
+    expect(
+      (await call('POST', '', userId, { scenarioId: 'nope', idempotencyKey: 'http-start-nope' }))
+        .json.code,
+    ).toBe('UNKNOWN_SCENARIO');
     // Nothing was written by any rejected request.
     expect(await prisma.sessionEvent.count({ where: { sessionId: id } })).toBe(1);
   });
 
   it('answers rule violations with stable codes', async () => {
     const userId = await newUser();
-    const created = await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery' });
+    const created = await call('POST', '', userId, {
+      scenarioId: 'warsaw-last-delivery',
+      idempotencyKey: 'http-start-0005',
+    });
     const id = created.json.sessionId as string;
     const post = (choiceId: string, expectedRevision: number, key: string) =>
       call('POST', `/${id}/choices`, userId, { choiceId, expectedRevision, idempotencyKey: key });
@@ -255,5 +290,96 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     expect(after.status).toBe(409);
     expect(after.json.code).toBe('SESSION_TERMINAL');
     expect(JSON.stringify(after.json)).not.toMatch(/prisma|sql|stack/i);
+  });
+
+  it('replays an identical creation and rejects key reuse over HTTP', async () => {
+    const userId = await newUser();
+    const body = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'http-replay-0001' };
+    const first = await call('POST', '', userId, body);
+    expect(first.status).toBe(201);
+    const id = first.json.sessionId;
+    await call('POST', `/${id}/choices`, userId, {
+      choiceId: 'c-ask-caretaker',
+      expectedRevision: 0,
+      idempotencyKey: 'http-choice-0001',
+    });
+
+    const replay = await call('POST', '', userId, body);
+    expect(replay.status).toBe(201);
+    expect(replay.json).toEqual(first.json); // the genesis response, not the current scene
+
+    const reused = await call('POST', '', userId, { ...body, scenarioId: 'other-scenario' });
+    expect(reused.status).toBe(409);
+    expect(reused.json.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    expect(await prisma.interactiveSession.count({ where: { userId } })).toBe(1);
+  });
+
+  it('answers a creation beyond the cap with SESSION_LIMIT_REACHED but still replays', async () => {
+    sessionCap = 1;
+    const userId = await newUser();
+    const body = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'http-cap-0001' };
+    const first = await call('POST', '', userId, body);
+    expect(first.status).toBe(201);
+
+    const refused = await call('POST', '', userId, { ...body, idempotencyKey: 'http-cap-0002' });
+    expect(refused.status).toBe(409);
+    expect(refused.json.code).toBe('SESSION_LIMIT_REACHED');
+
+    expect((await call('POST', '', userId, body)).json).toEqual(first.json);
+    expect(await prisma.interactiveSession.count({ where: { userId } })).toBe(1);
+  });
+
+  it('lists only the caller’s sessions as allow-listed summaries, with keyset paging', async () => {
+    const [ownerId, otherId] = [await newUser(), await newUser()];
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const created = await call('POST', '', ownerId, {
+        scenarioId: 'warsaw-last-delivery',
+        idempotencyKey: `http-list-${i}000`,
+      });
+      ids.push(created.json.sessionId);
+    }
+    await call('POST', '', otherId, {
+      scenarioId: 'warsaw-last-delivery',
+      idempotencyKey: 'http-list-other',
+    });
+
+    const unauthenticated = await call('GET', '', null);
+    expect([401, 403]).toContain(unauthenticated.status);
+
+    const first = await call('GET', '?limit=2', ownerId);
+    expect(first.status).toBe(200);
+    const page1 = first.json as unknown as {
+      sessions: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+    };
+    expect(page1.sessions).toHaveLength(2);
+    expect(page1.nextCursor).toEqual(expect.any(String));
+    for (const summary of page1.sessions) {
+      expect(Object.keys(summary).sort()).toEqual(
+        [
+          'createdAt',
+          'endingTitle',
+          'scenarioId',
+          'scenarioVersion',
+          'sceneTitle',
+          'sessionId',
+          'status',
+          'updatedAt',
+        ].sort(),
+      );
+    }
+    for (const leaked of ['npcKnowledge', 'stateHash', 'payload', 'idempotency', 'requestHash']) {
+      expect(first.text).not.toContain(leaked);
+    }
+
+    const second = await call('GET', `?limit=2&cursor=${page1.nextCursor}`, ownerId);
+    const page2 = second.json as unknown as {
+      sessions: Array<{ sessionId: string }>;
+      nextCursor: string | null;
+    };
+    expect(page2.nextCursor).toBeNull();
+    const seen = [...page1.sessions, ...page2.sessions].map((s) => s.sessionId);
+    expect(seen.sort()).toEqual([...ids].sort());
   });
 });

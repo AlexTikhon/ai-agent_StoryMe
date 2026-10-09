@@ -22,19 +22,36 @@ describe('interactiveApi', () => {
     setAccessToken(null);
   });
 
-  it('createSession POSTs only the scenario id', async () => {
+  it('createSession POSTs exactly the creation command', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockOk({ sessionId: 's1' }, 201));
     const controller = new AbortController();
+    const command = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-key-1' };
 
-    await interactiveApi.createSession('warsaw-last-delivery', controller.signal);
+    await interactiveApi.createSession(command, controller.signal);
 
     const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://localhost:4000/api/interactive/sessions');
     expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body as string)).toEqual({ scenarioId: 'warsaw-last-delivery' });
+    expect(JSON.parse(init.body as string)).toEqual(command);
     expect(init.signal).toBe(controller.signal);
     expect((init.headers as Record<string, string>)['Authorization']).toBe(
       'Bearer access-token-123',
+    );
+  });
+
+  it('listSessions GETs the first page with no query, and later pages with limit and cursor', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockOk({ sessions: [], nextCursor: null }));
+    const controller = new AbortController();
+
+    await interactiveApi.listSessions({}, controller.signal);
+    await interactiveApi.listSessions({ limit: 20, cursor: 'abc_-123' });
+
+    const calls = vi.mocked(fetch).mock.calls as Array<[string, RequestInit]>;
+    expect(calls[0]![0]).toBe('http://localhost:4000/api/interactive/sessions');
+    expect(calls[0]![1].method).toBeUndefined();
+    expect(calls[0]![1].signal).toBe(controller.signal);
+    expect(calls[1]![0]).toBe(
+      'http://localhost:4000/api/interactive/sessions?limit=20&cursor=abc_-123',
     );
   });
 
