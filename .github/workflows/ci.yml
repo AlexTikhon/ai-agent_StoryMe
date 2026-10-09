@@ -36,6 +36,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm eval:story:offline
+      - run: pnpm eval:interactive:offline
       - run: pnpm build
         env:
           NODE_ENV: production

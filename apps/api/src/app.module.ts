@@ -14,6 +14,7 @@ import { RedisModule } from './redis/redis.module';
 import { UsersModule } from './users/users.module';
 import { ChildProfilesModule } from './child-profiles/child-profiles.module';
 import { ObservabilityModule } from './observability/observability.module';
+import { InteractiveModule } from './interactive/interactive.module';
 
 export type AppModuleOptions = BooksModuleOptions;
 
@@ -48,6 +49,7 @@ export class AppModule {
         UsersModule,
         AuthModule,
         ChildProfilesModule,
+        InteractiveModule,
         BooksModule.register(options),
         CreditsModule,
         BillingModule,

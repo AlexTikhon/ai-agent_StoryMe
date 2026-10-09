@@ -1,0 +1,340 @@
+{
+  "id": "warsaw-last-delivery",
+  "version": 1,
+  "language": "en",
+  "title": "The Last Delivery",
+  "entrySceneId": "s-courtyard",
+  "characters": [
+    {
+      "id": "mara",
+      "name": "Mara Kowal",
+      "role": "Bike courier",
+      "isPlayer": true
+    },
+    {
+      "id": "ines",
+      "name": "Ines Nowak",
+      "role": "Building caretaker",
+      "isPlayer": false
+    },
+    {
+      "id": "tomasz",
+      "name": "Tomasz Wrona",
+      "role": "Missing recipient",
+      "isPlayer": false
+    }
+  ],
+  "facts": [
+    {
+      "id": "f-parcel-unmarked",
+      "text": "The parcel has no sender label and rattles faintly when shaken."
+    },
+    {
+      "id": "f-gone-two-days",
+      "text": "Nobody has seen Tomasz Wrona in the building for two days."
+    },
+    {
+      "id": "f-ledger-stamp",
+      "text": "The stamp on the torn ledger page matches the label on the cellar workshop door."
+    },
+    {
+      "id": "f-ines-altered-ledger",
+      "text": "Ines Nowak has been altering the building's rent ledger."
+    },
+    {
+      "id": "f-tomasz-in-cellar",
+      "text": "Tomasz Wrona is hiding in the cellar workshop."
+    },
+    {
+      "id": "f-parcel-holds-ledger",
+      "text": "The parcel holds the original, unaltered ledger pages."
+    }
+  ],
+  "items": [
+    { "id": "parcel", "name": "Sealed parcel", "oneTime": true },
+    { "id": "entry-card", "name": "Single-use entry card", "oneTime": true },
+    { "id": "ledger-page", "name": "Torn ledger page", "oneTime": false }
+  ],
+  "flags": [
+    "asked-caretaker",
+    "read-mailboxes",
+    "searched-flat",
+    "parcel-left",
+    "parcel-handed",
+    "ines-confronted"
+  ],
+  "initial": {
+    "playerKnowledge": ["f-parcel-unmarked"],
+    "npcKnowledge": {
+      "ines": [
+        "f-gone-two-days",
+        "f-ines-altered-ledger",
+        "f-tomasz-in-cellar"
+      ],
+      "tomasz": [
+        "f-ines-altered-ledger",
+        "f-tomasz-in-cellar",
+        "f-parcel-holds-ledger"
+      ]
+    },
+    "inventory": ["parcel"]
+  },
+  "scenes": [
+    {
+      "id": "s-courtyard",
+      "title": "Praga courtyard",
+      "narration": [
+        {
+          "id": "t-courtyard-arrive",
+          "text": "Rain taps the cobbles of a Praga courtyard in Warsaw. Mara Kowal checks her scanner: one sealed parcel for Tomasz Wrona, flat 4, no sender label."
+        },
+        {
+          "id": "t-courtyard-ines",
+          "text": "Across the yard, caretaker Ines Nowak sweeps the same square of pavement for the third time."
+        }
+      ],
+      "choices": [
+        {
+          "id": "c-ask-caretaker",
+          "label": "Ask the caretaker where Tomasz is",
+          "to": "s-caretaker",
+          "effects": [
+            { "kind": "learnFact", "fact": "f-gone-two-days" },
+            { "kind": "giveItem", "item": "entry-card" },
+            { "kind": "setFlag", "flag": "asked-caretaker" }
+          ]
+        },
+        {
+          "id": "c-read-mailboxes",
+          "label": "Check the mailboxes by the stairwell",
+          "to": "s-mailboxes",
+          "effects": [
+            { "kind": "giveItem", "item": "ledger-page" },
+            { "kind": "learnFact", "fact": "f-ledger-stamp" },
+            { "kind": "setFlag", "flag": "read-mailboxes" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s-caretaker",
+      "title": "The caretaker's broom",
+      "narration": [
+        {
+          "id": "t-caretaker-intro",
+          "text": "Ines puts down her broom and presses a plastic visitor card into Mara's hand.",
+          "when": [{ "kind": "flag", "flag": "asked-caretaker" }]
+        },
+        {
+          "id": "t-caretaker-speech",
+          "text": "\"Two days since anyone saw him,\" Ines says. \"The card opens his door once, then it expires. Be quick.\"",
+          "speakerId": "ines",
+          "factIds": ["f-gone-two-days"]
+        }
+      ],
+      "choices": [
+        {
+          "id": "c-climb-from-caretaker",
+          "label": "Climb to the fourth floor",
+          "to": "s-door",
+          "effects": []
+        }
+      ]
+    },
+    {
+      "id": "s-mailboxes",
+      "title": "Behind the mailboxes",
+      "narration": [
+        {
+          "id": "t-mailboxes-intro",
+          "text": "Behind the dented mailboxes Mara finds a torn page from a rent ledger, folded small. The ink still smells fresh."
+        },
+        {
+          "id": "t-mailboxes-stamp",
+          "text": "A faded stamp on the page matches the label on the cellar workshop door.",
+          "when": [{ "kind": "playerKnows", "fact": "f-ledger-stamp" }]
+        }
+      ],
+      "choices": [
+        {
+          "id": "c-climb-from-mailboxes",
+          "label": "Climb to the fourth floor",
+          "to": "s-door",
+          "effects": []
+        }
+      ]
+    },
+    {
+      "id": "s-door",
+      "title": "Flat 4",
+      "narration": [
+        {
+          "id": "t-door-intro",
+          "text": "On the fourth floor, flat 4 is silent. A dozen unopened letters are wedged in the door frame."
+        },
+        {
+          "id": "t-door-card",
+          "text": "The visitor card from Ines glows faintly green as it nears the lock.",
+          "when": [{ "kind": "hasItem", "item": "entry-card" }]
+        },
+        {
+          "id": "t-door-page",
+          "text": "In Mara's pocket the torn ledger page grows heavier with every step.",
+          "when": [{ "kind": "hasItem", "item": "ledger-page" }]
+        }
+      ],
+      "choices": [
+        {
+          "id": "c-use-card",
+          "label": "Use the single-use entry card on the lock",
+          "to": "s-flat",
+          "requires": [{ "kind": "hasItem", "item": "entry-card" }],
+          "effects": [
+            { "kind": "consumeItem", "item": "entry-card" },
+            { "kind": "learnFact", "fact": "f-ines-altered-ledger" },
+            { "kind": "setFlag", "flag": "searched-flat" }
+          ]
+        },
+        {
+          "id": "c-follow-stamp",
+          "label": "Follow the ledger stamp down to the cellar workshop",
+          "to": "s-cellar",
+          "requires": [{ "kind": "playerKnows", "fact": "f-ledger-stamp" }],
+          "effects": [
+            { "kind": "learnFact", "fact": "f-tomasz-in-cellar" },
+            { "kind": "learnFact", "fact": "f-parcel-holds-ledger" }
+          ]
+        },
+        {
+          "id": "c-leave-parcel",
+          "label": "Slip a delivery slip under the door and leave the parcel",
+          "to": "s-end-quiet",
+          "effects": [
+            { "kind": "consumeItem", "item": "parcel" },
+            { "kind": "setFlag", "flag": "parcel-left" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s-flat",
+      "title": "Inside flat 4",
+      "narration": [
+        {
+          "id": "t-flat-intro",
+          "text": "The card beeps once and goes dark for good. Inside, a half-eaten meal sits cold beside a desk lamp that is still burning."
+        },
+        {
+          "id": "t-flat-note",
+          "text": "A note is taped under the lamp: \"Ines has been rewriting the rent ledger. If I am gone, the proof is in the cellar workshop.\"",
+          "speakerId": "tomasz",
+          "factIds": ["f-ines-altered-ledger"]
+        }
+      ],
+      "choices": [
+        {
+          "id": "c-take-service-stairs",
+          "label": "Take the service stairs down to the cellar",
+          "to": "s-cellar",
+          "effects": [
+            { "kind": "learnFact", "fact": "f-tomasz-in-cellar" },
+            { "kind": "learnFact", "fact": "f-parcel-holds-ledger" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s-cellar",
+      "title": "The cellar workshop",
+      "narration": [
+        {
+          "id": "t-cellar-intro",
+          "text": "A strip of light shows under the cellar workshop door. Tomasz Wrona stands behind a workbench, pale but unharmed."
+        },
+        {
+          "id": "t-cellar-tomasz",
+          "text": "\"That parcel is the original ledger,\" Tomasz says. \"I posted it to myself before I hid.\"",
+          "speakerId": "tomasz",
+          "factIds": ["f-parcel-holds-ledger"]
+        },
+        {
+          "id": "t-cellar-page",
+          "text": "Mara lays the torn ledger page on the bench, and it fits the gap in the original.",
+          "when": [{ "kind": "hasItem", "item": "ledger-page" }]
+        },
+        {
+          "id": "t-cellar-accuse",
+          "text": "\"Ines has been altering the ledger,\" Mara says quietly.",
+          "speakerId": "mara",
+          "factIds": ["f-ines-altered-ledger"],
+          "when": [{ "kind": "playerKnows", "fact": "f-ines-altered-ledger" }]
+        }
+      ],
+      "choices": [
+        {
+          "id": "c-confront-ines",
+          "label": "Carry the original ledger up and confront Ines",
+          "to": "s-end-exposed",
+          "requires": [
+            { "kind": "playerKnows", "fact": "f-ines-altered-ledger" }
+          ],
+          "effects": [
+            { "kind": "consumeItem", "item": "parcel" },
+            { "kind": "setFlag", "flag": "ines-confronted" }
+          ]
+        },
+        {
+          "id": "c-hand-over-parcel",
+          "label": "Hand Tomasz his parcel and ask no more questions",
+          "to": "s-end-quiet",
+          "effects": [
+            { "kind": "consumeItem", "item": "parcel" },
+            { "kind": "setFlag", "flag": "parcel-handed" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s-end-quiet",
+      "title": "A quiet delivery",
+      "endingId": "quiet-delivery",
+      "narration": [
+        {
+          "id": "t-quiet-left",
+          "text": "The slip rests under the door and the parcel waits beside it. Mara cycles away while the courtyard shrinks behind her.",
+          "when": [{ "kind": "flag", "flag": "parcel-left" }]
+        },
+        {
+          "id": "t-quiet-handed",
+          "text": "Tomasz takes the parcel with shaking hands. Mara logs the delivery and rides into the rain, wondering what she did not ask.",
+          "when": [{ "kind": "flag", "flag": "parcel-handed" }]
+        }
+      ],
+      "choices": []
+    },
+    {
+      "id": "s-end-exposed",
+      "title": "The ledger exposed",
+      "endingId": "ledger-exposed",
+      "narration": [
+        {
+          "id": "t-exposed-main",
+          "text": "Ines goes silent as the original ledger is set before her. By morning the building committee knows the truth, and Tomasz can finally go home."
+        }
+      ],
+      "choices": []
+    }
+  ],
+  "endings": [
+    {
+      "id": "quiet-delivery",
+      "title": "A Quiet Delivery",
+      "summary": "The parcel was delivered, but the secret behind it stayed buried."
+    },
+    {
+      "id": "ledger-exposed",
+      "title": "The Ledger Exposed",
+      "summary": "The original ledger reached the people it was meant for, and the forgery came to light."
+    }
+  ]
+}
