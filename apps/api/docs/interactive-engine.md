@@ -1,4 +1,4 @@
-# Interactive story engine (v2, Phase 1)
+# Interactive story engine (v2: Phase 1 engine, Phase 2 web reader)
 
 A small deterministic engine for one scripted detective scenario. Flow:
 **create an authenticated session → read a scene → choose an available action → persist its consequences → resume the same session.**
@@ -115,4 +115,49 @@ Stable error codes: `INVALID_REQUEST` (400), `SESSION_NOT_FOUND` (404), `UNKNOWN
 
 ## Intentional limits
 
-No UI, images or PDF; no real LLM narrator or user-authored scenarios; no per-user session cap or rate-limit policy yet (the standard `UserRateLimitGuard` is applied but no `@RateLimit` budget is configured); no event-sourcing framework beyond this single session log.
+No images or PDF; no real LLM narrator or user-authored scenarios; no per-user session cap or rate-limit policy yet (the standard `UserRateLimitGuard` is applied but no `@RateLimit` budget is configured); no event-sourcing framework beyond this single session log. The only UI is the Phase 2 reader below.
+
+## Phase 2: playable web reader
+
+A minimal browser experience for the one shipped scenario. The API, engine, HTTP paths, payloads and status codes are unchanged; the only API edit is a compile-time check in `public-view.ts` that the schema-inferred view stays mutually assignable to the public contract.
+
+**Routes** (inside the authenticated dashboard; an `Interactive story` link sits next to `Child profiles`):
+
+| Route                                | What it does                                                                                                                                                                       |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/dashboard/interactive`             | Short introduction and an explicit **Start story** button. A session is created only by that click, never on mount.                                                                |
+| `/dashboard/interactive/[sessionId]` | The reader: scene, narration (plain text, blank lines = paragraphs), server-provided choices, clues, items, ending. Reload fetches the same session (`GET`); it never creates one. |
+
+**Contract.** Public request/response types live in `@book/types` (`interactive.types.ts`: `InteractiveSessionViewDto`, `SubmitInteractiveChoiceInput`, `InteractiveErrorCode`). Runtime validation stays in the API. The browser never imports the scenario JSON or domain modules and only renders what the API returns, so locked branches, future scenes, NPC knowledge and flags never reach it. The wrapper is `apps/web/src/lib/api/interactive.ts`, built on `apiFetch`, so authentication and the 401-refresh flow are unchanged.
+
+**Reader behaviour** (`use-interactive-reader.ts`):
+
+- The server owns state. Nothing advances optimistically: scene, clues, items and revision change only when an authoritative response is applied.
+- Each deliberate choice captures `choiceId`, the displayed `expectedRevision` and one `crypto.randomUUID()` key. That command is immutable until its outcome is resolved. A synchronous single-flight guard (not just disabled buttons) blocks duplicates and any other choice while a command is unresolved.
+- Every request has a local abortable deadline (15 s). A timeout, network failure or lost response is treated as an _unknown outcome_: the reader offers **Retry choice**, which resends the exact original command (same key, same revision). There is no automatic retry loop. Cancelling stops local waiting, not necessarily server execution.
+- After a retry succeeds, the saved response is **not** displayed as current state (an exact retry may return its original response after later choices advanced the session). The reader refreshes first; choices stay blocked until that refresh returns, and if it fails the known state is kept with a **Check again** action.
+- `REVISION_CONFLICT`, `CHOICE_UNAVAILABLE`, `SESSION_TERMINAL` (and `UNKNOWN_CHOICE`): the command is resolved as rejected, a brief explanation is shown, the authoritative state is fetched, and the user must choose again. Nothing is resubmitted against a newer revision. If the reload fails, choices stay blocked until it succeeds.
+- `IDEMPOTENCY_KEY_REUSED` is shown as a consistency error with a **Reload story** action; no new key is minted.
+- `SESSION_BUSY`, narration failures and 429/5xx allow a bounded, manual retry of the same command. `SESSION_NOT_FOUND` shows one "This story isn't available" screen for missing and foreign sessions alike. A definitive 401 leaves the redirect to the existing auth layer.
+- A displayed revision is never replaced by an older one. Every async completion is guarded by the active session id, a scope generation and the auth _session epoch_ (`getSessionEpoch()`), so late results after a route change, unmount, logout/login as the same account, or an account switch are dropped and their requests aborted.
+- Refresh happens on reader entry and when the tab regains focus/visibility, coalesced and skipped when the state is under 5 s old. No polling or realtime.
+
+### Commands
+
+```bash
+pnpm --filter @book/types build
+pnpm --filter @book/web test
+pnpm --filter @book/web typecheck && pnpm --filter @book/web lint
+NEXT_PUBLIC_API_URL=http://localhost:4000/api pnpm --filter @book/web build   # the build needs a public API URL
+pnpm test:infra:up                                                            # disposable Postgres :5440 / Redis :6380
+pnpm --filter @book/web test:e2e e2e/interactive.spec.ts                      # real API + browser; the API starts through the guarded launcher
+pnpm test:infra:down
+```
+
+`e2e/interactive.spec.ts` has two groups. The real-API journeys cover both endings, reload mid-story, foreign/missing sessions and a cross-tab conflict. A separately labelled group injects one transport failure in the browser: the response to a real choice request is dropped, the identical command is retried, and exactly one transition is recorded. The E2E API budget for `/auth/refresh` per IP (`AUTH_RATE_LIMIT_IP_MAX_ATTEMPTS`) is raised in `playwright.config.ts`, because every full page load in JWT mode restores the session through it.
+
+### Deferred / known limitations
+
+- Session creation has no idempotency contract. Concurrent creation from one page is prevented and an ambiguous create (timeout, lost response) is never retried automatically, but exactly-once creation is **not** guaranteed: the user is warned that trying again may create a second story. A timed-out create can still leave an unreferenced session behind.
+- An unresolved command lives in memory only. Reloading restores server state through `GET`; if a choice's outcome was unknown at that moment, the reload shows whatever the server recorded and the pending retry is gone. Durable recovery across reload is deferred (no localStorage story cache, service worker or offline outbox).
+- No session list, per-user session cap or rate-limit budget, and the scenario id is fixed to `warsaw-last-delivery`. These are required before any public launch.

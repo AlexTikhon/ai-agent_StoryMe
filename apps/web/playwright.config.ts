@@ -58,6 +58,9 @@ export default defineConfig({
         // The suite intentionally logs the same synthetic owner in for each
         // isolated journey; keep the test-only budget above the test count.
         AUTH_RATE_LIMIT_MAX_ATTEMPTS: '100',
+        // Every full page load in jwt mode restores the session through
+        // /auth/refresh, which has its own per-IP budget (default 30 / 15 min).
+        AUTH_RATE_LIMIT_IP_MAX_ATTEMPTS: '500',
         ENABLE_GENERATION_WORKER: 'true',
         ALLOWED_ORIGINS: webBaseUrl,
         WEB_APP_URL: webBaseUrl,

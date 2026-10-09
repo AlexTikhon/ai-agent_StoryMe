@@ -1,3 +1,4 @@
+import type { InteractiveSessionViewDto } from '@book/types';
 import { z } from 'zod';
 import { availableChoices, findScene } from './domain/engine';
 import type { NarrationOutput } from './domain/narration';
@@ -34,6 +35,17 @@ export const publicSessionViewSchema = z
   .strict();
 
 export type PublicSessionView = z.infer<typeof publicSessionViewSchema>;
+
+/**
+ * Compile-time contract check: the schema-inferred view and the public
+ * `@book/types` DTO the web client uses must stay mutually assignable. Drift in
+ * either direction fails typecheck here.
+ */
+type AssertMutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+export const publicViewMatchesSharedContract: AssertMutuallyAssignable<
+  PublicSessionView,
+  InteractiveSessionViewDto
+> = true;
 
 export function buildPublicView(input: {
   sessionId: string;
