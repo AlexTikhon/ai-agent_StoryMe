@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   Inject,
   Param,
@@ -10,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { User } from '@prisma/client';
-import type { InteractiveSessionListDto } from '@book/types';
+import type { InteractivePresentationDto, InteractiveSessionListDto } from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { RateLimit } from '../rate-limit/rate-limit.decorator';
@@ -21,6 +22,7 @@ import {
   createSessionBodySchema,
   listSessionsQuerySchema,
   parseRequest,
+  presentationQuerySchema,
   sessionIdSchema,
   submitChoiceBodySchema,
 } from './requests';
@@ -66,6 +68,28 @@ export class InteractiveController {
   })
   findOne(@CurrentUser() user: User, @Param('id') id: string): Promise<PublicSessionView> {
     return this.interactive.getSession(user.id, parseRequest(sessionIdSchema, id));
+  }
+
+  /**
+   * Artwork metadata for the session's current scene. Read-only: it resolves
+   * the owned session through the same public-view read as findOne. Artwork
+   * files themselves are public static assets; only this metadata is
+   * authenticated, so it must never be cached by shared caches.
+   */
+  @Get(':id/presentation')
+  @Header('Cache-Control', 'private, no-store')
+  @RateLimit({
+    windowMsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  presentation(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Query() query: unknown,
+  ): Promise<InteractivePresentationDto> {
+    const sessionId = parseRequest(sessionIdSchema, id);
+    const { expectedRevision } = parseRequest(presentationQuerySchema, query);
+    return this.interactive.getPresentation(user.id, sessionId, expectedRevision);
   }
 
   @Post(':id/choices')

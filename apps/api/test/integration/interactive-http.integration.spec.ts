@@ -4,7 +4,7 @@ import type { CanActivate, ExecutionContext, INestApplication } from '@nestjs/co
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AuthModeGuard } from '../../src/auth/auth-mode.guard';
 import type { RequestWithUser } from '../../src/auth/request-with-user';
 import { HttpExceptionFilter } from '../../src/common/filters/http-exception.filter';
@@ -99,7 +99,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     path: string,
     userId: string | null,
     body?: unknown,
-  ): Promise<{ status: number; json: ApiBody; text: string }> {
+  ): Promise<{ status: number; json: ApiBody; text: string; headers: Headers }> {
     const response = await fetch(`${baseUrl}/api/interactive/sessions${path}`, {
       method,
       headers: {
@@ -111,7 +111,12 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
         : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
     });
     const text = await response.text();
-    return { status: response.status, json: (text ? JSON.parse(text) : null) as ApiBody, text };
+    return {
+      status: response.status,
+      json: (text ? JSON.parse(text) : null) as ApiBody,
+      text,
+      headers: response.headers,
+    };
   }
 
   const stable = (json: Record<string, unknown>) => {
@@ -208,6 +213,173 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
       expect(probe.status).toBe(404);
       expect(stable(probe.json)).toEqual(stable(missing.json));
     }
+  });
+
+  describe('presentation endpoint', () => {
+    async function startSession(userId: string, key: string): Promise<string> {
+      const created = await call('POST', '', userId, {
+        scenarioId: 'warsaw-last-delivery',
+        idempotencyKey: key,
+      });
+      return created.json.sessionId as string;
+    }
+
+    async function snapshot(sessionId: string): Promise<string> {
+      const session = await prisma.interactiveSession.findUniqueOrThrow({
+        where: { id: sessionId },
+      });
+      const events = await prisma.sessionEvent.findMany({
+        where: { sessionId },
+        orderBy: { seq: 'asc' },
+      });
+      return JSON.stringify({ session, events });
+    }
+
+    it('returns the current scene artwork, private and uncacheable', async () => {
+      const userId = await newUser();
+      const id = await startSession(userId, 'http-pres-0001');
+
+      const first = await call('GET', `/${id}/presentation?expectedRevision=0`, userId);
+      expect(first.status).toBe(200);
+      expect(first.headers.get('cache-control')).toBe('private, no-store');
+      expect(first.json).toMatchObject({
+        sessionId: id,
+        revision: 0,
+        scenarioId: 'warsaw-last-delivery',
+        scenarioVersion: 1,
+        sceneId: 's-courtyard',
+        presentation: { packId: 'warsaw-noir', packVersion: 1 },
+      });
+      const panels = (first.json.presentation as { panels: Array<Record<string, unknown>> }).panels;
+      expect(panels).toHaveLength(1);
+      expect(panels[0]).toMatchObject({
+        src: '/interactive/warsaw-noir/v1/s-courtyard.svg',
+        width: 1200,
+        height: 800,
+      });
+      // No future scenes, state or narration on the wire.
+      for (const leaked of [
+        's-caretaker',
+        's-cellar',
+        'flags',
+        'stateHash',
+        'narration',
+        'userId',
+      ]) {
+        expect(first.text).not.toContain(leaked);
+      }
+
+      await call('POST', `/${id}/choices`, userId, {
+        choiceId: 'c-ask-caretaker',
+        expectedRevision: 0,
+        idempotencyKey: 'http-pres-key-0001',
+      });
+      const second = await call('GET', `/${id}/presentation?expectedRevision=1`, userId);
+      expect(second.status).toBe(200);
+      expect(second.json).toMatchObject({ revision: 1, sceneId: 's-caretaker' });
+    });
+
+    it('rejects any revision other than the current one with REVISION_CONFLICT', async () => {
+      const userId = await newUser();
+      const id = await startSession(userId, 'http-pres-0002');
+      await call('POST', `/${id}/choices`, userId, {
+        choiceId: 'c-ask-caretaker',
+        expectedRevision: 0,
+        idempotencyKey: 'http-pres-key-0002',
+      });
+      for (const revision of [0, 2, 999]) {
+        const response = await call(
+          'GET',
+          `/${id}/presentation?expectedRevision=${revision}`,
+          userId,
+        );
+        expect(response.status).toBe(409);
+        expect(response.json.code).toBe('REVISION_CONFLICT');
+        expect(response.text).not.toContain('s-caretaker');
+      }
+    });
+
+    it('answers missing and foreign sessions with the identical 404', async () => {
+      const ownerId = await newUser();
+      const intruderId = await newUser();
+      const id = await startSession(ownerId, 'http-pres-0003');
+
+      const missing = await call(
+        'GET',
+        `/${randomUUID()}/presentation?expectedRevision=0`,
+        ownerId,
+      );
+      expect(missing.status).toBe(404);
+      expect(missing.json.code).toBe('SESSION_NOT_FOUND');
+
+      // Even with the right revision, and even with a wrong one: no probing.
+      for (const revision of [0, 7]) {
+        const foreign = await call(
+          'GET',
+          `/${id}/presentation?expectedRevision=${revision}`,
+          intruderId,
+        );
+        expect(foreign.status).toBe(404);
+        expect(stable(foreign.json)).toEqual(stable(missing.json));
+        expect(foreign.text).not.toContain('packId');
+      }
+      expect((await call('GET', `/${id}/presentation?expectedRevision=0`, null)).status).toBe(403);
+    });
+
+    it('validates the id and the query strictly', async () => {
+      const userId = await newUser();
+      const id = await startSession(userId, 'http-pres-0004');
+      for (const path of [
+        `/not-a-uuid/presentation?expectedRevision=0`,
+        `/${id}/presentation`,
+        `/${id}/presentation?expectedRevision=`,
+        `/${id}/presentation?expectedRevision=-1`,
+        `/${id}/presentation?expectedRevision=1.5`,
+        `/${id}/presentation?expectedRevision=0&expectedRevision=1`,
+        `/${id}/presentation?expectedRevision=0&userId=${randomUUID()}`,
+      ]) {
+        const response = await call('GET', path, userId);
+        expect(response.status, path).toBe(400);
+        expect(response.json.code, path).toBe('INVALID_REQUEST');
+      }
+    });
+
+    it('is read-only: events, revision, state hashes and narration are untouched', async () => {
+      const userId = await newUser();
+      const id = await startSession(userId, 'http-pres-0005');
+      await call('POST', `/${id}/choices`, userId, {
+        choiceId: 'c-read-mailboxes',
+        expectedRevision: 0,
+        idempotencyKey: 'http-pres-key-0005',
+      });
+      const narrate = vi.spyOn(MockNarratorProvider.prototype, 'narrate');
+      const before = await snapshot(id);
+      const eventCount = await prisma.sessionEvent.count({ where: { sessionId: id } });
+
+      try {
+        for (let i = 0; i < 3; i += 1) {
+          expect((await call('GET', `/${id}/presentation?expectedRevision=1`, userId)).status).toBe(
+            200,
+          );
+          expect((await call('GET', `/${id}/presentation?expectedRevision=0`, userId)).status).toBe(
+            409,
+          );
+        }
+        expect(narrate).not.toHaveBeenCalled();
+      } finally {
+        narrate.mockRestore();
+      }
+      expect(await snapshot(id)).toBe(before);
+      expect(await prisma.sessionEvent.count({ where: { sessionId: id } })).toBe(eventCount);
+      // Replay and idempotency are unchanged: the same retry still returns the saved answer.
+      const retry = await call('POST', `/${id}/choices`, userId, {
+        choiceId: 'c-read-mailboxes',
+        expectedRevision: 0,
+        idempotencyKey: 'http-pres-key-0005',
+      });
+      expect(retry.status).toBe(200);
+      expect(retry.json).toMatchObject({ revision: 1, scene: { id: 's-mailboxes' } });
+    });
   });
 
   it('answers malformed input with the stable INVALID_REQUEST code', async () => {

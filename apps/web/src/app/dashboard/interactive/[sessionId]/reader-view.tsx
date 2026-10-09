@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef } from 'react';
+import { SceneIllustration } from './scene-illustration';
 import type { useInteractiveReader } from './use-interactive-reader';
 
 type Reader = ReturnType<typeof useInteractiveReader>;
@@ -36,7 +37,7 @@ function Narration({ text }: { text: string }) {
 function Frame({ children }: { children: React.ReactNode }) {
   return (
     <main className="min-h-dvh bg-stone-950 px-4 py-8 text-stone-100 sm:py-10">
-      <div className="mx-auto max-w-2xl">
+      <div className="mx-auto max-w-3xl">
         <Link
           href="/dashboard/interactive"
           className={`mb-6 inline-flex rounded text-sm font-medium text-stone-400 hover:text-stone-100 ${FOCUS_RING}`}
@@ -165,6 +166,9 @@ export function InteractiveReaderView({
           {view.scene.title}
         </h1>
         <div className="mt-5">
+          <SceneIllustration view={view} />
+        </div>
+        <div className="mt-5 max-w-2xl">
           <Narration text={view.narration} />
         </div>
       </article>

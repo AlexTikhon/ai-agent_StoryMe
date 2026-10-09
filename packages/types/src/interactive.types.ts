@@ -93,3 +93,31 @@ export type InteractiveErrorCode =
   | 'SESSION_LIMIT_REACHED'
   | 'RATE_LIMITED'
   | 'RATE_LIMIT_UNAVAILABLE';
+
+/** One illustration of the current scene. `src` is a same-origin public static path. */
+export interface InteractivePresentationPanelDto {
+  id: string;
+  src: string;
+  width: number;
+  height: number;
+  alt: string;
+}
+
+/**
+ * GET /api/interactive/sessions/:id/presentation?expectedRevision=N response.
+ * Presentation of the *current* scene only, selected from the public view.
+ * `presentation` is `null` when no artwork is configured for this scenario
+ * version: the text reader is complete without it.
+ */
+export interface InteractivePresentationDto {
+  sessionId: string;
+  revision: number;
+  scenarioId: string;
+  scenarioVersion: number;
+  sceneId: string;
+  presentation: {
+    packId: string;
+    packVersion: number;
+    panels: InteractivePresentationPanelDto[];
+  } | null;
+}

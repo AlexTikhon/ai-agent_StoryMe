@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0c0f"/><stop offset="1" stop-color="#1b1f25"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#f6c76f" stop-opacity=".6"/><stop offset=".45" stop-color="#e8a33d" stop-opacity=".18"/><stop offset="1" stop-color="#e8a33d" stop-opacity="0"/></radialGradient>
+    <linearGradient id="reflect" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e8a33d" stop-opacity=".5"/><stop offset="1" stop-color="#e8a33d" stop-opacity="0"/></linearGradient>
+    <radialGradient id="vig" cx=".5" cy=".5" r=".75"><stop offset=".55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".7"/></radialGradient>
+    <pattern id="rain" width="90" height="110" patternUnits="userSpaceOnUse" patternTransform="rotate(12)"><path d="M12 4v34M52 20v28M78 60v32M30 70v26M64 100v10" stroke="#aab4be" stroke-width="1.3" stroke-opacity=".3"/></pattern>
+    <pattern id="win" width="120" height="96" patternUnits="userSpaceOnUse" x="278" y="92"><rect x="22" y="0" width="56" height="68" fill="#0b0d10"/><rect x="22" y="0" width="56" height="68" fill="none" stroke="#2c323a" stroke-width="3"/><path d="M50 0v68M22 34h56" stroke="#2c323a" stroke-width="2"/></pattern>
+    <pattern id="cobble" width="44" height="22" patternUnits="userSpaceOnUse"><path d="M0 .5h44M0 11.5h44M22 0v11M0 11v11M44 11v11" stroke="#0e1013" stroke-width="2" fill="none" opacity=".7"/></pattern>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <!-- rear tenement wall -->
+  <rect x="250" y="60" width="700" height="470" fill="#1d2127"/>
+  <rect x="250" y="60" width="700" height="470" fill="url(#win)"/>
+  <rect x="250" y="40" width="700" height="26" fill="#14171b"/>
+  <!-- a few lit windows -->
+  <rect x="300" y="188" width="56" height="68" fill="#e8a33d" opacity=".55"/>
+  <rect x="660" y="92" width="56" height="68" fill="#e8a33d" opacity=".35"/>
+  <rect x="780" y="284" width="56" height="68" fill="#e8a33d" opacity=".5"/>
+  <!-- side walls in perspective -->
+  <polygon points="0,0 250,60 250,530 0,660" fill="#13161a"/>
+  <polygon points="1200,0 950,60 950,530 1200,660" fill="#13161a"/>
+  <path d="M0 120L250 150M0 260L250 270M0 400L250 390M1200 120L950 150M1200 260L950 270M1200 400L950 390" stroke="#0b0d10" stroke-width="3" opacity=".6"/>
+  <!-- stairwell doorway -->
+  <rect x="540" y="352" width="120" height="178" fill="#0f1114"/>
+  <rect x="556" y="372" width="88" height="158" fill="#e8a33d" opacity=".82"/>
+  <rect x="556" y="372" width="88" height="158" fill="none" stroke="#14171b" stroke-width="6"/>
+  <path d="M600 372v158M556 450h88" stroke="#14171b" stroke-width="4"/>
+  <rect x="528" y="526" width="144" height="10" fill="#2a2f36"/>
+  <!-- ground -->
+  <polygon points="0,660 250,530 950,530 1200,660 1200,800 0,800" fill="#181b20"/>
+  <polygon points="0,660 250,530 950,530 1200,660 1200,800 0,800" fill="url(#cobble)" opacity=".8"/>
+  <!-- wet reflections of the stairwell light -->
+  <rect x="556" y="536" width="88" height="250" fill="url(#reflect)"/>
+  <path d="M566 560h68M572 590h56M562 624h76M574 662h52M566 706h68" stroke="#14171b" stroke-width="3" opacity=".7"/>
+  <!-- the swept square of pavement -->
+  <polygon points="858,560 960,560 984,596 880,596" fill="#2a2f36" opacity=".9"/>
+  <!-- wall lantern -->
+  <circle cx="170" cy="270" r="190" fill="url(#glow)"/>
+  <path d="M150 230h44v8h-44zM160 238v54h24v-54z" fill="#0b0d10"/>
+  <rect x="164" y="244" width="16" height="40" fill="#f6c76f"/>
+  <polygon points="40,660 330,660 420,800 -60,800" fill="#e8a33d" opacity=".08"/>
+  <!-- caretaker, mid-yard, sweeping -->
+  <g fill="#0a0c0f">
+    <circle cx="918" cy="456" r="13"/>
+    <path d="M900 470q18-8 36 0l10 92h-56z"/>
+    <path d="M900 560h20l-3 36h-14zM922 560h20l-1 36h-16z"/>
+    <path d="M934 490L984 590" stroke="#0a0c0f" stroke-width="5" fill="none"/>
+    <path d="M974 584l22 14-12 10-22-14z"/>
+  </g>
+  <rect x="905" y="470" width="26" height="6" fill="#e8a33d" opacity=".5"/>
+  <!-- the courier, foreground left, parcel held against the chest -->
+  <g fill="#07080a">
+    <circle cx="232" cy="404" r="26"/>
+    <path d="M232 372q34 2 34 40l-68 0q0-38 34-40z"/>
+    <path d="M190 436q42-20 84 0l30 214h-148z"/>
+    <path d="M184 650h60l-6 120h-52zM250 650h60l4 120h-52z"/>
+  </g>
+  <rect x="236" y="486" width="86" height="64" fill="#4a3d2b"/>
+  <rect x="236" y="486" width="86" height="64" fill="none" stroke="#0a0c0f" stroke-width="4"/>
+  <path d="M279 486v64" stroke="#e8a33d" stroke-width="7" opacity=".85"/>
+  <rect x="204" y="508" width="30" height="20" fill="#f6c76f"/>
+  <circle cx="219" cy="518" r="46" fill="url(#glow)" opacity=".7"/>
+  <rect width="1200" height="800" fill="url(#rain)"/>
+  <rect width="1200" height="800" fill="url(#vig)"/>
+</svg>

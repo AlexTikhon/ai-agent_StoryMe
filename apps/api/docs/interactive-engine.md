@@ -1,4 +1,4 @@
-# Interactive story engine (v2: Phase 1 engine, Phase 2 web reader, Phase 3 session library)
+# Interactive story engine (v3: Phase 1 engine, Phase 2 web reader, Phase 3 session library, Phase 4 illustrated reader)
 
 A small deterministic engine for one scripted detective scenario. Flow:
 **create an authenticated session (idempotently) → read a scene → choose an available action → persist its consequences → find and resume the same session later.**
@@ -245,3 +245,107 @@ The cap and identical-creation tests use an `AdmissionGate` (test helper): every
 - Budgets and the cap are unmeasured assumptions. The cap is per user, not per organisation or IP.
 - A session whose current-revision event is missing is logged and omitted from the list rather than failing the whole page.
 - A reused key with an unknown scenario id reports `IDEMPOTENCY_KEY_REUSED` (identity is checked first), not `UNKNOWN_SCENARIO`.
+
+## Phase 4: illustrated reader (presentation packs)
+
+Presentation is **separate from story semantics**. The scenario JSON (and its hash), state, event schema, replay, narrator contract, persisted event responses and create/choice idempotency are untouched; there is no migration. A presentation pack only says which picture accompanies which scene.
+
+### Presentation packs
+
+`src/interactive/presentation/` holds typed data validated at load (zod, strict; no expressions, templates, remote URLs or model-generated metadata):
+
+- `packId`, `packVersion`, the `scenarioId`/`scenarioVersion` it illustrates, and `scenes`: sceneId → panels.
+- A panel is `{ id, src, width, height, alt }`. `src` must match `/interactive/<packId>/v<packVersion>/<name>.svg` (same-origin, versioned, allow-listed; no query strings, traversal, remote or `data:` URLs).
+- The registry (`presentation.ts`) is keyed by scenario `(id, version)`. At startup a pack must cover **every** scene of its scenario and name none that does not exist, otherwise the process refuses to load it.
+
+`warsaw-noir` v1 maps all eight `warsaw-last-delivery` v1 scenes: `s-courtyard`, `s-caretaker`, `s-mailboxes`, `s-door`, `s-flat`, `s-cellar`, `s-end-quiet`, `s-end-exposed`.
+
+**Version semantics.** Published pack versions are immutable: changed or replacement artwork (for example raster art later) is a new `packVersion` with its own asset directory, never an edit of files under an existing one. Story versions are pinned to sessions; **the pack is not**. It is selected from the registry at read time, so this phase does not promise historically pinned artwork: when a newer pack for the same scenario version is published, existing sessions will show it.
+
+### `GET /api/interactive/sessions/:id/presentation?expectedRevision=N`
+
+Same authentication, strict parameter validation (`expectedRevision` required, digits only, no repeats or extra keys, ≤ 1,000,000) and read-rate budget (`INTERACTIVE_READ_RATE_LIMIT_*`) as the other reads.
+
+The owned session is resolved through the existing public-view read (`getSession`); the presentation is selected from that view. No second interpretation of internal state.
+
+```jsonc
+// 200
+{
+  "sessionId": "…",
+  "revision": 1,
+  "scenarioId": "warsaw-last-delivery",
+  "scenarioVersion": 1,
+  "sceneId": "s-caretaker",
+  "presentation": {
+    "packId": "warsaw-noir",
+    "packVersion": 1,
+    "panels": [
+      {
+        "id": "p-caretaker",
+        "src": "/interactive/warsaw-noir/v1/s-caretaker.svg",
+        "width": 1200,
+        "height": 800,
+        "alt": "…",
+      },
+    ],
+  },
+}
+```
+
+- Missing and foreign sessions: the same `SESSION_NOT_FOUND` response, whatever `expectedRevision` is.
+- Any revision other than the current one: `REVISION_CONFLICT` (409), with no scene information.
+- Unknown scenario/version or unmapped scene: `presentation: null` (not an error); the text reader is complete without art.
+- Only the **current scene's** panels are returned. Never the manifest, future scene ids or panels, hidden knowledge, flags, events, state hashes or narration.
+- Strictly read-only: no writes, no narration or provider calls, no regeneration.
+- `Cache-Control: private, no-store`: the metadata is authenticated and must not be shared-cached.
+
+### Public asset boundary
+
+Artwork files live in `apps/web/public/interactive/<packId>/v<N>/` and are **public static files**: authentication protects the _session metadata_ (which scene a session is at), **not** the downloadable artwork. Anyone who knows or guesses a path can fetch it; the filenames are not obscured and nothing about spoiler secrecy is implied. Do not put art for scenes that must stay unseen anywhere other than a future, separately designed private store.
+
+### Assets, provenance, sizes
+
+Eight original SVG scene illustrations, hand-authored as vector source for this project (no third-party artwork, stock images, downloads, paid tools or provider calls). They share one Warsaw-noir visual language (rain, charcoal tones, restrained amber light) but each has its own composition: courtyard, gateway with the caretaker, mailbox wall, fourth-floor landing, lamp-lit flat, brick cellar workshop, a departure street and a lamp-lit table with an open ledger.
+
+| File                | Bytes |
+| ------------------- | ----- |
+| `s-courtyard.svg`   | 4,919 |
+| `s-caretaker.svg`   | 3,940 |
+| `s-mailboxes.svg`   | 5,205 |
+| `s-door.svg`        | 4,320 |
+| `s-flat.svg`        | 3,977 |
+| `s-cellar.svg`      | 3,912 |
+| `s-end-quiet.svg`   | 3,831 |
+| `s-end-exposed.svg` | 3,720 |
+
+All are 1200×800 (3:2), ~33.8 KB in total, with no scripts, event handlers, `foreignObject`, embedded HTML, `<text>`, `<image>`, or external references (only internal `url(#id)` fragments); this is enforced by `presentation.spec.ts`. They are loaded through `<img>`, which does not execute SVG scripts.
+
+Alt text describes what is visible and adds nothing the player has not been told by the current scene; no unrevealed evidence is drawn or named. `s-end-quiet` is reached by three routes (parcel handed over via the flat, via the stamp, or left at the door), so its art is a neutral departure (a cyclist riding away from a courtyard gate) that asserts neither delivery; a test pins that the alt text names neither route.
+
+These are **prototype art**. Later raster artwork replaces them through a new presentation-pack version.
+
+### Web: illustrations beside the text
+
+- `use-scene-presentation.ts` fetches only after the reader has an authoritative view, and is independent of choice submission and state recovery.
+- Every answer is bound to session, displayed revision, scene, scenario id/version, user and auth epoch, and used only while that exact scope is still displayed. After a choice, route change, unmount or logout/login (even as the same account) a late answer is discarded, so old-scene art can never sit under new-scene text, not even for one render.
+- Loading reserves a 3:2 box (a quiet pulse, no spinner, no live-region noise). Panels render in a `<figure>` with `alt`; text, choices, clues and endings stay HTML.
+- Failure never blocks play. A metadata outage or a broken image shows "The illustration isn't available right now. The story continues in text." with a bounded manual **Reload illustration** (2 per scene). `REVISION_CONFLICT`, `SESSION_NOT_FOUND` and 401 are left to the reader's own recovery and show nothing extra. No automatic retry, polling, or preloading of future scenes.
+- The reader's choice idempotency, monotonic revision guard and recovery semantics are unchanged.
+
+### Tests and commands
+
+```
+pnpm --filter @book/api test                     # pack coverage, asset safety, projection, request/controller specs
+pnpm --filter @book/api test:integration test/integration/interactive   # HTTP: ownership, conflict, read-only (events/state hashes/narrator untouched)
+pnpm --filter @book/web test                     # hook races (deferred promises), reader fallbacks
+pnpm --filter @book/web test:e2e e2e/interactive.spec.ts   # real API + browser: both endings, reload, injected failures, desktop/mobile layout
+```
+
+The Playwright run writes visual-QA screenshots to `apps/web/test-results/interactive-visual/` (git-ignored). Screenshots are visual QA, not proof of concurrency correctness; the race tests use deferred promises.
+
+### Phase 4 limitations
+
+- Art is not historically pinned (see above) and the SVGs are prototype quality.
+- Dialogue is not extracted into the picture or into speech bubbles; one panel per scene.
+- The public artwork can be fetched without logging in.
+- On narrow phones the existing dashboard top navigation clips its leftmost link; that is dashboard chrome outside the reader and was not changed here.

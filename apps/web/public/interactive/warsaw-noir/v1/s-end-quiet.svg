@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0c0f"/><stop offset="1" stop-color="#1e2329"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#f6c76f" stop-opacity=".6"/><stop offset=".45" stop-color="#e8a33d" stop-opacity=".18"/><stop offset="1" stop-color="#e8a33d" stop-opacity="0"/></radialGradient>
+    <linearGradient id="wet" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46505c"/><stop offset="1" stop-color="#14171b"/></linearGradient>
+    <radialGradient id="vig" cx=".5" cy=".5" r=".75"><stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".75"/></radialGradient>
+    <pattern id="rain" width="90" height="110" patternUnits="userSpaceOnUse" patternTransform="rotate(12)"><path d="M12 4v34M52 20v28M78 60v32M30 70v26M64 100v10" stroke="#aab4be" stroke-width="1.5" stroke-opacity=".38"/></pattern>
+    <pattern id="brick" width="60" height="28" patternUnits="userSpaceOnUse"><path d="M0 .5h60M0 14.5h60M30 0v14M0 14v14M60 14v14" stroke="#0b0d10" stroke-width="2" fill="none" opacity=".7"/></pattern>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <!-- night street with converging wet road -->
+  <polygon points="0,520 1200,430 1200,800 0,800" fill="url(#wet)"/>
+  <path d="M0 640L1200 470M0 720L1200 520M0 600L1200 450" stroke="#0b0d10" stroke-width="3" opacity=".6"/>
+  <path d="M880 440L560 800M900 440L860 800" stroke="#8d99a6" stroke-width="3" opacity=".25"/>
+  <!-- distant buildings -->
+  <g fill="#0f1114"><rect x="620" y="250" width="120" height="190"/><rect x="750" y="190" width="150" height="250"/><rect x="910" y="280" width="110" height="160"/><rect x="1030" y="220" width="170" height="220"/></g>
+  <g fill="#e8a33d" opacity=".4"><rect x="780" y="230" width="22" height="30"/><rect x="840" y="300" width="22" height="30"/><rect x="940" y="320" width="20" height="28"/><rect x="1090" y="270" width="22" height="30"/></g>
+  <!-- street lamps shrinking into the distance -->
+  <g stroke="#07080a" stroke-width="6" fill="none"><path d="M560 480V210q0-18 26-18"/><path d="M780 450V290q0-12 18-12"/><path d="M930 440V340q0-8 12-8"/></g>
+  <circle cx="588" cy="196" r="140" fill="url(#glow)"/><circle cx="800" cy="280" r="80" fill="url(#glow)"/><circle cx="944" cy="332" r="44" fill="url(#glow)"/>
+  <circle cx="588" cy="196" r="9" fill="#f6c76f"/><circle cx="800" cy="280" r="6" fill="#f6c76f"/><circle cx="944" cy="332" r="4" fill="#f6c76f"/>
+  <rect x="560" y="480" width="26" height="320" fill="#e8a33d" opacity=".1"/>
+  <!-- the courtyard gate behind, a lit passage -->
+  <rect x="0" y="0" width="470" height="800" fill="#1b1e23"/>
+  <rect x="0" y="0" width="470" height="800" fill="url(#brick)"/>
+  <path d="M60 800V360Q60 190 230 190T400 360V800z" fill="#0b0d10"/>
+  <path d="M110 800V380Q110 250 230 250T350 380V800z" fill="#e8a33d" opacity=".35"/>
+  <circle cx="230" cy="560" r="170" fill="url(#glow)" opacity=".8"/>
+  <path d="M60 800V360Q60 190 230 190T400 360V800" fill="none" stroke="#07080a" stroke-width="22"/>
+  <!-- lone cyclist riding away, small -->
+  <g stroke="#050607" stroke-width="5" fill="none">
+    <circle cx="690" cy="616" r="34"/><circle cx="772" cy="616" r="34"/>
+    <path d="M690 616l34-60h38l10 60M724 556l-6-20h20M762 556l8-34"/>
+  </g>
+  <g fill="#050607"><circle cx="738" cy="498" r="14"/><path d="M718 512q22-10 40 4l-6 38h-34z"/></g>
+  <circle cx="680" cy="574" r="5" fill="#e8a33d"/>
+  <circle cx="680" cy="574" r="30" fill="url(#glow)"/>
+  <ellipse cx="730" cy="656" rx="110" ry="9" fill="#050607" opacity=".5"/>
+  <rect width="1200" height="800" fill="url(#rain)"/>
+  <rect width="1200" height="800" fill="url(#vig)"/>
+</svg>

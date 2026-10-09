@@ -17,6 +17,7 @@ function setup() {
     listSessions: vi.fn().mockResolvedValue({ sessions: [], nextCursor: null }),
     getSession: vi.fn().mockResolvedValue({ ok: 'get' }),
     submitChoice: vi.fn().mockResolvedValue({ ok: 'choose' }),
+    getPresentation: vi.fn().mockResolvedValue({ ok: 'presentation' }),
   };
   return {
     service,
@@ -45,6 +46,9 @@ describe('InteractiveController', () => {
     await controller.findOne(USER, SESSION_ID);
     expect(service.getSession).toHaveBeenCalledWith(USER.id, SESSION_ID);
 
+    await controller.presentation(USER, SESSION_ID, { expectedRevision: '3' });
+    expect(service.getPresentation).toHaveBeenCalledWith(USER.id, SESSION_ID, 3);
+
     const command = {
       choiceId: 'c-ask-caretaker',
       expectedRevision: 0,
@@ -69,6 +73,16 @@ describe('InteractiveController', () => {
     expect(() => controller.list(USER, { userId: 'someone-else' })).toThrow(BadRequestException);
     expect(() => controller.list(USER, { limit: '500' })).toThrow(BadRequestException);
     expect(() => controller.findOne(USER, 'not-a-uuid')).toThrow(BadRequestException);
+    expect(() => controller.presentation(USER, 'not-a-uuid', { expectedRevision: '0' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => controller.presentation(USER, SESSION_ID, {})).toThrow(BadRequestException);
+    expect(() => controller.presentation(USER, SESSION_ID, { expectedRevision: '-1' })).toThrow(
+      BadRequestException,
+    );
+    expect(() =>
+      controller.presentation(USER, SESSION_ID, { expectedRevision: '0', userId: 'someone-else' }),
+    ).toThrow(BadRequestException);
     expect(() =>
       controller.choose(USER, SESSION_ID, {
         choiceId: 'c-ask-caretaker',
@@ -81,6 +95,7 @@ describe('InteractiveController', () => {
     expect(service.listSessions).not.toHaveBeenCalled();
     expect(service.getSession).not.toHaveBeenCalled();
     expect(service.submitChoice).not.toHaveBeenCalled();
+    expect(service.getPresentation).not.toHaveBeenCalled();
   });
 
   it('applies the configured request budgets to every endpoint', () => {
@@ -100,5 +115,18 @@ describe('InteractiveController', () => {
     };
     expect(budget('findOne')).toEqual(read);
     expect(budget('list')).toEqual(read);
+    expect(budget('presentation')).toEqual(read);
+  });
+
+  it('marks presentation metadata as private and uncacheable', () => {
+    expect(
+      Reflect.getMetadata('__httpCode__', InteractiveController.prototype.presentation),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata('__headers__', InteractiveController.prototype.presentation),
+    ).toEqual([{ name: 'Cache-Control', value: 'private, no-store' }]);
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.presentation)).toBe(
+      ':id/presentation',
+    );
   });
 });

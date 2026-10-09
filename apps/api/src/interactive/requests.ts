@@ -25,6 +25,20 @@ export const submitChoiceBodySchema = z
 
 export const sessionIdSchema = z.string().uuid();
 
+/** `?expectedRevision=N`: digits only, no sign/leading zeros, required, no repeats or extra keys. */
+export const presentationQuerySchema = z
+  .object({
+    expectedRevision: z
+      .string()
+      .regex(/^(0|[1-9][0-9]{0,6})$/)
+      .transform(Number),
+  })
+  .strict()
+  .refine((q) => q.expectedRevision <= 1_000_000)
+  .transform((q) => ({ expectedRevision: q.expectedRevision }));
+
+export type PresentationQuery = z.output<typeof presentationQuerySchema>;
+
 export const DEFAULT_LIST_LIMIT = 20;
 export const MAX_LIST_LIMIT = 50;
 

@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { HttpException, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { InteractiveSessionListDto, InteractiveSessionSummaryDto } from '@book/types';
+import type {
+  InteractivePresentationDto,
+  InteractiveSessionListDto,
+  InteractiveSessionSummaryDto,
+} from '@book/types';
 import type { InteractiveSession, Prisma } from '@prisma/client';
 import { canonicalHash } from './domain/canonical';
 import {
@@ -41,6 +45,7 @@ import {
   type ListSessionsQuery,
   type SubmitChoiceBody,
 } from './requests';
+import { projectPresentation } from './presentation/presentation';
 import { getLatestScenario, getScenario } from './scenarios';
 
 /** Bounds how long a choice may wait for the session row lock or run in total. */
@@ -227,6 +232,22 @@ export class InteractiveService {
       throw sessionStateInvalid();
     }
     return this.parseStoredView(event.response);
+  }
+
+  /**
+   * Artwork for the session's current scene. Resolves the owned session through
+   * getSession (so ownership and the stored public view are the only inputs),
+   * then selects from that view. Strictly read-only: no events, state, narration
+   * or provider calls.
+   */
+  async getPresentation(
+    userId: string,
+    sessionId: string,
+    expectedRevision: number,
+  ): Promise<InteractivePresentationDto> {
+    const view = await this.getSession(userId, sessionId);
+    if (view.revision !== expectedRevision) throw revisionConflict();
+    return projectPresentation(view);
   }
 
   async submitChoice(

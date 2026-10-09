@@ -19,7 +19,13 @@ vi.mock('next/link', () => ({
 }));
 vi.mock('@/lib/auth/auth-context', () => ({ useAuth: vi.fn() }));
 vi.mock('@/lib/api/interactive', () => ({
-  interactiveApi: { createSession: vi.fn(), getSession: vi.fn(), submitChoice: vi.fn() },
+  interactiveApi: {
+    createSession: vi.fn(),
+    getSession: vi.fn(),
+    submitChoice: vi.fn(),
+    // Illustrations are covered in scene-illustration.test.tsx; here they never arrive.
+    getPresentation: vi.fn(() => new Promise(() => {})),
+  },
 }));
 
 const getSession = vi.mocked(interactiveApi.getSession);

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0c0f"/><stop offset="1" stop-color="#1b1f25"/></linearGradient>
+    <linearGradient id="cold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7d8da0" stop-opacity=".45"/><stop offset="1" stop-color="#7d8da0" stop-opacity="0"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#f6c76f" stop-opacity=".6"/><stop offset=".45" stop-color="#e8a33d" stop-opacity=".18"/><stop offset="1" stop-color="#e8a33d" stop-opacity="0"/></radialGradient>
+    <radialGradient id="vig" cx=".5" cy=".5" r=".75"><stop offset=".55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".72"/></radialGradient>
+    <pattern id="rain" width="90" height="110" patternUnits="userSpaceOnUse" patternTransform="rotate(12)"><path d="M12 4v34M52 20v28M78 60v32M30 70v26M64 100v10" stroke="#aab4be" stroke-width="1.6" stroke-opacity=".4"/></pattern>
+    <pattern id="tile" width="90" height="46" patternUnits="userSpaceOnUse"><path d="M0 .5h90M0 0v46M45 0v46" stroke="#0b0d10" stroke-width="2" fill="none" opacity=".6"/></pattern>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <rect width="1200" height="640" fill="#1b1f25"/>
+  <path d="M0 440h1200" stroke="#262b32" stroke-width="6"/>
+  <!-- window on the landing, rain on the glass -->
+  <rect x="70" y="150" width="240" height="340" fill="#3b4652"/>
+  <rect x="70" y="150" width="240" height="340" fill="url(#rain)" opacity=".9"/>
+  <path d="M190 150v340M70 320h240" stroke="#0b0d10" stroke-width="10"/>
+  <rect x="70" y="150" width="240" height="340" fill="none" stroke="#0b0d10" stroke-width="14"/>
+  <polygon points="70,490 310,490 640,800 120,800" fill="url(#cold)" opacity=".5"/>
+  <!-- landing floor and the stairs rising behind the viewer -->
+  <rect x="0" y="640" width="1200" height="160" fill="#14171b"/>
+  <rect x="0" y="640" width="1200" height="160" fill="url(#tile)"/>
+  <ellipse cx="620" cy="706" rx="230" ry="20" fill="#2a2f36" opacity=".7"/>
+  <!-- door -->
+  <rect x="430" y="120" width="380" height="540" fill="#0b0d10"/>
+  <rect x="448" y="138" width="344" height="522" fill="#2a2420"/>
+  <rect x="478" y="170" width="120" height="170" fill="#211c19" stroke="#0b0d10" stroke-width="5"/>
+  <rect x="640" y="170" width="120" height="170" fill="#211c19" stroke="#0b0d10" stroke-width="5"/>
+  <rect x="478" y="380" width="120" height="230" fill="#211c19" stroke="#0b0d10" stroke-width="5"/>
+  <rect x="640" y="380" width="120" height="230" fill="#211c19" stroke="#0b0d10" stroke-width="5"/>
+  <rect x="580" y="108" width="80" height="44" fill="#6c5a36" opacity=".85"/>
+  <circle cx="760" cy="440" r="12" fill="#6c5a36"/>
+  <rect x="744" y="468" width="32" height="46" fill="#0b0d10"/>
+  <!-- unopened letters wedged in the frame -->
+  <g stroke="#0b0d10" stroke-width="2">
+    <polygon points="418,200 470,192 474,226 422,236" fill="#d8d0bc"/><polygon points="414,250 462,252 460,290 412,284" fill="#bdb6a4"/>
+    <polygon points="420,310 474,300 478,338 424,348" fill="#d8d0bc"/><polygon points="412,368 468,372 466,408 410,402" fill="#c6bfab"/>
+    <polygon points="808,210 860,218 856,254 804,246" fill="#bdb6a4"/><polygon points="802,272 854,266 858,304 806,310" fill="#d8d0bc"/>
+    <polygon points="808,330 858,338 854,372 806,364" fill="#c6bfab"/><polygon points="804,392 856,390 858,428 806,430" fill="#d8d0bc"/>
+    <polygon points="810,452 862,458 856,492 806,486" fill="#bdb6a4"/><polygon points="520,636 590,648 584,684 516,676" fill="#d8d0bc"/>
+    <polygon points="610,652 676,640 682,676 616,688" fill="#c6bfab"/><polygon points="698,646 760,654 754,688 694,680" fill="#bdb6a4"/>
+  </g>
+  <!-- single dim lamp on the ceiling -->
+  <circle cx="1030" cy="40" r="240" fill="url(#glow)" opacity=".7"/>
+  <rect x="1000" y="28" width="60" height="16" fill="#0b0d10"/>
+  <rect x="1010" y="44" width="40" height="6" fill="#f6c76f"/>
+  <!-- stair rail in the foreground -->
+  <path d="M900 800L1200 560M960 800L1200 640M1020 800L1200 720" stroke="#07080a" stroke-width="12"/>
+  <path d="M860 800L1200 500" stroke="#2f363e" stroke-width="16"/>
+  <rect width="1200" height="800" fill="url(#vig)"/>
+</svg>

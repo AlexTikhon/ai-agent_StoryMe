@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0c0f"/><stop offset="1" stop-color="#1b1f25"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#f6c76f" stop-opacity=".6"/><stop offset=".45" stop-color="#e8a33d" stop-opacity=".18"/><stop offset="1" stop-color="#e8a33d" stop-opacity="0"/></radialGradient>
+    <linearGradient id="cone" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6c76f" stop-opacity=".32"/><stop offset="1" stop-color="#f6c76f" stop-opacity="0"/></linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4a525c"/><stop offset="1" stop-color="#262b32"/></linearGradient>
+    <radialGradient id="vig" cx=".5" cy=".5" r=".75"><stop offset=".55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".7"/></radialGradient>
+    <pattern id="tile" width="80" height="40" patternUnits="userSpaceOnUse"><path d="M0 .5h80M0 0v40M40 0v40" stroke="#0b0d10" stroke-width="2" fill="none" opacity=".6"/></pattern>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <!-- stairwell wall with peeling paint -->
+  <rect x="0" y="0" width="1200" height="620" fill="#1c2026"/>
+  <path d="M0 470h1200" stroke="#2a2f36" stroke-width="6"/>
+  <path d="M90 60q40 30 20 70t30 80M860 40q-30 50 10 90t-20 100M1060 140q30 40 0 80" stroke="#2c323a" stroke-width="5" fill="none"/>
+  <!-- bare bulb and its cone -->
+  <path d="M600 0v70" stroke="#0b0d10" stroke-width="4"/>
+  <polygon points="582,96 618,96 940,620 260,620" fill="url(#cone)"/>
+  <circle cx="600" cy="96" r="230" fill="url(#glow)"/>
+  <ellipse cx="600" cy="92" rx="16" ry="22" fill="#f6c76f"/>
+  <!-- bank of mailboxes: 2 rows of 6 -->
+  <g stroke="#0b0d10" stroke-width="5" fill="url(#metal)">
+    <rect x="170" y="230" width="140" height="130"/><rect x="310" y="230" width="140" height="130"/><rect x="450" y="230" width="140" height="130"/>
+    <rect x="590" y="230" width="140" height="130"/><rect x="730" y="230" width="140" height="130"/><rect x="870" y="236" width="140" height="124"/>
+    <rect x="170" y="360" width="140" height="130"/><rect x="310" y="360" width="140" height="130"/><rect x="450" y="360" width="140" height="130"/>
+    <rect x="590" y="360" width="140" height="130"/><rect x="730" y="360" width="140" height="130"/><rect x="870" y="360" width="140" height="130"/>
+  </g>
+  <g fill="#07080a">
+    <rect x="200" y="272" width="80" height="10"/><rect x="340" y="272" width="80" height="10"/><rect x="480" y="272" width="80" height="10"/>
+    <rect x="620" y="272" width="80" height="10"/><rect x="760" y="272" width="80" height="10"/><rect x="900" y="272" width="80" height="10"/>
+    <rect x="200" y="402" width="80" height="10"/><rect x="340" y="402" width="80" height="10"/><rect x="480" y="402" width="80" height="10"/>
+    <rect x="620" y="402" width="80" height="10"/><rect x="760" y="402" width="80" height="10"/><rect x="900" y="402" width="80" height="10"/>
+  </g>
+  <!-- small plates, no text -->
+  <g fill="#8b8f93" opacity=".55">
+    <rect x="210" y="310" width="60" height="16"/><rect x="350" y="310" width="60" height="16"/><rect x="490" y="310" width="60" height="16"/>
+    <rect x="630" y="310" width="60" height="16"/><rect x="770" y="310" width="60" height="16"/><rect x="910" y="310" width="60" height="16"/>
+    <rect x="210" y="440" width="60" height="16"/><rect x="350" y="440" width="60" height="16"/><rect x="490" y="440" width="60" height="16"/>
+    <rect x="630" y="440" width="60" height="16"/><rect x="770" y="440" width="60" height="16"/><rect x="910" y="440" width="60" height="16"/>
+  </g>
+  <!-- dents and a door hanging slightly open -->
+  <path d="M640 250l30 40-26 38" stroke="#0b0d10" stroke-width="4" fill="none" opacity=".8"/>
+  <path d="M760 380l22 30-18 30" stroke="#0b0d10" stroke-width="4" fill="none" opacity=".8"/>
+  <polygon points="1010,236 1048,224 1048,352 1010,360" fill="#262b32" stroke="#0b0d10" stroke-width="4"/>
+  <!-- a folded page wedged behind the gap at the left end -->
+  <polygon points="130,330 172,322 176,452 138,462" fill="#0b0d10"/>
+  <polygon points="108,356 168,340 174,420 118,438" fill="#cfc4a8"/>
+  <path d="M138 348l8 82" stroke="#8d8368" stroke-width="3"/>
+  <path d="M120 380l44-10M122 398l42-8" stroke="#9a9078" stroke-width="3" opacity=".6"/>
+  <circle cx="140" cy="396" r="120" fill="url(#glow)" opacity=".45"/>
+  <!-- floor with wet footprints, stair rail at right -->
+  <rect x="0" y="620" width="1200" height="180" fill="#14171b"/>
+  <rect x="0" y="620" width="1200" height="180" fill="url(#tile)"/>
+  <ellipse cx="500" cy="700" rx="200" ry="24" fill="#2f363e" opacity=".7"/>
+  <g fill="#0a0c0f" opacity=".6"><ellipse cx="310" cy="720" rx="22" ry="10"/><ellipse cx="368" cy="752" rx="22" ry="10"/><ellipse cx="426" cy="714" rx="22" ry="10"/></g>
+  <path d="M1040 800L1200 520M1100 800L1200 640M1160 800L1200 760" stroke="#0a0c0f" stroke-width="9"/>
+  <path d="M1000 800L1200 440" stroke="#2f363e" stroke-width="12"/>
+  <rect width="1200" height="800" fill="url(#vig)"/>
+</svg>

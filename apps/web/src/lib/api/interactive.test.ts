@@ -65,6 +65,21 @@ describe('interactiveApi', () => {
     expect(init.method).toBeUndefined();
   });
 
+  it('getPresentation GETs the artwork for the expected revision, with no body', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk({ sessionId: 's1' }));
+    const controller = new AbortController();
+
+    await interactiveApi.getPresentation('s 1/x', 4, controller.signal);
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      'http://localhost:4000/api/interactive/sessions/s%201%2Fx/presentation?expectedRevision=4',
+    );
+    expect(init.method).toBeUndefined();
+    expect(init.body).toBeUndefined();
+    expect(init.signal).toBe(controller.signal);
+  });
+
   it('submitChoice POSTs the exact command', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockOk({ sessionId: 's1' }));
     const command = { choiceId: 'c-1', expectedRevision: 3, idempotencyKey: 'key-1' };

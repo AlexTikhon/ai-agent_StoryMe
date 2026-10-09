@@ -1,5 +1,6 @@
 import type {
   CreateInteractiveSessionInput,
+  InteractivePresentationDto,
   InteractiveSessionListDto,
   InteractiveSessionViewDto,
   SubmitInteractiveChoiceInput,
@@ -37,6 +38,20 @@ export const interactiveApi = {
 
   getSession: (sessionId: string, signal?: AbortSignal): Promise<InteractiveSessionViewDto> =>
     apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}`, { signal }),
+
+  /**
+   * Artwork metadata for the scene at `expectedRevision`. Read-only; a different
+   * current revision is answered with REVISION_CONFLICT. Never changes story state.
+   */
+  getPresentation: (
+    sessionId: string,
+    expectedRevision: number,
+    signal?: AbortSignal,
+  ): Promise<InteractivePresentationDto> =>
+    apiFetch(
+      `/interactive/sessions/${encodeURIComponent(sessionId)}/presentation?expectedRevision=${encodeURIComponent(String(expectedRevision))}`,
+      { signal },
+    ),
 
   /** Safe to resend with the identical command: the server deduplicates on `idempotencyKey`. */
   submitChoice: (

@@ -6,6 +6,7 @@ import {
   encodeListCursor,
   listSessionsQuerySchema,
   parseRequest,
+  presentationQuerySchema,
   sessionIdSchema,
   submitChoiceBodySchema,
 } from './requests';
@@ -88,6 +89,37 @@ describe('interactive request validation', () => {
         }),
       ).toBe(true);
     }
+  });
+
+  describe('presentation query', () => {
+    it('accepts a plain non-negative integer revision', () => {
+      expect(parseRequest(presentationQuerySchema, { expectedRevision: '0' })).toEqual({
+        expectedRevision: 0,
+      });
+      expect(parseRequest(presentationQuerySchema, { expectedRevision: '12' })).toEqual({
+        expectedRevision: 12,
+      });
+    });
+
+    it.each([
+      [{}],
+      [{ expectedRevision: '' }],
+      [{ expectedRevision: '-1' }],
+      [{ expectedRevision: '01' }],
+      [{ expectedRevision: '1.5' }],
+      [{ expectedRevision: '1e3' }],
+      [{ expectedRevision: '+1' }],
+      [{ expectedRevision: ' 1' }],
+      [{ expectedRevision: '1000001' }],
+      [{ expectedRevision: '99999999' }],
+      [{ expectedRevision: ['1', '2'] }],
+      [{ expectedRevision: 1 }],
+      [{ expectedRevision: '1', userId: 'someone-else' }],
+      [{ expectedRevision: '1', revision: '1' }],
+      [null],
+    ])('rejects %j', (query) => {
+      expect(rejects(presentationQuerySchema, query)).toBe(true);
+    });
   });
 
   describe('session list query', () => {

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#08090b"/><stop offset="1" stop-color="#1a1d22"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#f6c76f" stop-opacity=".6"/><stop offset=".45" stop-color="#e8a33d" stop-opacity=".18"/><stop offset="1" stop-color="#e8a33d" stop-opacity="0"/></radialGradient>
+    <linearGradient id="cone" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6c76f" stop-opacity=".4"/><stop offset="1" stop-color="#f6c76f" stop-opacity="0"/></linearGradient>
+    <radialGradient id="vig" cx=".5" cy=".5" r=".75"><stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".8"/></radialGradient>
+    <pattern id="brick" width="70" height="30" patternUnits="userSpaceOnUse"><path d="M0 .5h70M0 15.5h70M35 0v15M0 15v15M70 15v15" stroke="#07080a" stroke-width="2.5" fill="none" opacity=".8"/></pattern>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <!-- low brick vault -->
+  <rect width="1200" height="600" fill="#1b1e23"/>
+  <rect width="1200" height="600" fill="url(#brick)"/>
+  <path d="M0 140Q600 -60 1200 140V0H0z" fill="#0a0b0d"/>
+  <path d="M0 140Q600 -60 1200 140" fill="none" stroke="#0a0b0d" stroke-width="10"/>
+  <!-- the workshop door at the left, light leaking from underneath -->
+  <rect x="60" y="250" width="190" height="350" fill="#0b0d10"/>
+  <rect x="76" y="266" width="158" height="334" fill="#26211d"/>
+  <path d="M155 266v334M76 400h158" stroke="#0b0d10" stroke-width="5"/>
+  <circle cx="214" cy="440" r="8" fill="#6c5a36"/>
+  <rect x="70" y="594" width="170" height="8" fill="#f6c76f"/>
+  <polygon points="70,602 240,602 330,700 -10,700" fill="#f6c76f" opacity=".16"/>
+  <!-- pegboard with tools -->
+  <rect x="330" y="200" width="390" height="230" fill="#14171b" stroke="#0a0b0d" stroke-width="6"/>
+  <g fill="#07080a" stroke="#07080a">
+    <path d="M370 240h60v22h-60zM392 262v110" stroke-width="8"/>
+    <path d="M470 232l30 14-14 124h-8z"/><path d="M540 236h18l6 130h-30z"/>
+    <path d="M610 230l8 8-8 130-14 0z"/><path d="M660 244q24 0 24 28t-24 28" stroke-width="7" fill="none"/>
+    <circle cx="436" cy="394" r="14" fill="none" stroke-width="6"/>
+  </g>
+  <!-- hanging bulb and cone -->
+  <path d="M780 0v200" stroke="#07080a" stroke-width="5"/>
+  <polygon points="764,222 796,222 1030,640 530,640" fill="url(#cone)"/>
+  <circle cx="780" cy="224" r="300" fill="url(#glow)"/>
+  <ellipse cx="780" cy="220" rx="18" ry="24" fill="#f6c76f"/>
+  <!-- the person behind the workbench -->
+  <g fill="#07080a">
+    <circle cx="800" cy="352" r="38"/>
+    <path d="M740 400q60-30 120 0l16 190h-152z"/>
+  </g>
+  <path d="M780 346q20 10 40 0" stroke="#e8a33d" stroke-opacity=".45" stroke-width="3" fill="none"/>
+  <path d="M770 340h12M818 340h12" stroke="#f6c76f" stroke-opacity=".5" stroke-width="4"/>
+  <!-- workbench -->
+  <rect x="420" y="560" width="760" height="40" fill="#3a2f24"/>
+  <rect x="420" y="600" width="760" height="14" fill="#0a0b0d"/>
+  <rect x="450" y="614" width="30" height="190" fill="#1d1813"/>
+  <rect x="1120" y="614" width="30" height="190" fill="#1d1813"/>
+  <rect x="470" y="720" width="660" height="22" fill="#1d1813"/>
+  <!-- bench clutter: vise, jars, coiled wire -->
+  <rect x="470" y="520" width="70" height="40" fill="#07080a"/><rect x="486" y="500" width="38" height="20" fill="#07080a"/>
+  <rect x="980" y="506" width="44" height="54" fill="#2c333b" opacity=".9"/><rect x="1036" y="520" width="38" height="40" fill="#2c333b" opacity=".8"/>
+  <ellipse cx="620" cy="550" rx="48" ry="12" fill="none" stroke="#8b9096" stroke-width="5" opacity=".7"/>
+  <!-- floor -->
+  <polygon points="0,800 0,700 420,640 1200,640 1200,800" fill="#101215"/>
+  <rect width="1200" height="800" fill="url(#vig)"/>
+</svg>

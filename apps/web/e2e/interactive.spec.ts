@@ -36,8 +36,11 @@ async function choose(page: Page, label: string, nextSceneTitle: string): Promis
   await expect(page.getByRole('heading', { name: nextSceneTitle, exact: true })).toBeVisible();
 }
 
-async function registerFreshUser(browser: Browser): Promise<Page> {
-  const context = await browser.newContext();
+async function registerFreshUser(
+  browser: Browser,
+  contextOptions: Parameters<Browser['newContext']>[0] = {},
+): Promise<Page> {
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   await page.goto('/register');
   await page.getByLabel(/^Name/).fill('Second Reader');
@@ -340,4 +343,262 @@ test.describe('interactive story library — browser-injected transport failures
     expect(bodies).toHaveLength(1); // resuming from the library sent no second creation
     await page.context().close();
   });
+});
+
+// ── Illustrated reader (Phase 4) ────────────────────────────────────────────
+
+/** Alt-text fingerprints of the eight Warsaw noir v1 panels (see presentation/packs.ts). */
+const ART = {
+  courtyard: /rain-soaked courtyard/,
+  caretaker: /caretaker holding a broom/,
+  mailboxes: /dented metal mailboxes/,
+  door: /silent fourth-floor landing/,
+  flat: /dark flat at night/,
+  cellar: /brick-vaulted cellar workshop/,
+  quiet: /lone cyclist rides away/,
+  exposed: /open ledger on it/,
+} as const;
+type ArtKey = keyof typeof ART;
+
+const artImage = (page: Page, key: ArtKey) => page.getByRole('img', { name: ART[key] });
+
+/** The picture is on screen *and* its file really loaded (not a broken-image box). */
+async function expectArt(page: Page, key: ArtKey): Promise<void> {
+  const image = artImage(page, key);
+  await expect(image).toBeVisible();
+  await expect
+    .poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0))
+    .toBe(true);
+  // Past the fade-in, so screenshots show the finished picture.
+  await expect(image).toHaveCSS('opacity', '1');
+  for (const other of Object.keys(ART) as ArtKey[]) {
+    if (other !== key) await expect(artImage(page, other)).toHaveCount(0);
+  }
+}
+
+async function expectUsableLayout(page: Page): Promise<void> {
+  const viewport = page.viewportSize()!;
+  const metrics = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth); // no horizontal scroll
+  const figure = page.getByTestId('scene-illustration').locator('figure');
+  if ((await figure.count()) > 0) {
+    const box = (await figure.first().boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 0.5);
+    expect(box.width / box.height).toBeCloseTo(1.5, 1); // the reserved 3:2 shape
+  }
+  for (const button of await page.getByRole('main').getByRole('button').all()) {
+    const box = await button.boundingBox();
+    if (box) {
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 0.5);
+    }
+  }
+}
+
+const SHOTS = 'test-results/interactive-visual';
+const PRESENTATION_REV_0 = /\/interactive\/sessions\/[^/]+\/presentation\?expectedRevision=0$/;
+
+test.describe('interactive story — illustrated reader (real API)', () => {
+  test('quiet route: every scene has its artwork, and the shared ending is neutral', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await expectArt(page, 'courtyard');
+
+    await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+    await expectArt(page, 'caretaker');
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await expectArt(page, 'door');
+    await choose(
+      page,
+      'Slip a delivery slip under the door and leave the parcel',
+      'A quiet delivery',
+    );
+    await expectArt(page, 'quiet');
+    await expect(page.getByRole('button', { name: 'Start another story' })).toBeEnabled();
+    await page.context().close();
+  });
+
+  test('quiet ending reached by handing the parcel over shows the same artwork', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await choose(page, 'Check the mailboxes by the stairwell', 'Behind the mailboxes');
+    await expectArt(page, 'mailboxes');
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await choose(
+      page,
+      'Follow the ledger stamp down to the cellar workshop',
+      'The cellar workshop',
+    );
+    await expectArt(page, 'cellar');
+    await choose(page, 'Hand Tomasz his parcel and ask no more questions', 'A quiet delivery');
+    await expectArt(page, 'quiet');
+    await page.context().close();
+  });
+
+  test('exposed route: reload resumes the matching artwork, then the exposed ending is illustrated', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await choose(page, 'Use the single-use entry card on the lock', 'Inside flat 4');
+    await expectArt(page, 'flat');
+
+    // Reload: the artwork requested for the resumed scene is the one displayed.
+    const presentation = page.waitForResponse((r) =>
+      /\/interactive\/sessions\/[^/]+\/presentation\?expectedRevision=3$/.test(r.url()),
+    );
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Inside flat 4' })).toBeVisible();
+    const body = (await (await presentation).json()) as { revision: number; sceneId: string };
+    expect(body).toMatchObject({ revision: 3, sceneId: 's-flat' });
+    await expectArt(page, 'flat');
+
+    await choose(page, 'Take the service stairs down to the cellar', 'The cellar workshop');
+    await expectArt(page, 'cellar');
+    await choose(page, 'Carry the original ledger up and confront Ines', 'The ledger exposed');
+    await expectArt(page, 'exposed');
+    await page.context().close();
+  });
+
+  test('a slow artwork answer for the old scene never appears under the new scene', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = false;
+    let answered = false;
+    await page.route(PRESENTATION_REV_0, async (route) => {
+      if (held) {
+        await route.continue();
+        return;
+      }
+      held = true;
+      await gate; // the first scene's answer is withheld until the test releases it
+      await route.continue();
+      answered = true;
+    });
+    await startStory(page);
+    await expect(page.getByTestId('illustration-placeholder')).toBeVisible();
+
+    // The text and choices are fully usable while the picture is pending.
+    await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+    await expectArt(page, 'caretaker');
+
+    release(); // the old answer now arrives
+    await expect.poll(() => answered).toBe(true);
+    await expect(artImage(page, 'courtyard')).toHaveCount(0);
+    await expectArt(page, 'caretaker');
+    await page.context().close();
+  });
+
+  test('an artwork metadata outage leaves the text reader playable; reload recovers it', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    let failures = 0;
+    await page.route(PRESENTATION_REV_0, async (route) => {
+      if (failures < 1) {
+        failures += 1;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 'SERVICE_UNAVAILABLE', message: 'down' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await startStory(page);
+    await expect(page.getByText(/illustration isn.t available/i)).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Ask the caretaker where Tomasz is' }),
+    ).toBeEnabled();
+
+    await page.getByRole('button', { name: 'Reload illustration' }).click();
+    await expectArt(page, 'courtyard');
+    expect(failures).toBe(1);
+
+    await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+    await expectArt(page, 'caretaker');
+    await page.context().close();
+  });
+
+  test('a broken image file degrades to text and play continues', async ({ browser }) => {
+    const page = await registerFreshUser(browser);
+    await page.route('**/interactive/warsaw-noir/v1/s-caretaker.svg', (route) =>
+      route.abort('failed'),
+    );
+    await startStory(page);
+    await expectArt(page, 'courtyard');
+
+    await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+    await expect(page.getByText(/illustration isn.t available/i)).toBeVisible();
+    await expect(artImage(page, 'caretaker')).toHaveCount(0);
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await expectArt(page, 'door'); // the next scene's art is unaffected
+    await page.context().close();
+  });
+
+  test('artwork files are public static assets, but the scene metadata needs a login', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const sessionId = await startStory(page);
+    const asset = await page.request.get('/interactive/warsaw-noir/v1/s-cellar.svg');
+    expect(asset.status()).toBe(200);
+    expect(asset.headers()['content-type']).toContain('image/svg+xml');
+
+    const anonymous = await (
+      await browser.newContext()
+    ).request.get(
+      `${apiBaseUrl}/interactive/sessions/${sessionId}/presentation?expectedRevision=0`,
+    );
+    expect([401, 403]).toContain(anonymous.status());
+    await page.context().close();
+  });
+
+  for (const [name, viewport] of [
+    ['desktop', { width: 1280, height: 800 }],
+    ['mobile', { width: 390, height: 844 }],
+  ] as const) {
+    test(`has a usable ${name} layout at the entry scene and the ending (screenshots)`, async ({
+      browser,
+    }) => {
+      const page = await registerFreshUser(browser, {
+        viewport,
+        deviceScaleFactor: name === 'mobile' ? 2 : 1,
+        ...(name === 'mobile' ? { isMobile: true, hasTouch: true } : {}),
+      });
+      await startStory(page);
+      await expectArt(page, 'courtyard');
+      await expectUsableLayout(page);
+      await page.screenshot({ path: `${SHOTS}/${name}-entry.png`, fullPage: true });
+
+      await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+      await expectArt(page, 'caretaker');
+      await expectUsableLayout(page);
+      await choose(page, 'Climb to the fourth floor', 'Flat 4');
+      await choose(page, 'Use the single-use entry card on the lock', 'Inside flat 4');
+      await expectArt(page, 'flat');
+      await expectUsableLayout(page);
+      await page.screenshot({ path: `${SHOTS}/${name}-flat.png`, fullPage: true });
+      await choose(page, 'Take the service stairs down to the cellar', 'The cellar workshop');
+      await choose(page, 'Hand Tomasz his parcel and ask no more questions', 'A quiet delivery');
+      await expectArt(page, 'quiet');
+      await expectUsableLayout(page);
+      await page.screenshot({ path: `${SHOTS}/${name}-ending.png`, fullPage: true });
+      await page.context().close();
+    });
+  }
 });
