@@ -83,6 +83,7 @@ pnpm test:infra:up                                   # disposable Postgres :5440
 pnpm --filter @book/api prisma:generate
 pnpm --filter @book/api test                         # unit tests (no services)
 pnpm eval:interactive:offline                        # in-memory evaluation, no services/keys
+pnpm eval:interactive:authoring:offline              # scenario-authoring evaluation (see interactive-authoring.md)
 pnpm --filter @book/api test:integration test/integration/interactive   # guarded runner
 pnpm --filter @book/api typecheck:integration:hardening
 pnpm test:infra:down
