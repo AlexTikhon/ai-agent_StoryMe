@@ -1,5 +1,48 @@
 # StoryMe
 
+StoryMe is a pnpm/Turborepo monorepo with two supported products:
+
+- **Interactive illustrated stories.** A signed-in reader plays a branching
+  detective story in the browser: each choice is validated and applied by a
+  deterministic, versioned engine; progress is stored per account and can be
+  resumed after a reload; scenes are accompanied by local SVG artwork. One
+  scenario, "The Last Delivery", is published. A separate offline authoring
+  workflow can draft further scenarios with a model, validates them
+  mechanically, and stops at review artifacts: nothing is published without a
+  human decision recorded in source control.
+- **Personalized children's books.** Fill in a child's name, age, and a theme;
+  a queued pipeline produces a short illustrated story and a downloadable PDF.
+  This workflow is unchanged and documented below.
+
+**Start here:**
+
+- **[Interactive demo](docs/interactive-demo.md)** — a reproducible walkthrough
+  of the reader and of the offline authoring workflow (Windows PowerShell).
+- [Interactive section of CURRENT_PRODUCT](docs/CURRENT_PRODUCT.md#interactive-illustrated-stories)
+  — implemented behavior, routes, limits and trade-offs.
+- Implementation docs: [engine](apps/api/docs/interactive-engine.md) and
+  [authoring](apps/api/docs/interactive-authoring.md).
+
+```mermaid
+flowchart LR
+  subgraph Runtime
+    A[Authenticated command] --> B[Transaction and revision checks]
+    B --> C[Deterministic engine]
+    C --> D[Persisted events and public views]
+  end
+  subgraph Authoring
+    E[Brief] --> F[Bounded provider generation and repair]
+    F --> G[Mechanical validation]
+    G --> H[Pending review artifacts]
+    H --> I[Explicit human publication process]
+  end
+  I -.->|versioned scenario in source| C
+```
+
+No language model runs during play, and real-model authoring quality is
+unverified: the authoring workflow has only been exercised end to end with its
+deterministic mock provider.
+
 ## Durable integration tests
 
 The API integration suite owns a disposable PostgreSQL/Redis target and
@@ -17,9 +60,10 @@ credentials, and runs the serial real-infrastructure suite. Always run
 `test:infra:down` when finished; it removes only the named disposable Compose
 project and volumes.
 
-A personalized children's-storybook generator: fill in a child's name, age,
-and a theme, and the pipeline produces a short illustrated story and a
-downloadable PDF.
+## Children's-book generator
+
+The book workflow: fill in a child's name, age, and a theme, and the pipeline
+produces a short illustrated story and a downloadable PDF.
 
 **Start with [docs/CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md).** It is the
 source of truth for implemented behavior, real routes, providers, storage,
@@ -42,9 +86,10 @@ This is a pnpm/Turborepo monorepo:
 
 See **[docs/local-demo.md](docs/local-demo.md)** for the full local setup and
 demo walkthrough (install → Docker infra → migrate → run API/web → create and
-generate a book → download the PDF).
+generate a book → download the PDF). The interactive story reader runs on the
+same setup; its walkthrough is **[docs/interactive-demo.md](docs/interactive-demo.md)**.
 
-## What the MVP does
+## What the book generator does
 
 - Create a book from a short form (child's name/age, theme, language,
   page count, optional educational message/dedication).

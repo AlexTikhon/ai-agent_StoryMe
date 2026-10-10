@@ -4,6 +4,12 @@ This is the source of truth for what the repository implements now. The root PRD
 specification, architecture, design, UX, and roadmap files preserve historical intent and future
 design; they are not implementation contracts.
 
+The repository ships two products behind one authentication layer: the personalized
+children's-book generator (the sections from [Supported flow](#supported-flow) onward) and the
+[interactive illustrated stories](#interactive-illustrated-stories) reader with its offline
+authoring workflow. They share accounts, the API process and the web app, and nothing else: the
+interactive engine uses no generation run, queue, worker, PDF or image provider.
+
 ## Supported flow
 
 Users can register with email/password, verify email, log in, restore a session through a rotating
@@ -34,9 +40,150 @@ packages through Stripe Checkout.
 
 JWT mode is the default. A local-only `dev` auth mode exists and must not be exposed publicly.
 
+## Interactive illustrated stories
+
+A signed-in reader plays a branching detective story. A deterministic engine validates and applies
+every choice, stores each transition as an event, and serves a public view of the result. No
+language model runs during play. Implementation detail lives in the
+[engine document](../apps/api/docs/interactive-engine.md) and the
+[authoring document](../apps/api/docs/interactive-authoring.md); a reproducible walkthrough is in
+[interactive-demo.md](interactive-demo.md). Code is under
+[apps/api/src/interactive/](../apps/api/src/interactive/) and
+[apps/web/src/app/dashboard/interactive/](../apps/web/src/app/dashboard/interactive/).
+
+### What the reader does
+
+- **Published catalogue.** `GET /api/interactive/scenarios` lists each published scenario's latest
+  version with a title, language and spoiler-free synopsis. The static registry in
+  [scenarios/index.ts](../apps/api/src/interactive/scenarios/index.ts) is the only publication
+  authority. One scenario is published: "The Last Delivery" (`warsaw-last-delivery` v1, English,
+  eight scenes, three decision points, two endings).
+- **Version-pinned sessions.** A session stores its scenario id and version, and its first event
+  stores a hash of the definition. It never adopts a newer or edited definition; a version the
+  build no longer ships is refused (`SCENARIO_VERSION_UNAVAILABLE`), not migrated.
+- **Choices, knowledge, inventory, endings.** A choice is the only client input. Requirements
+  (`playerKnows`, `hasItem`, `flag`, `notFlag`) and effects (`learnFact`, `npcLearns`, `giveItem`,
+  `consumeItem`, `setFlag`) are a closed vocabulary with no expressions. Narration may only voice
+  facts its speaker knows. Locked choices are absent from the response, a one-time item is
+  consumed when used, and play stops at an ending.
+- **Session library and resume.** Session creation is idempotent (a required key). The "Your
+  stories" list shows in-progress and completed sessions; a reload or a link back to a session
+  fetches the stored state and never creates one. A user may retain 50 sessions
+  (`INTERACTIVE_MAX_SESSIONS_PER_USER`); there is no deletion yet.
+- **Revision conflicts and immutable retries.** Each choice carries the revision the player saw
+  and an idempotency key. The server locks the session row, so a stale revision is
+  `409 REVISION_CONFLICT` and an identical retry returns the saved response without a second
+  event. The reader holds one immutable command per choice: a lost response is recovered by a
+  manual **Retry choice** that resends the identical command, and a conflict reloads the
+  authoritative state and asks the player to choose again. Nothing is re-sent against a newer
+  revision.
+- **Presentation packs.** Artwork is selected by a separate pack, not by the scenario. `warsaw-noir`
+  v1 maps each of the eight scenes to a local hand-authored SVG
+  ([presentation/packs.ts](../apps/api/src/interactive/presentation/packs.ts), files in
+  [apps/web/public/interactive/warsaw-noir/v1/](../apps/web/public/interactive/warsaw-noir/v1/)).
+  Artwork failures do not block play: a metadata outage or a broken image file shows a text notice
+  and a bounded manual reload while the story continues.
+
+### Interactive API routes
+
+All routes have the `/api` prefix, use `AuthModeGuard` plus a per-user, Redis-backed request budget
+(fail-closed), validate input with strict schemas, and take the owner from the authenticated user.
+A missing session and another user's session both return `404 SESSION_NOT_FOUND`. Routes are
+derived from [interactive.controller.ts](../apps/api/src/interactive/interactive.controller.ts) and
+[interactive-scenarios.controller.ts](../apps/api/src/interactive/interactive-scenarios.controller.ts).
+
+| Method | Route                                    | Behavior                                                                      | Budget (`INTERACTIVE_*`) |
+| ------ | ---------------------------------------- | ----------------------------------------------------------------------------- | ------------------------ |
+| GET    | `/interactive/scenarios`                 | Published catalogue (`private, no-store`)                                     | `READ`                   |
+| POST   | `/interactive/sessions`                  | Create a session; `idempotencyKey` required, `scenarioVersion` optional       | `CREATE`                 |
+| GET    | `/interactive/sessions`                  | Owned session library, keyset pagination (`limit`, `cursor`)                  | `READ`                   |
+| GET    | `/interactive/sessions/:id`              | Current public view of an owned session                                       | `READ`                   |
+| GET    | `/interactive/sessions/:id/presentation` | Current scene's artwork metadata; `expectedRevision` required, stale is `409` | `READ`                   |
+| GET    | `/interactive/sessions/:id/metadata`     | Title of the session's pinned scenario version                                | `READ`                   |
+| POST   | `/interactive/sessions/:id/choices`      | Submit one choice (`choiceId`, `expectedRevision`, `idempotencyKey`)          | `CHOICE`                 |
+
+Budgets are `INTERACTIVE_<KIND>_RATE_LIMIT_WINDOW_MS` and `..._MAX_ATTEMPTS`; defaults are in
+`.env.example` and are private-pilot assumptions, not measured limits. Stable error codes are listed
+in the engine document. Web routes: `/dashboard/interactive` (catalogue, "Your stories", explicit
+**Start story**) and `/dashboard/interactive/[sessionId]` (the reader).
+
+### Offline authoring and the human approval boundary
+
+Authoring is a set of local commands with no endpoint, database, queue or editor UI:
+
+| Command                                             | Purpose                                                                    |
+| --------------------------------------------------- | -------------------------------------------------------------------------- |
+| `pnpm author:interactive --mode mock`               | Brief to candidate, at most one generation and one repair, then validation |
+| `pnpm playtest:interactive --candidate <file>`      | Play a candidate through the production engine; read-only                  |
+| `pnpm preflight:interactive --candidate --approval` | Re-validate a candidate and check its approval record; read-only           |
+| `pnpm eval:interactive:authoring:offline`           | Fixture evaluation of the authoring pipeline; no services, keys or network |
+
+A successful run writes a `--review-required` directory: the normalized candidate, a validation
+report, a human-readable review report, and an approval template that is `pending`. There is no
+approve, promote or publish command. Publication is a manual sequence recorded in source control:
+a person writes an approval record bound to the candidate's hash, the definition is committed as
+an immutable versioned JSON file, and it is registered in `scenarios/index.ts` with its approval in
+`scenarios/approvals.ts` and hand-written catalogue metadata. The registry
+([guarded-registry.ts](../apps/api/src/interactive/publication/guarded-registry.ts)) refuses to
+load a definition without a matching approved record. The sequence is specified in
+[Publication boundary](../apps/api/docs/interactive-authoring.md#publication-boundary-manual-sequence).
+
+Current status:
+
+- **The Last Delivery** is published. It predates approval records and is pinned in
+  [legacy-baseline.ts](../apps/api/src/interactive/scenarios/legacy-baseline.ts) by id, version and
+  hash as existing content; no retrospective human approval is claimed. `SCENARIO_APPROVALS` is
+  empty.
+- **The Last Tram** (`warsaw-last-tram` v1, the bundled mock episode) is `REVIEW_REQUIRED`. It is
+  not registered, not in the catalogue, and session creation for it returns
+  `422 UNKNOWN_SCENARIO`. Its approval template is pending and preflight fails with
+  `APPROVAL_PENDING`. See the [editorial review notes](../apps/api/docs/last-tram-editorial-review.md).
+- **Real-model authoring quality is unverified.** The OpenAI mode (it needs `--allow-paid-calls`
+  and an explicit model) is tested only against intercepted HTTP; whether a real model produces a
+  valid candidate, and how often it needs repair, is unknown.
+
+### Design trade-offs
+
+- **Deterministic gameplay over runtime LLM narration.** Narration is accepted only if it equals the
+  approved template text for the exact state
+  ([domain/narration.ts](../apps/api/src/interactive/domain/narration.ts)), so a contradiction
+  cannot be produced and any session can be replayed from its events. The cost is fixed prose that
+  cannot react to anything the scenario did not anticipate. The `NarratorProvider` seam exists
+  ([narrator/narrator.ts](../apps/api/src/interactive/narrator/narrator.ts)) but only the mock
+  implementation is wired; see
+  [Narration and its limits](../apps/api/docs/interactive-engine.md#narration-and-its-limits).
+- **Static versioned publication over dynamic content management.** Scenarios are JSON files in
+  source and are published by a code change, so a pinned session can always be replayed against
+  the exact definition it started with ([registry.ts](../apps/api/src/interactive/scenarios/registry.ts)).
+  The cost is that a new story or a fix needs a commit and a deploy; there is no in-app editor or
+  hot publish.
+- **Mechanical validity over prose quality.** Validation proves reachability, no dead ends, usable
+  choices and that annotated facts are known by their speaker
+  ([authoring/validate.ts](../apps/api/src/interactive/authoring/validate.ts)). It cannot show that
+  prose is good, free of unannotated spoilers or suitable for an audience, because fact ids are
+  assertions supplied by the author. A pass therefore means `REVIEW_REQUIRED`, and the human gate
+  is the quality control. See the [authoring document](../apps/api/docs/interactive-authoring.md).
+- **Local SVG packs over generated artwork.** Eight hand-authored files need no provider, cost or
+  network, load deterministically, and are checked for scripts and external references
+  ([presentation/presentation.ts](../apps/api/src/interactive/presentation/presentation.ts)). The
+  cost is prototype-quality art, one panel per scene, files that are public static assets, and a
+  pack that is chosen at read time rather than pinned to a session. See
+  [Phase 4 notes](../apps/api/docs/interactive-engine.md#phase-4-illustrated-reader-presentation-packs).
+
+### Interactive limitations
+
+- No session deletion or retention; every session counts toward the per-user cap.
+- Catalogue titles and synopses are English only; the catalogue shows each scenario's latest
+  version, and older versions can be started only through the API.
+- Request budgets and the cap are initial private-pilot assumptions. This document makes no
+  deployment claim for the interactive product.
+- An approval record is a human-authored attestation, not an authenticated signature.
+- There is no web preview of drafts; reviewers use the offline playtest.
+
 ## API routes
 
-All routes have the `/api` prefix.
+All routes have the `/api` prefix. The interactive routes are listed in
+[Interactive API routes](#interactive-api-routes).
 
 | Method           | Route                                                              | Behavior                                 |
 | ---------------- | ------------------------------------------------------------------ | ---------------------------------------- |
@@ -83,7 +230,8 @@ and ownership comes from the authenticated user rather than client-supplied user
 `/`, `/register`, `/login`, `/verify-email`, `/forgot-password`, `/reset-password`, `/dashboard`,
 `/dashboard/child-profiles`, `/dashboard/books/new`, `/dashboard/books/[id]`,
 `/dashboard/credits`, `/billing/success`, and
-`/billing/cancel`.
+`/billing/cancel`. The interactive reader adds `/dashboard/interactive` and
+`/dashboard/interactive/[sessionId]` (see [Interactive illustrated stories](#interactive-illustrated-stories)).
 
 The completed-book detail screen has an authenticated in-browser reader for the published cover,
 every generated story page, and the back cover. It lazily fetches one owned published image at a

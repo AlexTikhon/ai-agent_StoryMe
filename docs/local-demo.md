@@ -4,6 +4,9 @@ How to run StoryMe locally end-to-end: create a book, generate it, and
 download the PDF. Everything below uses the default **mock** generation
 mode — no OpenAI key required, no network calls, fully deterministic.
 
+Looking for the interactive illustrated stories? They run on the same setup (steps 1–7; no
+generation worker is needed). Their walkthrough is [interactive-demo.md](interactive-demo.md).
+
 ## Prerequisites
 
 - Node.js ≥ 20
