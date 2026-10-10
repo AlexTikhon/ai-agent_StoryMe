@@ -43,7 +43,7 @@ export const LAST_TRAM_BRIEF: ScenarioBrief = {
     {
       id: 'report-filed',
       title: 'Report Filed',
-      concept: 'Nina follows procedure and reports the missing box to the depot supervisor.',
+      concept: 'Nina follows procedure and files an incident report with the depot supervisor.',
     },
     {
       id: 'quiet-repayment',
@@ -110,7 +110,7 @@ export const LAST_TRAM_SCENARIO: ScenarioDefinition = {
         },
         {
           id: 't-boarding-nina',
-          text: 'Nina goes over what she has been told: the volunteers’ cash box was on the rear platform at the last stop, and now it is gone.',
+          text: 'Nina goes over what she has been told: the volunteers’ cash box was on the rear platform earlier tonight, and somewhere between two stops it vanished.',
           speakerId: 'nina',
           factIds: ['f-box-missing'],
         },
@@ -158,7 +158,7 @@ export const LAST_TRAM_SCENARIO: ScenarioDefinition = {
         },
         {
           id: 't-cab-key',
-          text: 'He slides a flat brass key across the dashboard. “Panel key. The depot does not need to know I lent it.”',
+          text: 'He slides a flat brass key across the dashboard. “In case you want a look behind that panel. The depot does not need to know I lent it.”',
         },
       ],
       choices: [
@@ -227,7 +227,7 @@ export const LAST_TRAM_SCENARIO: ScenarioDefinition = {
         },
         {
           id: 'c-show-receipt',
-          label: 'Show Hanna the torn receipt',
+          label: 'Show Hanna the torn receipt and ask about the shortfall',
           to: 's-terminus',
           requires: [{ kind: 'hasItem', item: 'torn-receipt' }],
           effects: [
@@ -254,14 +254,14 @@ export const LAST_TRAM_SCENARIO: ScenarioDefinition = {
         },
         {
           id: 't-terminus-panel',
-          text: 'Behind the panel the cash box sits where Hanna left it, its lid dented and its lock intact. Nina lifts it out and sets it down on the platform.',
+          text: 'Nina carries the cash box she found behind the panel out onto the platform. Its lid is dented, but its lock is intact.',
           speakerId: 'nina',
           factIds: ['f-box-under-panel'],
           when: [{ kind: 'flag', flag: 'panel-opened' }],
         },
         {
           id: 't-terminus-receipt',
-          text: '“I only meant to borrow it,” Hanna says, staring at the receipt. “A deposit was due on Friday. I would have put it back by morning.”',
+          text: '“I only meant to borrow the money,” Hanna says, staring at the receipt. “A deposit was due on Friday. I would have put it back by morning.” Up front, Wiktor’s eyes lift to his mirror, and he says nothing.',
           speakerId: 'hanna',
           factIds: ['f-hanna-borrowed'],
           when: [{ kind: 'flag', flag: 'receipt-shown' }],
@@ -275,7 +275,7 @@ export const LAST_TRAM_SCENARIO: ScenarioDefinition = {
       choices: [
         {
           id: 'c-report-to-depot',
-          label: 'Report the missing box to the depot supervisor',
+          label: 'File an incident report with the depot supervisor',
           to: 's-ending-report',
           effects: [],
         },
@@ -305,6 +305,16 @@ export const LAST_TRAM_SCENARIO: ScenarioDefinition = {
           when: [{ kind: 'flag', flag: 'asked-driver' }],
         },
         {
+          id: 't-report-recovered',
+          text: 'Nina logs the recovered box, its dented lid and intact lock, and the panel where she found it. How it came to be there is left for the supervisor to ask.',
+          when: [{ kind: 'flag', flag: 'panel-opened' }],
+        },
+        {
+          id: 't-report-confession',
+          text: 'Hanna’s own account of the borrowed money goes into the log beside the torn receipt. The box itself is still missing.',
+          when: [{ kind: 'flag', flag: 'receipt-shown' }],
+        },
+        {
           id: 't-report-waited',
           text: 'The log records the box as missing, and no one has said where it went.',
           when: [{ kind: 'flag', flag: 'waited-quietly' }],
@@ -314,12 +324,17 @@ export const LAST_TRAM_SCENARIO: ScenarioDefinition = {
     },
     {
       id: 's-ending-quiet',
-      title: 'Paid back by morning',
+      title: 'Until morning',
       endingId: 'quiet-repayment',
       narration: [
         {
           id: 't-quiet-base',
           text: 'Nina closes her notebook without writing a word. The tram’s brakes tick as they cool, and Hanna nods once, her hands trembling around the clipboard.',
+        },
+        {
+          id: 't-quiet-hanna',
+          text: '“The box and the money will both be back by morning,” Hanna whispers.',
+          speakerId: 'hanna',
         },
         {
           id: 't-quiet-driver',
