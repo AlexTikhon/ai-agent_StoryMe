@@ -34,8 +34,11 @@ jobs:
       - run: pnpm --filter @book/types build
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm --filter @book/api typecheck:scripts
       - run: pnpm test
       - run: pnpm eval:story:offline
+      - run: pnpm eval:interactive:offline
+      - run: pnpm eval:interactive:authoring:offline
       - run: pnpm build
         env:
           NODE_ENV: production

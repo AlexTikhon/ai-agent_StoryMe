@@ -232,18 +232,19 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  refreshTokens      RefreshToken[]
-  childProfiles      ChildProfile[]
-  uploads            Upload[]
-  books              Book[]
-  characterCards     CharacterCard[]
-  series             BookSeries[]
-  creditTransactions CreditTransaction[]
-  subscription       Subscription?
-  wizardDraft        WizardDraft?
-  userBookStates     UserBookState[]
-  notifications      Notification[]
-  pageImageRevisions PageImageRevision[]
+  refreshTokens       RefreshToken[]
+  childProfiles       ChildProfile[]
+  uploads             Upload[]
+  books               Book[]
+  characterCards      CharacterCard[]
+  series              BookSeries[]
+  creditTransactions  CreditTransaction[]
+  subscription        Subscription?
+  wizardDraft         WizardDraft?
+  userBookStates      UserBookState[]
+  notifications       Notification[]
+  pageImageRevisions  PageImageRevision[]
+  interactiveSessions InteractiveSession[]
 
   @@index([email])
   @@index([oauthProvider, oauthId])
@@ -974,4 +975,61 @@ model Notification {
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("notifications")
+}
+
+// ═══════════════════════════════════════════
+// INTERACTIVE STORY ENGINE (v2, Phase 1)
+// ═══════════════════════════════════════════
+// Independent from the book pipeline: no GenerationRun, outbox, queue or claim
+// is involved. See apps/api/docs/interactive-engine.md.
+
+// One playthrough of a versioned scenario. `scenarioId` + `scenarioVersion` pin
+// the definition for the life of the session. `state` is the validated
+// internal state (never returned to clients) and always equals the replay of
+// this session's events; `revision` equals the latest event's `seq`.
+model InteractiveSession {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  scenarioId      String   @map("scenario_id")
+  scenarioVersion Int      @map("scenario_version")
+  revision        Int      @default(0)
+  state           Json
+  // Creation identity. Nullable: sessions created before it existed have none.
+  // `creationRequestHash` fingerprints the validated creation command without the key.
+  creationIdempotencyKey String?  @map("creation_idempotency_key")
+  creationRequestHash    String?  @map("creation_request_hash")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events SessionEvent[]
+
+  @@unique([userId, creationIdempotencyKey])
+  @@index([userId, createdAt])
+  @@map("interactive_sessions")
+}
+
+// Append-only log. seq 0 is the SessionStarted genesis event (no idempotency
+// key); every accepted choice appends seq 1, 2, ... in the same transaction
+// that advances the session. `stateHash` is the SHA-256 of the canonical state
+// after this event. `response` is the public scene view returned for this
+// event, stored so GET and idempotent retries never regenerate narration.
+model SessionEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  sessionId      String   @map("session_id") @db.Uuid
+  seq            Int
+  type           String
+  schemaVersion  Int      @map("schema_version")
+  payload        Json
+  stateHash      String   @map("state_hash")
+  idempotencyKey String?  @map("idempotency_key")
+  requestHash    String?  @map("request_hash")
+  response       Json
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  session InteractiveSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, seq])
+  @@unique([sessionId, idempotencyKey])
+  @@map("session_events")
 }

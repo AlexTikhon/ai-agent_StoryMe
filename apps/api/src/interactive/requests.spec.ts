@@ -1,0 +1,200 @@
+import { BadRequestException } from '@nestjs/common';
+import { describe, expect, it } from 'vitest';
+import { canonicalHash } from './domain/canonical';
+import {
+  DEFAULT_LIST_LIMIT,
+  createSessionBodySchema,
+  createSessionRequestHash,
+  encodeListCursor,
+  listSessionsQuerySchema,
+  parseRequest,
+  presentationQuerySchema,
+  sessionIdSchema,
+  submitChoiceBodySchema,
+} from './requests';
+
+const valid = {
+  choiceId: 'c-ask-caretaker',
+  expectedRevision: 0,
+  idempotencyKey: 'key_1234-abcd',
+};
+
+function rejects(schema: Parameters<typeof parseRequest>[0], value: unknown): boolean {
+  try {
+    parseRequest(schema, value);
+    return false;
+  } catch (error) {
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).getResponse()).toMatchObject({ code: 'INVALID_REQUEST' });
+    return true;
+  }
+}
+
+describe('interactive request validation', () => {
+  it('accepts a well-formed choice command and session creation body', () => {
+    expect(parseRequest(submitChoiceBodySchema, valid)).toEqual(valid);
+    const create = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-1234-abcd' };
+    expect(parseRequest(createSessionBodySchema, create)).toEqual(create);
+    expect(parseRequest(sessionIdSchema, '3f2504e0-4f89-41d3-9a0c-0305e82c3301')).toBeTruthy();
+  });
+
+  it('accepts an optional integer scenarioVersion and rejects malformed ones', () => {
+    const base = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-1234-abcd' };
+    expect(parseRequest(createSessionBodySchema, { ...base, scenarioVersion: 2 })).toEqual({
+      ...base,
+      scenarioVersion: 2,
+    });
+    for (const scenarioVersion of [0, -1, 1.5, '1', null, Number.NaN, 2_000_000, [1], {}]) {
+      expect(rejects(createSessionBodySchema, { ...base, scenarioVersion })).toBe(true);
+    }
+  });
+
+  it('fingerprints a creation without a version exactly as before', () => {
+    // Pinned: keys accepted before scenarioVersion existed must keep replaying.
+    expect(createSessionRequestHash({ scenarioId: 'warsaw-last-delivery' })).toBe(
+      '3517ca905949a7cb8fdedd14f45834aeda7951a3b254d8d7465444694f501a2c',
+    );
+    expect(createSessionRequestHash({ scenarioId: 'warsaw-last-delivery' })).toBe(
+      canonicalHash({ scenarioId: 'warsaw-last-delivery' }),
+    );
+  });
+
+  it('includes an explicit version in the fingerprint', () => {
+    const legacy = createSessionRequestHash({ scenarioId: 'warsaw-last-delivery' });
+    const v1 = createSessionRequestHash({ scenarioId: 'warsaw-last-delivery', scenarioVersion: 1 });
+    const v2 = createSessionRequestHash({ scenarioId: 'warsaw-last-delivery', scenarioVersion: 2 });
+    expect(new Set([legacy, v1, v2]).size).toBe(3);
+    expect(v1).toBe(canonicalHash({ scenarioId: 'warsaw-last-delivery', scenarioVersion: 1 }));
+  });
+
+  it('rejects malformed session ids', () => {
+    for (const id of ['', 'abc', '3f2504e0-4f89-41d3-9a0c-0305e82c33', "1'; DROP TABLE x;--"]) {
+      expect(rejects(sessionIdSchema, id)).toBe(true);
+    }
+  });
+
+  it('rejects bad revisions', () => {
+    for (const expectedRevision of [-1, 1.5, '1', null, Number.NaN, 2_000_000, undefined]) {
+      expect(rejects(submitChoiceBodySchema, { ...valid, expectedRevision })).toBe(true);
+    }
+  });
+
+  it('rejects unbounded or malformed identifiers and keys', () => {
+    expect(rejects(submitChoiceBodySchema, { ...valid, choiceId: 'C Bad' })).toBe(true);
+    expect(rejects(submitChoiceBodySchema, { ...valid, choiceId: 'c'.repeat(64) })).toBe(true);
+    expect(rejects(submitChoiceBodySchema, { ...valid, idempotencyKey: '' })).toBe(true);
+    expect(rejects(submitChoiceBodySchema, { ...valid, idempotencyKey: 'k'.repeat(129) })).toBe(
+      true,
+    );
+    expect(rejects(submitChoiceBodySchema, { ...valid, idempotencyKey: 'has space' })).toBe(true);
+    const create = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-1234-abcd' };
+    expect(rejects(createSessionBodySchema, { ...create, scenarioId: '../etc' })).toBe(true);
+    for (const key of ['', 'k'.repeat(129), 'has space', 42, null]) {
+      expect(rejects(createSessionBodySchema, { ...create, idempotencyKey: key })).toBe(true);
+    }
+  });
+
+  it('rejects missing fields and non-object bodies', () => {
+    expect(rejects(submitChoiceBodySchema, undefined)).toBe(true);
+    expect(rejects(submitChoiceBodySchema, 'choice')).toBe(true);
+    expect(rejects(submitChoiceBodySchema, { choiceId: valid.choiceId })).toBe(true);
+    expect(rejects(createSessionBodySchema, {})).toBe(true);
+    // The idempotency key is required for creation.
+    expect(rejects(createSessionBodySchema, { scenarioId: 'warsaw-last-delivery' })).toBe(true);
+  });
+
+  it('refuses client-supplied events, state, effects, narration or owner', () => {
+    for (const extra of [
+      { userId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301' },
+      { events: [] },
+      { state: { revision: 99 } },
+      { effects: [{ kind: 'giveItem', item: 'parcel' }] },
+      { narration: 'The story ends happily.' },
+    ]) {
+      expect(rejects(submitChoiceBodySchema, { ...valid, ...extra })).toBe(true);
+      expect(
+        rejects(createSessionBodySchema, {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: 'start-1234-abcd',
+          ...extra,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  describe('presentation query', () => {
+    it('accepts a plain non-negative integer revision', () => {
+      expect(parseRequest(presentationQuerySchema, { expectedRevision: '0' })).toEqual({
+        expectedRevision: 0,
+      });
+      expect(parseRequest(presentationQuerySchema, { expectedRevision: '12' })).toEqual({
+        expectedRevision: 12,
+      });
+    });
+
+    it.each([
+      [{}],
+      [{ expectedRevision: '' }],
+      [{ expectedRevision: '-1' }],
+      [{ expectedRevision: '01' }],
+      [{ expectedRevision: '1.5' }],
+      [{ expectedRevision: '1e3' }],
+      [{ expectedRevision: '+1' }],
+      [{ expectedRevision: ' 1' }],
+      [{ expectedRevision: '1000001' }],
+      [{ expectedRevision: '99999999' }],
+      [{ expectedRevision: ['1', '2'] }],
+      [{ expectedRevision: 1 }],
+      [{ expectedRevision: '1', userId: 'someone-else' }],
+      [{ expectedRevision: '1', revision: '1' }],
+      [null],
+    ])('rejects %j', (query) => {
+      expect(rejects(presentationQuerySchema, query)).toBe(true);
+    });
+  });
+
+  describe('session list query', () => {
+    const cursorValue = encodeListCursor({
+      createdAt: new Date('2026-10-09T10:11:12.345Z'),
+      id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+    });
+
+    it('defaults the limit and accepts a round-tripped cursor', () => {
+      expect(parseRequest(listSessionsQuerySchema, {})).toEqual({
+        limit: DEFAULT_LIST_LIMIT,
+        cursor: null,
+      });
+      const parsed = parseRequest(listSessionsQuerySchema, { limit: '50', cursor: cursorValue });
+      expect(parsed.limit).toBe(50);
+      expect(parsed.cursor).toEqual({
+        createdAt: new Date('2026-10-09T10:11:12.345Z'),
+        id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+      });
+    });
+
+    it('rejects out-of-range, non-numeric and repeated limits', () => {
+      for (const limit of ['0', '51', '-1', '1.5', '1e1', ' 5', '007', 'abc', '', ['1', '2']]) {
+        expect(rejects(listSessionsQuerySchema, { limit }), String(limit)).toBe(true);
+      }
+    });
+
+    it('rejects malformed, forged and oversized cursors', () => {
+      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const bad = [
+        '',
+        'not base64!',
+        'a'.repeat(201),
+        encode({ t: 'yesterday', i: '3f2504e0-4f89-41d3-9a0c-0305e82c3301' }),
+        encode({ t: '2026-10-09T10:11:12.345Z', i: "1' OR '1'='1" }),
+        encode({ t: '2026-10-09T10:11:12.345Z', i: '3f2504e0-4f89-41d3-9a0c-0305e82c3301', x: 1 }),
+        encode('plain string'),
+        Buffer.from('{not json').toString('base64url'),
+      ];
+      for (const cursor of bad) expect(rejects(listSessionsQuerySchema, { cursor })).toBe(true);
+    });
+
+    it('rejects unknown query parameters such as an owner id', () => {
+      expect(rejects(listSessionsQuerySchema, { userId: 'someone-else' })).toBe(true);
+    });
+  });
+});

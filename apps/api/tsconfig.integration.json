@@ -9,6 +9,10 @@
     "test/integration/generation-execution-acceptance.integration.spec.ts",
     "test/integration/page-image-revisions.integration.spec.ts",
     "test/integration/generation-queue-stalled-redelivery.integration.spec.ts",
+    "test/integration/interactive-engine.integration.spec.ts",
+    "test/integration/interactive-concurrency.integration.spec.ts",
+    "test/integration/interactive-http.integration.spec.ts",
+    "test/integration/interactive-catalogue.integration.spec.ts",
     "test/integration/fixtures/terminated-dispatch-worker.ts",
     "test/integration/fixtures/terminated-page-revision-worker.ts"
   ],

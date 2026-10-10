@@ -3,4 +3,5 @@ export * from './billing.types';
 export * from './book.types';
 export * from './child-profile.types';
 export * from './credit.types';
+export * from './interactive.types';
 export * from './user.types';

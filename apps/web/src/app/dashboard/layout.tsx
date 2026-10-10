@@ -116,6 +116,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         >
           Child profiles
         </Link>
+        <Link
+          href="/dashboard/interactive"
+          className="font-medium text-text-secondary hover:text-violet-700"
+        >
+          Interactive story
+        </Link>
         {homeMode ? (
           <span className="font-medium text-text-secondary">Family library</span>
         ) : (

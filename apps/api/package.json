@@ -14,6 +14,7 @@
     "start:prod:worker": "node dist/worker",
     "lint": "eslint src --max-warnings 0",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "node scripts/run-integration-tests.mjs",
@@ -36,6 +37,11 @@
     "migrate:target-guard": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/migrate-target-guard.ts",
     "eval:story:mock": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts mock",
     "eval:story:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-offline.ts",
+    "eval:interactive:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-interactive-offline.ts",
+    "eval:interactive:authoring:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-interactive-authoring-offline.ts",
+    "author:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/author-interactive-scenario.ts",
+    "playtest:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/playtest-interactive-scenario.ts",
+    "preflight:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-interactive-publication.ts",
     "eval:story:openai": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts openai"
   },
   "dependencies": {

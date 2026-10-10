@@ -332,6 +332,31 @@ describe('DashboardLayout', () => {
     expect(creditsApi.getBalance).not.toHaveBeenCalled();
   });
 
+  it.each(['home', 'demo'])('links to the interactive story in %s mode', (mode) => {
+    vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', mode);
+    vi.mocked(useAuth).mockReturnValue({
+      user: MOCK_USER,
+      status: 'authed',
+      authMode: 'jwt',
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: logoutMock,
+      retrySession: vi.fn(),
+    });
+
+    render(
+      <DashboardLayout>
+        <p>Protected content</p>
+      </DashboardLayout>,
+    );
+
+    expect(screen.getByRole('link', { name: 'Interactive story' })).toHaveProperty(
+      'href',
+      expect.stringContaining('/dashboard/interactive'),
+    );
+    expect(screen.getByRole('link', { name: 'Child profiles' })).toBeDefined();
+  });
+
   it('does not hide protected children when the balance fetch fails', async () => {
     vi.mocked(creditsApi.getBalance).mockRejectedValueOnce(new Error('boom'));
     vi.mocked(useAuth).mockReturnValue({

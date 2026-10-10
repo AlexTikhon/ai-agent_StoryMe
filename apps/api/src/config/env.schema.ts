@@ -238,6 +238,20 @@ export const envSchema = z
     HARD_DELETE_JOB_ATTEMPTS: z.coerce.number().int().positive().default(8),
     HARD_DELETE_JOB_BACKOFF_MS: z.coerce.number().int().positive().default(5_000),
 
+    // ─── Interactive stories (private-pilot assumptions, not measured limits) ─
+    // Concurrent-session quota: counts every retained session, completed ones
+    // included, because session deletion/retention is not built yet.
+    INTERACTIVE_MAX_SESSIONS_PER_USER: z.coerce.number().int().positive().default(50),
+    // Request-attempt budgets (UserRateLimitGuard). They count attempts, idempotent
+    // retries included; the quota above counts sessions actually created.
+    INTERACTIVE_CREATE_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(600_000),
+    INTERACTIVE_CREATE_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+    INTERACTIVE_CHOICE_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+    INTERACTIVE_CHOICE_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(60),
+    // Shared by GET /sessions/:id and GET /sessions; each endpoint keeps its own counter.
+    INTERACTIVE_READ_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+    INTERACTIVE_READ_RATE_LIMIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(120),
+
     // ─── Orphaned claim-artifact cleanup (Phase C) ──────────────────────────
     // Storage-listing sweeper that deletes claim-scoped image/PDF artifacts
     // (see generation-artifact-namespace.ts) once nothing references them

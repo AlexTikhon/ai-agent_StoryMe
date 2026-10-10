@@ -86,5 +86,8 @@ generated-images/
 artifacts/
 private/
 
+# Local interactive-scenario authoring drafts (unreviewed model output; never committed)
+scenario-drafts/
+
 # Clean review archives are local deliverables, not repository source
 storyme-clean-*.tar.gz

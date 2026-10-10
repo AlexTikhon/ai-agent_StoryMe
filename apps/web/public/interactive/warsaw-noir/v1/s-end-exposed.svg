@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0c0f"/><stop offset="1" stop-color="#1b1f25"/></linearGradient>
+    <linearGradient id="dawn" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#c98c3a"/><stop offset=".45" stop-color="#6e6a6a"/><stop offset="1" stop-color="#2c333b"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#f6c76f" stop-opacity=".6"/><stop offset=".45" stop-color="#e8a33d" stop-opacity=".18"/><stop offset="1" stop-color="#e8a33d" stop-opacity="0"/></radialGradient>
+    <linearGradient id="cone" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6c76f" stop-opacity=".45"/><stop offset="1" stop-color="#f6c76f" stop-opacity="0"/></linearGradient>
+    <radialGradient id="vig" cx=".5" cy=".5" r=".75"><stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".75"/></radialGradient>
+    <pattern id="rain" width="90" height="110" patternUnits="userSpaceOnUse" patternTransform="rotate(12)"><path d="M12 4v34M52 20v28M78 60v32M30 70v26M64 100v10" stroke="#cdd5dc" stroke-width="1.4" stroke-opacity=".3"/></pattern>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <!-- tall window, the sky turning pale over the rooftops -->
+  <rect x="120" y="70" width="360" height="470" fill="url(#dawn)"/>
+  <g fill="#0b0d10"><polygon points="120,420 200,360 260,400 330,330 400,390 480,350 480,540 120,540"/><rect x="190" y="300" width="22" height="64"/><rect x="340" y="260" width="26" height="76"/></g>
+  <rect x="120" y="70" width="360" height="470" fill="url(#rain)"/>
+  <path d="M300 70v470M120 300h360" stroke="#0b0d10" stroke-width="12"/>
+  <rect x="120" y="70" width="360" height="470" fill="none" stroke="#0b0d10" stroke-width="18"/>
+  <polygon points="140,540 460,540 700,760 60,760" fill="#c98c3a" opacity=".09"/>
+  <!-- room -->
+  <rect x="0" y="560" width="1200" height="240" fill="#121519"/>
+  <path d="M0 560h1200" stroke="#0b0d10" stroke-width="6"/>
+  <!-- hanging lamp over the table -->
+  <path d="M740 0v230" stroke="#07080a" stroke-width="5"/>
+  <polygon points="700,258 780,258 960,600 520,600" fill="url(#cone)"/>
+  <circle cx="740" cy="268" r="300" fill="url(#glow)"/>
+  <path d="M690 262l20-34h60l20 34z" fill="#07080a"/>
+  <ellipse cx="740" cy="262" rx="30" ry="8" fill="#f6c76f"/>
+  <!-- table with the ledger open, set down in the light -->
+  <polygon points="470,560 1010,560 1070,640 420,640" fill="#3a2f24"/>
+  <rect x="420" y="640" width="650" height="18" fill="#0b0d10"/>
+  <rect x="460" y="658" width="28" height="140" fill="#1d1813"/>
+  <rect x="1000" y="658" width="28" height="140" fill="#1d1813"/>
+  <polygon points="590,560 740,548 740,606 576,618" fill="#d5ccb4"/>
+  <polygon points="740,548 890,560 904,618 740,606" fill="#e0d7be"/>
+  <path d="M740 548v58" stroke="#8a8068" stroke-width="4"/>
+  <path d="M608 576l116-8M606 590l116-8M762 568l106 8M764 582l108 8" stroke="#9a9078" stroke-width="3" opacity=".65"/>
+  <path d="M580 618l160-12 164 12" stroke="#6b3d2a" stroke-width="8"/>
+  <!-- the caretaker, standing still across the table, broom leaned beside her -->
+  <g fill="#07080a">
+    <circle cx="1010" cy="300" r="40"/>
+    <circle cx="1010" cy="250" r="18"/>
+    <path d="M944 350q66-30 132 0l34 230h-200z"/>
+  </g>
+  <path d="M1140 330L1090 720" stroke="#2a2f36" stroke-width="9"/>
+  <polygon points="1060,716 1124,730 1114,790 1046,778" fill="#3a3226"/>
+  <path d="M1000 296q10 8 20 0" stroke="#e8a33d" stroke-opacity=".4" stroke-width="3" fill="none"/>
+  <rect width="1200" height="800" fill="url(#vig)"/>
+</svg>
