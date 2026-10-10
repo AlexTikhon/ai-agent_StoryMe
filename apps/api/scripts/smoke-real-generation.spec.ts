@@ -1,9 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { GenerationDiagnosticsDto } from '@book/types';
 import {
+  DEFAULT_SMOKE_TIMEOUT_MS,
   checkPreconditions,
   formatDiagnosticsSummary,
+  loadSmokePhoto,
+  parseSmokeLanguage,
   resolveSmokeBookConfig,
+  resolveSmokeTimeoutMs,
   type SmokeValidationExtras,
 } from './smoke-real-generation-helpers';
 
@@ -229,5 +233,48 @@ describe('resolveSmokeBookConfig', () => {
 
     expect(config.childAge).toBe(5);
     expect(config.pageCount).toBe(4);
+  });
+});
+
+describe('resolveSmokeTimeoutMs', () => {
+  it('defaults when unset, malformed or non-positive', () => {
+    expect(resolveSmokeTimeoutMs({} as NodeJS.ProcessEnv)).toBe(DEFAULT_SMOKE_TIMEOUT_MS);
+    for (const bad of ['abc', '0', '-5']) {
+      expect(resolveSmokeTimeoutMs({ SMOKE_TIMEOUT_MS: bad } as unknown as NodeJS.ProcessEnv)).toBe(
+        DEFAULT_SMOKE_TIMEOUT_MS,
+      );
+    }
+  });
+
+  it('reads a positive SMOKE_TIMEOUT_MS', () => {
+    expect(
+      resolveSmokeTimeoutMs({ SMOKE_TIMEOUT_MS: '90000' } as unknown as NodeJS.ProcessEnv),
+    ).toBe(90_000);
+  });
+});
+
+describe('loadSmokePhoto', () => {
+  it('maps the extension to a content type and returns the file bytes', () => {
+    const readFile = vi.fn(() => Buffer.from('bytes'));
+    expect(loadSmokePhoto('/tmp/mia.JPG', readFile)).toEqual({
+      buffer: Buffer.from('bytes'),
+      contentType: 'image/jpeg',
+    });
+    expect(loadSmokePhoto('/tmp/mia.webp', readFile).contentType).toBe('image/webp');
+  });
+
+  it('rejects an unsupported extension before reading the file', () => {
+    const readFile = vi.fn(() => Buffer.from('bytes'));
+    expect(() => loadSmokePhoto('/tmp/mia.gif', readFile)).toThrow(
+      'SMOKE_CHILD_PHOTO_PATH must point to',
+    );
+    expect(readFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('parseSmokeLanguage', () => {
+  it('accepts supported languages and rejects others', () => {
+    expect(parseSmokeLanguage('ru')).toBe('ru');
+    expect(() => parseSmokeLanguage('xx')).toThrow(/SMOKE_LANGUAGE/);
   });
 });

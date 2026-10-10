@@ -637,20 +637,36 @@ once, end-to-end, against the real OpenAI API:
   tested directly (`smoke-real-generation.spec.ts`) without ever importing
   the main script, so normal test runs never invoke `main()` or touch the
   network.
-- Otherwise boots the real Nest application context (`AppModule`) — requires
-  a running local Postgres + Redis, same as `pnpm --filter @book/api dev` —
-  finds-or-creates a fixed smoke-test user, creates one test book via
-  `PrismaService`, and calls `AgentService.startBookGeneration` directly.
-  **Deliberately unchanged by Phase 3H**: this script still calls
-  `AgentService.startBookGeneration` directly rather than going through
-  `POST /:id/generate` + polling. It doesn't go through `BooksService` or
-  `GenerationTaskRunner` at all, so the async/background change is invisible
-  to it — the script blocks on the `await` exactly as before and asserts on
-  the final `Book` row synchronously, which is the simplest, most
-  deterministic way to smoke-test the real pipeline end-to-end. Exercising
-  the actual async HTTP endpoints (with polling) is left to the mocked
-  frontend/backend test suites, which already cover that path without a real
-  network call.
+- Otherwise boots the real Nest application context
+  (`AppModule.register({ enableGenerationWorker: true })` — the same module
+  graph `worker.ts` uses, so the BullMQ processor and outbox dispatcher run
+  **inside the smoke process**; no separate worker is needed, but a running
+  Postgres + Redis is, same as `pnpm --filter @book/api dev`). It then drives
+  the **supported generation lifecycle**, not `AgentService` directly:
+  1. find-or-create the fixed smoke user and, only if its balance is below
+     `GENERATION_CREDIT_COST`, grant it one credit (`promotional_grant`) so
+     admission's debit can succeed;
+  2. create the book via `BooksService.create`;
+  3. (optional) upload the child photo via `BooksService.uploadChildPhoto`;
+  4. admit the run via `BooksService.startGeneration` — this creates the real
+     `GenerationRun`, its immutable input snapshot, the credit debit and the
+     outbox event; the script never builds a `GenerationExecutionContext`
+     or fencing version itself;
+  5. the in-process worker claims and executes the run under the normal
+     ownership, fencing, cancellation and `GenerationRunCoordinator.completeRun`
+     rules; the script only polls `GenerationRunService.findLatestForBook`
+     (every 2s) until the persisted run is `completed`, `failed` or
+     `cancelled`;
+  6. only then does it **reload the persisted Book, AgentLog rows and
+     GenerationRun** and build diagnostics from them
+     (`buildGenerationDiagnostics(book, logs, run)`). A `GenerationOutcome` is
+     an intermediate value that is never a Book and is never inspected.
+- **Bounded wait**: `SMOKE_TIMEOUT_MS` (default 20 minutes). On timeout, or if
+  an unexpected error occurs while waiting, the script cancels the still-active
+  run via `BooksService.cancelGeneration` (best effort) so it stops spending,
+  then fails with a controlled message. A `failed` or `cancelled` run also
+  fails the smoke test. Success requires `run.status === completed`,
+  `book.status === complete` and `book.publishedRunId === run.id`.
 - **Configurable inputs (QA phase)** — `resolveSmokeBookConfig(process.env)`
   (`smoke-real-generation-helpers.ts`, pure/unit-tested) reads optional env
   vars, each with a safe default so the script still runs with none of them
@@ -664,26 +680,38 @@ once, end-to-end, against the real OpenAI API:
     provider clamps any lower value back up to 4 anyway)
   - `SMOKE_CHILD_PHOTO_PATH` — optional local filesystem path to a
     `.jpg`/`.jpeg`/`.png`/`.webp` reference photo. When set, the script
-    uploads it to `ImageAssetStorage` under `childPhotoAssetKey(bookId)` and
-    sets `Book.childPhotoAssetKey`/`childPhotoContentType` — the same state
-    `BooksService.uploadChildPhoto` produces — **before** calling
-    `startBookGeneration`, so the real `OpenAICharacterProfileProvider`
-    actually analyzes it. Malformed extensions fail fast with a clear error
-    before any upload happens.
-- Verifies the book reaches `BookStatus.complete`, that every generated image
-  entry's bytes were actually saved to `ImageAssetStorage`, and that the
-  rendered PDF exists in `PdfStorage` — then prints a safe summary (see
+    uploads it through `BooksService.uploadChildPhoto` (real image
+    processing, versioned storage key, sha256/size recorded) **before**
+    admission, so the run's input snapshot freezes the photo and the real
+    `OpenAICharacterProfileProvider` actually analyzes it. Unsupported
+    extensions fail fast, before Nest boots or any row is created.
+  - `SMOKE_TIMEOUT_MS` — bound on waiting for the worker (default `1200000`).
+- Verifies, through the current supported read APIs and persisted ids, that
+  the run published a complete book: every generated image is readable via
+  `BooksService.getPublishedImage` (`cover`, `page-N`, `back-cover`), the
+  PDF is readable and non-empty via `BooksService.getPreviewPdfBuffer`, and
+  (photo + all-OpenAI providers) the character sheet is readable at the key
+  persisted on `Book.characterSheetAssetKey` — then prints a safe summary (see
   "Smoke test output" below).
 - Exits non-zero with a clear error on any failed check. Not part of
   `pnpm --filter @book/api test` or CI — matches the existing
   `smoke:cloud-storage` script's pattern (see
   `apps/api/docs/cloud-storage-smoke-test.md`).
 
-**Known limitations**: this smoke test creates real rows against whatever
-database `DATABASE_URL` points at (nothing is cleaned up afterward — same as
-manually creating a book through the API) and makes real, billed OpenAI API
-calls (one story completion + one image generation per page/cover/back
-cover). Run it deliberately, not routinely.
+**Known limitations**: this smoke test creates real rows (user, book, run,
+credit ledger entries, stored artifacts) against whatever database
+`DATABASE_URL` points at and nothing is deleted afterward — same as manually
+creating a book through the API; the only cleanup it performs is cancelling a
+still-active run on timeout/abnormal exit and closing the Nest context. It is
+also meant to run alone: if a separate worker process is consuming the same
+queue, either process may execute the run. Its orchestration is covered
+**offline** by `smoke-real-generation-run.spec.ts` with mocked ports; that
+verifies the script follows the current contracts, **not** that real-provider
+output quality or a paid end-to-end run works — only a deliberate manual run
+shows that. The script is compiled by `pnpm --filter @book/api
+typecheck:scripts` (part of CI) so it cannot silently drift again. A real run makes billed OpenAI API calls
+(one story completion + one image generation per page/cover/back cover). Run
+it deliberately, not routinely.
 
 ### How to generate a local personalized book with a child photo (QA)
 
@@ -725,11 +753,11 @@ cover). Run it deliberately, not routinely.
    The script always prints its full "Validation summary" (see "Smoke test
    output" below) right after generation finishes, whether the book reached
    `complete` or `failed` — a failed run is never just a bare stack trace. If
-   the process throws before or after generation (setup, Nest bootstrap, or
-   the post-completion verification asserts), the top-level error message
-   names the failure stage (`preconditions` / `nest-bootstrap` / `setup` /
-   `generation` / `diagnostics` / `verification`) so it's clear which phase
-   broke. If `SMOKE_CHILD_PHOTO_PATH` is set without
+   anything fails (setup, admission, the run itself, a wait timeout, or the
+   post-completion verification checks), the final line names the failure
+   stage (`setup` / `admission` / `generation` / `diagnostics` /
+   `verification`) so it's clear which phase broke, and the process exits
+   non-zero. If `SMOKE_CHILD_PHOTO_PATH` is set without
    `CHARACTER_PROFILE_PROVIDER=openai`, the script prints an upfront warning
    that visual-reference consistency won't be exercised this run.
 
@@ -1006,8 +1034,8 @@ down which step actually failed and how long prior steps took.
 
 `pnpm --filter @book/api smoke:real-generation` (see "Manual end-to-end
 smoke test" above) builds and **always** prints a "Validation summary" right
-after `AgentService.startBookGeneration` returns — whether the book reached
-`complete` or `failed` — via `formatDiagnosticsSummary`
+once the persisted generation run reaches a terminal state — whether the
+book reached `complete` or `failed` — via `formatDiagnosticsSummary`
 (`apps/api/scripts/smoke-real-generation-helpers.ts`): book id, status,
 story/character-profile/image provider + model, requested vs. generated page
 count, expected vs. generated vs. fallback image counts, duration, PDF
@@ -1028,12 +1056,12 @@ call — and only ever prints fields already proven safe by
 never prints `OPENAI_API_KEY`, a raw prompt, or generated image bytes/base64
 — see "What's intentionally not stored (safety)" below.
 
-If generation itself throws, or an error occurs outside
-`startBookGeneration` (setup, Nest bootstrap, or the post-completion
-verification asserts), the script's top-level error message names the
-failure stage it was in (`preconditions` / `nest-bootstrap` / `setup` /
-`generation` / `diagnostics` / `verification`) instead of a bare stack trace
-— see "Manual end-to-end smoke test" above.
+Any failure — admission rejection, a failed/cancelled run, a wait timeout, or
+a failed post-completion check — is reported as a controlled
+`✘ ... FAILED at stage "<stage>"` line (`setup` / `admission` /
+`generation` / `diagnostics` / `verification`) with a scrubbed reason and a
+non-zero exit code, instead of a bare stack trace — see "Manual end-to-end
+smoke test" above.
 
 ### What's intentionally not stored (safety)
 

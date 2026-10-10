@@ -1,4 +1,6 @@
-import { MIN_BOOK_PAGE_COUNT, type GenerationDiagnosticsDto } from '@book/types';
+import { extname } from 'node:path';
+import { MIN_BOOK_PAGE_COUNT, SupportedLanguage, type GenerationDiagnosticsDto } from '@book/types';
+import type { SmokePhoto, SmokePhotoContentType } from './smoke-real-generation-run';
 
 /**
  * Extra safe/non-secret fields the smoke script computes itself (from the
@@ -140,4 +142,48 @@ export function checkPreconditions(env: NodeJS.ProcessEnv): string | null {
   }
 
   return null;
+}
+
+/** Default bound on waiting for the generation worker to finish one smoke run. */
+export const DEFAULT_SMOKE_TIMEOUT_MS = 20 * 60_000;
+export const SMOKE_POLL_INTERVAL_MS = 2_000;
+
+/** Reads SMOKE_TIMEOUT_MS, falling back to the default when unset, malformed or non-positive. */
+export function resolveSmokeTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const parsed = env['SMOKE_TIMEOUT_MS'] ? Number(env['SMOKE_TIMEOUT_MS']) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_SMOKE_TIMEOUT_MS;
+}
+
+const CONTENT_TYPE_BY_EXTENSION: Record<string, SmokePhotoContentType> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
+
+/**
+ * Validates the optional reference-photo path's extension and reads it. Runs
+ * before any book/upload exists so a bad path fails fast. The error message
+ * names the path the operator supplied, never file contents.
+ */
+export function loadSmokePhoto(photoPath: string, readFile: (path: string) => Buffer): SmokePhoto {
+  const extension = extname(photoPath).toLowerCase();
+  const contentType = CONTENT_TYPE_BY_EXTENSION[extension];
+  if (!contentType) {
+    throw new Error(
+      `SMOKE_CHILD_PHOTO_PATH must point to a .jpg/.jpeg/.png/.webp file, got "${photoPath}"`,
+    );
+  }
+  return { buffer: readFile(photoPath), contentType };
+}
+
+/** Narrows the free-form SMOKE_LANGUAGE value to a language the book contract supports. */
+export function parseSmokeLanguage(value: string): SupportedLanguage {
+  const match = Object.values(SupportedLanguage).find((language) => language === value);
+  if (!match) {
+    throw new Error(
+      `SMOKE_LANGUAGE must be one of ${Object.values(SupportedLanguage).join(', ')}, got "${value}"`,
+    );
+  }
+  return match;
 }
