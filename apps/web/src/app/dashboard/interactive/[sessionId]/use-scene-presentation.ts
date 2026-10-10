@@ -6,14 +6,12 @@ import { ApiError } from '@/lib/api/client';
 import { interactiveApi } from '@/lib/api/interactive';
 import { useAuth } from '@/lib/auth/auth-context';
 import { getSessionEpoch } from '@/lib/auth/token-store';
+import { isPanel } from '../presentation-panels';
 
 /** Local deadline for the artwork metadata request. */
 export const PRESENTATION_DEADLINE_MS = 10_000;
 /** Manual "reload" attempts allowed per scene; there are never automatic ones. */
 export const MAX_ILLUSTRATION_RETRIES = 2;
-
-/** The same-origin public SVG paths the API allow-lists; anything else is never rendered. */
-const SAFE_PANEL_SRC = /^\/interactive\/[a-z0-9-]{1,40}\/v[1-9][0-9]{0,2}\/[a-z0-9-]{1,60}\.svg$/;
 
 export type PresentationStatus =
   | 'idle' //     no authoritative view to illustrate yet
@@ -40,22 +38,6 @@ export interface ScenePresentation {
   scopeKey: string;
   canRetry: boolean;
   retry: () => void;
-}
-
-function isPanel(value: unknown): value is InteractivePresentationPanelDto {
-  if (typeof value !== 'object' || value === null) return false;
-  const p = value as Record<string, unknown>;
-  return (
-    typeof p['id'] === 'string' &&
-    typeof p['src'] === 'string' &&
-    SAFE_PANEL_SRC.test(p['src']) &&
-    Number.isInteger(p['width']) &&
-    (p['width'] as number) > 0 &&
-    Number.isInteger(p['height']) &&
-    (p['height'] as number) > 0 &&
-    typeof p['alt'] === 'string' &&
-    p['alt'].length > 0
-  );
 }
 
 /**

@@ -6,6 +6,7 @@ import { ApiError } from '@/lib/api/client';
 import { interactiveApi } from '@/lib/api/interactive';
 import { useAuth } from '@/lib/auth/auth-context';
 import { getSessionEpoch } from '@/lib/auth/token-store';
+import { describeAcceptedPage, type AcceptedTranscriptPage } from './accepted-page';
 import { checkTranscriptPage, type TranscriptIdentity } from './validate-transcript-page';
 
 /** Steps requested per page, so even the short published routes need more than one page. */
@@ -30,6 +31,8 @@ export type TranscriptFailure = 'rate-limited' | 'failed' | 'inconsistent';
 interface TranscriptData {
   phase: TranscriptPhase;
   chapters: InteractiveTranscriptStepDto[];
+  /** One frozen descriptor per accepted text page, oldest first; artwork is requested from these. */
+  pages: readonly AcceptedTranscriptPage[];
   identity: (TranscriptIdentity & { sessionId: string }) | null;
   /** The cursor of the next page; `null` once the terminal step is loaded. */
   nextCursor: string | null;
@@ -42,6 +45,7 @@ interface TranscriptData {
 const INITIAL: TranscriptData = {
   phase: 'loading',
   chapters: [],
+  pages: [],
   identity: null,
   nextCursor: null,
   loadingMore: false,
@@ -148,6 +152,7 @@ export function useInteractiveTranscript(sessionId: string) {
         commit(scope, (d) => ({
           phase: 'ready',
           chapters: [...d.chapters, ...page.steps],
+          pages: [...d.pages, describeAcceptedPage(page, { limit: TRANSCRIPT_PAGE_SIZE, cursor })],
           identity: {
             sessionId: page.sessionId,
             scenarioId: page.scenarioId,
@@ -218,5 +223,7 @@ export function useInteractiveTranscript(sessionId: string) {
   }, [key, userId, sessionId, requestPage]);
 
   const complete = data.phase === 'ready' && data.nextCursor === null;
-  return { ...data, complete, loadNext };
+  // The scope the shown chapters belong to; `null` until they do, so dependants clear in the same render.
+  const scopeKey = key !== null && store.key === key ? key : null;
+  return { ...data, complete, scopeKey, loadNext };
 }

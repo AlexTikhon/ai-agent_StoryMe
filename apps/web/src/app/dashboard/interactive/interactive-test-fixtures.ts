@@ -1,4 +1,5 @@
 import type {
+  InteractivePresentationPanelDto,
   InteractiveScenarioCatalogueDto,
   InteractiveScenarioCatalogueEntryDto,
   InteractiveSessionListDto,
@@ -6,6 +7,7 @@ import type {
   InteractiveSessionSummaryDto,
   InteractiveSessionViewDto,
   InteractiveTranscriptDto,
+  InteractiveTranscriptPresentationDto,
   InteractiveTranscriptStepDto,
 } from '@book/types';
 
@@ -142,5 +144,46 @@ export function makeTranscriptPage(
     steps,
     nextCursor: to < completedRevision ? `cursor-${to + 1}` : null,
     ...overrides,
+  };
+}
+
+/** A valid panel for scene `sceneId` of the published warsaw-noir pack. */
+export function makeArtworkPanel(
+  sceneId: string,
+  overrides: Partial<InteractivePresentationPanelDto> = {},
+): InteractivePresentationPanelDto {
+  return {
+    id: `p-${sceneId}`,
+    src: `/interactive/warsaw-noir/v1/${sceneId}.svg`,
+    width: 1200,
+    height: 800,
+    alt: `Artwork of ${sceneId}`,
+    ...overrides,
+  };
+}
+
+/**
+ * The artwork page that answers `text`: same identity, revisions, scene ids and
+ * cursor. With `pack: false` every step has no artwork configured.
+ */
+export function makeArtworkPage(
+  text: InteractiveTranscriptDto,
+  options: { pack?: boolean; overrides?: Partial<InteractiveTranscriptPresentationDto> } = {},
+): InteractiveTranscriptPresentationDto {
+  const pack = options.pack ?? true;
+  return {
+    sessionId: text.sessionId,
+    scenarioId: text.scenarioId,
+    scenarioVersion: text.scenarioVersion,
+    completedRevision: text.completedRevision,
+    steps: text.steps.map((step) => ({
+      revision: step.revision,
+      sceneId: step.scene.id,
+      presentation: pack
+        ? { packId: 'warsaw-noir', packVersion: 1, panels: [makeArtworkPanel(step.scene.id)] }
+        : null,
+    })),
+    nextCursor: text.nextCursor,
+    ...options.overrides,
   };
 }

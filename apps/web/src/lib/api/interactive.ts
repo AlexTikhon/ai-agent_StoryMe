@@ -6,6 +6,7 @@ import type {
   InteractiveSessionListDto,
   InteractiveSessionViewDto,
   InteractiveTranscriptDto,
+  InteractiveTranscriptPresentationDto,
   SubmitInteractiveChoiceInput,
 } from '@book/types';
 import { apiFetch } from './client';
@@ -73,6 +74,26 @@ export const interactiveApi = {
     return apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}/transcript${suffix}`, {
       signal,
     });
+  },
+
+  /**
+   * Artwork for one page of a *completed* session's transcript, with the exact query
+   * (`limit`, `cursor`) of the text page it illustrates. Read-only; artwork is selected
+   * at read time, so this is not a record of what the player originally saw.
+   */
+  getTranscriptPresentation: (
+    sessionId: string,
+    params: { limit?: number; cursor?: string | null } = {},
+    signal?: AbortSignal,
+  ): Promise<InteractiveTranscriptPresentationDto> => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.cursor) query.set('cursor', params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return apiFetch(
+      `/interactive/sessions/${encodeURIComponent(sessionId)}/transcript/presentation${suffix}`,
+      { signal },
+    );
   },
 
   /**

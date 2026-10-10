@@ -4,8 +4,10 @@ import Link from 'next/link';
 import { useEffect, useRef } from 'react';
 import type { InteractiveTranscriptStepDto } from '@book/types';
 import { Narration } from '../reader-view';
+import { Panels, Placeholder, RESERVED_ASPECT, UnavailableNote } from '../scene-illustration';
 import { useSessionMetadata } from '../use-session-metadata';
 import type { TranscriptFailure, useInteractiveTranscript } from './use-interactive-transcript';
+import { useTranscriptArtwork, type ChapterArtwork } from './use-transcript-artwork';
 
 type Transcript = ReturnType<typeof useInteractiveTranscript>;
 
@@ -55,7 +57,53 @@ function failureMessage(failure: TranscriptFailure, hasChapters: boolean): strin
     : "We couldn't load this story. Check your connection and try again.";
 }
 
-function Chapter({ step }: { step: InteractiveTranscriptStepDto }) {
+/**
+ * The pictures of one chapter. Every state but `ready` leaves the text exactly as
+ * it is; a broken image falls back to the same note the live reader shows.
+ */
+function ChapterIllustration({
+  artwork,
+  revision,
+  scopeKey,
+}: {
+  artwork: ChapterArtwork | null;
+  revision: number;
+  scopeKey: string | null;
+}) {
+  if (!artwork || artwork.status === 'none') return null;
+  let content: React.ReactNode = null;
+  if (artwork.status === 'loading') {
+    content = <Placeholder aspect={RESERVED_ASPECT} />;
+  } else if (artwork.status === 'error') {
+    content = artwork.showsNote ? (
+      <UnavailableNote onRetry={artwork.canRetry ? artwork.retry : null} />
+    ) : null;
+  } else {
+    content = (
+      <Panels
+        key={`${scopeKey}|${revision}|${artwork.packKey}`}
+        panels={artwork.panels}
+        lazy={revision > 0}
+      />
+    );
+  }
+  if (content === null) return null;
+  return (
+    <div className="mt-4" data-testid="chapter-artwork" data-revision={revision}>
+      {content}
+    </div>
+  );
+}
+
+function Chapter({
+  step,
+  artwork,
+  scopeKey,
+}: {
+  step: InteractiveTranscriptStepDto;
+  artwork: ChapterArtwork | null;
+  scopeKey: string | null;
+}) {
   const headingId = `chapter-${step.revision}`;
   return (
     <li>
@@ -75,6 +123,7 @@ function Chapter({ step }: { step: InteractiveTranscriptStepDto }) {
             You chose: {step.arrivedByChoiceLabel}
           </p>
         )}
+        <ChapterIllustration artwork={artwork} revision={step.revision} scopeKey={scopeKey} />
         <div className="mt-4 max-w-2xl">
           <Narration text={step.narration} />
         </div>
@@ -109,6 +158,8 @@ export function InteractiveTranscriptView({
   const { phase, chapters, identity, complete, loadingMore, failure } = transcript;
   // Cosmetic only: never gates the chapters.
   const { title: storyTitle } = useSessionMetadata(identity);
+  // Artwork follows the accepted text pages; it never gates, advances or completes them.
+  const { forRevision } = useTranscriptArtwork(transcript.scopeKey, transcript.pages);
   const shownCount = useRef(0);
 
   // After a "Load more", move focus to the first new chapter so keyboard and
@@ -215,7 +266,12 @@ export function InteractiveTranscriptView({
 
       <ol className="mt-8 space-y-10">
         {chapters.map((step) => (
-          <Chapter key={step.revision} step={step} />
+          <Chapter
+            key={step.revision}
+            step={step}
+            artwork={forRevision(step.revision)}
+            scopeKey={transcript.scopeKey}
+          />
         ))}
       </ol>
 

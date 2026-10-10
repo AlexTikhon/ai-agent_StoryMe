@@ -938,3 +938,216 @@ test.describe('interactive story — rereading under browser-injected transport 
     await page.context().close();
   });
 });
+
+// ── Illustrated rereading (Phase 9.4) ───────────────────────────────────────
+
+const ARTWORK_REQUEST = /\/interactive\/sessions\/[0-9a-f-]{36}\/transcript\/presentation(\?|$)/;
+
+const chapterAt = (page: Page, index: number) => page.getByTestId('transcript-chapter').nth(index);
+
+/** Chapter `index` shows exactly this picture, and its file really loaded (not a broken-image box). */
+async function expectChapterArt(page: Page, index: number, key: ArtKey): Promise<void> {
+  await expect(chapterAt(page, index).getByRole('img')).toHaveCount(1);
+  const image = chapterAt(page, index).getByRole('img', { name: ART[key] });
+  await expect(image).toBeVisible();
+  await expect
+    .poll(() => image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0))
+    .toBe(true);
+}
+
+/** Finished artwork requests (dev-mode StrictMode also starts, and aborts, a first one). */
+function watchArtworkRequests(page: Page): URL[] {
+  const urls: URL[] = [];
+  page.on('requestfinished', (request) => {
+    if (ARTWORK_REQUEST.test(request.url())) urls.push(new URL(request.url()));
+  });
+  return urls;
+}
+
+const EXPOSED_ART: ArtKey[] = ['courtyard', 'caretaker', 'door', 'flat', 'cellar', 'exposed'];
+const QUIET_ART: ArtKey[] = ['courtyard', 'mailboxes', 'door', 'quiet'];
+
+test.describe('interactive story — illustrated rereading (real API)', () => {
+  test('exposed ending: each chapter shows its own picture across pages, and a reload starts over', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await playExposedRoute(page);
+
+    const posts = watchInteractivePosts(page);
+    const artwork = watchArtworkRequests(page);
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page).toHaveURL(TRANSCRIPT_URL);
+
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    for (const index of [0, 1, 2]) await expectChapterArt(page, index, EXPOSED_ART[index]!);
+    expect(artwork).toHaveLength(1); // one request for the page, not one per chapter
+    expect(artwork[0]!.searchParams.get('limit')).toBe('3');
+    expect(artwork[0]!.searchParams.get('cursor')).toBeNull();
+    await expect(page.getByTestId('transcript-progress')).toHaveText('Showing 3 of 6 chapters.');
+
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    for (const index of [0, 1, 2, 3, 4, 5]) {
+      await expectChapterArt(page, index, EXPOSED_ART[index]!);
+    }
+    expect(artwork).toHaveLength(2);
+    expect(artwork[1]!.searchParams.get('limit')).toBe('3');
+    expect(artwork[1]!.searchParams.get('cursor')).toBeTruthy();
+    // The ending chapter keeps its text and its picture together.
+    await expect(
+      chapterAt(page, 5).getByRole('heading', { level: 3, name: 'The Ledger Exposed' }),
+    ).toBeVisible();
+    await expect(page.getByTestId('transcript-progress')).toContainText('All 6 chapters');
+    // Images below the first chapter are lazy and every one reserves its size.
+    const attributes = await page
+      .getByTestId('transcript-chapter')
+      .locator('img')
+      .evaluateAll((els) =>
+        els.map((el) => ({
+          loading: el.getAttribute('loading'),
+          width: el.getAttribute('width'),
+          height: el.getAttribute('height'),
+        })),
+      );
+    expect(attributes.map((a) => a.loading)).toEqual([
+      null,
+      'lazy',
+      'lazy',
+      'lazy',
+      'lazy',
+      'lazy',
+    ]);
+    expect(attributes.every((a) => a.width === '1200' && a.height === '800')).toBe(true);
+
+    await page.reload();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    for (const index of [0, 1, 2]) await expectChapterArt(page, index, EXPOSED_ART[index]!);
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    await expectChapterArt(page, 5, 'exposed');
+
+    expect(posts).toEqual([]); // rereading created nothing and chose nothing
+    await page.context().close();
+  });
+
+  test('quiet ending: its own pictures end the story', async ({ browser }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await choose(page, 'Check the mailboxes by the stairwell', 'Behind the mailboxes');
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await choose(
+      page,
+      'Slip a delivery slip under the door and leave the parcel',
+      'A quiet delivery',
+    );
+
+    const posts = watchInteractivePosts(page);
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(4);
+    for (const [index, key] of QUIET_ART.entries()) await expectChapterArt(page, index, key);
+    await expect(page.getByRole('heading', { level: 3, name: 'A Quiet Delivery' })).toBeVisible();
+    expect(posts).toEqual([]);
+    await page.context().close();
+  });
+});
+
+test.describe('interactive story — illustrated rereading under browser-injected failures (not a real network fault)', () => {
+  const unavailable = /illustration isn.t available/;
+
+  test('a metadata outage leaves the text and pagination usable; a retry sends the exact query', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await playExposedRoute(page);
+
+    const posts = watchInteractivePosts(page);
+    const artworkQueries: string[] = [];
+    let failures = 0;
+    await page.route(ARTWORK_REQUEST, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get('cursor') === null && failures < 1) {
+        failures += 1;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 'SERVICE_UNAVAILABLE', message: 'down' }),
+        });
+        return;
+      }
+      artworkQueries.push(url.search);
+      await route.continue();
+    });
+
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await expect(page.getByText(unavailable)).toHaveCount(1);
+    await expect(page.getByRole('main').getByRole('img')).toHaveCount(0);
+    await expect(page.getByTestId('transcript-progress')).toHaveText('Showing 3 of 6 chapters.');
+
+    // Pagination is unaffected, and the next page's pictures still arrive.
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    for (const index of [3, 4, 5]) await expectChapterArt(page, index, EXPOSED_ART[index]!);
+    await expect(chapterAt(page, 0).getByRole('img')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Reload illustration' }).click();
+    for (const index of [0, 1, 2]) await expectChapterArt(page, index, EXPOSED_ART[index]!);
+    await expect(page.getByText(unavailable)).toHaveCount(0);
+    expect(artworkQueries.some((query) => query === '?limit=3')).toBe(true); // exact first-page query
+    expect(posts).toEqual([]);
+    await page.context().close();
+  });
+
+  test('a response for other chapters is rejected whole, and the text stays complete', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await playExposedRoute(page);
+    await page.route(ARTWORK_REQUEST, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as { steps: { sceneId: string }[] };
+      body.steps[1]!.sceneId = 's-somewhere-else';
+      await route.fulfill({ response, json: body });
+    });
+
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await expect(page.getByTestId('transcript-progress')).toHaveText('Showing 3 of 6 chapters.');
+    await expect(page.getByTestId('illustration-placeholder')).toHaveCount(0);
+    await expect(page.getByRole('main').getByRole('img')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    await expect(page.getByTestId('transcript-progress')).toContainText('All 6 chapters');
+    await expect(page.getByTestId('illustration-placeholder')).toHaveCount(0);
+    await expect(page.getByRole('main').getByRole('img')).toHaveCount(0);
+    await page.context().close();
+  });
+
+  test('a broken image file degrades to a note on its chapter only', async ({ browser }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await playExposedRoute(page);
+    await page.route('**/interactive/warsaw-noir/v1/s-caretaker.svg', (route) => route.abort());
+
+    const posts = watchInteractivePosts(page);
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await expectChapterArt(page, 0, 'courtyard');
+    await expectChapterArt(page, 2, 'door');
+    await expect(chapterAt(page, 1).getByText(unavailable)).toBeVisible();
+    await expect(chapterAt(page, 1).getByRole('img')).toHaveCount(0);
+    await expect(chapterAt(page, 1).getByRole('heading', { level: 2 })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    for (const index of [3, 4, 5]) await expectChapterArt(page, index, EXPOSED_ART[index]!);
+    expect(posts).toEqual([]);
+    await page.context().close();
+  });
+});
