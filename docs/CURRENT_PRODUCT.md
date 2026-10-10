@@ -146,8 +146,12 @@ Current status:
 
 - **Deterministic gameplay over runtime LLM narration.** Narration is accepted only if it equals the
   approved template text for the exact state
-  ([domain/narration.ts](../apps/api/src/interactive/domain/narration.ts)), so a contradiction
-  cannot be produced and any session can be replayed from its events. The cost is fixed prose that
+  ([domain/narration.ts](../apps/api/src/interactive/domain/narration.ts)), so runtime narration
+  cannot diverge from the authored templates and any session can be replayed from its events. That
+  equality says nothing about the templates themselves: it does not prove they are consistent with
+  each other or free of unannotated spoilers. That rests on mechanical validation and human review,
+  and the published Last Delivery has no retrospective approval (see Current status). The cost is
+  fixed prose that
   cannot react to anything the scenario did not anticipate. The `NarratorProvider` seam exists
   ([narrator/narrator.ts](../apps/api/src/interactive/narrator/narrator.ts)) but only the mock
   implementation is wired; see

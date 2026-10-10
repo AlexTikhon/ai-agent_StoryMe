@@ -7,8 +7,9 @@ A reproducible walkthrough of the interactive illustrated-story product, in two 
 2. **Mock draft** — author the unpublished "The Last Tram" offline, play both of its endings, and
    watch publication preflight reject it because no human has approved it.
 
-Everything here uses deterministic mock components. There are no network calls, no paid provider
-calls, and nothing is published. Commands are Windows PowerShell and run from the repository root.
+Everything here uses deterministic mock components. There are no external provider calls and no paid
+calls, and nothing is published. (The reader in Part 1 makes ordinary local HTTP requests between the
+web app and the API on your machine.) Commands are Windows PowerShell and run from the repository root.
 For what the product implements and its limits, see
 [CURRENT_PRODUCT.md](CURRENT_PRODUCT.md#interactive-illustrated-stories).
 
@@ -88,19 +89,36 @@ not need it.
 
 ## Part 2: mock draft walkthrough
 
-This part needs no database, Redis, network or API key. It writes only into a temporary directory and
-reads that directory afterwards; it changes nothing under `apps/`.
+This part needs no database, Redis, network access or API key once dependencies are installed
+(`pnpm install`). Each invocation creates its own fresh temporary directory and writes only there; it
+changes nothing under `apps/`. Run the steps in order in one PowerShell session, because they share
+variables. Steps 2–4 stop immediately if step 1 did not finish.
 
 ### 1. Author the candidate
 
+Create a new, uniquely named demo root for this invocation, then author into a `scenario-drafts`
+child of it (the authoring tool requires that exact name). Nothing from an earlier invocation is
+reused, so an older run can never be mistaken for this one.
+
 ```powershell
-$drafts = Join-Path $env:TEMP 'storyme-interactive-demo\scenario-drafts'
-New-Item -ItemType Directory -Force $drafts | Out-Null
-pnpm --silent author:interactive --mode mock --drafts-root $drafts
+# Forget anything left over from an earlier invocation in this session.
+$demo = $drafts = $out = $run = $cand = $appr = $before = $null
+
+$demo = Join-Path ([IO.Path]::GetTempPath()) ('storyme-interactive-demo-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $demo | Out-Null   # no -Force: fails if it already exists
+Set-Content -LiteralPath (Join-Path $demo '.storyme-demo-owner') -Value 'created by docs/interactive-demo.md'
+$drafts = Join-Path $demo 'scenario-drafts'
+New-Item -ItemType Directory -Path $drafts | Out-Null
+
+$out = pnpm --silent author:interactive --mode mock --drafts-root $drafts
+$code = $LASTEXITCODE
+$out = @($out | ForEach-Object { "$_" })
+$out
+if ($code -ne 0) { throw "Authoring failed (exit $code); no artifacts were selected." }
 ```
 
-The drafts root must be named `scenario-drafts`. Expected output, abridged (the artifacts line and
-run directory name differ per run):
+Expected output, abridged (the hash is the same on every run at a given commit; the `Artifacts:`
+path differs per run):
 
 ```text
 Mode: mock (offline, deterministic, no network)
@@ -108,19 +126,42 @@ Call budget: at most 2 requests / 2 HTTP attempts (1 generation + 1 repair)
 Result: REVIEW_REQUIRED (mechanically valid; NOT approved, NOT published)
 Candidate: warsaw-last-tram@1 hash=<64 hex characters>
 Requests: 1, HTTP attempts: 0
+Artifacts: <demo root>\scenario-drafts\<timestamp>-warsaw-last-tram-v1-<hex>--review-required
 Files: validated-candidate.json, validation-report.json, review-report.md, approval-template.json
 ```
 
-The mock candidate is deterministic, so the hash is the same on every run at a given commit. A later
-edit to the episode changes it. `REVIEW_REQUIRED` means mechanically valid, not approved.
+A later edit to the episode changes the hash. `REVIEW_REQUIRED` means mechanically valid, not
+approved.
 
-Locate the artifacts and snapshot them so you can prove they are not modified later:
+Now select the run this invocation created. The `Artifacts:` line printed by the authoring tool names
+the run; the check then confirms it is the only entry in the fresh drafts folder and holds exactly the
+four expected files. Directory ordering is never used to choose a run, and an absent or ambiguous
+result stops here.
 
 ```powershell
-$run  = Get-ChildItem $drafts -Directory -Filter '*--review-required' | Select-Object -First 1
+$names = 'validated-candidate.json', 'validation-report.json', 'review-report.md', 'approval-template.json'
+$lines = @($out | Where-Object { $_ -like 'Artifacts: *' })
+if ($lines.Count -ne 1) { throw "Expected exactly one 'Artifacts:' line, found $($lines.Count)." }
+$printed = Split-Path -Leaf $lines[0].Substring('Artifacts: '.Length).Trim()
+$entries = @(Get-ChildItem -LiteralPath $drafts -Force)
+if ($entries.Count -ne 1) { throw "Expected exactly one run in the fresh drafts folder, found $($entries.Count)." }
+if ($entries[0].Name -ne $printed -or -not $entries[0].PSIsContainer -or $printed -notlike '*--review-required') {
+  throw "The run on disk ('$($entries[0].Name)') is not the reported REVIEW_REQUIRED run ('$printed')."
+}
+$files = @(Get-ChildItem -LiteralPath $entries[0].FullName -Force | ForEach-Object Name | Sort-Object)
+if (($files -join '|') -ne (($names | Sort-Object) -join '|')) { throw "Unexpected artifact set: $($files -join ', ')" }
+
+$run  = $entries[0]
 $cand = Join-Path $run.FullName 'validated-candidate.json'
 $appr = Join-Path $run.FullName 'approval-template.json'
-$before = Get-ChildItem $run.FullName | Get-FileHash | ForEach-Object { "$($_.Hash) $(Split-Path $_.Path -Leaf)" }
+```
+
+Snapshot the four artifacts so you can prove they are not modified later:
+
+```powershell
+$snapshot = { Get-ChildItem -LiteralPath $run.FullName -Force | Sort-Object Name | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash) $(Split-Path -Leaf $_.Path)" } }
+$before = @(& $snapshot)
+$before
 ```
 
 Open `$run\review-report.md`: it lists the witness route to each ending and the editorial checklist a
@@ -132,6 +173,7 @@ person must complete. `$appr` has `"decision": "pending"`, no reviewer and every
 The playtest drives the production engine over the candidate file and only reads it.
 
 ```powershell
+if (-not $cand -or -not $before) { throw 'Step 1 did not select a run; stop.' }
 # Quiet ending
 pnpm --silent playtest:interactive --candidate $cand --choices 'c-inspect-carriage,c-pocket-receipt,c-show-receipt,c-let-hanna-repay'
 # Report ending
@@ -155,6 +197,7 @@ Playtest only: nothing was approved, registered or published.
 A route that stops early is never reported as completed:
 
 ```powershell
+if (-not $cand) { throw 'Step 1 did not select a run; stop.' }
 pnpm --silent playtest:interactive --candidate $cand --choices 'c-ask-driver'
 ```
 
@@ -179,6 +222,7 @@ Notes for PowerShell:
 ### 3. Preflight rejects the pending approval
 
 ```powershell
+if (-not $cand -or -not $appr) { throw 'Step 1 did not select a run; stop.' }
 pnpm --silent preflight:interactive --candidate $cand --approval $appr
 ```
 
@@ -197,22 +241,39 @@ This demo deliberately does not fabricate an approval.
 ### 4. Confirm nothing changed and nothing was published
 
 ```powershell
-$after = Get-ChildItem $run.FullName | Get-FileHash | ForEach-Object { "$($_.Hash) $(Split-Path $_.Path -Leaf)" }
-"Artifacts unchanged: $(-not (Compare-Object $before $after))"
+if (-not $before) { throw 'Step 1 did not select a run; stop.' }
+$after = @(& $snapshot)
+"Artifacts unchanged: $(($before.Count -eq 4) -and (($before -join '|') -ceq ($after -join '|')))"
 ```
 
-Expected: `Artifacts unchanged: True`. "The Last Tram" is also absent from the web app: the catalogue
+Expected: `Artifacts unchanged: True`, comparing the SHA-256 hashes of the four artifacts of this
+invocation's run. "The Last Tram" is also absent from the web app: the catalogue
 (`GET /api/interactive/scenarios`) and the **Interactive story** page list only "The Last
 Delivery", because the static registry does not contain the draft, and session creation for it
 returns `422 UNKNOWN_SCENARIO` ([engine document](../apps/api/docs/interactive-engine.md#catalogue)).
 
 ### Clean up the draft demo
 
+Remove the demo root only after checking that it is the directory this invocation created: a real
+directory (not a link) directly under the temporary directory, with the generated name and the
+ownership marker file written in step 1.
+
 ```powershell
-Remove-Item -Recurse -Force (Split-Path $drafts -Parent)
+if (-not $demo) { throw 'No demo root in this session; nothing to remove.' }
+$tempRoot = (Get-Item -LiteralPath ([IO.Path]::GetTempPath())).FullName.TrimEnd('\')
+$target = Get-Item -LiteralPath $demo -Force -ErrorAction Stop
+$owned = $target.PSIsContainer -and
+  -not $target.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -and
+  $target.Parent.FullName.TrimEnd('\') -eq $tempRoot -and
+  $target.Name -match '^storyme-interactive-demo-[0-9a-f]{32}$' -and
+  (Test-Path -LiteralPath (Join-Path $target.FullName '.storyme-demo-owner') -PathType Leaf)
+if (-not $owned) { throw "Refusing to delete '$demo': it is not this demo's temporary root." }
+Remove-Item -LiteralPath $target.FullName -Recurse -Force
 ```
 
-This removes only the temporary `storyme-interactive-demo` directory.
+This removes only this invocation's demo root. Roots left by earlier invocations (for example after a
+failed step) are separate directories under the temporary directory named
+`storyme-interactive-demo-<32 hex characters>`; remove each the same way, after confirming its path.
 
 ## What this demonstrates and what it does not
 
