@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { z } from 'zod';
+import { canonicalHash } from './domain/canonical';
 
 /**
  * Request parsing for the interactive endpoints. Schemas are strict: clients
@@ -12,7 +13,11 @@ const identifier = z.string().regex(/^[a-z][a-z0-9-]{0,62}$/);
 const idempotencyKey = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
 
 export const createSessionBodySchema = z
-  .object({ scenarioId: identifier, idempotencyKey })
+  .object({
+    scenarioId: identifier,
+    scenarioVersion: z.number().int().min(1).max(1_000_000).optional(),
+    idempotencyKey,
+  })
   .strict();
 
 export const submitChoiceBodySchema = z
@@ -24,6 +29,9 @@ export const submitChoiceBodySchema = z
   .strict();
 
 export const sessionIdSchema = z.string().uuid();
+
+/** The catalogue takes no parameters: any query key is rejected. */
+export const catalogueQuerySchema = z.object({}).strict();
 
 /** `?expectedRevision=N`: digits only, no sign/leading zeros, required, no repeats or extra keys. */
 export const presentationQuerySchema = z
@@ -90,6 +98,20 @@ export const listSessionsQuerySchema = z
 
 export type ListSessionsQuery = z.output<typeof listSessionsQuerySchema>;
 export type CreateSessionBody = z.infer<typeof createSessionBodySchema>;
+
+/**
+ * Fingerprint of a creation command, stored with the session. Without an
+ * explicit version it is exactly the canonical { scenarioId } hash, so creation
+ * keys accepted before versions existed keep replaying; an explicit version is
+ * part of the fingerprint, so one key can never mean two different stories.
+ */
+export function createSessionRequestHash(
+  command: Pick<CreateSessionBody, 'scenarioId' | 'scenarioVersion'>,
+): string {
+  return command.scenarioVersion === undefined
+    ? canonicalHash({ scenarioId: command.scenarioId })
+    : canonicalHash({ scenarioId: command.scenarioId, scenarioVersion: command.scenarioVersion });
+}
 export type SubmitChoiceBody = z.infer<typeof submitChoiceBodySchema>;
 
 export function parseRequest<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown): T {

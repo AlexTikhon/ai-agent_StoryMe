@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useParams, useRouter } from 'next/navigation';
 import { ApiError } from '@/lib/api/client';
@@ -160,7 +160,7 @@ describe('interactive reader page', () => {
     expect(submitChoice).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the ending with an explicit “Start another story” action', async () => {
+  it('shows the ending with a “Start another story” link to the catalogue, creating nothing', async () => {
     getSession.mockResolvedValueOnce(
       makeView(5, {
         status: 'ended',
@@ -180,13 +180,12 @@ describe('interactive reader page', () => {
     // Not created until asked.
     expect(createSession).not.toHaveBeenCalled();
 
-    createSession.mockResolvedValueOnce(makeView(0, { sessionId: 'new-session' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Start another story' }));
-
-    expect(createSession).toHaveBeenCalledTimes(1);
-    await waitFor(() =>
-      expect(pushMock).toHaveBeenCalledWith('/dashboard/interactive/new-session'),
-    );
+    // The reader never picks a story: the user chooses one from the server catalogue.
+    const another = screen.getByRole('link', { name: 'Start another story' });
+    expect(another).toHaveAttribute('href', '/dashboard/interactive');
+    expect(screen.queryByRole('button', { name: 'Start another story' })).toBeNull();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
   it('shows the same unavailable screen for missing and foreign sessions', async () => {

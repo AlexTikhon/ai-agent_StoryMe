@@ -1,4 +1,6 @@
 import type {
+  InteractiveScenarioCatalogueDto,
+  InteractiveScenarioCatalogueEntryDto,
   InteractiveSessionListDto,
   InteractiveSessionSummaryDto,
   InteractiveSessionViewDto,
@@ -35,6 +37,7 @@ export function makeSummary(
     sessionId: id,
     scenarioId: 'warsaw-last-delivery',
     scenarioVersion: 1,
+    scenarioTitle: 'The Last Delivery',
     sceneTitle: `Scene of story ${n}`,
     status: 'in_progress',
     endingTitle: null,
@@ -42,6 +45,25 @@ export function makeSummary(
     updatedAt: `2026-10-0${Math.min(n, 9)}T11:00:00.000Z`,
     ...overrides,
   };
+}
+
+export function makeCatalogueEntry(
+  overrides: Partial<InteractiveScenarioCatalogueEntryDto> = {},
+): InteractiveScenarioCatalogueEntryDto {
+  return {
+    scenarioId: 'warsaw-last-delivery',
+    scenarioVersion: 1,
+    title: 'The Last Delivery',
+    language: 'en',
+    synopsis: 'Warsaw, a wet evening. A courier with one parcel left.',
+    ...overrides,
+  };
+}
+
+export function makeCatalogue(
+  ...entries: InteractiveScenarioCatalogueEntryDto[]
+): InteractiveScenarioCatalogueDto {
+  return { scenarios: entries.length > 0 ? entries : [makeCatalogueEntry()] };
 }
 
 export function makePage(

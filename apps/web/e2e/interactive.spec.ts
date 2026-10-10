@@ -76,7 +76,7 @@ test.describe('interactive story — real API journeys', () => {
       page.getByRole('heading', { name: 'A Quiet Delivery', exact: true }),
     ).toBeVisible();
     await expect(page.getByText('What do you do?')).toBeHidden();
-    await expect(page.getByRole('button', { name: 'Start another story' })).toBeEnabled();
+    await expect(page.getByRole('link', { name: 'Start another story' })).toBeVisible();
   });
 
   test('reloads mid-story into the same session, then reaches the exposed ending', async ({
@@ -118,8 +118,12 @@ test.describe('interactive story — real API journeys', () => {
       page.getByRole('heading', { name: 'The Ledger Exposed', exact: true }),
     ).toBeVisible();
 
-    // "Start another story" is the only thing that creates a second session.
-    await page.getByRole('button', { name: 'Start another story' }).click();
+    // "Start another story" only leads to the catalogue; clicking a story card is what
+    // creates the second session.
+    await page.getByRole('link', { name: 'Start another story' }).click();
+    await expect(page).toHaveURL(/\/dashboard\/interactive$/);
+    expect(createRequests).toHaveLength(1);
+    await page.getByRole('button', { name: /^Start story/ }).click();
     await expect(page).not.toHaveURL(new RegExp(`${sessionId}$`));
     await expect(page).toHaveURL(SESSION_URL);
     await expect(page.getByRole('heading', { name: 'Praga courtyard', exact: true })).toBeVisible();
@@ -420,7 +424,7 @@ test.describe('interactive story — illustrated reader (real API)', () => {
       'A quiet delivery',
     );
     await expectArt(page, 'quiet');
-    await expect(page.getByRole('button', { name: 'Start another story' })).toBeEnabled();
+    await expect(page.getByRole('link', { name: 'Start another story' })).toBeVisible();
     await page.context().close();
   });
 

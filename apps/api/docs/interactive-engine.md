@@ -1,4 +1,4 @@
-# Interactive story engine (v3: Phase 1 engine, Phase 2 web reader, Phase 3 session library, Phase 4 illustrated reader)
+# Interactive story engine (v3: Phase 1 engine, Phase 2 web reader, Phase 3 session library, Phase 4 illustrated reader, Phase 6.1 catalogue)
 
 A small deterministic engine for one scripted detective scenario. Flow:
 **create an authenticated session (idempotently) → read a scene → choose an available action → persist its consequences → find and resume the same session later.**
@@ -173,7 +173,7 @@ Preparation for a **private pilot**, not authorization to deploy publicly. Choic
 
 ### Idempotent creation
 
-`POST /api/interactive/sessions` takes `{ scenarioId, idempotencyKey }`. The key is required and uses the same bounded format as choice keys (`[A-Za-z0-9._:-]{1,128}`). The creation fingerprint is `sha256(canonical {scenarioId})` (the validated command without the key), stored on the session as `creation_request_hash` next to `creation_idempotency_key`. Existing sessions have both columns `NULL`; PostgreSQL unique indexes treat `NULL`s as distinct, so they never collide.
+`POST /api/interactive/sessions` takes `{ scenarioId, idempotencyKey }` (Phase 6.1 adds an optional `scenarioVersion`; see below). The key is required and uses the same bounded format as choice keys (`[A-Za-z0-9._:-]{1,128}`). The creation fingerprint is `sha256(canonical {scenarioId})` (the validated command without the key), stored on the session as `creation_request_hash` next to `creation_idempotency_key`. Existing sessions have both columns `NULL`; PostgreSQL unique indexes treat `NULL`s as distinct, so they never collide.
 
 | Request                                         | Result                                                                            |
 | ----------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -214,7 +214,7 @@ These are **initial private-pilot assumptions, not measured production limits**;
 
 ### Session library API
 
-`GET /api/interactive/sessions?limit=20&cursor=...` returns `{ sessions: [...], nextCursor }`, an explicit allow-list per entry: `sessionId`, `scenarioId`, `scenarioVersion`, `sceneTitle`, `status` (`in_progress` | `ended`), `endingTitle`, `createdAt`, `updatedAt`. It never contains state JSON, narration, clues, inventory, event payloads, hashes, idempotency keys, NPC knowledge or future scenes. Titles come from each session's stored public view for its current revision.
+`GET /api/interactive/sessions?limit=20&cursor=...` returns `{ sessions: [...], nextCursor }`, an explicit allow-list per entry: `sessionId`, `scenarioId`, `scenarioVersion`, `scenarioTitle` (Phase 6.1), `sceneTitle`, `status` (`in_progress` | `ended`), `endingTitle`, `createdAt`, `updatedAt`. It never contains state JSON, narration, clues, inventory, event payloads, hashes, idempotency keys, NPC knowledge or future scenes. Titles come from each session's stored public view for its current revision.
 
 - **Keyset pagination** ordered by `(created_at DESC, id DESC)`; the cursor is the opaque base64url of the last row's `{t, i}` and is strictly validated (length, base64url, JSON shape, ISO time, UUID), so a forged cursor is `400 INVALID_REQUEST`. `limit` is digits only, 1-50 (default 20); repeated or unknown query parameters are rejected.
 - **Owner isolation.** Every query filters by the authenticated user; a cursor from another account can only position within the caller's own rows. The existing `(user_id, created_at)` index already serves the query (an owner has at most the cap's rows), so no new index was added.
@@ -222,10 +222,10 @@ These are **initial private-pilot assumptions, not measured production limits**;
 
 ### Web: "Your stories"
 
-`/dashboard/interactive` gains a "Your stories" section (loading, empty, error with retry, refresh, load-more, in-progress vs completed, **Continue** / **Read again** links to the reader URL). **Start story** stays an explicit action. There is no catalogue, search, deletion or management UI.
+`/dashboard/interactive` gains a "Your stories" section (loading, empty, error with retry, refresh, load-more, in-progress vs completed, **Continue** / **Read again** links to the reader URL). **Start story** stays an explicit action. There is no search, deletion or management UI (the story catalogue arrived in Phase 6.1, below).
 
 - `use-session-library.ts` binds every request to a scope (account id, auth session epoch, generation). Responses for another account, another auth session, an unmounted page, or a request a refresh made obsolete are dropped and aborted; the owner is stored with the data so another account's list is not rendered even for one frame.
-- `use-start-story.ts` creates **one immutable command per deliberate start** (`crypto.randomUUID()` key). After an ambiguous result (network failure, timeout, unlabelled 5xx), a rate limit, or `SESSION_BUSY`, the button becomes **Try again** and resends the identical command (same key and body); nothing is retried automatically. A definitive rejection (e.g. `SESSION_LIMIT_REACHED`) resolves the command so the next start is new. After success or replay it navigates to the returned session id and the reader fetches the current state.
+- `use-start-story.ts` creates **one immutable command per deliberate start** (`crypto.randomUUID()` key). After an ambiguous result (network failure, timeout, unlabelled 5xx), a rate limit, or `SESSION_BUSY`, the alert offers **Try again**, which resends the identical command (same key and body); nothing is retried automatically. A definitive rejection (e.g. `SESSION_LIMIT_REACHED`) resolves the command so the next start is new. After success or replay it navigates to the returned session id and the reader fetches the current state.
 - The held command is in memory only. A reload forgets it, but a committed session remains discoverable through the library.
 
 ### Tests and commands
@@ -350,3 +350,53 @@ The Playwright run writes visual-QA screenshots to `apps/web/test-results/intera
 - Dialogue is not extracted into the picture or into speech bubbles; one panel per scene.
 - The public artwork can be fetched without logging in.
 - On narrow phones the existing dashboard top navigation clips its leftmost link; that is dashboard chrome outside the reader and was not changed here.
+
+## Phase 6.1: published-scenario catalogue and version-aware creation
+
+The browser no longer knows any story. It asks the server which stories are published and starts the exact (id, version) it was offered. No migration: the existing `scenario_version` and `creation_request_hash` columns carry everything.
+
+### Catalogue
+
+- `GET /api/interactive/scenarios` (same `AuthModeGuard` + `UserRateLimitGuard` and the shared `INTERACTIVE_READ_*` budget as the other reads; `Cache-Control: private, no-store`; query parameters are rejected) returns `{ scenarios: [{ scenarioId, scenarioVersion, title, language, synopsis }] }`: one entry per published scenario, for its **latest** published version, sorted by id. That five-field DTO (`InteractiveScenarioCatalogueEntryDto`) is the entire surface; definitions, scenes, choices, conditions, facts, endings, draft/review reports and provider output are never serialized.
+- The static published registry in `scenarios/index.ts` remains the **publication authority**. Catalogue metadata (`title`, hand-written spoiler-free `synopsis`) lives in `scenarios/catalogue-metadata.ts`, outside the scenario JSON, so adding or fixing a synopsis never changes a definition hash. Metadata is keyed by (id, version) so a session pinned to v1 keeps its v1 title after v2 ships.
+- `createScenarioRegistry` (`scenarios/registry.ts`) validates at module load and refuses to start on: metadata for an unpublished identity, duplicate metadata, duplicate definitions, a scenario whose **latest** version has no metadata, or a title/synopsis that is empty, multi-line or over 80 / 400 characters.
+- "The Last Delivery" (`warsaw-last-delivery` v1) is the only published scenario. "The Last Tram" (`warsaw-last-tram`) stays `REVIEW_REQUIRED`: unregistered, not in the catalogue, and rejected by creation with `422 UNKNOWN_SCENARIO`.
+- `InteractiveService` takes the registry as an optional 4th constructor argument (token `SCENARIO_REGISTRY`, defaulting to the published one). Tests use it to inject test-only registries; nothing test-only is registered as real content.
+
+### Version-aware creation
+
+`POST /api/interactive/sessions` accepts an optional integer `scenarioVersion` (1-1,000,000).
+
+| Request                   | Resolution                                     | Fingerprint stored as `creation_request_hash`                    |
+| ------------------------- | ---------------------------------------------- | ---------------------------------------------------------------- |
+| `scenarioVersion` present | exactly that published version; never upgraded | `sha256(canonical { scenarioId, scenarioVersion })`              |
+| omitted                   | latest published version (unchanged behaviour) | `sha256(canonical { scenarioId })`, **exactly** the pre-6.1 hash |
+
+- An existing creation identity (`userId`, key) is resolved **before** the registry is consulted or anything is narrated. An identical retry returns the original genesis response even if that version is no longer published; a different fingerprint (another version, or explicit vs omitted) is `409 IDEMPOTENCY_KEY_REUSED`.
+- Unknown id, unpublished id (Last Tram) or unpublished version: `422 UNKNOWN_SCENARIO`, with no session or event created.
+- Admission locking, the per-user cap, narration outside the transaction, immutable version pinning and all choice/replay semantics are unchanged.
+- **Compatibility decision:** an old client that omits the version and later retries with an explicit `scenarioVersion` equal to what it got is a _different_ command and is rejected with `IDEMPOTENCY_KEY_REUSED`. Preserving old hashes was chosen over treating omitted == latest, because "latest" changes over time and the hash must not.
+
+### Session titles
+
+Session summaries gain `scenarioTitle`, resolved from the session's **pinned** (id, version) in the registry, falling back to `Interactive story` when there is no metadata. Stored event responses and historical sessions are not rewritten, and the reader's own view DTO is unchanged.
+
+### Web
+
+- `use-scenario-catalogue.ts` loads the catalogue once per account/auth session (scope-guarded like the library; aborted on unmount or auth change) and again only on a manual **Try again**. `scenario-catalogue.tsx` renders one accessible card per entry (`aria-label="Start story: <title>"`) with loading, empty and error states. A catalogue failure does not affect "Your stories".
+- `use-start-story.ts` captures one immutable command `{ scenarioId, scenarioVersion, idempotencyKey }` from the clicked card. While it is in flight or awaiting a manual retry, every card is disabled and `start` is ignored; **Try again** resends that exact command even if the catalogue has since been refreshed with a newer version or without that story. Single-flight, deadline, auth-epoch and unmount protection are unchanged.
+- The browser title map was removed; titles come from `scenarioTitle` (summaries) and the catalogue (cards). `scenario-boundary.test.ts` fails if web sources import API/scenario modules or hardcode a scenario id.
+
+### Tests and commands
+
+```bash
+pnpm --filter @book/api test                                              # registry, requests, controller specs
+pnpm --filter @book/api test:integration test/integration/interactive     # incl. interactive-catalogue (versions, key reuse, concurrency, titles) and HTTP
+pnpm --filter @book/web test
+```
+
+### Phase 6.1 limitations
+
+- The reader page header still shows the fixed text "The Last Delivery": the session view DTO (and its stored responses) has no title, and adding one was out of scope. It must be addressed before a second scenario is published.
+- Catalogue entries are one per scenario (latest version only); there is no way to start an older published version from the UI, only through the API.
+- Title and synopsis are English-only (`language` is currently always `en`); there is no localisation, ordering or featured-story control beyond sort-by-id.

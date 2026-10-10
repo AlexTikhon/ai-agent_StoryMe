@@ -6,7 +6,13 @@ import { ApiError } from '@/lib/api/client';
 import { interactiveApi } from '@/lib/api/interactive';
 import { useAuth } from '@/lib/auth/auth-context';
 import { advanceSessionEpoch } from '@/lib/auth/token-store';
-import { deferred, makePage, makeSummary, makeView } from './interactive-test-fixtures';
+import {
+  deferred,
+  makeCatalogue,
+  makePage,
+  makeSummary,
+  makeView,
+} from './interactive-test-fixtures';
 import InteractiveIntroPage from './page';
 import { useSessionLibrary } from './use-session-library';
 
@@ -22,6 +28,7 @@ vi.mock('next/link', () => ({
 vi.mock('@/lib/auth/auth-context', () => ({ useAuth: vi.fn() }));
 vi.mock('@/lib/api/interactive', () => ({
   interactiveApi: {
+    listScenarios: vi.fn(),
     createSession: vi.fn(),
     listSessions: vi.fn(),
     getSession: vi.fn(),
@@ -29,6 +36,7 @@ vi.mock('@/lib/api/interactive', () => ({
   },
 }));
 
+const listScenarios = vi.mocked(interactiveApi.listScenarios);
 const createSession = vi.mocked(interactiveApi.createSession);
 const listSessions = vi.mocked(interactiveApi.listSessions);
 const pushMock = vi.fn();
@@ -46,6 +54,8 @@ beforeEach(() => {
     typeof useRouter
   >);
   signInAs('user-1');
+  listScenarios.mockReset();
+  listScenarios.mockResolvedValue(makeCatalogue());
   createSession.mockReset();
   listSessions.mockReset();
   pushMock.mockReset();
@@ -60,7 +70,7 @@ describe('Your stories library', () => {
     render(<InteractiveIntroPage />);
 
     expect(within(library()).getByRole('status')).toHaveTextContent('Loading your stories');
-    expect(screen.getByRole('button', { name: 'Start story' })).toBeEnabled();
+    expect(await screen.findByRole('button', { name: /^Start story/ })).toBeEnabled();
 
     gate.resolve(makePage([]));
     expect(await within(library()).findByText(/No stories yet/)).toBeInTheDocument();
@@ -94,6 +104,42 @@ describe('Your stories library', () => {
     );
   });
 
+  it('titles each story from the server-provided scenarioTitle, not from a browser map', async () => {
+    listSessions.mockResolvedValueOnce(
+      makePage([
+        makeSummary(2, { scenarioId: 'test-second-story', scenarioTitle: 'The Second Test Story' }),
+        makeSummary(1, { scenarioId: 'warsaw-last-delivery', scenarioTitle: 'Server Chosen Name' }),
+      ]),
+    );
+    render(<InteractiveIntroPage />);
+
+    const items = await within(library()).findAllByRole('listitem');
+    expect(within(items[0]!).getByText('The Second Test Story')).toBeInTheDocument();
+    expect(within(items[0]!).getByRole('link')).toHaveAccessibleName(
+      /^Continue The Second Test Story, in progress/,
+    );
+    // A known id no longer implies a known title: only the server decides.
+    expect(within(items[1]!).getByText('Server Chosen Name')).toBeInTheDocument();
+    expect(within(items[1]!).queryByText('The Last Delivery')).not.toBeInTheDocument();
+  });
+
+  it('falls back to a generic title when the server sends none', async () => {
+    const summary = makeSummary(1) as unknown as Record<string, unknown>;
+    delete summary['scenarioTitle'];
+    listSessions.mockResolvedValueOnce(
+      makePage([
+        summary as unknown as ReturnType<typeof makeSummary>,
+        makeSummary(2, { scenarioTitle: '  ' }),
+      ]),
+    );
+    render(<InteractiveIntroPage />);
+
+    const items = await within(library()).findAllByRole('listitem');
+    for (const item of items) {
+      expect(within(item).getByText('Interactive story')).toBeInTheDocument();
+    }
+  });
+
   it('resuming a story never creates a session', async () => {
     listSessions.mockResolvedValueOnce(makePage([makeSummary(1)]));
     render(<InteractiveIntroPage />);
@@ -110,7 +156,7 @@ describe('Your stories library', () => {
     render(<InteractiveIntroPage />);
     await within(library()).findByText(/No stories yet/);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Start story' }));
+    await userEvent.click(await screen.findByRole('button', { name: /^Start story/ }));
     expect(await screen.findByText(/won.t start a second story/i)).toBeInTheDocument();
     await userEvent.click(within(library()).getByRole('button', { name: 'Refresh' }));
 
@@ -305,7 +351,7 @@ describe('Your stories library', () => {
     render(<InteractiveIntroPage />);
     await within(library()).findByText(/No stories yet/);
 
-    await userEvent.dblClick(screen.getByRole('button', { name: 'Start story' }));
+    await userEvent.dblClick(await screen.findByRole('button', { name: /^Start story/ }));
 
     expect(createSession).toHaveBeenCalledTimes(1);
     gate.resolve(makeView(0));

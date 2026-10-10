@@ -39,6 +39,35 @@ describe('interactiveApi', () => {
     );
   });
 
+  it('createSession sends the explicit scenarioVersion unchanged', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk({ sessionId: 's1' }, 201));
+    const command = {
+      scenarioId: 'warsaw-last-delivery',
+      scenarioVersion: 1,
+      idempotencyKey: 'start-key-2',
+    };
+
+    await interactiveApi.createSession(command);
+
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual(command);
+  });
+
+  it('listScenarios GETs the catalogue with the caller signal and no body', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk({ scenarios: [] }));
+    const controller = new AbortController();
+
+    await expect(interactiveApi.listScenarios(controller.signal)).resolves.toEqual({
+      scenarios: [],
+    });
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:4000/api/interactive/scenarios');
+    expect(init.method).toBeUndefined();
+    expect(init.body).toBeUndefined();
+    expect(init.signal).toBe(controller.signal);
+  });
+
   it('listSessions GETs the first page with no query, and later pages with limit and cursor', async () => {
     vi.mocked(fetch).mockResolvedValue(mockOk({ sessions: [], nextCursor: null }));
     const controller = new AbortController();

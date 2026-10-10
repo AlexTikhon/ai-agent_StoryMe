@@ -5,9 +5,35 @@
  * shared with clients.
  */
 
+/**
+ * One published scenario in the catalogue: its latest published version and
+ * hand-written display metadata. Deliberately nothing else: no definition,
+ * scenes, choices, conditions, facts, endings or drafts.
+ */
+export interface InteractiveScenarioCatalogueEntryDto {
+  scenarioId: string;
+  /** The exact version a new session started from this entry is pinned to. */
+  scenarioVersion: number;
+  title: string;
+  language: string;
+  /** Short and spoiler-free. */
+  synopsis: string;
+}
+
+/** GET /api/interactive/scenarios response, sorted by scenario id. */
+export interface InteractiveScenarioCatalogueDto {
+  scenarios: InteractiveScenarioCatalogueEntryDto[];
+}
+
 /** POST /api/interactive/sessions body. */
 export interface CreateInteractiveSessionInput {
   scenarioId: string;
+  /**
+   * The exact published version to start. When omitted the server starts the
+   * latest published version (legacy behaviour). Part of the idempotency
+   * fingerprint when present: reusing a key with another version is rejected.
+   */
+  scenarioVersion?: number;
   /**
    * Client-generated key identifying one deliberate "start story" action.
    * Resending the identical command with it returns the original session.
@@ -60,6 +86,8 @@ export interface InteractiveSessionSummaryDto {
   sessionId: string;
   scenarioId: string;
   scenarioVersion: number;
+  /** Display title of the session's pinned version; a generic title if unavailable. */
+  scenarioTitle: string;
   /** Title of the scene the session is currently at. */
   sceneTitle: string;
   status: 'in_progress' | 'ended';

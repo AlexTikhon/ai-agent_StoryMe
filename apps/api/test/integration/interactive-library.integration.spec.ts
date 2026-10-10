@@ -378,6 +378,7 @@ describe('Interactive session library listing (real Postgres)', () => {
           'createdAt',
           'endingTitle',
           'scenarioId',
+          'scenarioTitle',
           'scenarioVersion',
           'sceneTitle',
           'sessionId',

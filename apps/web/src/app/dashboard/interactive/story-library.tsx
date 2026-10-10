@@ -8,13 +8,12 @@ const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300';
 const SECONDARY_BUTTON = `rounded-lg border border-stone-600 px-4 py-2 text-sm font-semibold text-stone-100 hover:border-stone-400 disabled:cursor-not-allowed disabled:opacity-60 ${FOCUS_RING}`;
 
-/** Display names for the scenarios the server can return; unknown ids fall back to a generic title. */
-const SCENARIO_TITLES: Record<string, string> = {
-  'warsaw-last-delivery': 'The Last Delivery',
-};
+const FALLBACK_TITLE = 'Interactive story';
 
-function scenarioTitle(scenarioId: string): string {
-  return SCENARIO_TITLES[scenarioId] ?? 'Interactive story';
+/** The title is the server's (resolved from the session's pinned version); never derived from the id. */
+function scenarioTitle(story: InteractiveSessionSummaryDto): string {
+  const title = typeof story.scenarioTitle === 'string' ? story.scenarioTitle.trim() : '';
+  return title || FALLBACK_TITLE;
 }
 
 function formatDate(iso: string): string {
@@ -25,7 +24,7 @@ function formatDate(iso: string): string {
 }
 
 function StoryItem({ story }: { story: InteractiveSessionSummaryDto }) {
-  const title = scenarioTitle(story.scenarioId);
+  const title = scenarioTitle(story);
   const ended = story.status === 'ended';
   const actionLabel = ended ? 'Read again' : 'Continue';
   return (

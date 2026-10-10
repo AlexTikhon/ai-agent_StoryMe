@@ -10,6 +10,7 @@ import type { RequestWithUser } from '../../src/auth/request-with-user';
 import { HttpExceptionFilter } from '../../src/common/filters/http-exception.filter';
 import { PrismaService } from '../../src/database/prisma.service';
 import { InteractiveController } from '../../src/interactive/interactive.controller';
+import { InteractiveScenariosController } from '../../src/interactive/interactive-scenarios.controller';
 import { InteractiveService } from '../../src/interactive/interactive.service';
 import { MockNarratorProvider } from '../../src/interactive/narrator/mock-narrator.provider';
 import { NARRATOR_PROVIDER } from '../../src/interactive/narrator/narrator';
@@ -49,7 +50,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
-      controllers: [InteractiveController],
+      controllers: [InteractiveController, InteractiveScenariosController],
       providers: [
         PrismaService,
         InteractiveService,
@@ -486,6 +487,121 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     expect(await prisma.interactiveSession.count({ where: { userId } })).toBe(1);
   });
 
+  describe('scenario catalogue and version-aware creation', () => {
+    const catalogue = async (userId: string | null) => {
+      const response = await fetch(`${baseUrl}/api/interactive/scenarios`, {
+        headers: userId ? { 'x-test-user': userId } : {},
+      });
+      const text = await response.text();
+      return { status: response.status, text, headers: response.headers };
+    };
+
+    it('requires authentication', async () => {
+      expect([401, 403]).toContain((await catalogue(null)).status);
+    });
+
+    it('serves only the allowlisted published entry, privately and uncacheable', async () => {
+      const userId = await newUser();
+      const response = await catalogue(userId);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(JSON.parse(response.text)).toEqual({
+        scenarios: [
+          {
+            scenarioId: 'warsaw-last-delivery',
+            scenarioVersion: 1,
+            title: 'The Last Delivery',
+            language: 'en',
+            synopsis: expect.any(String),
+          },
+        ],
+      });
+      for (const leaked of [
+        'scenes',
+        'choices',
+        'endings',
+        'entrySceneId',
+        'facts',
+        'conditions',
+        'ledger-exposed',
+        'warsaw-last-tram',
+        'REVIEW_REQUIRED',
+      ]) {
+        expect(response.text).not.toContain(leaked);
+      }
+    });
+
+    it('rejects query parameters on the catalogue', async () => {
+      const userId = await newUser();
+      const response = await fetch(`${baseUrl}/api/interactive/scenarios?x=1`, {
+        headers: { 'x-test-user': userId },
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it('creates the explicit version, replays it, and rejects the same key for another version', async () => {
+      const userId = await newUser();
+      const body = {
+        scenarioId: 'warsaw-last-delivery',
+        scenarioVersion: 1,
+        idempotencyKey: 'http-version-0001',
+      };
+      const first = await call('POST', '', userId, body);
+      expect(first.status).toBe(201);
+      expect(first.json).toMatchObject({ scenarioVersion: 1 });
+      expect((await call('POST', '', userId, body)).json).toEqual(first.json);
+
+      const reused = await call('POST', '', userId, { ...body, scenarioVersion: 2 });
+      expect(reused.status).toBe(409);
+      expect(reused.json.code).toBe('IDEMPOTENCY_KEY_REUSED');
+      expect(await prisma.interactiveSession.count({ where: { userId } })).toBe(1);
+    });
+
+    it('answers unknown, unpublished and unpublished-version requests with UNKNOWN_SCENARIO', async () => {
+      const userId = await newUser();
+      let n = 0;
+      for (const extra of [
+        { scenarioId: 'warsaw-last-tram' },
+        { scenarioId: 'warsaw-last-tram', scenarioVersion: 1 },
+        { scenarioId: 'warsaw-last-delivery', scenarioVersion: 2 },
+      ]) {
+        n += 1;
+        const response = await call('POST', '', userId, {
+          idempotencyKey: `http-unknown-${n}000`,
+          ...extra,
+        });
+        expect(response.status).toBe(422);
+        expect(response.json.code).toBe('UNKNOWN_SCENARIO');
+      }
+      expect(await prisma.interactiveSession.count({ where: { userId } })).toBe(0);
+    });
+
+    it('rejects a malformed scenarioVersion as INVALID_REQUEST', async () => {
+      const userId = await newUser();
+      for (const scenarioVersion of [0, -1, 1.5, '1', null]) {
+        const response = await call('POST', '', userId, {
+          scenarioId: 'warsaw-last-delivery',
+          scenarioVersion,
+          idempotencyKey: 'http-bad-version',
+        });
+        expect(response.status).toBe(400);
+        expect(response.json.code).toBe('INVALID_REQUEST');
+      }
+    });
+
+    it('titles listed sessions from the server', async () => {
+      const userId = await newUser();
+      await call('POST', '', userId, {
+        scenarioId: 'warsaw-last-delivery',
+        idempotencyKey: 'http-title-0001',
+      });
+      const list = (await call('GET', '', userId)).json as unknown as {
+        sessions: Array<{ scenarioTitle: string }>;
+      };
+      expect(list.sessions.map((s) => s.scenarioTitle)).toEqual(['The Last Delivery']);
+    });
+  });
+
   it('answers a creation beyond the cap with SESSION_LIMIT_REACHED but still replays', async () => {
     sessionCap = 1;
     const userId = await newUser();
@@ -533,6 +649,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
           'createdAt',
           'endingTitle',
           'scenarioId',
+          'scenarioTitle',
           'scenarioVersion',
           'sceneTitle',
           'sessionId',

@@ -121,7 +121,19 @@ Everything is written under one git-ignored directory, `apps/api/scenario-drafts
 ## Review and publication
 
 1. A human reads `review-report.md` and the candidate prose and completes the checklist.
-2. Publication is a **separate, explicit, manual step** (adding a new, append-only registry entry in `scenarios/index.ts` with tests and, optionally, a presentation pack). **This tool has no approve or publish command, and nothing it writes is registered, hashed into sessions or served.**
+2. Publication is a **separate, explicit, manual step**. **This tool has no approve, promote or publish command, and nothing it writes is registered, hashed into sessions, listed in the catalogue or served.**
+
+### Publication boundary (manual sequence)
+
+Each step is a deliberate human action, in this order. Mechanical success (`REVIEW_REQUIRED`, a green validation run, passing tests) is **never** approval and does not replace step 1.
+
+1. **Editorial review of the exact candidate.** A person reviews the specific candidate (identified by its id, version and hash in the review report), prose included, and records their approval against that hash. Any later edit makes it a different candidate and restarts review.
+2. **Mechanical revalidation.** The approved definition is run through `loadScenario` / the full validation pipeline again, unchanged, to confirm it is still structurally and playably valid.
+3. **Immutable versioned definition.** The approved JSON is committed as `scenarios/<id>.v<N>.json`. Published definitions are append-only: a change is a new version, never an edit.
+4. **Explicit source registration.** The definition is added to the `SCENARIOS` list in `scenarios/index.ts` (with tests and, optionally, a presentation pack). This static list is the publication authority.
+5. **Catalogue metadata.** A hand-written `title` and spoiler-free `synopsis` for that exact (id, version) are added to `scenarios/catalogue-metadata.ts`. The registry refuses to load without metadata for the latest version, refuses metadata for anything unregistered, and keeps it out of the definition so its hash is unaffected.
+
+Until step 4 a scenario cannot be started, and until step 5 the app will not boot with it registered. "The Last Tram" (`warsaw-last-tram` v1) has completed none of these steps: it stays `REVIEW_REQUIRED`, unregistered, absent from `GET /api/interactive/scenarios`, and rejected by session creation.
 
 ## Offline evaluation
 

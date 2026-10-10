@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { HttpException, Inject, Injectable, Logger } from '@nestjs/common';
+import { HttpException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   InteractivePresentationDto,
+  InteractiveScenarioCatalogueDto,
   InteractiveSessionListDto,
   InteractiveSessionSummaryDto,
 } from '@book/types';
@@ -40,13 +41,17 @@ import type { Env } from '../config/env.schema';
 import { PrismaService } from '../database/prisma.service';
 import { buildPublicView, publicSessionViewSchema, type PublicSessionView } from './public-view';
 import {
+  createSessionRequestHash,
   encodeListCursor,
   type CreateSessionBody,
   type ListSessionsQuery,
   type SubmitChoiceBody,
 } from './requests';
 import { projectPresentation } from './presentation/presentation';
-import { getLatestScenario, getScenario } from './scenarios';
+import { publishedScenarioRegistry, type ScenarioRegistry } from './scenarios';
+
+/** Injection token for the published scenario registry; defaults to the real one. */
+export const SCENARIO_REGISTRY = Symbol('SCENARIO_REGISTRY');
 
 /** Bounds how long a choice may wait for the session row lock or run in total. */
 export const LOCK_TIMEOUT_MS = 2_000;
@@ -77,25 +82,38 @@ export class InteractiveService {
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(NARRATOR_PROVIDER) private readonly narrator: NarratorProvider,
     @Inject(ConfigService) private readonly config: ConfigService<Env, true>,
+    @Optional()
+    @Inject(SCENARIO_REGISTRY)
+    private readonly registry: ScenarioRegistry = publishedScenarioRegistry,
   ) {}
+
+  /** The published scenarios, one allowlisted entry each (latest version). */
+  listScenarios(): InteractiveScenarioCatalogueDto {
+    return { scenarios: this.registry.catalogue() };
+  }
 
   /**
    * Creates a session, or replays the one a previous identical request created.
    *
-   * Order matters: (1) an existing creation identity is resolved before any
-   * narration is prepared, so a retry never narrates again and never depends on
-   * the latest scenario version; (2) narration is prepared outside any
-   * transaction; (3) the identity is re-checked inside the write transaction,
-   * under the owner's admission lock, before the session cap is evaluated, so an
-   * accepted retry still succeeds at the cap.
+   * Order matters: (1) an existing creation identity is resolved before the
+   * registry is consulted or any narration is prepared, so a retry never
+   * narrates again and never depends on which versions are published now;
+   * (2) the exact requested version is resolved (never upgraded), or the latest
+   * when none was named; (3) narration is prepared outside any transaction;
+   * (4) the identity is re-checked inside the write transaction, under the
+   * owner's admission lock, before the session cap is evaluated, so an accepted
+   * retry still succeeds at the cap.
    */
   async createSession(userId: string, command: CreateSessionBody): Promise<PublicSessionView> {
-    const requestHash = canonicalHash({ scenarioId: command.scenarioId });
+    const requestHash = createSessionRequestHash(command);
 
     const existing = await this.findCreation(this.prisma, userId, command.idempotencyKey);
     if (existing) return this.replayCreation(this.prisma, existing, requestHash);
 
-    const scenario = getLatestScenario(command.scenarioId);
+    const scenario =
+      command.scenarioVersion === undefined
+        ? this.registry.getLatest(command.scenarioId)
+        : this.registry.get(command.scenarioId, command.scenarioVersion);
     if (!scenario) throw unknownScenario();
 
     const genesis = startSession(scenario);
@@ -212,6 +230,7 @@ export class InteractiveService {
         sessionId: row.id,
         scenarioId: row.scenarioId,
         scenarioVersion: row.scenarioVersion,
+        scenarioTitle: this.registry.title(row.scenarioId, row.scenarioVersion),
         sceneTitle: view.scene.title,
         status: view.status,
         endingTitle: view.ending?.title ?? null,
@@ -452,7 +471,7 @@ export class InteractiveService {
   }
 
   private pinnedScenario(session: InteractiveSession): ScenarioDefinition {
-    const scenario = getScenario(session.scenarioId, session.scenarioVersion);
+    const scenario = this.registry.get(session.scenarioId, session.scenarioVersion);
     if (!scenario) {
       this.logger.error(
         `Session ${session.id} pinned to unavailable ${session.scenarioId}@${session.scenarioVersion}`,

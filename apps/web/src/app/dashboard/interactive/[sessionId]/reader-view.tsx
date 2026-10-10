@@ -7,14 +7,6 @@ import type { useInteractiveReader } from './use-interactive-reader';
 
 type Reader = ReturnType<typeof useInteractiveReader>;
 
-interface StartAnother {
-  start: () => void;
-  starting: boolean;
-  error: string | null;
-  /** The previous start's outcome is unresolved; the next click resends the same command. */
-  pending?: boolean;
-}
-
 const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300';
 const LINK_BUTTON = `rounded-lg bg-amber-400 px-5 py-2.5 text-sm font-semibold text-stone-950 hover:bg-amber-300 ${FOCUS_RING}`;
@@ -72,13 +64,7 @@ function Problem({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function InteractiveReaderView({
-  reader,
-  startAnother,
-}: {
-  reader: Reader;
-  startAnother: StartAnother;
-}) {
+export function InteractiveReaderView({ reader }: { reader: Reader }) {
   const { phase, view, command, syncRequired, syncing, syncError, notice } = reader;
   const headingRef = useRef<HTMLHeadingElement>(null);
   const shownRevision = useRef<number | null>(null);
@@ -262,26 +248,10 @@ export function InteractiveReaderView({
           <p className="mt-3 font-book text-lg leading-relaxed text-stone-200">
             {view.ending.summary}
           </p>
-          {startAnother.error && (
-            <p
-              role="alert"
-              className="mt-4 rounded-lg border border-red-400/40 bg-red-950/60 px-4 py-3 text-sm text-red-100"
-            >
-              {startAnother.error}
-            </p>
-          )}
-          <button
-            type="button"
-            onClick={startAnother.start}
-            disabled={startAnother.starting}
-            className={`mt-5 ${PRIMARY_BUTTON}`}
-          >
-            {startAnother.starting
-              ? 'Starting…'
-              : startAnother.pending
-                ? 'Try again'
-                : 'Start another story'}
-          </button>
+          {/* Choosing the next story is the catalogue's job; nothing is created from here. */}
+          <Link href="/dashboard/interactive" className={`mt-5 inline-flex ${LINK_BUTTON}`}>
+            Start another story
+          </Link>
         </section>
       )}
 

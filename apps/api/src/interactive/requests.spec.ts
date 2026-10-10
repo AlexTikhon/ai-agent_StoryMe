@@ -1,8 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
+import { canonicalHash } from './domain/canonical';
 import {
   DEFAULT_LIST_LIMIT,
   createSessionBodySchema,
+  createSessionRequestHash,
   encodeListCursor,
   listSessionsQuerySchema,
   parseRequest,
@@ -34,6 +36,35 @@ describe('interactive request validation', () => {
     const create = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-1234-abcd' };
     expect(parseRequest(createSessionBodySchema, create)).toEqual(create);
     expect(parseRequest(sessionIdSchema, '3f2504e0-4f89-41d3-9a0c-0305e82c3301')).toBeTruthy();
+  });
+
+  it('accepts an optional integer scenarioVersion and rejects malformed ones', () => {
+    const base = { scenarioId: 'warsaw-last-delivery', idempotencyKey: 'start-1234-abcd' };
+    expect(parseRequest(createSessionBodySchema, { ...base, scenarioVersion: 2 })).toEqual({
+      ...base,
+      scenarioVersion: 2,
+    });
+    for (const scenarioVersion of [0, -1, 1.5, '1', null, Number.NaN, 2_000_000, [1], {}]) {
+      expect(rejects(createSessionBodySchema, { ...base, scenarioVersion })).toBe(true);
+    }
+  });
+
+  it('fingerprints a creation without a version exactly as before', () => {
+    // Pinned: keys accepted before scenarioVersion existed must keep replaying.
+    expect(createSessionRequestHash({ scenarioId: 'warsaw-last-delivery' })).toBe(
+      '3517ca905949a7cb8fdedd14f45834aeda7951a3b254d8d7465444694f501a2c',
+    );
+    expect(createSessionRequestHash({ scenarioId: 'warsaw-last-delivery' })).toBe(
+      canonicalHash({ scenarioId: 'warsaw-last-delivery' }),
+    );
+  });
+
+  it('includes an explicit version in the fingerprint', () => {
+    const legacy = createSessionRequestHash({ scenarioId: 'warsaw-last-delivery' });
+    const v1 = createSessionRequestHash({ scenarioId: 'warsaw-last-delivery', scenarioVersion: 1 });
+    const v2 = createSessionRequestHash({ scenarioId: 'warsaw-last-delivery', scenarioVersion: 2 });
+    expect(new Set([legacy, v1, v2]).size).toBe(3);
+    expect(v1).toBe(canonicalHash({ scenarioId: 'warsaw-last-delivery', scenarioVersion: 1 }));
   });
 
   it('rejects malformed session ids', () => {

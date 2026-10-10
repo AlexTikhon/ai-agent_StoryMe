@@ -13,7 +13,7 @@ import {
   type NarratorProvider,
 } from '../../../src/interactive/narrator/narrator';
 import { buildPublicView, type PublicSessionView } from '../../../src/interactive/public-view';
-import { getScenario } from '../../../src/interactive/scenarios';
+import { getScenario, type ScenarioRegistry } from '../../../src/interactive/scenarios';
 import { PrismaService } from '../../../src/database/prisma.service';
 
 export const SCENARIO_ID = 'warsaw-last-delivery';
@@ -157,12 +157,14 @@ export class InteractiveTestKit {
   gatedService(
     point: { model: InterceptedModel; method: string },
     parties: number,
+    registry?: ScenarioRegistry,
   ): InteractiveService {
     const gate = new AdmissionGate(parties, () => this.countBlockedAdmissions());
     return new InteractiveService(
       withAdmissionGate(this.prisma, point, gate),
       this.narrator,
       configWithCap(this.maxSessions),
+      registry,
     );
   }
 

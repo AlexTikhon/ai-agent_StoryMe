@@ -2,14 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { CreateInteractiveSessionInput } from '@book/types';
+import type {
+  CreateInteractiveSessionInput,
+  InteractiveScenarioCatalogueEntryDto,
+} from '@book/types';
 import { ApiError } from '@/lib/api/client';
 import { interactiveApi } from '@/lib/api/interactive';
 import { useAuth } from '@/lib/auth/auth-context';
 import { getSessionEpoch } from '@/lib/auth/token-store';
 
-/** Public identifier of the one shipped scenario; the story itself lives on the server. */
-export const WARSAW_SCENARIO_ID = 'warsaw-last-delivery';
 const CREATE_DEADLINE_MS = 20_000;
 
 /** What the user is told after each kind of failure. */
@@ -52,24 +53,32 @@ function classify(cause: unknown): Failure {
   return { message: MESSAGES.rejected, retryable: false };
 }
 
+/** The story a creation command is for; the idempotency key stays private to the hook. */
+export type StartTarget = Pick<
+  InteractiveScenarioCatalogueEntryDto,
+  'scenarioId' | 'scenarioVersion'
+>;
+
 /**
- * Creates a session only when `start` is called by a user action, then opens
- * its reader URL.
+ * Creates a session only when `start` or `retry` is called by a user action,
+ * then opens its reader URL.
  *
- * Each deliberate start owns one immutable creation command (scenario + a
- * fresh idempotency key). While the outcome is unknown or temporarily refused,
- * the same command is kept in memory and a manual retry resends it unchanged,
- * so the server converges on a single session. A definitive rejection resolves
- * the command; the next start mints a new one. Nothing is retried
- * automatically. The command is not persisted across reload: a session whose
- * response was lost stays discoverable through the session library.
+ * Each deliberate start captures one immutable creation command: the exact
+ * scenario id and version of the clicked catalogue entry plus a fresh
+ * idempotency key. While the outcome is unknown or temporarily refused, that
+ * command is kept in memory, no other story can be started, and a manual
+ * `retry` resends it unchanged however the catalogue has changed since, so the
+ * server converges on a single session. A definitive rejection resolves the
+ * command; the next start mints a new one. Nothing is retried automatically.
+ * The command is not persisted across reload: a session whose response was lost
+ * stays discoverable through the session library.
  */
 export function useStartStory() {
   const router = useRouter();
   const { status, user } = useAuth();
   const userId = user?.id ?? null;
   const [starting, setStarting] = useState(false);
-  const [pending, setPending] = useState(false);
+  const [active, setActive] = useState<StartTarget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inFlightRef = useRef(false);
   const commandRef = useRef<Readonly<CreateInteractiveSessionInput> | null>(null);
@@ -85,17 +94,14 @@ export function useStartStory() {
       commandRef.current = null;
       inFlightRef.current = false;
       setStarting(false);
-      setPending(false);
+      setActive(null);
     };
   }, [userId, status]);
 
-  const start = useCallback(() => {
-    if (inFlightRef.current) return;
+  const send = useCallback(() => {
+    const command = commandRef.current;
+    if (!command || inFlightRef.current) return;
     inFlightRef.current = true;
-    const command =
-      commandRef.current ??
-      Object.freeze({ scenarioId: WARSAW_SCENARIO_ID, idempotencyKey: crypto.randomUUID() });
-    commandRef.current = command;
     const attempt = { controller: new AbortController(), epoch: getSessionEpoch() };
     attemptRef.current = attempt;
     const timer = setTimeout(() => attempt.controller.abort(), CREATE_DEADLINE_MS);
@@ -116,13 +122,33 @@ export function useStartStory() {
         if (!isCurrent()) return;
         inFlightRef.current = false;
         const failure = classify(cause);
-        if (!failure.retryable) commandRef.current = null;
+        if (!failure.retryable) {
+          commandRef.current = null;
+          setActive(null);
+        }
         setStarting(false);
-        setPending(failure.retryable);
         setError(failure.message);
       })
       .finally(() => clearTimeout(timer));
   }, [router]);
 
-  return { start, starting, error, pending };
+  /** Starts a new story. Ignored while any start is in flight or awaiting a manual retry. */
+  const start = useCallback(
+    (target: StartTarget) => {
+      if (inFlightRef.current || commandRef.current) return;
+      commandRef.current = Object.freeze({
+        scenarioId: target.scenarioId,
+        scenarioVersion: target.scenarioVersion,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      setActive({ scenarioId: target.scenarioId, scenarioVersion: target.scenarioVersion });
+      send();
+    },
+    [send],
+  );
+
+  /** Resends the held command exactly as captured; a no-op when there is none. */
+  const retry = useCallback(() => send(), [send]);
+
+  return { start, retry, starting, error, active };
 }

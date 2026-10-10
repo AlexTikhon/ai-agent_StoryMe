@@ -1,6 +1,7 @@
 import type {
   CreateInteractiveSessionInput,
   InteractivePresentationDto,
+  InteractiveScenarioCatalogueDto,
   InteractiveSessionListDto,
   InteractiveSessionViewDto,
   SubmitInteractiveChoiceInput,
@@ -8,10 +9,14 @@ import type {
 import { apiFetch } from './client';
 
 export const interactiveApi = {
+  /** The published scenarios a new story can be started from (server-owned titles and versions). */
+  listScenarios: (signal?: AbortSignal): Promise<InteractiveScenarioCatalogueDto> =>
+    apiFetch('/interactive/scenarios', { signal }),
+
   /**
    * Idempotent on `command.idempotencyKey`: resending the identical command
-   * returns the original session, so an ambiguous result may be retried with
-   * the same command (never with a new key). The response is the session's
+   * (scenario id and version included) returns the original session, so an
+   * ambiguous result may be retried with the same command (never with a new key). The response is the session's
    * *creation* view, not necessarily its current state.
    */
   createSession: (
