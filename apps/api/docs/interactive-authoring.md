@@ -118,9 +118,38 @@ Everything is written under one git-ignored directory, `apps/api/scenario-drafts
 
 `review-report.md` contains the candidate identity/hash and validation results, reachability summary, witness routes to both endings, character knowledge, fact disclosures, item consumption, branch prerequisites, every authored narration template with its declared speaker/fact annotations, a list of what the validation does **not** prove, and an editorial checklist (unannotated secrets, contradictions, pacing, meaningful choices, audience suitability, originality, endings).
 
+## Offline playtest
+
+A reviewer can play a candidate locally before approving it. The playtest drives the production engine (`startSession`, `applyChoice`, `verifyReplay`, canonical narration validation, `buildPublicView`) and reproduces no transition rule of its own. It needs no registration, authentication, PostgreSQL, Redis, Nest or provider, and it only **reads** the candidate file.
+
+```bash
+# interactive: numbered choices, q to quit
+pnpm playtest:interactive --candidate apps/api/scenario-drafts/<run>--review-required/validated-candidate.json
+
+# scripted: reproducible, same runner and validation
+pnpm playtest:interactive --candidate <validated-candidate.json> \
+  --choices c-ask-driver,c-leave-cab,c-wait-for-terminus,c-report-to-depot
+```
+
+`--candidate` is the normalized runtime artifact (`validated-candidate.json`), not the provider wire format. Every mechanical check is re-run before play, and the canonical candidate hash is printed with the identity. An unpublished or pending candidate may be playtested; approval is not required, mechanical validity is. A local-playtest banner says so on every run.
+
+Each screen shows only the current scene title, the validated canonical narration, the choices available right now, the clues the player knows and the inventory. Locked choices, future scenes, NPC knowledge, internal flags, choice/scene ids and state hashes are never printed. A refused choice reveals only that it is unavailable, never which requirement blocks it. After every accepted choice the event log is replayed against the resulting state. A rejected line changes neither state nor events, and play stops at an ending, which shows its earned title and summary.
+
+| Exit | Result line              | Meaning                                                                                                                                                                            |
+| ---- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | `PLAYTEST_COMPLETED`     | An ending was reached.                                                                                                                                                             |
+| `1`  | `PLAYTEST_FAILED [CODE]` | Candidate unreadable/too large/not JSON/mechanically invalid; scripted choice unknown or locked; choice after an ending; route too long or malformed; input or transcript limit hit. |
+| `2`  | (usage text on stderr)   | Missing, duplicated or unknown arguments.                                                                                                                                          |
+| `3`  | `PLAYTEST_INCOMPLETE`    | The scripted route stopped, or input reached EOF, before an ending. Never reported as completed.                                                                                   |
+| `4`  | `PLAYTEST_CANCELLED`     | `q`/`quit` or Ctrl-C (SIGINT).                                                                                                                                                     |
+
+Bounds: candidate file 200 000 bytes, interactive line 256 bytes, 100 input lines, 32 choices per route (2 048 characters of `--choices`), 200 000 characters of transcript. There is no polling, retry or unbounded loop, and authored text is stripped of terminal control characters before printing.
+
+**This is not review.** Playing every route does not approve the prose, write or change an approval record, register the scenario or publish anything, and there is no web draft-preview endpoint. "The Last Tram" stays `REVIEW_REQUIRED` with a pending approval template. The editorial checklist below still applies in full.
+
 ## Review and publication
 
-1. A human reads `review-report.md` and the candidate prose and completes the checklist.
+1. A human reads `review-report.md` and the candidate prose, optionally playing it with `pnpm playtest:interactive`, and completes the checklist.
 2. Publication is a **separate, explicit, manual step**. **This tool has no approve, promote or publish command, and nothing it writes is registered, hashed into sessions, listed in the catalogue or served.**
 
 ### Publication boundary (manual sequence)

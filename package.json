@@ -33,6 +33,7 @@
     "eval:interactive:offline": "pnpm --filter @book/api eval:interactive:offline",
     "eval:interactive:authoring:offline": "pnpm --filter @book/api eval:interactive:authoring:offline",
     "author:interactive": "pnpm --filter @book/api author:interactive",
+    "playtest:interactive": "pnpm --filter @book/api playtest:interactive",
     "preflight:interactive": "pnpm --filter @book/api preflight:interactive"
   },
   "devDependencies": {
