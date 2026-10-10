@@ -27,6 +27,8 @@ function StoryItem({ story }: { story: InteractiveSessionSummaryDto }) {
   const title = scenarioTitle(story);
   const ended = story.status === 'ended';
   const actionLabel = ended ? 'Read again' : 'Continue';
+  // A finished story is reread chapter by chapter; the reader only shows its ending.
+  const href = `/dashboard/interactive/${encodeURIComponent(story.sessionId)}${ended ? '/transcript' : ''}`;
   return (
     <li className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-stone-800 bg-stone-900/60 p-4">
       <div className="min-w-0">
@@ -50,7 +52,7 @@ function StoryItem({ story }: { story: InteractiveSessionSummaryDto }) {
         </p>
       </div>
       <Link
-        href={`/dashboard/interactive/${encodeURIComponent(story.sessionId)}`}
+        href={href}
         aria-label={`${actionLabel} ${title}, ${ended ? 'completed' : 'in progress'}, started ${formatDate(story.createdAt)}`}
         className={`rounded-lg bg-amber-400 px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-amber-300 ${FOCUS_RING}`}
       >

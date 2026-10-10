@@ -706,3 +706,235 @@ test.describe('interactive story — illustrated reader (real API)', () => {
     });
   }
 });
+
+// ── Rereading a completed story (Phase 9.2) ────────────────────────────────
+
+const TRANSCRIPT_URL = /\/dashboard\/interactive\/[0-9a-f-]{36}\/transcript$/;
+const TRANSCRIPT_REQUEST = /\/interactive\/sessions\/[0-9a-f-]{36}\/transcript(\?|$)/;
+
+const chapterHeading = (page: Page, title: string) =>
+  page.getByRole('heading', { level: 2, name: title, exact: true });
+
+/** Interactive POSTs seen from now on (creation or choices); rereading must send none. */
+function watchInteractivePosts(page: Page): string[] {
+  const posts: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().startsWith(`${apiBaseUrl}/interactive/`)) {
+      posts.push(request.url());
+    }
+  });
+  return posts;
+}
+
+async function playExposedRoute(page: Page): Promise<void> {
+  await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+  await choose(page, 'Climb to the fourth floor', 'Flat 4');
+  await choose(page, 'Use the single-use entry card on the lock', 'Inside flat 4');
+  await choose(page, 'Take the service stairs down to the cellar', 'The cellar workshop');
+  await choose(page, 'Carry the original ledger up and confront Ines', 'The ledger exposed');
+}
+
+test.describe('interactive story — rereading a completed story (real API)', () => {
+  test('library “Read again” rereads the exposed route page by page, and reload starts over', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const sessionId = await startStory(page);
+    await playExposedRoute(page);
+    await expect(
+      page.getByRole('heading', { name: 'The Ledger Exposed', exact: true }),
+    ).toBeVisible();
+
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    const stories = libraryRegion(page).getByRole('listitem');
+    await expect(stories.getByText('Completed')).toBeVisible();
+
+    // Everything from here on is rereading: no creation and no choice may be sent.
+    const posts = watchInteractivePosts(page);
+    const transcriptUrls: string[] = [];
+    // Finished requests only: dev-mode StrictMode also starts (and immediately aborts) a first one.
+    page.on('requestfinished', (request) => {
+      if (TRANSCRIPT_REQUEST.test(request.url())) transcriptUrls.push(request.url());
+    });
+
+    const readAgain = stories.getByRole('link', { name: /Read again/ });
+    await expect(readAgain).toHaveAttribute(
+      'href',
+      `/dashboard/interactive/${sessionId}/transcript`,
+    );
+    await readAgain.click();
+    await expect(page).toHaveURL(TRANSCRIPT_URL);
+
+    // First page: the first three chapters, nothing else yet.
+    await expect(chapterHeading(page, 'Praga courtyard')).toBeVisible();
+    await expect(chapterHeading(page, 'Flat 4')).toBeVisible();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await expect(page.getByTestId('transcript-progress')).toHaveText('Showing 3 of 6 chapters.');
+    await expect(page.getByTestId('story-title')).toHaveText('The Last Delivery');
+    await expect(page.getByText('You chose: Ask the caretaker where Tomasz is')).toBeVisible();
+    await expect(chapterHeading(page, 'The ledger exposed')).toHaveCount(0);
+    await expect(page.getByText('The end', { exact: true })).toHaveCount(0);
+    expect(transcriptUrls).toHaveLength(1); // no automatic loading of the rest
+    expect(new URL(transcriptUrls[0]!).searchParams.get('limit')).toBe('3');
+    expect(new URL(transcriptUrls[0]!).searchParams.get('cursor')).toBeNull();
+
+    // Explicit "Load more": remaining chapters in order, then the ending.
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(chapterHeading(page, 'The ledger exposed')).toBeVisible();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    await expect(page.getByTestId('transcript-chapter').locator('h2')).toHaveText([
+      'Praga courtyard',
+      "The caretaker's broom",
+      'Flat 4',
+      'Inside flat 4',
+      'The cellar workshop',
+      'The ledger exposed',
+    ]);
+    await expect(page.getByRole('heading', { level: 3, name: 'The Ledger Exposed' })).toBeVisible();
+    await expect(page.getByTestId('transcript-progress')).toHaveText(
+      'All 6 chapters, from the beginning to the end.',
+    );
+    await expect(page.getByRole('button', { name: /Load more|Try again/ })).toHaveCount(0);
+    expect(transcriptUrls).toHaveLength(2);
+    expect(new URL(transcriptUrls[1]!).searchParams.get('cursor')).toBeTruthy();
+
+    // Reload: a fresh scope that again starts with the first page only.
+    await page.reload();
+    await expect(chapterHeading(page, 'Praga courtyard')).toBeVisible();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await expect(page.getByTestId('transcript-progress')).toHaveText('Showing 3 of 6 chapters.');
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    await expect(page.getByTestId('story-title')).toHaveText('The Last Delivery');
+
+    expect(posts).toEqual([]); // rereading created nothing and chose nothing
+    await page.context().close();
+  });
+
+  test('the completed reader links to the rereading route; the quiet ending rereads too', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await choose(page, 'Check the mailboxes by the stairwell', 'Behind the mailboxes');
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await choose(
+      page,
+      'Slip a delivery slip under the door and leave the parcel',
+      'A quiet delivery',
+    );
+
+    const posts = watchInteractivePosts(page);
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page).toHaveURL(TRANSCRIPT_URL);
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await expect(page.getByTestId('transcript-progress')).toHaveText('Showing 3 of 4 chapters.');
+
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(4);
+    await expect(page.getByRole('heading', { level: 3, name: 'A Quiet Delivery' })).toBeVisible();
+    await expect(page.getByTestId('transcript-progress')).toContainText('All 4 chapters');
+
+    await page.getByRole('link', { name: 'Back to the ending' }).click();
+    await expect(
+      page.getByRole('heading', { name: 'A Quiet Delivery', exact: true }),
+    ).toBeVisible();
+    expect(posts).toEqual([]);
+    await page.context().close();
+  });
+
+  test('an unfinished story explains that rereading comes after the ending; a foreign one is unavailable', async ({
+    browser,
+  }) => {
+    const owner = await registerFreshUser(browser);
+    const sessionId = await startStory(owner);
+    await owner.goto(`/dashboard/interactive/${sessionId}/transcript`);
+    await expect(
+      owner.getByRole('heading', { name: 'Rereading comes after the ending' }),
+    ).toBeVisible();
+    await expect(owner.getByTestId('transcript-chapter')).toHaveCount(0);
+    await owner.getByRole('link', { name: 'Continue the story' }).click();
+    await expect(
+      owner.getByRole('heading', { name: 'Praga courtyard', exact: true }),
+    ).toBeVisible();
+
+    const other = await registerFreshUser(browser);
+    await other.goto(`/dashboard/interactive/${sessionId}/transcript`);
+    await expect(other.getByRole('heading', { name: /isn.t available/ })).toBeVisible();
+    await other.goto('/dashboard/interactive/00000000-0000-4000-8000-0000000000aa/transcript');
+    await expect(other.getByRole('heading', { name: /isn.t available/ })).toBeVisible();
+    await owner.context().close();
+    await other.context().close();
+  });
+});
+
+test.describe('interactive story — rereading under browser-injected transport failures (not a real network fault)', () => {
+  test('a failed later page keeps the loaded chapters and retries the exact cursor', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await playExposedRoute(page);
+
+    const posts = watchInteractivePosts(page);
+    const cursors: Array<string | null> = [];
+    let failed = false;
+    await page.route(TRANSCRIPT_REQUEST, async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get('cursor');
+      cursors.push(cursor);
+      if (cursor !== null && !failed) {
+        failed = true;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 'SERVICE_UNAVAILABLE', message: 'down' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+
+    await page.getByRole('button', { name: 'Load more' }).click();
+    const problem = page.getByRole('alert').filter({ hasText: /couldn.t load the next chapters/i });
+    await expect(problem).toBeVisible();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3); // nothing discarded
+    await expect(page.getByTestId('transcript-progress')).toHaveText('Showing 3 of 6 chapters.');
+
+    await page.getByRole('button', { name: 'Try again' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    await expect(problem).toHaveCount(0);
+    await expect(page.getByTestId('transcript-progress')).toContainText('All 6 chapters');
+
+    // Page-two requests only (the first page has no cursor): the failed one, then the exact retry.
+    const pageTwo = cursors.filter((cursor) => cursor !== null);
+    expect(pageTwo).toHaveLength(2);
+    expect(pageTwo[1]).toBe(pageTwo[0]);
+    expect(posts).toEqual([]);
+    await page.context().close();
+  });
+
+  test('a session-metadata outage leaves the generic title and the chapters readable', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    await startStory(page);
+    await playExposedRoute(page);
+    await page.route(METADATA_URL, (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'SERVICE_UNAVAILABLE', message: 'down' }),
+      }),
+    );
+
+    await page.getByRole('link', { name: 'Read the story from the beginning' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(3);
+    await expect(page.getByTestId('story-title')).toHaveText('Interactive story');
+    await page.getByRole('button', { name: 'Load more' }).click();
+    await expect(page.getByTestId('transcript-chapter')).toHaveCount(6);
+    await page.context().close();
+  });
+});

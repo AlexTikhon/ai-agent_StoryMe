@@ -5,6 +5,7 @@ import type {
   InteractiveSessionMetadataDto,
   InteractiveSessionListDto,
   InteractiveSessionViewDto,
+  InteractiveTranscriptDto,
   SubmitInteractiveChoiceInput,
 } from '@book/types';
 import { apiFetch } from './client';
@@ -54,6 +55,25 @@ export const interactiveApi = {
     signal?: AbortSignal,
   ): Promise<InteractiveSessionMetadataDto> =>
     apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}/metadata`, { signal }),
+
+  /**
+   * One page of a *completed* session's transcript, oldest step first. Read-only; an
+   * unfinished session is answered with SESSION_NOT_COMPLETED. `cursor` is the opaque
+   * `nextCursor` of the previous page and must be resent unchanged to retry a page.
+   */
+  getTranscript: (
+    sessionId: string,
+    params: { limit?: number; cursor?: string | null } = {},
+    signal?: AbortSignal,
+  ): Promise<InteractiveTranscriptDto> => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.cursor) query.set('cursor', params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}/transcript${suffix}`, {
+      signal,
+    });
+  },
 
   /**
    * Artwork metadata for the scene at `expectedRevision`. Read-only; a different

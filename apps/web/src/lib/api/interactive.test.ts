@@ -122,6 +122,31 @@ describe('interactiveApi', () => {
     expect(init.signal).toBe(controller.signal);
   });
 
+  it('getTranscript GETs one page, with an optional limit and cursor', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockOk({ sessionId: 's1' }));
+    const controller = new AbortController();
+
+    await interactiveApi.getTranscript('s 1/x', {}, controller.signal);
+    await interactiveApi.getTranscript('s1', { limit: 3, cursor: 'abc_-123' });
+    await interactiveApi.getTranscript('s1', { limit: 3, cursor: null });
+
+    const calls = vi.mocked(fetch).mock.calls as [string, RequestInit][];
+    expect(calls[0]![0]).toBe(
+      'http://localhost:4000/api/interactive/sessions/s%201%2Fx/transcript',
+    );
+    expect(calls[0]![1].signal).toBe(controller.signal);
+    expect(calls[1]![0]).toBe(
+      'http://localhost:4000/api/interactive/sessions/s1/transcript?limit=3&cursor=abc_-123',
+    );
+    expect(calls[2]![0]).toBe(
+      'http://localhost:4000/api/interactive/sessions/s1/transcript?limit=3',
+    );
+    for (const [, init] of calls) {
+      expect(init.method).toBeUndefined();
+      expect(init.body).toBeUndefined();
+    }
+  });
+
   it('submitChoice POSTs the exact command', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockOk({ sessionId: 's1' }));
     const command = { choiceId: 'c-1', expectedRevision: 3, idempotencyKey: 'key-1' };

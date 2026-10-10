@@ -5,6 +5,8 @@ import type {
   InteractiveSessionMetadataDto,
   InteractiveSessionSummaryDto,
   InteractiveSessionViewDto,
+  InteractiveTranscriptDto,
+  InteractiveTranscriptStepDto,
 } from '@book/types';
 
 export const SESSION_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
@@ -98,6 +100,47 @@ export function makeMetadata(
     scenarioId: 'warsaw-last-delivery',
     scenarioVersion: 1,
     title: 'The Last Delivery',
+    ...overrides,
+  };
+}
+
+export function makeTranscriptStep(
+  revision: number,
+  completedRevision: number,
+  overrides: Partial<InteractiveTranscriptStepDto> = {},
+): InteractiveTranscriptStepDto {
+  const terminal = revision === completedRevision;
+  return {
+    revision,
+    scene: { id: `scene-${revision}`, title: `Scene ${revision}` },
+    narration: `Narration for revision ${revision}.`,
+    arrivedByChoiceLabel: revision === 0 ? null : `Choice into ${revision}`,
+    ending: terminal ? { title: 'A Quiet Delivery', summary: 'The parcel is delivered.' } : null,
+    ...overrides,
+  };
+}
+
+/**
+ * One transcript page holding revisions `from`..`to` of a story completed at
+ * `completedRevision`. By default the next cursor follows the page, or is null on the last.
+ */
+export function makeTranscriptPage(
+  from: number,
+  to: number,
+  completedRevision: number,
+  overrides: Partial<InteractiveTranscriptDto> = {},
+): InteractiveTranscriptDto {
+  const steps: InteractiveTranscriptStepDto[] = [];
+  for (let revision = from; revision <= to; revision += 1) {
+    steps.push(makeTranscriptStep(revision, completedRevision));
+  }
+  return {
+    sessionId: SESSION_ID,
+    scenarioId: 'warsaw-last-delivery',
+    scenarioVersion: 1,
+    completedRevision,
+    steps,
+    nextCursor: to < completedRevision ? `cursor-${to + 1}` : null,
     ...overrides,
   };
 }
