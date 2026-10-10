@@ -109,6 +109,19 @@ describe('interactiveApi', () => {
     expect(init.signal).toBe(controller.signal);
   });
 
+  it('getSessionMetadata GETs the session metadata, with no body or query', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockOk({ sessionId: 's1' }));
+    const controller = new AbortController();
+
+    await interactiveApi.getSessionMetadata('s 1/x', controller.signal);
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:4000/api/interactive/sessions/s%201%2Fx/metadata');
+    expect(init.method).toBeUndefined();
+    expect(init.body).toBeUndefined();
+    expect(init.signal).toBe(controller.signal);
+  });
+
   it('submitChoice POSTs the exact command', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(mockOk({ sessionId: 's1' }));
     const command = { choiceId: 'c-1', expectedRevision: 3, idempotencyKey: 'key-1' };

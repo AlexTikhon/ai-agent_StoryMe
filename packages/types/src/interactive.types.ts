@@ -98,6 +98,20 @@ export interface InteractiveSessionSummaryDto {
   updatedAt: string;
 }
 
+/**
+ * GET /api/interactive/sessions/:id/metadata response: display-only metadata of
+ * the session's exact pinned scenario version. Deliberately separate from
+ * `InteractiveSessionViewDto`, which is persisted per event and must not change
+ * shape retroactively.
+ */
+export interface InteractiveSessionMetadataDto {
+  sessionId: string;
+  scenarioId: string;
+  scenarioVersion: number;
+  /** Plain text. A generic title when the pinned version has no catalogue metadata. */
+  title: string;
+}
+
 /** GET /api/interactive/sessions?limit=&cursor= response, newest session first. */
 export interface InteractiveSessionListDto {
   sessions: InteractiveSessionSummaryDto[];

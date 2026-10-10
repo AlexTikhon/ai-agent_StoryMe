@@ -18,6 +18,7 @@ function setup() {
     getSession: vi.fn().mockResolvedValue({ ok: 'get' }),
     submitChoice: vi.fn().mockResolvedValue({ ok: 'choose' }),
     getPresentation: vi.fn().mockResolvedValue({ ok: 'presentation' }),
+    getSessionMetadata: vi.fn().mockResolvedValue({ ok: 'metadata' }),
   };
   return {
     service,
@@ -48,6 +49,9 @@ describe('InteractiveController', () => {
 
     await controller.presentation(USER, SESSION_ID, { expectedRevision: '3' });
     expect(service.getPresentation).toHaveBeenCalledWith(USER.id, SESSION_ID, 3);
+
+    await controller.metadata(USER, SESSION_ID, {});
+    expect(service.getSessionMetadata).toHaveBeenCalledWith(USER.id, SESSION_ID);
 
     const command = {
       choiceId: 'c-ask-caretaker',
@@ -83,6 +87,13 @@ describe('InteractiveController', () => {
     expect(() =>
       controller.presentation(USER, SESSION_ID, { expectedRevision: '0', userId: 'someone-else' }),
     ).toThrow(BadRequestException);
+    expect(() => controller.metadata(USER, 'not-a-uuid', {})).toThrow(BadRequestException);
+    expect(() => controller.metadata(USER, SESSION_ID, { userId: 'someone-else' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => controller.metadata(USER, SESSION_ID, { refresh: '1' })).toThrow(
+      BadRequestException,
+    );
     expect(() =>
       controller.choose(USER, SESSION_ID, {
         choiceId: 'c-ask-caretaker',
@@ -96,6 +107,7 @@ describe('InteractiveController', () => {
     expect(service.getSession).not.toHaveBeenCalled();
     expect(service.submitChoice).not.toHaveBeenCalled();
     expect(service.getPresentation).not.toHaveBeenCalled();
+    expect(service.getSessionMetadata).not.toHaveBeenCalled();
   });
 
   it('applies the configured request budgets to every endpoint', () => {
@@ -116,6 +128,19 @@ describe('InteractiveController', () => {
     expect(budget('findOne')).toEqual(read);
     expect(budget('list')).toEqual(read);
     expect(budget('presentation')).toEqual(read);
+    expect(budget('metadata')).toEqual(read);
+  });
+
+  it('marks session metadata as a private, uncacheable read', () => {
+    expect(
+      Reflect.getMetadata('__httpCode__', InteractiveController.prototype.metadata),
+    ).toBeUndefined();
+    expect(Reflect.getMetadata('__headers__', InteractiveController.prototype.metadata)).toEqual([
+      { name: 'Cache-Control', value: 'private, no-store' },
+    ]);
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.metadata)).toBe(
+      ':id/metadata',
+    );
   });
 
   it('marks presentation metadata as private and uncacheable', () => {

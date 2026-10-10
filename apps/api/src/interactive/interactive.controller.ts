@@ -11,7 +11,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { User } from '@prisma/client';
-import type { InteractivePresentationDto, InteractiveSessionListDto } from '@book/types';
+import type {
+  InteractivePresentationDto,
+  InteractiveSessionListDto,
+  InteractiveSessionMetadataDto,
+} from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { RateLimit } from '../rate-limit/rate-limit.decorator';
@@ -24,6 +28,7 @@ import {
   parseRequest,
   presentationQuerySchema,
   sessionIdSchema,
+  sessionMetadataQuerySchema,
   submitChoiceBodySchema,
 } from './requests';
 
@@ -90,6 +95,27 @@ export class InteractiveController {
     const sessionId = parseRequest(sessionIdSchema, id);
     const { expectedRevision } = parseRequest(presentationQuerySchema, query);
     return this.interactive.getPresentation(user.id, sessionId, expectedRevision);
+  }
+
+  /**
+   * Display metadata (title) of the session's pinned scenario version. Read-only
+   * and separate from the session view, whose stored responses must stay
+   * unchanged. Private, like the other per-user reads.
+   */
+  @Get(':id/metadata')
+  @Header('Cache-Control', 'private, no-store')
+  @RateLimit({
+    windowMsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  metadata(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Query() query: unknown,
+  ): Promise<InteractiveSessionMetadataDto> {
+    const sessionId = parseRequest(sessionIdSchema, id);
+    parseRequest(sessionMetadataQuerySchema, query);
+    return this.interactive.getSessionMetadata(user.id, sessionId);
   }
 
   @Post(':id/choices')

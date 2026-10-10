@@ -268,6 +268,109 @@ describe('Version-aware session creation and catalogue titles (real Postgres)', 
     );
   });
 
+  describe('session display metadata', () => {
+    it('titles a v1 session with the v1 title while v2 is the latest', async () => {
+      const userId = await kit.createUser();
+      const v1 = await create(userId, REAL_ID, 'meta-v1', 1);
+      const v2 = await create(userId, REAL_ID, 'meta-v2', 2);
+      const other = await create(userId, SECOND_ID, 'meta-other', 1);
+      const legacyId = await kit.seedLegacySession(userId);
+
+      expect(await multi.getSessionMetadata(userId, v1.sessionId)).toEqual({
+        sessionId: v1.sessionId,
+        scenarioId: REAL_ID,
+        scenarioVersion: 1,
+        title: `Title ${REAL_ID} v1`,
+      });
+      expect(await multi.getSessionMetadata(userId, v2.sessionId)).toMatchObject({
+        scenarioVersion: 2,
+        title: `Title ${REAL_ID} v2`,
+      });
+      expect(await multi.getSessionMetadata(userId, other.sessionId)).toMatchObject({
+        scenarioId: SECOND_ID,
+        title: `Title ${SECOND_ID} v1`,
+      });
+      expect(await multi.getSessionMetadata(userId, legacyId)).toMatchObject({
+        scenarioVersion: 1,
+        title: `Title ${REAL_ID} v1`,
+      });
+    });
+
+    it('falls back to the generic title when the pinned version has no metadata', async () => {
+      const userId = await kit.createUser();
+      const created = await create(userId, REAL_ID, 'meta-fallback', 1);
+      const sparse = new InteractiveService(
+        kit.prisma,
+        kit.narrator,
+        configWithCap(50),
+        registryMissingV1Metadata(),
+      );
+      expect(await sparse.getSessionMetadata(userId, created.sessionId)).toEqual({
+        sessionId: created.sessionId,
+        scenarioId: REAL_ID,
+        scenarioVersion: 1,
+        title: 'Interactive story',
+      });
+    });
+
+    it('answers a missing and a foreign session with the same error', async () => {
+      const ownerId = await kit.createUser();
+      const intruderId = await kit.createUser();
+      const created = await create(ownerId, REAL_ID, 'meta-foreign', 1);
+
+      const outcome = async (userId: string, sessionId: string) => {
+        try {
+          await multi.getSessionMetadata(userId, sessionId);
+        } catch (error) {
+          if (error instanceof HttpException) {
+            return { status: error.getStatus(), body: error.getResponse() };
+          }
+          throw error;
+        }
+        return null;
+      };
+      const missing = await outcome(ownerId, randomUUID());
+      expect(missing).toEqual({
+        status: 404,
+        body: expect.objectContaining({ code: 'SESSION_NOT_FOUND' }),
+      });
+      expect(await outcome(intruderId, created.sessionId)).toEqual(missing);
+    });
+
+    it('is read-only: no writes, no narration, and stored responses are untouched', async () => {
+      const userId = await kit.createUser();
+      const created = await create(userId, REAL_ID, 'meta-readonly', 1);
+      const choice = {
+        choiceId: 'c-ask-caretaker',
+        expectedRevision: 0,
+        idempotencyKey: 'meta-readonly-choice',
+      };
+      const chosen = await multi.submitChoice(userId, created.sessionId, choice);
+      const snapshot = async () =>
+        JSON.stringify({
+          session: await kit.prisma.interactiveSession.findUniqueOrThrow({
+            where: { id: created.sessionId },
+          }),
+          events: await kit.prisma.sessionEvent.findMany({
+            where: { sessionId: created.sessionId },
+            orderBy: { seq: 'asc' },
+          }),
+        });
+      const before = await snapshot();
+      const narrationCalls = kit.narrator.calls;
+
+      for (let i = 0; i < 3; i += 1) await multi.getSessionMetadata(userId, created.sessionId);
+
+      expect(await snapshot()).toBe(before);
+      expect(kit.narrator.calls).toBe(narrationCalls);
+      // Historical idempotent responses are exactly what they were.
+      expect(await create(userId, REAL_ID, 'meta-readonly', 1)).toEqual(created);
+      expect(await multi.submitChoice(userId, created.sessionId, choice)).toEqual(chosen);
+      expect(Object.keys(created)).not.toContain('title');
+      expect(Object.keys(chosen)).not.toContain('title');
+    });
+  });
+
   it('keeps an existing session on its pinned version when choosing', async () => {
     const userId = await kit.createUser();
     const created = await create(userId, REAL_ID, 'pinned-key', 1);

@@ -33,6 +33,9 @@ export const sessionIdSchema = z.string().uuid();
 /** The catalogue takes no parameters: any query key is rejected. */
 export const catalogueQuerySchema = z.object({}).strict();
 
+/** Session metadata takes no parameters either: any query key is rejected. */
+export const sessionMetadataQuerySchema = z.object({}).strict();
+
 /** `?expectedRevision=N`: digits only, no sign/leading zeros, required, no repeats or extra keys. */
 export const presentationQuerySchema = z
   .object({

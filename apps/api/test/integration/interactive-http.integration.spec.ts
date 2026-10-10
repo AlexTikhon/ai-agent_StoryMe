@@ -383,6 +383,104 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     });
   });
 
+  describe('session metadata endpoint', () => {
+    const start = async (userId: string, key: string) =>
+      (
+        await call('POST', '', userId, {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: key,
+        })
+      ).json;
+
+    it('returns only the four allowlisted fields, privately and uncacheable', async () => {
+      const userId = await newUser();
+      const created = await start(userId, 'http-meta-0001');
+      const id = created.sessionId;
+
+      const response = await call('GET', `/${id}/metadata`, userId);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(response.json).toEqual({
+        sessionId: id,
+        scenarioId: 'warsaw-last-delivery',
+        scenarioVersion: 1,
+        title: 'The Last Delivery',
+      });
+      for (const leaked of ['revision', 'scene', 'narration', 'choices', 'userId', 'status']) {
+        expect(response.text).not.toContain(leaked);
+      }
+    });
+
+    it('answers missing and foreign sessions with the identical 404', async () => {
+      const ownerId = await newUser();
+      const intruderId = await newUser();
+      const id = (await start(ownerId, 'http-meta-0002')).sessionId;
+
+      const missing = await call('GET', `/${randomUUID()}/metadata`, ownerId);
+      expect(missing.status).toBe(404);
+      expect(missing.json.code).toBe('SESSION_NOT_FOUND');
+      const foreign = await call('GET', `/${id}/metadata`, intruderId);
+      expect(foreign.status).toBe(404);
+      expect(stable(foreign.json)).toEqual(stable(missing.json));
+      expect(foreign.text).not.toContain('Last Delivery');
+      expect((await call('GET', `/${id}/metadata`, null)).status).toBe(403);
+    });
+
+    it('rejects a malformed id and any query parameter', async () => {
+      const userId = await newUser();
+      const id = (await start(userId, 'http-meta-0003')).sessionId;
+      for (const path of [
+        '/not-a-uuid/metadata',
+        `/${id}/metadata?x=1`,
+        `/${id}/metadata?userId=${randomUUID()}`,
+        `/${id}/metadata?expectedRevision=0`,
+      ]) {
+        const response = await call('GET', path, userId);
+        expect(response.status, path).toBe(400);
+        expect(response.json.code, path).toBe('INVALID_REQUEST');
+      }
+    });
+
+    it('is read-only and leaves historical idempotent responses unchanged', async () => {
+      const userId = await newUser();
+      const created = await start(userId, 'http-meta-0004');
+      const id = created.sessionId;
+      const command = {
+        choiceId: 'c-ask-caretaker',
+        expectedRevision: 0,
+        idempotencyKey: 'http-meta-key-0004',
+      };
+      const chosen = await call('POST', `/${id}/choices`, userId, command);
+      const snapshot = async () =>
+        JSON.stringify({
+          session: await prisma.interactiveSession.findUniqueOrThrow({ where: { id } }),
+          events: await prisma.sessionEvent.findMany({
+            where: { sessionId: id },
+            orderBy: { seq: 'asc' },
+          }),
+        });
+      const before = await snapshot();
+      const narrate = vi.spyOn(MockNarratorProvider.prototype, 'narrate');
+      try {
+        for (let i = 0; i < 3; i += 1) {
+          expect((await call('GET', `/${id}/metadata`, userId)).status).toBe(200);
+        }
+        expect(narrate).not.toHaveBeenCalled();
+      } finally {
+        narrate.mockRestore();
+      }
+      expect(await snapshot()).toBe(before);
+
+      const creationRetry = await call('POST', '', userId, {
+        scenarioId: 'warsaw-last-delivery',
+        idempotencyKey: 'http-meta-0004',
+      });
+      expect(creationRetry.json).toEqual(created);
+      expect((await call('POST', `/${id}/choices`, userId, command)).json).toEqual(chosen.json);
+      expect(Object.keys(created)).not.toContain('title');
+    });
+  });
+
   it('answers malformed input with the stable INVALID_REQUEST code', async () => {
     const userId = await newUser();
     const created = await call('POST', '', userId, {

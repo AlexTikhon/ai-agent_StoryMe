@@ -2,6 +2,7 @@ import type {
   CreateInteractiveSessionInput,
   InteractivePresentationDto,
   InteractiveScenarioCatalogueDto,
+  InteractiveSessionMetadataDto,
   InteractiveSessionListDto,
   InteractiveSessionViewDto,
   SubmitInteractiveChoiceInput,
@@ -43,6 +44,16 @@ export const interactiveApi = {
 
   getSession: (sessionId: string, signal?: AbortSignal): Promise<InteractiveSessionViewDto> =>
     apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}`, { signal }),
+
+  /**
+   * Display metadata (title) of the session's pinned scenario version. Read-only and
+   * separate from the session view, which is never enriched with it.
+   */
+  getSessionMetadata: (
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<InteractiveSessionMetadataDto> =>
+    apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}/metadata`, { signal }),
 
   /**
    * Artwork metadata for the scene at `expectedRevision`. Read-only; a different

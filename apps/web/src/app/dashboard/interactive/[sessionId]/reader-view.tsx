@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useRef } from 'react';
 import { SceneIllustration } from './scene-illustration';
 import type { useInteractiveReader } from './use-interactive-reader';
+import { useSessionMetadata } from './use-session-metadata';
 
 type Reader = ReturnType<typeof useInteractiveReader>;
 
@@ -66,6 +67,8 @@ function Problem({ children }: { children: React.ReactNode }) {
 
 export function InteractiveReaderView({ reader }: { reader: Reader }) {
   const { phase, view, command, syncRequired, syncing, syncError, notice } = reader;
+  // Cosmetic only: never gates any other part of the reader.
+  const { title: storyTitle } = useSessionMetadata(view);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const shownRevision = useRef<number | null>(null);
 
@@ -140,8 +143,11 @@ export function InteractiveReaderView({ reader }: { reader: Reader }) {
   return (
     <Frame>
       <article aria-labelledby="scene-title">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
-          The Last Delivery
+        <p
+          data-testid="story-title"
+          className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300"
+        >
+          {storyTitle}
         </p>
         <h1
           id="scene-title"

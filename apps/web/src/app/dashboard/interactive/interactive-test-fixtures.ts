@@ -2,6 +2,7 @@ import type {
   InteractiveScenarioCatalogueDto,
   InteractiveScenarioCatalogueEntryDto,
   InteractiveSessionListDto,
+  InteractiveSessionMetadataDto,
   InteractiveSessionSummaryDto,
   InteractiveSessionViewDto,
 } from '@book/types';
@@ -87,4 +88,16 @@ export function deferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+export function makeMetadata(
+  overrides: Partial<InteractiveSessionMetadataDto> = {},
+): InteractiveSessionMetadataDto {
+  return {
+    sessionId: SESSION_ID,
+    scenarioId: 'warsaw-last-delivery',
+    scenarioVersion: 1,
+    title: 'The Last Delivery',
+    ...overrides,
+  };
 }

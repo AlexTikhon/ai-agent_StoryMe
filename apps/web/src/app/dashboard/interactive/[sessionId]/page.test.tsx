@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useParams, useRouter } from 'next/navigation';
 import { ApiError } from '@/lib/api/client';
 import { interactiveApi } from '@/lib/api/interactive';
 import { useAuth } from '@/lib/auth/auth-context';
-import { SESSION_ID, deferred, makeView } from '../interactive-test-fixtures';
+import { SESSION_ID, deferred, makeMetadata, makeView } from '../interactive-test-fixtures';
 import InteractiveReaderPage from './page';
 
 vi.mock('next/navigation', () => ({ useParams: vi.fn(), useRouter: vi.fn() }));
@@ -25,12 +25,14 @@ vi.mock('@/lib/api/interactive', () => ({
     submitChoice: vi.fn(),
     // Illustrations are covered in scene-illustration.test.tsx; here they never arrive.
     getPresentation: vi.fn(() => new Promise(() => {})),
+    getSessionMetadata: vi.fn(),
   },
 }));
 
 const getSession = vi.mocked(interactiveApi.getSession);
 const submitChoice = vi.mocked(interactiveApi.submitChoice);
 const createSession = vi.mocked(interactiveApi.createSession);
+const getSessionMetadata = vi.mocked(interactiveApi.getSessionMetadata);
 const pushMock = vi.fn();
 
 beforeEach(() => {
@@ -45,6 +47,9 @@ beforeEach(() => {
   getSession.mockReset();
   submitChoice.mockReset();
   createSession.mockReset();
+  // Unless a test says otherwise, the title never arrives.
+  getSessionMetadata.mockReset();
+  getSessionMetadata.mockImplementation(() => new Promise(() => {}));
   pushMock.mockReset();
 });
 
@@ -213,5 +218,93 @@ describe('interactive reader page', () => {
     await userEvent.click(retry);
 
     expect(await screen.findByRole('heading', { name: 'Scene 0' })).toBeInTheDocument();
+  });
+
+  describe('reader title from session metadata', () => {
+    it('shows the generic title while metadata is pending, then the server title', async () => {
+      const gate = deferred<ReturnType<typeof makeMetadata>>();
+      getSessionMetadata.mockReturnValueOnce(gate.promise);
+      getSession.mockResolvedValueOnce(makeView(0));
+      render(<InteractiveReaderPage />);
+
+      expect(await screen.findByRole('heading', { name: 'Scene 0' })).toBeInTheDocument();
+      expect(screen.getByText('Interactive story')).toBeInTheDocument();
+      expect(screen.queryByText('The Last Delivery')).toBeNull();
+
+      gate.resolve(makeMetadata({ title: 'A Test-Only Story' }));
+      expect(await screen.findByText('A Test-Only Story')).toBeInTheDocument();
+      expect(screen.queryByText('Interactive story')).toBeNull();
+    });
+
+    it('requests the title of the pinned session identity from the authoritative view', async () => {
+      getSession.mockResolvedValueOnce(
+        makeView(0, { scenarioId: 'old-story', scenarioVersion: 1 }),
+      );
+      getSessionMetadata.mockResolvedValueOnce(
+        makeMetadata({ scenarioId: 'old-story', scenarioVersion: 1, title: 'Old Story v1' }),
+      );
+      render(<InteractiveReaderPage />);
+
+      expect(await screen.findByText('Old Story v1')).toBeInTheDocument();
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1);
+      expect(getSessionMetadata.mock.calls[0]![0]).toBe(SESSION_ID);
+    });
+
+    it('renders the title as escaped plain text', async () => {
+      getSession.mockResolvedValueOnce(makeView(0));
+      getSessionMetadata.mockResolvedValueOnce(
+        makeMetadata({ title: '<img src=x onerror="alert(1)">' }),
+      );
+      const { container } = render(<InteractiveReaderPage />);
+
+      expect(await screen.findByText('<img src=x onerror="alert(1)">')).toBeInTheDocument();
+      expect(container.querySelector('img')).toBeNull();
+    });
+
+    it('keeps choices usable and play going when metadata fails', async () => {
+      getSessionMetadata.mockRejectedValue(new ApiError(503, 'down', 'SERVICE_UNAVAILABLE'));
+      getSession.mockResolvedValueOnce(makeView(0));
+      render(<InteractiveReaderPage />);
+
+      const button = await screen.findByRole('button', { name: 'Choice A' });
+      await waitFor(() => expect(getSessionMetadata).toHaveBeenCalledTimes(1));
+      expect(button).toBeEnabled();
+      expect(screen.getByText('Interactive story')).toBeInTheDocument();
+
+      submitChoice.mockResolvedValueOnce(makeView(1));
+      await userEvent.click(button);
+      expect(await screen.findByRole('heading', { name: 'Scene 1' })).toBeInTheDocument();
+      expect(screen.getByText('Interactive story')).toBeInTheDocument();
+    });
+
+    it('keeps retries working while metadata is still pending', async () => {
+      getSession.mockResolvedValueOnce(makeView(0));
+      submitChoice.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      render(<InteractiveReaderPage />);
+      await userEvent.click(await screen.findByRole('button', { name: 'Choice A' }));
+      const retry = await screen.findByRole('button', { name: 'Retry choice' });
+
+      submitChoice.mockResolvedValueOnce(makeView(1));
+      getSession.mockResolvedValueOnce(makeView(1));
+      await userEvent.click(retry);
+      expect(await screen.findByRole('heading', { name: 'Scene 1' })).toBeInTheDocument();
+    });
+
+    it('does not refetch the title when the story advances', async () => {
+      getSession.mockResolvedValueOnce(makeView(0));
+      getSessionMetadata.mockResolvedValue(makeMetadata({ title: 'Stable Title' }));
+      render(<InteractiveReaderPage />);
+      await screen.findByText('Stable Title');
+
+      submitChoice.mockResolvedValueOnce(makeView(1));
+      await userEvent.click(screen.getByRole('button', { name: 'Choice A' }));
+      expect(await screen.findByRole('heading', { name: 'Scene 1' })).toBeInTheDocument();
+      submitChoice.mockResolvedValueOnce(makeView(2));
+      await userEvent.click(screen.getByRole('button', { name: 'Choice A' }));
+      expect(await screen.findByRole('heading', { name: 'Scene 2' })).toBeInTheDocument();
+
+      expect(screen.getByText('Stable Title')).toBeInTheDocument();
+      expect(getSessionMetadata).toHaveBeenCalledTimes(1);
+    });
   });
 });

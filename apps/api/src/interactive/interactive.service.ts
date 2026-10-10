@@ -48,6 +48,7 @@ import {
   type SubmitChoiceBody,
 } from './requests';
 import { projectPresentation } from './presentation/presentation';
+import { sessionMetadataSchema, type SessionMetadata } from './session-metadata';
 import { publishedScenarioRegistry, type ScenarioRegistry } from './scenarios';
 
 /** Injection token for the published scenario registry; defaults to the real one. */
@@ -267,6 +268,22 @@ export class InteractiveService {
     const view = await this.getSession(userId, sessionId);
     if (view.revision !== expectedRevision) throw revisionConflict();
     return projectPresentation(view);
+  }
+
+  /**
+   * Display title of the session's exact pinned (id, version). Ownership is
+   * resolved first; the title comes from the injected registry for that pinned
+   * identity, never from the latest version. Strictly read-only and independent
+   * of events, narration, providers and artwork.
+   */
+  async getSessionMetadata(userId: string, sessionId: string): Promise<SessionMetadata> {
+    const session = await this.loadOwned(userId, sessionId);
+    return sessionMetadataSchema.parse({
+      sessionId: session.id,
+      scenarioId: session.scenarioId,
+      scenarioVersion: session.scenarioVersion,
+      title: this.registry.title(session.scenarioId, session.scenarioVersion),
+    });
   }
 
   async submitChoice(

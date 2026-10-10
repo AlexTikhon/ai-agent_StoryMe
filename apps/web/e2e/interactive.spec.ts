@@ -7,6 +7,13 @@ const apiBaseUrl = 'http://127.0.0.1:4100/api';
 const loginEmail = 'verified-login@e2e.storyme.test';
 const password = 'StoryMeE2E1!';
 const SESSION_URL = /\/dashboard\/interactive\/[0-9a-f-]{36}$/;
+const METADATA_URL = /\/interactive\/sessions\/[0-9a-f-]{36}\/metadata$/;
+
+interface CatalogueEntry {
+  scenarioId: string;
+  scenarioVersion: number;
+  title: string;
+}
 
 async function login(page: Page): Promise<string> {
   await page.goto('/login');
@@ -130,6 +137,64 @@ test.describe('interactive story — real API journeys', () => {
     expect(createRequests).toHaveLength(2);
   });
 
+  test('starts the catalogue entry exact id/version and titles the reader from its metadata, across reload', async ({
+    page,
+  }) => {
+    await login(page);
+    const created = page.waitForResponse(
+      (r) => r.url() === `${apiBaseUrl}/interactive/sessions` && r.request().method() === 'POST',
+    );
+    const catalogue = page.waitForResponse(
+      (r) => r.url() === `${apiBaseUrl}/interactive/scenarios`,
+    );
+    await page.getByRole('link', { name: 'Interactive story' }).click();
+    const entry = (
+      (await (await catalogue).json()) as { scenarios: CatalogueEntry[] }
+    ).scenarios.find((e) => e.scenarioId === 'warsaw-last-delivery')!;
+    expect(entry).toBeTruthy();
+    const metadata = page.waitForResponse((r) => METADATA_URL.test(r.url()));
+    await page.getByRole('button', { name: 'Start story' }).click();
+
+    // The creation POST names exactly the catalogue entry's id and version.
+    const creation = await created;
+    const sent = JSON.parse(creation.request().postData() ?? '{}') as Record<string, unknown>;
+    expect(sent).toEqual({
+      scenarioId: entry.scenarioId,
+      scenarioVersion: entry.scenarioVersion,
+      idempotencyKey: expect.any(String),
+    });
+    const session = (await creation.json()) as {
+      sessionId: string;
+      scenarioId: string;
+      scenarioVersion: number;
+    };
+    expect(session).toMatchObject({
+      scenarioId: entry.scenarioId,
+      scenarioVersion: entry.scenarioVersion,
+    });
+    await expect(page).toHaveURL(SESSION_URL);
+
+    // The reader title is exactly what the metadata endpoint said, and it is not the session view's.
+    const first = (await (await metadata).json()) as Record<string, unknown>;
+    expect(first).toEqual({
+      sessionId: session.sessionId,
+      scenarioId: entry.scenarioId,
+      scenarioVersion: entry.scenarioVersion,
+      title: entry.title,
+    });
+    await expect(page.getByTestId('story-title')).toHaveText(first['title'] as string);
+
+    await choose(page, 'Check the mailboxes by the stairwell', 'Behind the mailboxes');
+    await expect(page.getByTestId('story-title')).toHaveText(first['title'] as string);
+
+    // Reload: a fresh metadata answer, the same title, the same session.
+    const reloaded = page.waitForResponse((r) => METADATA_URL.test(r.url()));
+    await page.reload();
+    expect(await (await reloaded).json()).toEqual(first);
+    await expect(page.getByRole('heading', { name: 'Behind the mailboxes' })).toBeVisible();
+    await expect(page.getByTestId('story-title')).toHaveText(first['title'] as string);
+  });
+
   test('shows the same unavailable screen for missing and foreign sessions', async ({
     page,
     browser,
@@ -211,6 +276,29 @@ test.describe('interactive story — browser-injected transport failures (not a 
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(((await response.json()) as { revision: number }).revision).toBe(1);
+  });
+
+  test('a session-metadata outage shows the generic title and play continues', async ({ page }) => {
+    await login(page);
+    let failures = 0;
+    await page.route(METADATA_URL, async (route) => {
+      failures += 1;
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'SERVICE_UNAVAILABLE', message: 'down' }),
+      });
+    });
+    await startStory(page);
+    await expect(page.getByTestId('story-title')).toHaveText('Interactive story');
+    await expect.poll(() => failures).toBe(1);
+
+    // Choices, retries and illustrations are unaffected by the title outage.
+    await expect(page.getByRole('img', { name: /rain-soaked courtyard/ })).toBeVisible();
+    await choose(page, 'Ask the caretaker where Tomasz is', "The caretaker's broom");
+    await choose(page, 'Climb to the fourth floor', 'Flat 4');
+    await expect(page.getByTestId('story-title')).toHaveText('Interactive story');
+    expect(failures).toBe(1); // scene changes did not refetch, and nothing retried on its own
   });
 });
 
@@ -302,7 +390,13 @@ test.describe('interactive story library — browser-injected transport failures
   }) => {
     const page = await registerFreshUser(browser);
     const bodies = await dropFirstCreationResponse(page);
+    const catalogue = page.waitForResponse(
+      (r) => r.url() === `${apiBaseUrl}/interactive/scenarios`,
+    );
     await page.getByRole('link', { name: 'Interactive story' }).click();
+    const entry = (
+      (await (await catalogue).json()) as { scenarios: CatalogueEntry[] }
+    ).scenarios.find((e) => e.scenarioId === 'warsaw-last-delivery')!;
 
     await page.getByRole('button', { name: 'Start story' }).click();
     await expect(page.getByRole('alert').filter({ hasText: /couldn.t confirm/i })).toBeVisible();
@@ -313,6 +407,12 @@ test.describe('interactive story library — browser-injected transport failures
     await expect(page.getByRole('heading', { name: 'Praga courtyard', exact: true })).toBeVisible();
     expect(bodies).toHaveLength(2);
     expect(bodies[1]).toBe(bodies[0]); // same body, same idempotency key
+    // ... and that body carries exactly the catalogue entry's id and version plus one key.
+    expect(JSON.parse(bodies[1]!)).toEqual({
+      scenarioId: entry.scenarioId,
+      scenarioVersion: entry.scenarioVersion,
+      idempotencyKey: expect.any(String),
+    });
     const sessionId = new URL(page.url()).pathname.split('/').at(-1)!;
 
     // The server holds exactly one session, and it is the one the retry opened.
