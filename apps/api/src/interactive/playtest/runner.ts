@@ -175,7 +175,11 @@ function isChoiceId(value: string): boolean {
 // ── Input contract (interactive mode) ───────────────────────────────────────
 
 export type LineRead =
-  { kind: 'line'; text: string } | { kind: 'oversized' } | { kind: 'eof' } | { kind: 'cancelled' };
+  | { kind: 'line'; text: string }
+  | { kind: 'oversized' }
+  | { kind: 'overflow' }
+  | { kind: 'eof' }
+  | { kind: 'cancelled' };
 
 export interface LineSource {
   next(): Promise<LineRead>;
@@ -402,6 +406,9 @@ export async function runInteractivePlaytest(options: InteractiveOptions): Promi
       const read = await input.next();
       if (read.kind === 'cancelled') {
         return run.result('CANCELLED', 'playtest was cancelled', null, rejected);
+      }
+      if (read.kind === 'overflow') {
+        return run.result('FAILED', 'input exceeded the read buffer limit', 'INPUT_LIMIT', rejected);
       }
       if (read.kind === 'eof') {
         return run.result('INCOMPLETE', 'input ended before an ending was reached', null, rejected);

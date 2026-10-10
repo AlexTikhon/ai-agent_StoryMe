@@ -3,126 +3,164 @@ import type { Readable } from 'node:stream';
 import type { LineRead, LineSource } from './runner';
 
 /**
- * Bounded, cancellable line reader over any Readable (a TTY, a pipe or a test
- * stream). It deliberately avoids `readline`: there is no interface object to
- * leak, an over-long line is discarded instead of buffered, at most a handful
- * of lines are ever queued (the stream is paused meanwhile), and `close()`
- * detaches every listener so the process can exit on its own.
+ * Bounded, cancellable, pull-based line reader over any Readable (a TTY, a pipe
+ * or a test stream). It deliberately avoids `readline`: there is no interface
+ * object to leak, an over-long line is discarded instead of buffered, and
+ * `close()` detaches every listener so the process can exit on its own.
+ *
+ * The stream stays paused unless a read is waiting. At most one received chunk
+ * (<= MAX_CHUNK_BYTES) plus an unterminated partial line (<= MAX_LINE_BYTES) is
+ * ever retained, and lines are split out of it only when `next()` asks, so no
+ * line queue exists to outgrow. A chunk above the bound is never buffered: it
+ * is reported as `overflow` once the lines before it have been handed out.
  */
 
 /** Longest line kept; anything longer is reported once as `oversized`. */
 export const MAX_LINE_BYTES = 256;
-const MAX_QUEUED_LINES = 16;
+/** Largest single chunk accepted (a pipe/TTY/file read is at most this). */
+export const MAX_CHUNK_BYTES = 64 * 1024;
+/** Hard cap on unparsed text held at once: one chunk plus one partial line. */
+export const MAX_RETAINED_BYTES = MAX_CHUNK_BYTES + MAX_LINE_BYTES;
 
 export function createLineSource(input: Readable, signal?: AbortSignal): LineSource {
   const decoder = new StringDecoder('utf8');
-  const queue: LineRead[] = [];
-  let partial = '';
+  let pending = '';
+  let pos = 0;
   let discarding = false;
+  let overflowed = false;
   let ended = false;
+  let closed = false;
   let cancelled = signal?.aborted ?? false;
   let waiter: ((read: LineRead) => void) | null = null;
 
-  const push = (read: LineRead): void => {
-    if (waiter) {
-      const resolve = waiter;
-      waiter = null;
-      resolve(read);
-    } else {
-      queue.push(read);
-    }
-  };
+  const retainedBytes = (): number => Buffer.byteLength(pending.slice(pos), 'utf8');
 
-  const takeLine = (text: string): void => {
-    if (discarding) {
-      // The tail of an oversized line: swallow it, then resume normally.
-      discarding = false;
-      return;
-    }
-    push({ kind: 'line', text: text.endsWith('\r') ? text.slice(0, -1) : text });
-  };
-
-  const consume = (chunk: string): void => {
-    let rest = chunk;
+  /** Splits the next line out of the retained text, or returns null if none is complete. */
+  const parseLine = (): LineRead | null => {
     for (;;) {
-      const newline = rest.indexOf('\n');
-      if (newline === -1) break;
-      const head = rest.slice(0, newline);
-      rest = rest.slice(newline + 1);
-      if (!discarding && Buffer.byteLength(partial + head, 'utf8') > MAX_LINE_BYTES) {
-        push({ kind: 'oversized' });
-        discarding = true;
+      const newline = pending.indexOf('\n', pos);
+      if (newline === -1) {
+        const rest = pending.slice(pos);
+        pending = '';
+        pos = 0;
+        if (discarding) return null;
+        if (Buffer.byteLength(rest, 'utf8') > MAX_LINE_BYTES) {
+          discarding = true;
+          return { kind: 'oversized' };
+        }
+        pending = rest;
+        return null;
       }
-      takeLine(partial + head);
-      partial = '';
+      const head = pending.slice(pos, newline);
+      pos = newline + 1;
+      if (discarding) {
+        // The tail of an oversized line: swallow it, then resume normally.
+        discarding = false;
+        continue;
+      }
+      if (Buffer.byteLength(head, 'utf8') > MAX_LINE_BYTES) return { kind: 'oversized' };
+      return { kind: 'line', text: head.endsWith('\r') ? head.slice(0, -1) : head };
     }
-    if (!discarding && Buffer.byteLength(partial + rest, 'utf8') > MAX_LINE_BYTES) {
-      push({ kind: 'oversized' });
-      discarding = true;
-      partial = '';
-    } else if (!discarding) {
-      partial += rest;
+  };
+
+  /** The next read if one is available right now; null means "wait for more input". */
+  const poll = (): LineRead | null => {
+    const line = parseLine();
+    if (line) return line;
+    if (overflowed) return { kind: 'overflow' };
+    if (ended) return { kind: 'eof' };
+    return null;
+  };
+
+  const settle = (read: LineRead): void => {
+    if (!waiter) return;
+    const resolve = waiter;
+    waiter = null;
+    resolve(read);
+  };
+
+  const serveWaiter = (): void => {
+    if (!waiter) return;
+    const read = poll();
+    if (read) {
+      settle(read);
+      input.pause();
     }
-    if (queue.length >= MAX_QUEUED_LINES) input.pause();
   };
 
   const finish = (): void => {
-    if (ended) return;
+    if (ended || closed) return;
     ended = true;
-    const tail = partial + decoder.end();
-    partial = '';
-    if (tail.length > 0 && !discarding) takeLine(tail);
-    if (waiter) {
-      const resolve = waiter;
-      waiter = null;
-      resolve({ kind: 'eof' });
+    // After an overflow the text behind the dropped chunk is unknown: the
+    // retained complete lines still flow, then `overflow` is reported.
+    if (!overflowed) {
+      pending = pending.slice(pos) + decoder.end();
+      pos = 0;
+      // A final unterminated line is parsed like any other.
+      if (pending.length > 0 && !pending.endsWith('\n')) pending += '\n';
     }
+    serveWaiter();
   };
 
   const onData = (chunk: Buffer | string): void => {
-    consume(typeof chunk === 'string' ? chunk : decoder.write(chunk));
-  };
-  const onAbort = (): void => {
-    cancelled = true;
-    if (waiter) {
-      const resolve = waiter;
-      waiter = null;
-      resolve({ kind: 'cancelled' });
+    if (overflowed) return;
+    const incoming = typeof chunk === 'string' ? Buffer.byteLength(chunk, 'utf8') : chunk.length;
+    if (incoming > MAX_CHUNK_BYTES || retainedBytes() + incoming > MAX_RETAINED_BYTES) {
+      overflowed = true;
+      input.pause();
+      // Unparsed lines before the overflow are still handed out first.
+      if (waiter) serveWaiter();
+      return;
     }
+    const text = typeof chunk === 'string' ? chunk : decoder.write(chunk);
+    pending = pos > 0 ? pending.slice(pos) + text : pending + text;
+    pos = 0;
+    if (waiter) serveWaiter();
+    else input.pause();
   };
+
+  const release = (): void => {
+    input.off('data', onData);
+    input.off('end', finish);
+    input.off('close', finish);
+    input.off('error', finish);
+    signal?.removeEventListener('abort', onAbort);
+    input.pause();
+    pending = '';
+    pos = 0;
+  };
+
+  function onAbort(): void {
+    cancelled = true;
+    release();
+    settle({ kind: 'cancelled' });
+  }
 
   input.on('data', onData);
   input.on('end', finish);
   input.on('close', finish);
   input.on('error', finish);
   signal?.addEventListener('abort', onAbort, { once: true });
+  // Pull-based: stay paused until a read is waiting.
+  input.pause();
+  if (cancelled) release();
 
   return {
     next(): Promise<LineRead> {
       if (cancelled) return Promise.resolve({ kind: 'cancelled' });
-      const queued = queue.shift();
-      if (queued) {
-        if (queue.length < MAX_QUEUED_LINES && !ended) input.resume();
-        return Promise.resolve(queued);
-      }
-      if (ended) return Promise.resolve({ kind: 'eof' });
+      if (closed) return Promise.resolve({ kind: 'eof' });
+      const read = poll();
+      if (read) return Promise.resolve(read);
       return new Promise<LineRead>((resolve) => {
         waiter = resolve;
+        input.resume();
       });
     },
     close(): void {
-      input.off('data', onData);
-      input.off('end', finish);
-      input.off('close', finish);
-      input.off('error', finish);
-      signal?.removeEventListener('abort', onAbort);
-      input.pause();
-      queue.length = 0;
-      if (waiter) {
-        const resolve = waiter;
-        waiter = null;
-        resolve({ kind: 'eof' });
-      }
+      if (closed) return;
+      closed = true;
+      release();
+      settle({ kind: 'eof' });
     },
   };
 }

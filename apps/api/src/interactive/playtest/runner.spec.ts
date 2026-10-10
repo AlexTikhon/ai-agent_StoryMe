@@ -445,6 +445,19 @@ describe('runInteractivePlaytest', () => {
     expect(input.asked).toBe(MAX_INPUT_LINES);
   });
 
+  it('fails with INPUT_LIMIT, not as end of input, when the line source overflows', async () => {
+    const input = fakeInput(['abc', { kind: 'overflow' }, '1']);
+    const result = await runInteractivePlaytest({
+      scenario: loadScenario(),
+      input,
+      out: sink().out,
+    });
+    expect(result.status).toBe('FAILED');
+    expect(result.failureCode).toBe('INPUT_LIMIT');
+    expect(result.rejectedInputs).toBe(1);
+    expect(input.asked).toBe(2);
+  });
+
   it('never prints locked choices, future scenes, flags, ids or hidden knowledge', async () => {
     const scenario = loadScenario();
     // Waited quietly: the "let Hanna repay" choice stays locked at the terminus.
