@@ -4,8 +4,11 @@ import {
   ScenarioValidationError,
   type ScenarioDefinition,
 } from '../domain/scenario-schema';
+import { createGuardedScenarioRegistry } from '../publication/guarded-registry';
+import { SCENARIO_APPROVALS } from './approvals';
 import { CATALOGUE_METADATA } from './catalogue-metadata';
-import { createScenarioRegistry, type ScenarioRegistry } from './registry';
+import { LEGACY_PUBLISHED_BASELINE } from './legacy-baseline';
+import type { ScenarioRegistry } from './registry';
 import warsawLastDeliveryV1 from './warsaw-last-delivery.v1.json';
 
 export { DEFAULT_SCENARIO_TITLE, createScenarioRegistry } from './registry';
@@ -33,10 +36,12 @@ const SCENARIOS: readonly ScenarioDefinition[] = [loadScenario(warsawLastDeliver
 export const WARSAW_LAST_DELIVERY_V1: ScenarioDefinition = SCENARIOS[0]!;
 
 /** The registry of real published content, validated at module load. */
-export const publishedScenarioRegistry: ScenarioRegistry = createScenarioRegistry(
-  SCENARIOS,
-  CATALOGUE_METADATA,
-);
+export const publishedScenarioRegistry: ScenarioRegistry = createGuardedScenarioRegistry({
+  definitions: SCENARIOS,
+  metadata: CATALOGUE_METADATA,
+  approvals: SCENARIO_APPROVALS,
+  legacyBaseline: LEGACY_PUBLISHED_BASELINE,
+});
 
 export function getScenario(id: string, version: number): ScenarioDefinition | undefined {
   return publishedScenarioRegistry.get(id, version);

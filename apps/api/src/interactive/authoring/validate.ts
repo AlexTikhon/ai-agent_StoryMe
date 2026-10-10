@@ -395,10 +395,25 @@ export function validateCandidate(raw: unknown, context: ValidationContext): Val
   }
   if (identity.length > 0) return fail('identity', identity, rawSha256);
 
+  return validateNormalizedScenario(normalized.candidate, rawSha256, analyze);
+}
+
+/**
+ * Stages 3-6 for an already NORMALIZED runtime candidate: strict runtime schema
+ * and structural checks, authoring format, exhaustive play analysis and witness
+ * routes. Shared by the provider path (after wire normalization) and the
+ * read-only publication preflight (which reads stored runtime definitions).
+ * It does not accept the provider wire format and does not check identity.
+ */
+export function validateNormalizedScenario(
+  normalized: unknown,
+  rawSha256: string | null,
+  analyze: typeof analyzeScenario = analyzeScenario,
+): ValidationOutcome {
   // 3. Strict runtime schema + existing structural checks.
   let scenario: ScenarioDefinition;
   try {
-    scenario = parseScenarioDefinition(normalized.candidate);
+    scenario = parseScenarioDefinition(normalized);
   } catch (error) {
     const issues =
       error instanceof ScenarioValidationError ? error.issues : ['candidate failed validation'];

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseScenarioDefinition } from '../domain/scenario-schema';
 import { DRAFTS_DIR_NAME, validateDraftsRoot, writeRunArtifacts } from './artifacts';
+import { checkApproval, buildPendingApproval } from '../publication/approval';
 import { runAuthoring } from './pipeline';
 import { MockScenarioDraftProvider } from './provider';
 import { ScriptedDraftProvider } from './scripted-provider';
@@ -33,6 +34,7 @@ describe('writeRunArtifacts', () => {
       '20261009T120000Z-warsaw-last-tram-v1-aaaa1111--review-required',
     );
     expect(readdirSync(written.dir).sort()).toEqual([
+      'approval-template.json',
       'review-report.md',
       'validated-candidate.json',
       'validation-report.json',
@@ -49,6 +51,27 @@ describe('writeRunArtifacts', () => {
     );
     expect(report).toMatchObject({ status: 'REVIEW_REQUIRED', approved: false });
     expect(report.candidate.hash).toBe(result.candidateHash);
+
+    // The template is pending and attests nothing; it never becomes an approval by itself.
+    const template = JSON.parse(
+      readFileSync(path.join(written.dir, 'approval-template.json'), 'utf8'),
+    );
+    expect(template).toEqual(
+      buildPendingApproval({
+        id: 'warsaw-last-tram',
+        version: 1,
+        candidateHash: result.candidateHash,
+      }),
+    );
+    expect(template).toMatchObject({ decision: 'pending', reviewer: null, reviewedAt: null });
+    expect(Object.values(template.checklist.items).every((v) => v === false)).toBe(true);
+    expect(
+      checkApproval(
+        template,
+        { id: 'warsaw-last-tram', version: 1, candidateHash: result.candidateHash },
+        NOW,
+      ),
+    ).toMatchObject({ ok: false, code: 'APPROVAL_PENDING' });
   });
 
   it('writes no candidate file for a rejected run, only a labelled failure report', async () => {

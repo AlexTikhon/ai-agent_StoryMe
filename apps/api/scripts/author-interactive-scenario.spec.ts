@@ -39,6 +39,7 @@ describe('author-interactive-scenario (mock mode, end to end)', () => {
     expect(runs[0]).toMatch(/^\d{8}T\d{6}Z-warsaw-last-tram-v1-[0-9a-f]{8}--review-required$/);
     const dir = path.join(draftsRoot, runs[0]!);
     expect(readdirSync(dir).sort()).toEqual([
+      'approval-template.json',
       'review-report.md',
       'validated-candidate.json',
       'validation-report.json',

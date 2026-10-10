@@ -111,7 +111,7 @@ Everything is written under one git-ignored directory, `apps/api/scenario-drafts
 
 | Directory suffix    | Meaning                                  | Files                                                                    |
 | ------------------- | ---------------------------------------- | ------------------------------------------------------------------------ |
-| `--review-required` | mechanically valid, awaiting a human     | `validated-candidate.json`, `validation-report.json`, `review-report.md` |
+| `--review-required` | mechanically valid, awaiting a human     | `validated-candidate.json`, `validation-report.json`, `review-report.md`, `approval-template.json` (pending) |
 | `--rejected`        | content failed validation (after repair) | `run-report.json` only — **no candidate file**                           |
 | `--stopped`         | provider/transport stop                  | `run-report.json` only                                                   |
 | `.incomplete`       | crashed or interrupted run — ignore it   | partial                                                                  |
@@ -127,13 +127,39 @@ Everything is written under one git-ignored directory, `apps/api/scenario-drafts
 
 Each step is a deliberate human action, in this order. Mechanical success (`REVIEW_REQUIRED`, a green validation run, passing tests) is **never** approval and does not replace step 1.
 
-1. **Editorial review of the exact candidate.** A person reviews the specific candidate (identified by its id, version and hash in the review report), prose included, and records their approval against that hash. Any later edit makes it a different candidate and restarts review.
-2. **Mechanical revalidation.** The approved definition is run through `loadScenario` / the full validation pipeline again, unchanged, to confirm it is still structurally and playably valid.
+1. **Editorial review of the exact candidate.** A person reviews the specific candidate (identified by its id, version and hash in the review report), prose included, and records their approval against that hash in an **approval record** (below). Any later edit makes it a different candidate and restarts review.
+2. **Mechanical revalidation (preflight).** `pnpm preflight:interactive --candidate <validated-candidate.json> --approval <approval.json>` re-runs the whole pipeline on the stored runtime definition (schema, authoring format, bounded play analysis, witness-route replay, narration checks), recomputes the canonical hash, rejects an already-published id/version, and checks the approval. It is read-only and prints `PUBLICATION_PREFLIGHT_PASSED` or `PUBLICATION_PREFLIGHT_FAILED [CODE]` (exit 0 / 1; 2 for usage errors).
 3. **Immutable versioned definition.** The approved JSON is committed as `scenarios/<id>.v<N>.json`. Published definitions are append-only: a change is a new version, never an edit.
-4. **Explicit source registration.** The definition is added to the `SCENARIOS` list in `scenarios/index.ts` (with tests and, optionally, a presentation pack). This static list is the publication authority.
+4. **Explicit source registration.** The definition is added to the `SCENARIOS` list in `scenarios/index.ts`, **and the approval record to `SCENARIO_APPROVALS` in `scenarios/approvals.ts`** (with tests and, optionally, a presentation pack). This static list is the publication authority.
 5. **Catalogue metadata.** A hand-written `title` and spoiler-free `synopsis` for that exact (id, version) are added to `scenarios/catalogue-metadata.ts`. The registry refuses to load without metadata for the latest version, refuses metadata for anything unregistered, and keeps it out of the definition so its hash is unaffected.
 
 Until step 4 a scenario cannot be started, and until step 5 the app will not boot with it registered. "The Last Tram" (`warsaw-last-tram` v1) has completed none of these steps: it stays `REVIEW_REQUIRED`, unregistered, absent from `GET /api/interactive/scenarios`, and rejected by session creation.
+
+### Approval records
+
+Successful authoring writes an extra `approval-template.json` beside the review artifacts. It is **PENDING**: no reviewer, no review timestamp, every checklist item `false`. Tooling never writes an approved record. A person completes it by hand:
+
+```json
+{
+  "schemaVersion": "scenario-approval/v1",
+  "scenario": { "id": "...", "version": 1 },
+  "candidateHash": "<canonical hash from the review report>",
+  "decision": "pending | approved | rejected",
+  "reviewer": "<identifier>",
+  "reviewedAt": "2026-01-31T09:30:00Z",
+  "checklist": { "version": "editorial-checklist/v1", "items": { "unannotated-secrets": true, "...": true } }
+}
+```
+
+An approval counts only when: the record is strict (unknown fields, unsupported record/checklist versions and malformed values are rejected); scenario id, version and `candidateHash` equal the candidate's (the hash is `hashScenarioDefinition`, canonical over the parsed definition, so reformatting or key order never matters while any prose or effect edit changes it); `decision` is `approved`; `reviewer` is a non-empty single-line identifier; `reviewedAt` is a real ISO-8601 UTC timestamp that is not in the future; and every checklist item is `true`. Failure codes: `APPROVAL_MISSING`, `APPROVAL_MALFORMED`, `APPROVAL_UNSUPPORTED_VERSION`, `APPROVAL_IDENTITY_MISMATCH`, `APPROVAL_HASH_MISMATCH`, `APPROVAL_PENDING`, `APPROVAL_REJECTED`, `APPROVAL_REVIEWER_INVALID`, `APPROVAL_TIMESTAMP_INVALID`, `APPROVAL_CHECKLIST_INCOMPLETE`; preflight adds `CANDIDATE_UNREADABLE|TOO_LARGE|NOT_JSON|INVALID`, `APPROVAL_UNREADABLE|TOO_LARGE|NOT_JSON` and `IDENTITY_ALREADY_PUBLISHED`.
+
+**What this is not.** A record is a human-authored attestation. It is not an authenticated identity, a signature, or evidence that prose quality was verified by software; anyone with repository access can write one. Its value is that publication requires a deliberate, reviewable, hash-bound statement in source control rather than a green mechanical run.
+
+### Registration guard and the legacy baseline
+
+The real registry (`scenarios/index.ts`) is composed through `createGuardedScenarioRegistry`: every definition must be covered by exactly one matching approved record in `SCENARIO_APPROVALS`, otherwise the module throws `PublicationGuardError` at load and the application does not start. The injectable `createScenarioRegistry` used by tests is unchanged.
+
+`warsaw-last-delivery@1` was published before approval records existed. It is pinned in `scenarios/legacy-baseline.ts` by exact id, version **and canonical hash**, labelled `EXISTING_PUBLISHED_CONTENT`; no retrospective human approval is claimed. The exception does not extend to an edited copy (`LEGACY_BASELINE_HASH_MISMATCH`), another scenario or a new version, which all need a real approval.
 
 ## Offline evaluation
 

@@ -32,7 +32,8 @@
     "eval:story:offline": "pnpm --filter @book/api eval:story:offline",
     "eval:interactive:offline": "pnpm --filter @book/api eval:interactive:offline",
     "eval:interactive:authoring:offline": "pnpm --filter @book/api eval:interactive:authoring:offline",
-    "author:interactive": "pnpm --filter @book/api author:interactive"
+    "author:interactive": "pnpm --filter @book/api author:interactive",
+    "preflight:interactive": "pnpm --filter @book/api preflight:interactive"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.5.0",

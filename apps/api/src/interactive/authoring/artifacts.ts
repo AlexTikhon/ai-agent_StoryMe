@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { lstatSync, mkdirSync, renameSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { buildPendingApproval } from '../publication/approval';
 import { buildFailureReport, buildValidationReport, renderReviewReport } from './review';
 import type { AuthoringResult } from './pipeline';
 
@@ -11,7 +12,8 @@ import type { AuthoringResult } from './pipeline';
  * A run is written to `<run>.incomplete/` and only renamed to its final,
  * status-bearing name once every file is on disk, so a failed or interrupted run
  * can never be mistaken for a complete one:
- *   <run>--review-required/  validated-candidate.json, validation-report.json, review-report.md
+ *   <run>--review-required/  validated-candidate.json, validation-report.json, review-report.md,
+ *                            approval-template.json (PENDING; a human completes it, tooling never does)
  *   <run>--rejected/         run-report.json   (no candidate file)
  *   <run>--stopped/          run-report.json   (no candidate file)
  * Nothing is ever written to public assets or the published scenario directory.
@@ -108,6 +110,16 @@ export function writeRunArtifacts(options: {
           ['validated-candidate.json', json(result.scenario)],
           ['validation-report.json', json(buildValidationReport(result))],
           ['review-report.md', renderReviewReport(result)],
+          [
+            'approval-template.json',
+            json(
+              buildPendingApproval({
+                id: result.scenario.id,
+                version: result.scenario.version,
+                candidateHash: result.candidateHash,
+              }),
+            ),
+          ],
         ]
       : [['run-report.json', json(buildFailureReport(result))]];
 

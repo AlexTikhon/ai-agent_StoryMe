@@ -40,6 +40,7 @@
     "eval:interactive:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-interactive-offline.ts",
     "eval:interactive:authoring:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-interactive-authoring-offline.ts",
     "author:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/author-interactive-scenario.ts",
+    "preflight:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-interactive-publication.ts",
     "eval:story:openai": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts openai"
   },
   "dependencies": {
