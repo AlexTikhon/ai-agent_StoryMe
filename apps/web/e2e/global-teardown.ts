@@ -14,6 +14,9 @@ export default function globalTeardown(): void {
   );
 
   if (result.status !== 0) {
-    throw new Error('Failed to clean up disposable StoryMe E2E fixtures.');
+    const reason = result.error
+      ? result.error.message
+      : `exit ${result.status ?? 'unknown'}${result.signal ? ` (${result.signal})` : ''}`;
+    throw new Error(`Failed to clean up disposable StoryMe E2E fixtures: ${reason}.`);
   }
 }
