@@ -14,6 +14,12 @@ import { NarrationRejectedError } from './narrator/narrator';
 export const sessionNotFound = () =>
   new NotFoundException({ code: 'SESSION_NOT_FOUND', message: 'Session not found' });
 
+export const sessionNotCompleted = () =>
+  new ConflictException({
+    code: 'SESSION_NOT_COMPLETED',
+    message: 'The story has not ended yet',
+  });
+
 export const revisionConflict = () =>
   new ConflictException({
     code: 'REVISION_CONFLICT',

@@ -400,3 +400,16 @@ pnpm --filter @book/web test
 - The reader page header still shows the fixed text "The Last Delivery": the session view DTO (and its stored responses) has no title, and adding one was out of scope. It must be addressed before a second scenario is published.
 - Catalogue entries are one per scenario (latest version only); there is no way to start an older published version from the UI, only through the API.
 - Title and synopsis are English-only (`language` is currently always `en`); there is no localisation, ordering or featured-story control beyond sort-by-id.
+
+## Phase 9.1: completed-session transcript API
+
+`GET /api/interactive/sessions/:id/transcript?limit=&cursor=` returns the path a player actually completed, oldest step first. API only; no web UI yet.
+
+- **Access:** authenticated, owner-only, the existing read rate limit, `Cache-Control: private, no-store`. Missing and foreign sessions both return the same `404 SESSION_NOT_FOUND`; a session that has not reached an ending returns `409 SESSION_NOT_COMPLETED` (judged from the stored response of its terminal event).
+- **Query:** `limit` is digits only, default 10, maximum 25. `cursor` is opaque, at most 200 characters, and is bound to the session id and the terminal revision; a malformed, forged, oversized, repeated or cross-session cursor is `400 INVALID_REQUEST`. Unknown parameters are rejected.
+- **Response** (`InteractiveTranscriptDto` in `@book/types`): `{ sessionId, scenarioId, scenarioVersion, completedRevision, steps: [{ revision, scene: { id, title }, narration, arrivedByChoiceLabel, ending: null | { title, summary } }], nextCursor }`. `arrivedByChoiceLabel` is `null` at revision 0; for later steps it is the label of the accepted `ChoiceMade` choice as listed in the **previous stored view's** choices. Only the terminal step has an `ending`. No payloads, hashes, idempotency keys, flags, NPC knowledge, player state or unselected choices are returned.
+- **Stored responses are authoritative.** Steps are built only from the immutable public response saved on each `SessionEvent`. The scenario registry, narrator and session state are not consulted, so later template or scenario edits never change a transcript. The endpoint performs no writes.
+- **Integrity:** event type and version, payload schema, contiguous sequence, response identity (session, revision, scenario), the choice reference (offered by the previous view, taken from that view's scene) and the ending state are all checked. Any missing or inconsistent record fails the request with `500 SESSION_STATE_INVALID`; steps are never skipped. Only the pages being read are validated, not the whole history.
+- **Cost:** one terminal-event read plus one range read of the page and its predecessor (at most 26 rows, only `seq`, `type`, `schemaVersion`, `payload`, `response`). The next-page decision uses the terminal revision, so there is no lookahead read.
+
+Tests: `src/interactive/transcript.spec.ts` (pure builder), `requests.spec.ts`, `interactive.controller.spec.ts`, and `test/integration/interactive-transcript.integration.spec.ts` plus the transcript block of `interactive-http.integration.spec.ts` (real Postgres).

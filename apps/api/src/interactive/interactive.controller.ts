@@ -15,6 +15,7 @@ import type {
   InteractivePresentationDto,
   InteractiveSessionListDto,
   InteractiveSessionMetadataDto,
+  InteractiveTranscriptDto,
 } from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -30,6 +31,7 @@ import {
   sessionIdSchema,
   sessionMetadataQuerySchema,
   submitChoiceBodySchema,
+  transcriptQuerySchema,
 } from './requests';
 
 /**
@@ -116,6 +118,30 @@ export class InteractiveController {
     const sessionId = parseRequest(sessionIdSchema, id);
     parseRequest(sessionMetadataQuerySchema, query);
     return this.interactive.getSessionMetadata(user.id, sessionId);
+  }
+
+  /**
+   * The path a completed session actually took, rebuilt from the public
+   * responses stored on its events. Read-only; refused (409) while the story is
+   * still in progress so it cannot be used to peek ahead or around the reader.
+   */
+  @Get(':id/transcript')
+  @Header('Cache-Control', 'private, no-store')
+  @RateLimit({
+    windowMsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  transcript(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Query() query: unknown,
+  ): Promise<InteractiveTranscriptDto> {
+    const sessionId = parseRequest(sessionIdSchema, id);
+    return this.interactive.getTranscript(
+      user.id,
+      sessionId,
+      parseRequest(transcriptQuerySchema, query),
+    );
   }
 
   @Post(':id/choices')

@@ -481,6 +481,137 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     });
   });
 
+  describe('transcript endpoint', () => {
+    const ROUTE = ['c-ask-caretaker', 'c-climb-from-caretaker', 'c-leave-parcel'];
+
+    async function finished(userId: string, key: string) {
+      let view = (
+        await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery', idempotencyKey: key })
+      ).json;
+      const sessionId = view.sessionId;
+      for (const [i, choiceId] of ROUTE.entries()) {
+        view = (
+          await call('POST', `/${sessionId}/choices`, userId, {
+            choiceId,
+            expectedRevision: view.revision,
+            idempotencyKey: `${key}-c${i}`,
+          })
+        ).json;
+      }
+      return sessionId;
+    }
+
+    it('pages the completed path privately and uncacheable', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-tr-0001');
+
+      const first = await call('GET', `/${id}/transcript?limit=3`, userId);
+      expect(first.status).toBe(200);
+      expect(first.headers.get('cache-control')).toBe('private, no-store');
+      const firstBody = first.json as unknown as {
+        steps: Array<{ revision: number; arrivedByChoiceLabel: string | null }>;
+        nextCursor: string;
+        completedRevision: number;
+      };
+      expect(firstBody.completedRevision).toBe(3);
+      expect(firstBody.steps.map((s) => s.revision)).toEqual([0, 1, 2]);
+      expect(firstBody.steps[0]!.arrivedByChoiceLabel).toBeNull();
+      expect(firstBody.steps[1]!.arrivedByChoiceLabel).toEqual(expect.any(String));
+
+      const second = await call(
+        'GET',
+        `/${id}/transcript?limit=3&cursor=${firstBody.nextCursor}`,
+        userId,
+      );
+      expect(second.status).toBe(200);
+      const secondBody = second.json as unknown as {
+        steps: Array<{ revision: number }>;
+        nextCursor: null;
+      };
+      expect(secondBody.steps.map((s) => s.revision)).toEqual([3]);
+      expect(secondBody.nextCursor).toBeNull();
+
+      const defaults = await call('GET', `/${id}/transcript`, userId);
+      expect((defaults.json as unknown as { steps: unknown[] }).steps).toHaveLength(4);
+      for (const leaked of [
+        'stateHash',
+        'payload',
+        'idempotency',
+        'requestHash',
+        'choices',
+        'knowledge',
+      ]) {
+        expect(defaults.text).not.toContain(leaked);
+      }
+    });
+
+    it('answers missing and foreign sessions with the identical 404, and unauthenticated with a refusal', async () => {
+      const ownerId = await newUser();
+      const intruderId = await newUser();
+      const id = await finished(ownerId, 'http-tr-0002');
+
+      const missing = await call('GET', `/${randomUUID()}/transcript`, ownerId);
+      const foreign = await call('GET', `/${id}/transcript`, intruderId);
+      expect(missing.status).toBe(404);
+      expect(foreign.status).toBe(404);
+      expect(missing.json.code).toBe('SESSION_NOT_FOUND');
+      expect(stable(foreign.json)).toEqual(stable(missing.json));
+      expect((await call('GET', `/${id}/transcript`, null)).status).toBe(403);
+    });
+
+    it('answers an in-progress session with 409 SESSION_NOT_COMPLETED', async () => {
+      const userId = await newUser();
+      const created = (
+        await call('POST', '', userId, {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: 'http-tr-0003',
+        })
+      ).json;
+      const response = await call('GET', `/${created.sessionId}/transcript`, userId);
+      expect(response.status).toBe(409);
+      expect(response.json.code).toBe('SESSION_NOT_COMPLETED');
+    });
+
+    it('rejects malformed queries and cross-session cursors with INVALID_REQUEST', async () => {
+      const userId = await newUser();
+      const a = await finished(userId, 'http-tr-0004');
+      const b = await finished(userId, 'http-tr-0005');
+      const cursorA = (
+        (await call('GET', `/${a}/transcript?limit=1`, userId)).json as unknown as {
+          nextCursor: string;
+        }
+      ).nextCursor;
+
+      for (const bad of [
+        'limit=0',
+        'limit=26',
+        'limit=abc',
+        'limit=2&limit=3',
+        'cursor=%21%21',
+        `cursor=${'a'.repeat(201)}`,
+        'userId=someone-else',
+        `cursor=${cursorA}&cursor=${cursorA}`,
+      ]) {
+        const response = await call('GET', `/${a}/transcript?${bad}`, userId);
+        expect(response.status, bad).toBe(400);
+        expect(response.json.code, bad).toBe('INVALID_REQUEST');
+      }
+      const crossed = await call('GET', `/${b}/transcript?cursor=${cursorA}`, userId);
+      expect(crossed.status).toBe(400);
+      expect(crossed.json.code).toBe('INVALID_REQUEST');
+      expect((await call('GET', '/not-a-uuid/transcript', userId)).status).toBe(400);
+    });
+
+    it('reports corrupt stored history as SESSION_STATE_INVALID without echoing details', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-tr-0006');
+      await prisma.sessionEvent.delete({ where: { sessionId_seq: { sessionId: id, seq: 1 } } });
+      const response = await call('GET', `/${id}/transcript`, userId);
+      expect(response.status).toBe(500);
+      expect(response.json.code).toBe('SESSION_STATE_INVALID');
+    });
+  });
+
   it('answers malformed input with the stable INVALID_REQUEST code', async () => {
     const userId = await newUser();
     const created = await call('POST', '', userId, {

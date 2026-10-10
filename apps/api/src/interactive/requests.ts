@@ -99,6 +99,67 @@ export const listSessionsQuerySchema = z
   .strict()
   .transform((q) => ({ limit: q.limit ?? DEFAULT_LIST_LIMIT, cursor: q.cursor ?? null }));
 
+export const DEFAULT_TRANSCRIPT_LIMIT = 10;
+export const MAX_TRANSCRIPT_LIMIT = 25;
+
+/**
+ * Decoded transcript position. Bound to the session it was issued for and the
+ * terminal revision it was issued against, so it cannot be replayed on another
+ * session or on a session that has since changed shape.
+ */
+export interface TranscriptCursor {
+  sessionId: string;
+  completedRevision: number;
+  /** Revision of the first step of the page this cursor opens (1..completedRevision). */
+  nextRevision: number;
+}
+
+const transcriptCursorPayloadSchema = z
+  .object({
+    s: z.string().uuid(),
+    r: z.number().int().min(1).max(1_000_000),
+    n: z.number().int().min(1),
+  })
+  .strict()
+  .refine((p) => p.n <= p.r);
+
+export function encodeTranscriptCursor(cursor: TranscriptCursor): string {
+  return Buffer.from(
+    JSON.stringify({ s: cursor.sessionId, r: cursor.completedRevision, n: cursor.nextRevision }),
+  ).toString('base64url');
+}
+
+const transcriptCursor = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,200}$/)
+  .transform((raw, ctx): TranscriptCursor => {
+    try {
+      const parsed = transcriptCursorPayloadSchema.parse(
+        JSON.parse(Buffer.from(raw, 'base64url').toString()),
+      );
+      return { sessionId: parsed.s, completedRevision: parsed.r, nextRevision: parsed.n };
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid cursor' });
+      return z.NEVER;
+    }
+  });
+
+/** `?limit=&cursor=`: digits only (1-25), repeated or unknown params rejected. */
+export const transcriptQuerySchema = z
+  .object({
+    limit: z
+      .string()
+      .regex(/^[1-9][0-9]?$/)
+      .transform(Number)
+      .refine((n) => n <= MAX_TRANSCRIPT_LIMIT)
+      .optional(),
+    cursor: transcriptCursor.optional(),
+  })
+  .strict()
+  .transform((q) => ({ limit: q.limit ?? DEFAULT_TRANSCRIPT_LIMIT, cursor: q.cursor ?? null }));
+
+export type TranscriptQuery = z.output<typeof transcriptQuerySchema>;
+
 export type ListSessionsQuery = z.output<typeof listSessionsQuerySchema>;
 export type CreateSessionBody = z.infer<typeof createSessionBodySchema>;
 
@@ -117,13 +178,13 @@ export function createSessionRequestHash(
 }
 export type SubmitChoiceBody = z.infer<typeof submitChoiceBodySchema>;
 
+export const invalidRequest = () =>
+  new BadRequestException({ code: 'INVALID_REQUEST', message: 'The request is malformed' });
+
 export function parseRequest<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown): T {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    throw new BadRequestException({
-      code: 'INVALID_REQUEST',
-      message: 'The request is malformed',
-    });
+    throw invalidRequest();
   }
   return parsed.data;
 }

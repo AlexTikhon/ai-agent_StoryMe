@@ -62,14 +62,14 @@ export interface DomainEvent {
   stateHash: string;
 }
 
-const sessionStartedPayload = z
+export const sessionStartedPayload = z
   .object({
     scenarioId: z.string(),
     scenarioVersion: z.number().int(),
     definitionHash: z.string(),
   })
   .strict();
-const choiceMadePayload = z.object({ choiceId: z.string(), fromSceneId: z.string() }).strict();
+export const choiceMadePayload = z.object({ choiceId: z.string(), fromSceneId: z.string() }).strict();
 
 export type SessionStartedPayload = z.infer<typeof sessionStartedPayload>;
 export type ChoiceMadePayload = z.infer<typeof choiceMadePayload>;

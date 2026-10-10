@@ -6,6 +6,7 @@ import type {
   InteractiveScenarioCatalogueDto,
   InteractiveSessionListDto,
   InteractiveSessionSummaryDto,
+  InteractiveTranscriptDto,
 } from '@book/types';
 import type { InteractiveSession, Prisma } from '@prisma/client';
 import { canonicalHash } from './domain/canonical';
@@ -24,6 +25,7 @@ import {
   isLockOrTransactionTimeout,
   revisionConflict,
   scenarioVersionUnavailable,
+  sessionNotCompleted,
   sessionBusy,
   sessionLimitReached,
   sessionNotFound,
@@ -43,11 +45,20 @@ import { buildPublicView, publicSessionViewSchema, type PublicSessionView } from
 import {
   createSessionRequestHash,
   encodeListCursor,
+  encodeTranscriptCursor,
+  invalidRequest,
   type CreateSessionBody,
   type ListSessionsQuery,
   type SubmitChoiceBody,
+  type TranscriptQuery,
 } from './requests';
 import { projectPresentation } from './presentation/presentation';
+import {
+  TranscriptIntegrityError,
+  assessCompletion,
+  buildTranscriptPage,
+  transcriptWindow,
+} from './transcript';
 import { sessionMetadataSchema, type SessionMetadata } from './session-metadata';
 import { publishedScenarioRegistry, type ScenarioRegistry } from './scenarios';
 
@@ -284,6 +295,57 @@ export class InteractiveService {
       scenarioVersion: session.scenarioVersion,
       title: this.registry.title(session.scenarioId, session.scenarioVersion),
     });
+  }
+
+  /**
+   * Transcript of a completed session, oldest step first. Ownership and
+   * completion are established before any step is read; steps come only from
+   * the public responses stored on the events (never the registry, narrator or
+   * session state), so they are exactly what the player saw. The cursor is bound
+   * to this session and its terminal revision. Strictly read-only; it fetches
+   * the terminal event plus the requested page and its predecessor.
+   */
+  async getTranscript(
+    userId: string,
+    sessionId: string,
+    query: TranscriptQuery,
+  ): Promise<InteractiveTranscriptDto> {
+    const session = await this.loadOwned(userId, sessionId);
+    const select = { seq: true, type: true, schemaVersion: true, payload: true, response: true };
+    try {
+      const terminal = await this.prisma.sessionEvent.findUnique({
+        where: { sessionId_seq: { sessionId, seq: session.revision } },
+        select,
+      });
+      if (!terminal) throw new TranscriptIntegrityError('terminal event is missing');
+      if (assessCompletion(session, terminal) !== 'ended') throw sessionNotCompleted();
+
+      const { cursor, limit } = query;
+      if (
+        cursor &&
+        (cursor.sessionId !== session.id || cursor.completedRevision !== session.revision)
+      ) {
+        throw invalidRequest();
+      }
+      const from = cursor?.nextRevision ?? 0;
+      const { lo, hi } = transcriptWindow(from, limit, session.revision);
+      const rows = await this.prisma.sessionEvent.findMany({
+        where: { sessionId, seq: { gte: lo, lte: hi } },
+        orderBy: { seq: 'asc' },
+        select,
+      });
+      const page = buildTranscriptPage({ session, rows, from, limit });
+      return {
+        ...page,
+        nextCursor: page.nextCursor ? encodeTranscriptCursor(page.nextCursor) : null,
+      };
+    } catch (error) {
+      if (error instanceof TranscriptIntegrityError) {
+        this.logger.error(`Session ${sessionId} transcript is invalid: ${error.message}`);
+        throw sessionStateInvalid();
+      }
+      throw error;
+    }
   }
 
   async submitChoice(

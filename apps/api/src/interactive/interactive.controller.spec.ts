@@ -19,6 +19,7 @@ function setup() {
     submitChoice: vi.fn().mockResolvedValue({ ok: 'choose' }),
     getPresentation: vi.fn().mockResolvedValue({ ok: 'presentation' }),
     getSessionMetadata: vi.fn().mockResolvedValue({ ok: 'metadata' }),
+    getTranscript: vi.fn().mockResolvedValue({ ok: 'transcript' }),
   };
   return {
     service,
@@ -52,6 +53,12 @@ describe('InteractiveController', () => {
 
     await controller.metadata(USER, SESSION_ID, {});
     expect(service.getSessionMetadata).toHaveBeenCalledWith(USER.id, SESSION_ID);
+
+    await controller.transcript(USER, SESSION_ID, { limit: '5' });
+    expect(service.getTranscript).toHaveBeenCalledWith(USER.id, SESSION_ID, {
+      limit: 5,
+      cursor: null,
+    });
 
     const command = {
       choiceId: 'c-ask-caretaker',
@@ -94,6 +101,14 @@ describe('InteractiveController', () => {
     expect(() => controller.metadata(USER, SESSION_ID, { refresh: '1' })).toThrow(
       BadRequestException,
     );
+    expect(() => controller.transcript(USER, 'not-a-uuid', {})).toThrow(BadRequestException);
+    expect(() => controller.transcript(USER, SESSION_ID, { limit: '26' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => controller.transcript(USER, SESSION_ID, { userId: 'someone-else' })).toThrow(
+      BadRequestException,
+    );
+    expect(service.getTranscript).not.toHaveBeenCalled();
     expect(() =>
       controller.choose(USER, SESSION_ID, {
         choiceId: 'c-ask-caretaker',
@@ -129,6 +144,7 @@ describe('InteractiveController', () => {
     expect(budget('list')).toEqual(read);
     expect(budget('presentation')).toEqual(read);
     expect(budget('metadata')).toEqual(read);
+    expect(budget('transcript')).toEqual(read);
   });
 
   it('marks session metadata as a private, uncacheable read', () => {
@@ -140,6 +156,18 @@ describe('InteractiveController', () => {
     ]);
     expect(Reflect.getMetadata('path', InteractiveController.prototype.metadata)).toBe(
       ':id/metadata',
+    );
+  });
+
+  it('marks the transcript as a private, uncacheable read', () => {
+    expect(
+      Reflect.getMetadata('__httpCode__', InteractiveController.prototype.transcript),
+    ).toBeUndefined();
+    expect(Reflect.getMetadata('__headers__', InteractiveController.prototype.transcript)).toEqual([
+      { name: 'Cache-Control', value: 'private, no-store' },
+    ]);
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.transcript)).toBe(
+      ':id/transcript',
     );
   });
 
