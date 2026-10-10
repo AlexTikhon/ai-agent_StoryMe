@@ -612,6 +612,151 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     });
   });
 
+  describe('transcript artwork endpoint', () => {
+    const ROUTE = ['c-ask-caretaker', 'c-climb-from-caretaker', 'c-leave-parcel'];
+    const PATH = '/transcript/presentation';
+
+    async function finished(userId: string, key: string) {
+      let view = (
+        await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery', idempotencyKey: key })
+      ).json;
+      const sessionId = view.sessionId;
+      for (const [i, choiceId] of ROUTE.entries()) {
+        view = (
+          await call('POST', `/${sessionId}/choices`, userId, {
+            choiceId,
+            expectedRevision: view.revision,
+            idempotencyKey: `${key}-c${i}`,
+          })
+        ).json;
+      }
+      return sessionId;
+    }
+
+    it('pages artwork privately and uncacheable, in step with the text transcript', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-ar-0001');
+
+      for (const query of ['?limit=3', '', '?limit=1']) {
+        const text = await call('GET', `/${id}/transcript${query}`, userId);
+        const art = await call('GET', `/${id}${PATH}${query}`, userId);
+        expect(art.status, query).toBe(200);
+        expect(art.headers.get('cache-control')).toBe('private, no-store');
+        const textBody = text.json as unknown as {
+          steps: Array<{ revision: number; scene: { id: string } }>;
+          nextCursor: string | null;
+        };
+        const artBody = art.json as unknown as {
+          steps: Array<{ revision: number; sceneId: string; presentation: unknown }>;
+          nextCursor: string | null;
+          completedRevision: number;
+        };
+        expect(artBody.steps.map((s) => [s.revision, s.sceneId])).toEqual(
+          textBody.steps.map((s) => [s.revision, s.scene.id]),
+        );
+        expect(artBody.nextCursor).toBe(textBody.nextCursor);
+        expect(artBody.completedRevision).toBe(3);
+        expect(artBody.steps.every((s) => s.presentation !== null)).toBe(true);
+      }
+
+      const first = await call('GET', `/${id}${PATH}?limit=3`, userId);
+      const cursor = (first.json as unknown as { nextCursor: string }).nextCursor;
+      const second = await call('GET', `/${id}${PATH}?limit=3&cursor=${cursor}`, userId);
+      expect(second.status).toBe(200);
+      expect(
+        (second.json as unknown as { steps: Array<{ revision: number }> }).steps.map(
+          (s) => s.revision,
+        ),
+      ).toEqual([3]);
+      for (const leaked of ['narration', 'choices', 'stateHash', 'payload', 'idempotency']) {
+        expect(first.text).not.toContain(leaked);
+      }
+    });
+
+    it('answers missing and foreign sessions with the identical 404, and unauthenticated with a refusal', async () => {
+      const ownerId = await newUser();
+      const intruderId = await newUser();
+      const id = await finished(ownerId, 'http-ar-0002');
+
+      const missing = await call('GET', `/${randomUUID()}${PATH}`, ownerId);
+      const foreign = await call('GET', `/${id}${PATH}`, intruderId);
+      expect(missing.status).toBe(404);
+      expect(foreign.status).toBe(404);
+      expect(missing.json.code).toBe('SESSION_NOT_FOUND');
+      expect(stable(foreign.json)).toEqual(stable(missing.json));
+      expect((await call('GET', `/${id}${PATH}`, null)).status).toBe(403);
+    });
+
+    it('answers an in-progress session with 409 SESSION_NOT_COMPLETED', async () => {
+      const userId = await newUser();
+      const created = (
+        await call('POST', '', userId, {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: 'http-ar-0003',
+        })
+      ).json;
+      const response = await call('GET', `/${created.sessionId}${PATH}`, userId);
+      expect(response.status).toBe(409);
+      expect(response.json.code).toBe('SESSION_NOT_COMPLETED');
+    });
+
+    it('rejects malformed or repeated queries and cross-session cursors with INVALID_REQUEST', async () => {
+      const userId = await newUser();
+      const a = await finished(userId, 'http-ar-0004');
+      const b = await finished(userId, 'http-ar-0005');
+      const cursorA = (
+        (await call('GET', `/${a}${PATH}?limit=1`, userId)).json as unknown as {
+          nextCursor: string;
+        }
+      ).nextCursor;
+
+      for (const bad of [
+        'limit=0',
+        'limit=26',
+        'limit=abc',
+        'limit=2&limit=3',
+        'cursor=%21%21',
+        `cursor=${'a'.repeat(201)}`,
+        'userId=someone-else',
+        `cursor=${cursorA}&cursor=${cursorA}`,
+      ]) {
+        const response = await call('GET', `/${a}${PATH}?${bad}`, userId);
+        expect(response.status, bad).toBe(400);
+        expect(response.json.code, bad).toBe('INVALID_REQUEST');
+      }
+      const crossed = await call('GET', `/${b}${PATH}?cursor=${cursorA}`, userId);
+      expect(crossed.status).toBe(400);
+      expect(crossed.json.code).toBe('INVALID_REQUEST');
+      expect((await call('GET', `/not-a-uuid${PATH}`, userId)).status).toBe(400);
+    });
+
+    it('reports corrupt stored history as SESSION_STATE_INVALID', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-ar-0006');
+      await prisma.sessionEvent.delete({ where: { sessionId_seq: { sessionId: id, seq: 1 } } });
+      const response = await call('GET', `/${id}${PATH}`, userId);
+      expect(response.status).toBe(500);
+      expect(response.json.code).toBe('SESSION_STATE_INVALID');
+    });
+
+    it('leaves the text transcript and the current-scene presentation endpoints unchanged', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-ar-0007');
+      const textBefore = (await call('GET', `/${id}/transcript`, userId)).text;
+      const currentBefore = (await call('GET', `/${id}/presentation?expectedRevision=3`, userId))
+        .text;
+
+      await call('GET', `/${id}${PATH}`, userId);
+
+      expect((await call('GET', `/${id}/transcript`, userId)).text).toBe(textBefore);
+      const current = await call('GET', `/${id}/presentation?expectedRevision=3`, userId);
+      expect(current.text).toBe(currentBefore);
+      const historical = await call('GET', `/${id}/presentation?expectedRevision=1`, userId);
+      expect(historical.status).toBe(409);
+      expect(historical.json.code).toBe('REVISION_CONFLICT');
+    });
+  });
+
   it('answers malformed input with the stable INVALID_REQUEST code', async () => {
     const userId = await newUser();
     const created = await call('POST', '', userId, {

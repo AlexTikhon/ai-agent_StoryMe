@@ -195,3 +195,35 @@ export interface InteractivePresentationDto {
     panels: InteractivePresentationPanelDto[];
   } | null;
 }
+
+/**
+ * One step of the artwork transcript. Keyed by the text transcript's `revision`
+ * and scene id so the two pages can be zipped; carries no narration, choices or
+ * title. `presentation` is `null` when no artwork is configured for the scene.
+ */
+export interface InteractiveTranscriptPresentationStepDto {
+  revision: number;
+  sceneId: string;
+  presentation: {
+    packId: string;
+    packVersion: number;
+    panels: InteractivePresentationPanelDto[];
+  } | null;
+}
+
+/**
+ * GET /api/interactive/sessions/:id/transcript/presentation?limit=&cursor=
+ * response. Same query, identity, steps' revisions/scene ids and cursor as the
+ * text transcript page. Artwork is selected from the pack registry at read time
+ * for the session's pinned scenario version; pack identity is not stored with
+ * gameplay events, so this is not a record of the artwork originally shown.
+ */
+export interface InteractiveTranscriptPresentationDto {
+  sessionId: string;
+  scenarioId: string;
+  scenarioVersion: number;
+  completedRevision: number;
+  steps: InteractiveTranscriptPresentationStepDto[];
+  /** Opaque; pass back as `cursor` for the next page. `null` on the last page. */
+  nextCursor: string | null;
+}

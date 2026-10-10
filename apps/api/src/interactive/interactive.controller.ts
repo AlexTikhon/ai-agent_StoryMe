@@ -16,6 +16,7 @@ import type {
   InteractiveSessionListDto,
   InteractiveSessionMetadataDto,
   InteractiveTranscriptDto,
+  InteractiveTranscriptPresentationDto,
 } from '@book/types';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -138,6 +139,30 @@ export class InteractiveController {
   ): Promise<InteractiveTranscriptDto> {
     const sessionId = parseRequest(sessionIdSchema, id);
     return this.interactive.getTranscript(
+      user.id,
+      sessionId,
+      parseRequest(transcriptQuerySchema, query),
+    );
+  }
+
+  /**
+   * Artwork metadata for the scenes of one transcript page, under exactly the
+   * text transcript's query, ownership and completion rules. Artwork is
+   * selected at read time; it is not a record of what the player originally saw.
+   */
+  @Get(':id/transcript/presentation')
+  @Header('Cache-Control', 'private, no-store')
+  @RateLimit({
+    windowMsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  transcriptPresentation(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Query() query: unknown,
+  ): Promise<InteractiveTranscriptPresentationDto> {
+    const sessionId = parseRequest(sessionIdSchema, id);
+    return this.interactive.getTranscriptPresentation(
       user.id,
       sessionId,
       parseRequest(transcriptQuerySchema, query),

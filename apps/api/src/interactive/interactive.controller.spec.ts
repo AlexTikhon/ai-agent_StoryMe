@@ -20,6 +20,7 @@ function setup() {
     getPresentation: vi.fn().mockResolvedValue({ ok: 'presentation' }),
     getSessionMetadata: vi.fn().mockResolvedValue({ ok: 'metadata' }),
     getTranscript: vi.fn().mockResolvedValue({ ok: 'transcript' }),
+    getTranscriptPresentation: vi.fn().mockResolvedValue({ ok: 'transcript-presentation' }),
   };
   return {
     service,
@@ -56,6 +57,12 @@ describe('InteractiveController', () => {
 
     await controller.transcript(USER, SESSION_ID, { limit: '5' });
     expect(service.getTranscript).toHaveBeenCalledWith(USER.id, SESSION_ID, {
+      limit: 5,
+      cursor: null,
+    });
+
+    await controller.transcriptPresentation(USER, SESSION_ID, { limit: '5' });
+    expect(service.getTranscriptPresentation).toHaveBeenCalledWith(USER.id, SESSION_ID, {
       limit: 5,
       cursor: null,
     });
@@ -109,6 +116,19 @@ describe('InteractiveController', () => {
       BadRequestException,
     );
     expect(service.getTranscript).not.toHaveBeenCalled();
+    expect(() => controller.transcriptPresentation(USER, 'not-a-uuid', {})).toThrow(
+      BadRequestException,
+    );
+    expect(() => controller.transcriptPresentation(USER, SESSION_ID, { limit: '26' })).toThrow(
+      BadRequestException,
+    );
+    expect(() =>
+      controller.transcriptPresentation(USER, SESSION_ID, { cursor: 'x', userId: 'someone-else' }),
+    ).toThrow(BadRequestException);
+    expect(() => controller.transcriptPresentation(USER, SESSION_ID, { cursor: '!!' })).toThrow(
+      BadRequestException,
+    );
+    expect(service.getTranscriptPresentation).not.toHaveBeenCalled();
     expect(() =>
       controller.choose(USER, SESSION_ID, {
         choiceId: 'c-ask-caretaker',
@@ -145,6 +165,23 @@ describe('InteractiveController', () => {
     expect(budget('presentation')).toEqual(read);
     expect(budget('metadata')).toEqual(read);
     expect(budget('transcript')).toEqual(read);
+    expect(budget('transcriptPresentation')).toEqual(read);
+  });
+
+  it('marks the transcript artwork as a private, uncacheable read on its own sub-path', () => {
+    const handler = InteractiveController.prototype.transcriptPresentation;
+    expect(Reflect.getMetadata('__httpCode__', handler)).toBeUndefined();
+    expect(Reflect.getMetadata('__headers__', handler)).toEqual([
+      { name: 'Cache-Control', value: 'private, no-store' },
+    ]);
+    expect(Reflect.getMetadata('path', handler)).toBe(':id/transcript/presentation');
+    // The text transcript and current-scene presentation routes are untouched.
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.transcript)).toBe(
+      ':id/transcript',
+    );
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.presentation)).toBe(
+      ':id/presentation',
+    );
   });
 
   it('marks session metadata as a private, uncacheable read', () => {

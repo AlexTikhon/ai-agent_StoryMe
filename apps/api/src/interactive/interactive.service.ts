@@ -7,6 +7,7 @@ import type {
   InteractiveSessionListDto,
   InteractiveSessionSummaryDto,
   InteractiveTranscriptDto,
+  InteractiveTranscriptPresentationDto,
 } from '@book/types';
 import type { InteractiveSession, Prisma } from '@prisma/client';
 import { canonicalHash } from './domain/canonical';
@@ -52,7 +53,7 @@ import {
   type SubmitChoiceBody,
   type TranscriptQuery,
 } from './requests';
-import { projectPresentation } from './presentation/presentation';
+import { projectPresentation, projectTranscriptPresentation } from './presentation/presentation';
 import {
   TranscriptIntegrityError,
   assessCompletion,
@@ -346,6 +347,22 @@ export class InteractiveService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Artwork for the scenes one transcript page visited. It is derived from the
+   * validated text transcript page itself (same ownership, completion, cursor
+   * and integrity checks, same bounded event window), so revisions, scene ids
+   * and the next cursor cannot disagree with it. Artwork is selected from the
+   * pack registry at read time for the pinned scenario version; it is not a
+   * record of the artwork originally shown. Strictly read-only.
+   */
+  async getTranscriptPresentation(
+    userId: string,
+    sessionId: string,
+    query: TranscriptQuery,
+  ): Promise<InteractiveTranscriptPresentationDto> {
+    return projectTranscriptPresentation(await this.getTranscript(userId, sessionId, query));
   }
 
   async submitChoice(
