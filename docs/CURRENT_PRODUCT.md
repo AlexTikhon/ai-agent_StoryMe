@@ -129,12 +129,17 @@ in the [engine document](../apps/api/docs/interactive-engine.md#phase-91-complet
   the label offered by the previous stored response. Event type, version, payload, contiguous
   sequence, response identity, the choice reference and the ending state are checked; an
   inconsistency is `500 SESSION_STATE_INVALID`, never a skipped step.
-- **Pagination.** `limit` is digits only, default 10, maximum 25. `cursor` is opaque and bound to the
-  session id and the terminal revision, so a malformed, forged, oversized or cross-session cursor,
-  a repeated parameter or an unknown parameter is `400 INVALID_REQUEST`
-  ([requests.ts](../apps/api/src/interactive/requests.ts)). The same cursor is valid on both
-  endpoints. Only the requested page and its predecessor are read and validated, not the whole
-  history. The web page asks for 3 chapters at a time
+- **Pagination.** `limit` is digits only, default 10, maximum 25. `cursor` is opaque to clients but
+  unsigned: it is base64url-encoded JSON (session id, terminal revision, next revision). The query
+  parser accepts only that exact shape within its bounds, and the service then checks it against the
+  owned session. A malformed or oversized cursor, a cursor naming another session or another
+  terminal revision, a repeated parameter or an unknown parameter is `400 INVALID_REQUEST`
+  ([requests.ts](../apps/api/src/interactive/requests.ts)). Forgery itself is not detected: a
+  hand-built cursor with valid values for the owned session is accepted and simply opens a page at
+  that position. The same cursor is valid on both endpoints. The database reads are the
+  owned-session lookup, the terminal-event read that establishes completion, and one bounded window
+  of events holding the requested page and its predecessor; the whole history is not read or
+  validated. The web page asks for 3 chapters at a time
   ([use-interactive-transcript.ts](../apps/web/src/app/dashboard/interactive/%5BsessionId%5D/transcript/use-interactive-transcript.ts)).
 - **Ownership and completion.** Authentication, the `READ` budget and owner scoping are as for the
   other routes: a missing session and another user's session both return
@@ -175,7 +180,8 @@ exact `limit` and `cursor`
   otherwise it is discarded whole and the chapters show no picture.
 - Whatever happens to the artwork (a service failure, a rejected answer, a missing pack, a broken
   image file), the chapter text, the ending and **Load more** keep working. A broken image shows
-  "This illustration isn't available" on its own chapter only. Metadata for the story title is
+  a short note that the illustration isn't available right now, with the story continuing in text,
+  on its own chapter only. Metadata for the story title is
   likewise cosmetic.
 
 Tests: the transcript and presentation integration specs under
