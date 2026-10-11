@@ -1,16 +1,26 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState, type FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState, type FormEvent } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
+import { authPageHref, resolvePostAuthDestination } from '@/lib/auth/post-auth-destination';
 
 const inputCls =
   'rounded-lg border border-border-default bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600';
 
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={null}>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function RegisterForm() {
   const { register, status, authMode } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -19,10 +29,10 @@ export default function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // router is intentionally excluded: only auth state transitions should
-    // trigger the redirect, not router identity.
+    // router/searchParams are intentionally excluded: only auth state
+    // transitions should trigger the redirect, not router/param identity.
     if (authMode === 'jwt' && status === 'authed') {
-      router.replace('/dashboard');
+      router.replace(resolvePostAuthDestination(searchParams.get('next')));
     }
   }, [authMode, status]);
 
@@ -33,7 +43,7 @@ export default function RegisterPage() {
     try {
       const trimmedName = name.trim();
       await register(email, password, trimmedName || undefined);
-      router.push('/dashboard');
+      router.push(resolvePostAuthDestination(searchParams.get('next')));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to register');
       setSubmitting(false);
@@ -109,7 +119,10 @@ export default function RegisterPage() {
 
         <p className="mt-6 text-center text-sm text-text-muted">
           Already have an account?{' '}
-          <Link href="/login" className="font-medium text-violet-600 hover:text-violet-500">
+          <Link
+            href={authPageHref('/login', searchParams.get('next'))}
+            className="font-medium text-violet-600 hover:text-violet-500"
+          >
             Sign in
           </Link>
         </p>

@@ -1151,3 +1151,117 @@ test.describe('interactive story — illustrated rereading under browser-injecte
     await page.context().close();
   });
 });
+
+// ── Interactive-first homepage and authentication entry (Phase 11.1) ────────
+
+const CATALOGUE_URL = /\/dashboard\/interactive$/;
+const CATALOGUE_NEXT = 'next=%2Fdashboard%2Finteractive';
+
+async function sessionCount(page: Page, token: string): Promise<number> {
+  const response = await page.request.get(`${apiBaseUrl}/interactive/sessions?limit=50`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.ok()).toBe(true);
+  return ((await response.json()) as { sessions: unknown[] }).sessions.length;
+}
+
+async function expectCatalogueWithoutNewSession(
+  page: Page,
+  token: string,
+  posts: string[],
+  sessionsBefore: number,
+): Promise<void> {
+  await expect(page).toHaveURL(CATALOGUE_URL);
+  await expect(page.getByRole('heading', { name: 'Choose a story' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Start story/ })).toBeVisible();
+  // Entering the catalogue is not starting a story: that stays an explicit click.
+  expect(posts).toHaveLength(0);
+  expect(await sessionCount(page, token)).toBe(sessionsBefore);
+}
+
+test.describe('interactive-first homepage — real API journeys', () => {
+  test('homepage → registration → catalogue, creating no session', async ({ browser }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const posts = watchInteractivePosts(page);
+
+    await page.goto('/');
+    await expect(page.getByRole('heading', { level: 1, name: 'StoryMe' })).toBeVisible();
+    await page.getByRole('link', { name: 'Start your first story' }).click();
+    await expect(page).toHaveURL(`/register?${CATALOGUE_NEXT}`);
+
+    await page.getByLabel(/^Name/).fill('Homepage Reader');
+    await page.getByLabel('Email').fill(`home-reg-${Date.now()}@e2e.storyme.test`);
+    await page.getByLabel('Password').fill(password);
+    const registered = page.waitForResponse(
+      (response) =>
+        response.url() === `${apiBaseUrl}/auth/register` && response.request().method() === 'POST',
+    );
+    await page.getByRole('button', { name: 'Create account' }).click();
+    const { accessToken } = (await (await registered).json()) as { accessToken: string };
+
+    await expectCatalogueWithoutNewSession(page, accessToken, posts, 0);
+    await expect(libraryRegion(page).getByText(/No stories yet/)).toBeVisible();
+    await context.close();
+  });
+
+  test('homepage → sign-in → catalogue, creating no session', async ({ browser }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const posts = watchInteractivePosts(page);
+
+    await page.goto('/');
+    await page.getByRole('link', { name: 'Sign in', exact: true }).click();
+    await expect(page).toHaveURL(`/login?${CATALOGUE_NEXT}`);
+
+    await page.getByLabel('Email').fill(loginEmail);
+    await page.getByLabel('Password').fill(password);
+    const loggedIn = page.waitForResponse(
+      (response) =>
+        response.url() === `${apiBaseUrl}/auth/login` && response.request().method() === 'POST',
+    );
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    const { accessToken } = (await (await loggedIn).json()) as { accessToken: string };
+
+    // The shared owner may already hold stories from other journeys; only count the delta.
+    await expect(page).toHaveURL(CATALOGUE_URL);
+    const before = await sessionCount(page, accessToken);
+    await expectCatalogueWithoutNewSession(page, accessToken, posts, before);
+    await context.close();
+  });
+
+  test('authenticated homepage → catalogue, creating no session', async ({ browser }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const token = await login(page);
+    const before = await sessionCount(page, token);
+    const posts = watchInteractivePosts(page);
+
+    await page.goto('/');
+    // A full load restores the session before the primary CTA switches over.
+    await page.getByRole('link', { name: 'Open the story catalogue' }).click();
+    await expectCatalogueWithoutNewSession(page, token, posts, before);
+    await context.close();
+  });
+
+  test('keeps the destination across login ↔ registration and rejects an unsafe one', async ({
+    browser,
+  }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    await page.goto(`/register?${CATALOGUE_NEXT}`);
+    await page.getByRole('link', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL(`/login?${CATALOGUE_NEXT}`);
+    await page.getByRole('link', { name: 'Register' }).click();
+    await expect(page).toHaveURL(`/register?${CATALOGUE_NEXT}`);
+
+    // An external destination is ignored: sign-in lands on the default dashboard.
+    await page.goto(`/login?next=${encodeURIComponent('https://evil.example/dashboard')}`);
+    await page.getByLabel('Email').fill(loginEmail);
+    await page.getByLabel('Password').fill(password);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await context.close();
+  });
+});

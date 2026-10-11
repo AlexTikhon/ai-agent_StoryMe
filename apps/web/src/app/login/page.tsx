@@ -6,13 +6,10 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { ApiError } from '@/lib/api/api-error';
 import { authApi } from '@/lib/api/auth';
+import { authPageHref, resolvePostAuthDestination } from '@/lib/auth/post-auth-destination';
 
 const inputCls =
   'rounded-lg border border-border-default bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600';
-
-function safeNextPath(next: string | null): string {
-  return next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
-}
 
 export default function LoginPage() {
   return (
@@ -38,7 +35,7 @@ function LoginForm() {
     // router/searchParams are intentionally excluded: only auth state
     // transitions should trigger the redirect, not router/param identity.
     if (authMode === 'jwt' && status === 'authed') {
-      router.replace(safeNextPath(searchParams.get('next')));
+      router.replace(resolvePostAuthDestination(searchParams.get('next')));
     }
   }, [authMode, status]);
 
@@ -50,7 +47,7 @@ function LoginForm() {
     setResendStatus('idle');
     try {
       await login(email, password);
-      router.push(safeNextPath(searchParams.get('next')));
+      router.push(resolvePostAuthDestination(searchParams.get('next')));
     } catch (err) {
       if (err instanceof ApiError && err.code === 'EMAIL_NOT_VERIFIED') {
         setError('Please verify your email before signing in.');
@@ -145,7 +142,10 @@ function LoginForm() {
 
         <p className="mt-6 text-center text-sm text-text-muted">
           Don&apos;t have an account?{' '}
-          <Link href="/register" className="font-medium text-violet-600 hover:text-violet-500">
+          <Link
+            href={authPageHref('/register', searchParams.get('next'))}
+            className="font-medium text-violet-600 hover:text-violet-500"
+          >
             Register
           </Link>
         </p>
