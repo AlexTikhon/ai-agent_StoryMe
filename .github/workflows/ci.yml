@@ -87,3 +87,38 @@ jobs:
       - run: pnpm --filter @book/web exec playwright install --with-deps chromium
       - run: pnpm --filter @book/web build
       - run: pnpm --filter @book/web test:e2e:production
+  interactive-browser:
+    name: Interactive browser journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @book/api prisma:generate
+      - run: pnpm --filter @book/types build
+      - run: pnpm --filter @book/web exec playwright install --with-deps chromium
+      - run: pnpm test:infra:up
+      # Playwright launches the API (migrate, seed, start) and web servers, and
+      # its global teardown removes fixtures. The runner permits only
+      # localhost:5440/storyme_e2e and localhost:6380/15.
+      - run: pnpm --filter @book/web test:e2e e2e/interactive.spec.ts
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 5
+        with:
+          name: interactive-browser-playwright
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 3
+      - if: always()
+        timeout-minutes: 5
+        run: pnpm test:infra:down
