@@ -3,7 +3,7 @@
 A reproducible walkthrough of the interactive illustrated-story product, in two parts:
 
 1. **Published reader** — start "The Last Delivery", make choices, reload and resume, reach an
-   ending.
+   ending, then reread the finished story page by page with its illustrations.
 2. **Mock draft** — author the unpublished "The Last Tram" offline, play both of its endings, and
    watch publication preflight reject it because no human has approved it.
 
@@ -50,12 +50,50 @@ Open <http://localhost:3000/register> and create an account (JWT mode is the def
 | 8   | Choose **Carry the original ledger up and confront Ines** | Ending "The Ledger Exposed"; no more choices; a **Start another story** link appears                  |
 | 9   | Click **← Interactive story**                             | "Your stories" lists one entry, "Completed", "Ending: The Ledger Exposed", with a **Read again** link |
 
+### Reread the finished story
+
+Continue from step 9, with "Your stories" open. Rereading reads the history stored for the completed
+session. It creates no session and submits no choice, so the list still shows one story afterwards.
+
+| #   | Action                                                  | Expected result                                                                                                                                                                                                                                                    |
+| --- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 10  | Click **Read again** on the completed story             | URL becomes `/dashboard/interactive/<session-id>/transcript`; heading "Read again", story title "The Last Delivery", and "Showing 3 of 6 chapters."                                                                                                                |
+| 11  | Read the three chapters shown                           | "Chapter 1 Praga courtyard" (no choice label); "Chapter 2 The caretaker's broom", "You chose: Ask the caretaker where Tomasz is"; "Chapter 3 Flat 4", "You chose: Climb to the fourth floor". Each chapter shows its own illustration. No ending card yet          |
+| 12  | Click **Load more**                                     | Chapters 4–6 follow: "Inside flat 4" ("You chose: Use the single-use entry card on the lock"), "The cellar workshop" ("You chose: Take the service stairs down to the cellar"), "The ledger exposed" ("You chose: Carry the original ledger up and confront Ines") |
+| 13  | Read the end of chapter 6                               | A "The end" card titled "The Ledger Exposed" with its summary; "All 6 chapters, from the beginning to the end."; no **Load more** button                                                                                                                           |
+| 14  | **Reload the page**                                     | Rereading starts again at the first page: "Showing 3 of 6 chapters." and chapters 1–3 only. Nothing is remembered between loads                                                                                                                                    |
+| 15  | Click **Back to the ending** or **← Interactive story** | **Back to the ending** returns to the finished reader at `/dashboard/interactive/<session-id>`; **← Interactive story** returns to the catalogue. **Start another story** is also offered                                                                          |
+
+The exposed route has six chapters because it makes five choices (the opening scene plus one chapter
+per choice); the quiet route below makes three choices and has four. The page requests three chapters
+at a time, so even the four-chapter route needs **Load more**. From the finished reader, the **Read
+the story from the beginning** link opens the same page.
+
+The text of each chapter and every "You chose" label come from the responses saved when the story was
+played, so they cannot change if the scenario files are edited later. The pictures are different:
+they are looked up when the page is read from the illustration pack for that scenario version. Today
+that is the same local pack the reader used, but rereading does not record or prove which picture
+was shown at the time.
+
+Illustrations are fetched separately from the text, one request per page of chapters, and a failure
+never blocks reading. If a metadata request fails or is rejected, or an image file cannot be loaded,
+the affected chapters show no picture (a note and **Reload illustration** where a retry is allowed),
+while the text and **Load more** keep working. The automated suite below exercises these failures with
+browser-injected faults; this walkthrough does not ask you to cause them.
+
 Optional checks:
 
 - **The other ending.** Start another story and choose **Check the mailboxes by the stairwell**, then
   **Climb to the fourth floor**, then **Slip a delivery slip under the door and leave the parcel**.
   It ends at "A Quiet Delivery". Choices such as using the entry card are not offered on this route
-  because the earlier choice that grants the card was never made.
+  because the earlier choice that grants the card was never made. Click **Read again** on it: the
+  page shows "Showing 3 of 4 chapters.", then after **Load more** "All 4 chapters, from the
+  beginning to the end." with the chapters "Praga courtyard", "Behind the mailboxes", "Flat 4" and
+  "A quiet delivery".
+- **Unfinished stories.** Open `/dashboard/interactive/<session-id>/transcript` for a story you have
+  not finished: the page says "Rereading comes after the ending" and offers **Continue the story**.
+  The same URL for another account's session, or one that does not exist, says "This story isn't
+  available".
 - **Revision conflict.** Open the same session URL in a second tab and advance the story there.
   Back in the first tab, click a choice from the old scene. The reader explains that the story moved
   on, shows the current scene, and applies nothing on your behalf.
@@ -65,8 +103,9 @@ Optional checks:
 ### Automated coverage
 
 The browser suite plays these journeys (both endings, reload and resume, ownership, cross-tab
-conflict, lost-response retries, illustrations, desktop and mobile layout) against a real API on a
-**disposable** PostgreSQL/Redis pair. It is guarded: Playwright replaces the database settings and
+conflict, lost-response retries, illustrations, desktop and mobile layout, and paginated, illustrated
+rereading of both endings including reload, ownership, unfinished stories and artwork failures)
+against a real API on a **disposable** PostgreSQL/Redis pair. It is guarded: Playwright replaces the database settings and
 the launcher refuses any target other than `127.0.0.1:5440/storyme_e2e` and Redis
 `127.0.0.1:6380/15`, so it cannot touch the development database. Docker must be running.
 
@@ -79,6 +118,11 @@ pnpm test:infra:down
 `test:infra:down` removes the containers and volumes of that named disposable project only. The
 suite uses web port 3100 and API port 4100; see [E2E_TESTING.md](E2E_TESTING.md). The full-suite
 command `pnpm test:e2e:home` runs every spec, not just the interactive one.
+
+The workflow [ci.yml](../.github/workflows/ci.yml) configures an `Interactive browser journey` job
+that runs the same spec on a CI runner. Treat the two kinds of evidence separately: a local run
+shows the suite passed on one machine at one commit, and a remote run would show the configured job
+passed on a runner. This document records no successful remote run, because none has been inspected.
 
 ### Clean up the reader demo
 
@@ -281,5 +325,7 @@ It demonstrates a deterministic, replayable runtime and an authoring workflow wh
 and human gate are separate. It does not demonstrate real-model authoring (that mode needs
 `--allow-paid-calls` and has never been run here, so its quality is unverified), prose quality
 (mechanical validation cannot judge it), a deployed service, or generated artwork (the illustrations
-are local SVG files). The trade-offs behind those choices are in
+are local SVG files, and rereading shows the artwork selected at read time rather than a record of
+what was shown originally). "The Last Tram" remains unapproved and unpublished, and rereading applies
+only to published, completed sessions. The trade-offs behind those choices are in
 [CURRENT_PRODUCT.md](CURRENT_PRODUCT.md#design-trade-offs).

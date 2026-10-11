@@ -83,6 +83,10 @@ language model runs during play. Implementation detail lives in the
   [apps/web/public/interactive/warsaw-noir/v1/](../apps/web/public/interactive/warsaw-noir/v1/)).
   Artwork failures do not block play: a metadata outage or a broken image file shows a text notice
   and a bounded manual reload while the story continues.
+- **Rereading a completed story.** Once a session reaches an ending, its owner can read the path
+  they took from the beginning, a few chapters at a time, with the same scene artwork. Rereading
+  is read-only: it creates no session and submits no choice. See
+  [Rereading a completed story](#rereading-a-completed-story).
 
 ### Interactive API routes
 
@@ -92,20 +96,97 @@ A missing session and another user's session both return `404 SESSION_NOT_FOUND`
 derived from [interactive.controller.ts](../apps/api/src/interactive/interactive.controller.ts) and
 [interactive-scenarios.controller.ts](../apps/api/src/interactive/interactive-scenarios.controller.ts).
 
-| Method | Route                                    | Behavior                                                                      | Budget (`INTERACTIVE_*`) |
-| ------ | ---------------------------------------- | ----------------------------------------------------------------------------- | ------------------------ |
-| GET    | `/interactive/scenarios`                 | Published catalogue (`private, no-store`)                                     | `READ`                   |
-| POST   | `/interactive/sessions`                  | Create a session; `idempotencyKey` required, `scenarioVersion` optional       | `CREATE`                 |
-| GET    | `/interactive/sessions`                  | Owned session library, keyset pagination (`limit`, `cursor`)                  | `READ`                   |
-| GET    | `/interactive/sessions/:id`              | Current public view of an owned session                                       | `READ`                   |
-| GET    | `/interactive/sessions/:id/presentation` | Current scene's artwork metadata; `expectedRevision` required, stale is `409` | `READ`                   |
-| GET    | `/interactive/sessions/:id/metadata`     | Title of the session's pinned scenario version                                | `READ`                   |
-| POST   | `/interactive/sessions/:id/choices`      | Submit one choice (`choiceId`, `expectedRevision`, `idempotencyKey`)          | `CHOICE`                 |
+| Method | Route                                               | Behavior                                                                      | Budget (`INTERACTIVE_*`) |
+| ------ | --------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------ |
+| GET    | `/interactive/scenarios`                            | Published catalogue (`private, no-store`)                                     | `READ`                   |
+| POST   | `/interactive/sessions`                             | Create a session; `idempotencyKey` required, `scenarioVersion` optional       | `CREATE`                 |
+| GET    | `/interactive/sessions`                             | Owned session library, keyset pagination (`limit`, `cursor`)                  | `READ`                   |
+| GET    | `/interactive/sessions/:id`                         | Current public view of an owned session                                       | `READ`                   |
+| GET    | `/interactive/sessions/:id/presentation`            | Current scene's artwork metadata; `expectedRevision` required, stale is `409` | `READ`                   |
+| GET    | `/interactive/sessions/:id/metadata`                | Title of the session's pinned scenario version                                | `READ`                   |
+| GET    | `/interactive/sessions/:id/transcript`              | One page of a completed session's stored history (`private, no-store`)        | `READ`                   |
+| GET    | `/interactive/sessions/:id/transcript/presentation` | Artwork metadata for the scenes of the same page (`private, no-store`)        | `READ`                   |
+| POST   | `/interactive/sessions/:id/choices`                 | Submit one choice (`choiceId`, `expectedRevision`, `idempotencyKey`)          | `CHOICE`                 |
 
 Budgets are `INTERACTIVE_<KIND>_RATE_LIMIT_WINDOW_MS` and `..._MAX_ATTEMPTS`; defaults are in
 `.env.example` and are private-pilot assumptions, not measured limits. Stable error codes are listed
 in the engine document. Web routes: `/dashboard/interactive` (catalogue, "Your stories", explicit
-**Start story**) and `/dashboard/interactive/[sessionId]` (the reader).
+**Start story**), `/dashboard/interactive/[sessionId]` (the reader) and
+`/dashboard/interactive/[sessionId]/transcript` (rereading a completed story).
+
+### Rereading a completed story
+
+`GET /interactive/sessions/:id/transcript` and `.../transcript/presentation` serve the path a
+finished session took, oldest step first. Both are handled by
+[interactive.controller.ts](../apps/api/src/interactive/interactive.controller.ts) and
+[interactive.service.ts](../apps/api/src/interactive/interactive.service.ts); the full contract is
+in the [engine document](../apps/api/docs/interactive-engine.md#phase-91-completed-session-transcript-api).
+
+- **Immutable stored text.** Each step is built only from the public response saved on its
+  `SessionEvent` when the player saw it ([transcript.ts](../apps/api/src/interactive/transcript.ts)).
+  The scenario registry, narrator and session state are not consulted, so a later template or
+  scenario edit never changes what rereading shows. The label of the choice that led into a step is
+  the label offered by the previous stored response. Event type, version, payload, contiguous
+  sequence, response identity, the choice reference and the ending state are checked; an
+  inconsistency is `500 SESSION_STATE_INVALID`, never a skipped step.
+- **Pagination.** `limit` is digits only, default 10, maximum 25. `cursor` is opaque and bound to the
+  session id and the terminal revision, so a malformed, forged, oversized or cross-session cursor,
+  a repeated parameter or an unknown parameter is `400 INVALID_REQUEST`
+  ([requests.ts](../apps/api/src/interactive/requests.ts)). The same cursor is valid on both
+  endpoints. Only the requested page and its predecessor are read and validated, not the whole
+  history. The web page asks for 3 chapters at a time
+  ([use-interactive-transcript.ts](../apps/web/src/app/dashboard/interactive/%5BsessionId%5D/transcript/use-interactive-transcript.ts)).
+- **Ownership and completion.** Authentication, the `READ` budget and owner scoping are as for the
+  other routes: a missing session and another user's session both return
+  `404 SESSION_NOT_FOUND`. A session whose terminal stored response is not an ending returns
+  `409 SESSION_NOT_COMPLETED`, so the endpoint cannot be used to read ahead. Successful responses of
+  both endpoints are sent with `Cache-Control: private, no-store`.
+- **Artwork is a separate request.** The presentation endpoint runs the same validated read and
+  returns, per visited scene, `{ packId, packVersion, panels }` or `null`
+  ([projectTranscriptPresentation](../apps/api/src/interactive/presentation/presentation.ts)). It
+  carries no narration or choices, and revisions, scene ids and `nextCursor` are copied from the text
+  page.
+- **Historical text versus read-time artwork.** The text is a record of what was shown. The artwork
+  is not: the pack is selected when the page is read from the session's pinned scenario version, and
+  pack identity is not stored with gameplay events. A later revision of a pack would change the
+  pictures shown for an old story while its text stayed the same.
+
+The page is
+[`/dashboard/interactive/[sessionId]/transcript`](../apps/web/src/app/dashboard/interactive/%5BsessionId%5D/transcript/page.tsx),
+rendered by [transcript-view.tsx](../apps/web/src/app/dashboard/interactive/%5BsessionId%5D/transcript/transcript-view.tsx).
+It is reached from the **Read again** link in "Your stories" and from the **Read the story from the
+beginning** link on a finished story. It loads only the first page automatically; **Load more**
+requests the next cursor, and each response is checked against what is already shown before it is
+appended. A failed request keeps the loaded chapters and **Try again** repeats the same cursor. An
+unfinished session shows "Rereading comes after the ending" with a **Continue the story** link, and
+a missing or foreign one shows "This story isn't available". Reloading the page starts again from
+the first page.
+
+Pictures are requested independently of the text, one request per accepted text page with that page's
+exact `limit` and `cursor`
+([use-transcript-artwork.ts](../apps/web/src/app/dashboard/interactive/%5BsessionId%5D/transcript/use-transcript-artwork.ts)):
+
+- At most 2 artwork requests are in flight at once; the rest wait in page order.
+- Each request has a 10-second local deadline, and a deadline or transport failure is an error for
+  that page only. There are no automatic retries: **Reload illustration** is a manual retry, allowed
+  at most twice per page and always with the original query.
+- An answer is attached only if it matches its text page exactly
+  ([validate-transcript-artwork.ts](../apps/web/src/app/dashboard/interactive/%5BsessionId%5D/transcript/validate-transcript-artwork.ts));
+  otherwise it is discarded whole and the chapters show no picture.
+- Whatever happens to the artwork (a service failure, a rejected answer, a missing pack, a broken
+  image file), the chapter text, the ending and **Load more** keep working. A broken image shows
+  "This illustration isn't available" on its own chapter only. Metadata for the story title is
+  likewise cosmetic.
+
+Tests: the transcript and presentation integration specs under
+[apps/api/test/integration/](../apps/api/test/integration/), the unit specs next to the web files
+above, and the rereading blocks of [apps/web/e2e/interactive.spec.ts](../apps/web/e2e/interactive.spec.ts).
+Those browser tests use a real API on the disposable PostgreSQL/Redis pair; the failure cases inject
+faults with Playwright routing and are not real network faults. A CI job, `Interactive browser
+journey`, that runs this spec is configured in
+[ci.yml](../.github/workflows/ci.yml). This document does not claim that job has run successfully
+on a remote runner; no remote run was inspected. Local browser runs and remote CI are separate
+evidence (see [interactive-demo.md](interactive-demo.md#automated-coverage)).
 
 ### Offline authoring and the human approval boundary
 
@@ -183,6 +264,10 @@ Current status:
   deployment claim for the interactive product.
 - An approval record is a human-authored attestation, not an authenticated signature.
 - There is no web preview of drafts; reviewers use the offline playtest.
+- Rereading is available only for completed sessions and always starts from the first chapter; it
+  has no bookmark, search or chapter picker, and the page size is fixed in the web client.
+- Rereading shows the artwork selected at read time, not a record of the artwork originally shown
+  (see [Rereading a completed story](#rereading-a-completed-story)).
 
 ## API routes
 
@@ -234,8 +319,9 @@ and ownership comes from the authenticated user rather than client-supplied user
 `/`, `/register`, `/login`, `/verify-email`, `/forgot-password`, `/reset-password`, `/dashboard`,
 `/dashboard/child-profiles`, `/dashboard/books/new`, `/dashboard/books/[id]`,
 `/dashboard/credits`, `/billing/success`, and
-`/billing/cancel`. The interactive reader adds `/dashboard/interactive` and
-`/dashboard/interactive/[sessionId]` (see [Interactive illustrated stories](#interactive-illustrated-stories)).
+`/billing/cancel`. The interactive reader adds `/dashboard/interactive`,
+`/dashboard/interactive/[sessionId]` and `/dashboard/interactive/[sessionId]/transcript` (see
+[Interactive illustrated stories](#interactive-illustrated-stories)).
 
 The completed-book detail screen has an authenticated in-browser reader for the published cover,
 every generated story page, and the back cover. It lazily fetches one owned published image at a
