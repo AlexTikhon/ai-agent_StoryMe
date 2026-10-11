@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   HttpCode,
@@ -29,6 +30,8 @@ import {
   listSessionsQuerySchema,
   parseRequest,
   presentationQuerySchema,
+  removeSessionBodySchema,
+  removeSessionQuerySchema,
   sessionIdSchema,
   sessionMetadataQuerySchema,
   submitChoiceBodySchema,
@@ -167,6 +170,31 @@ export class InteractiveController {
       sessionId,
       parseRequest(transcriptQuerySchema, query),
     );
+  }
+
+  /**
+   * Soft-removes the caller's session (see InteractiveService.removeSession).
+   * 204 whether it was removed now, earlier, or never existed / is not theirs.
+   * Takes no query or body; unexpected input is rejected before the service is
+   * reached. Shares the choice write budget (each endpoint keeps its own counter).
+   */
+  @Delete(':id')
+  @HttpCode(204)
+  @Header('Cache-Control', 'private, no-store')
+  @RateLimit({
+    windowMsEnvKey: 'INTERACTIVE_CHOICE_RATE_LIMIT_WINDOW_MS',
+    maxAttemptsEnvKey: 'INTERACTIVE_CHOICE_RATE_LIMIT_MAX_ATTEMPTS',
+  })
+  async remove(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Query() query: unknown,
+    @Body() body: unknown,
+  ): Promise<void> {
+    const sessionId = parseRequest(sessionIdSchema, id);
+    parseRequest(removeSessionQuerySchema, query);
+    parseRequest(removeSessionBodySchema, body);
+    await this.interactive.removeSession(user.id, sessionId);
   }
 
   @Post(':id/choices')

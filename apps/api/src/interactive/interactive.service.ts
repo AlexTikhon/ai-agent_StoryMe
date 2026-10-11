@@ -27,6 +27,7 @@ import {
   revisionConflict,
   scenarioVersionUnavailable,
   sessionNotCompleted,
+  sessionRemoved,
   sessionBusy,
   sessionLimitReached,
   sessionNotFound,
@@ -154,7 +155,11 @@ export class InteractiveService {
 
         // Counted under the lock and inserted in the same transaction: there is no
         // window between the count and the insert for a concurrent creation.
-        const retained = await tx.interactiveSession.count({ where: { userId } });
+        // Removal takes this same lock, so a freed slot is visible here exactly
+        // when the removal committed. Removed sessions do not count.
+        const retained = await tx.interactiveSession.count({
+          where: { userId, removedAt: null },
+        });
         if (retained >= this.maxSessionsPerUser()) throw sessionLimitReached();
 
         await tx.interactiveSession.create({
@@ -197,6 +202,7 @@ export class InteractiveService {
     const rows = await this.prisma.interactiveSession.findMany({
       where: {
         userId,
+        removedAt: null,
         ...(cursor
           ? {
               OR: [
@@ -365,6 +371,46 @@ export class InteractiveService {
     return projectTranscriptPresentation(await this.getTranscript(userId, sessionId, query));
   }
 
+  /**
+   * Soft-removes one of the caller's sessions: it leaves the library, stops
+   * counting toward the cap and becomes SESSION_NOT_FOUND on every endpoint, but
+   * the row, state, events and creation identity are retained untouched.
+   * Idempotent and enumeration-safe: repeated, missing and foreign ids all
+   * resolve silently and never modify another owner's session.
+   *
+   * Locks the owner's admission row first (the same lock creation counts under),
+   * then the session row (the same lock a choice commits under), always in that
+   * order. A choice therefore either commits before the removal or finds the
+   * session removed; creation sees the freed slot exactly once this commits.
+   * Writes only `removed_at`: no revision, state, event, `updated_at` or stored
+   * response changes, and no narrator or artwork code is reachable from here.
+   */
+  async removeSession(userId: string, sessionId: string): Promise<void> {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT_MS}ms'`);
+        await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
+
+        const owner = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM users WHERE id = ${userId}::uuid FOR NO KEY UPDATE`;
+        if (owner.length === 0) return;
+
+        const locked = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM interactive_sessions
+          WHERE id = ${sessionId}::uuid AND user_id = ${userId}::uuid
+          FOR UPDATE`;
+        if (locked.length === 0) return;
+
+        // The first removal wins; a repeat leaves the original timestamp alone.
+        await tx.$executeRaw`
+          UPDATE interactive_sessions SET removed_at = now()
+          WHERE id = ${sessionId}::uuid AND user_id = ${userId}::uuid AND removed_at IS NULL`;
+      }, TRANSACTION_OPTIONS);
+    } catch (error) {
+      throw this.translate(error);
+    }
+  }
+
   async submitChoice(
     userId: string,
     sessionId: string,
@@ -435,10 +481,14 @@ export class InteractiveService {
       await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT_MS}ms'`);
       await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
 
-      // Serializes every command for this session; also re-verifies ownership.
+      // Serializes every command for this session; also re-verifies ownership and
+      // that the session was not removed. Removal commits under this same row lock:
+      // a choice that waited behind it re-evaluates the predicate on the committed
+      // row and finds nothing, so no event is ever appended after a removal, and
+      // this happens before any idempotent replay.
       const locked = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM interactive_sessions
-        WHERE id = ${sessionId}::uuid AND user_id = ${userId}::uuid
+        WHERE id = ${sessionId}::uuid AND user_id = ${userId}::uuid AND removed_at IS NULL
         FOR UPDATE`;
       if (locked.length === 0) throw sessionNotFound();
 
@@ -537,17 +587,23 @@ export class InteractiveService {
   private findCreation(db: Prisma.TransactionClient, userId: string, key: string) {
     return db.interactiveSession.findUnique({
       where: { userId_creationIdempotencyKey: { userId, creationIdempotencyKey: key } },
-      select: { id: true, creationRequestHash: true },
+      select: { id: true, creationRequestHash: true, removedAt: true },
     });
   }
 
-  /** Same fingerprint: the stored genesis response, even if the session has since advanced. */
+  /**
+   * Same fingerprint: the stored genesis response, even if the session has since
+   * advanced. Removed sessions keep their creation identity: a different
+   * fingerprint is still a key reuse, and the same one is refused rather than
+   * replayed or recreated.
+   */
   private async replayCreation(
     db: Prisma.TransactionClient,
-    existing: { id: string; creationRequestHash: string | null },
+    existing: { id: string; creationRequestHash: string | null; removedAt: Date | null },
     requestHash: string,
   ): Promise<PublicSessionView> {
     if (existing.creationRequestHash !== requestHash) throw idempotencyKeyReused();
+    if (existing.removedAt) throw sessionRemoved();
     const genesis = await db.sessionEvent.findUnique({
       where: { sessionId_seq: { sessionId: existing.id, seq: 0 } },
     });
@@ -560,7 +616,7 @@ export class InteractiveService {
 
   private async loadOwned(userId: string, sessionId: string): Promise<InteractiveSession> {
     const session = await this.prisma.interactiveSession.findFirst({
-      where: { id: sessionId, userId },
+      where: { id: sessionId, userId, removedAt: null },
     });
     if (!session) throw sessionNotFound();
     return session;

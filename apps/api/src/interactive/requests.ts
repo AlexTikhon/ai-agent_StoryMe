@@ -36,6 +36,14 @@ export const catalogueQuerySchema = z.object({}).strict();
 /** Session metadata takes no parameters either: any query key is rejected. */
 export const sessionMetadataQuerySchema = z.object({}).strict();
 
+/**
+ * Removal takes no parameters: any query key is rejected. A body is tolerated
+ * only when absent or empty (Express yields `{}` for a DELETE without one);
+ * anything else, including `{}` with keys, is rejected.
+ */
+export const removeSessionQuerySchema = z.object({}).strict();
+export const removeSessionBodySchema = z.union([z.undefined(), z.object({}).strict()]);
+
 /** `?expectedRevision=N`: digits only, no sign/leading zeros, required, no repeats or extra keys. */
 export const presentationQuerySchema = z
   .object({

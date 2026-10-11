@@ -304,3 +304,75 @@ export function withAdmissionGate(
     return result;
   });
 }
+
+/**
+ * Keeps one transactional model call's transaction (and every lock it holds)
+ * open after the call returns, until `hold` settles. Deterministic stand-in for
+ * "this request is mid-transaction while another one arrives".
+ */
+export function withTransactionHold(
+  prisma: PrismaService,
+  point: { model: InterceptedModel; method: string },
+  hold: () => Promise<void>,
+): PrismaService {
+  return interceptTransactionMethod(prisma, point, async (call) => {
+    const result = await (call() as Promise<unknown>);
+    await hold();
+    return result;
+  });
+}
+
+/** Like withTransactionHold, for the transaction client's tagged `$executeRaw` writes. */
+export function withRawWriteHold(prisma: PrismaService, hold: () => Promise<void>): PrismaService {
+  const heldTx = (tx: Prisma.TransactionClient): Prisma.TransactionClient =>
+    new Proxy(tx, {
+      get(object, prop) {
+        const value = Reflect.get(object, prop, object) as unknown;
+        if (typeof value !== 'function') return value;
+        const original = (value as AnyFn).bind(object);
+        if (prop !== '$executeRaw') return original;
+        return async (...args: unknown[]) => {
+          const result = await (original(...args) as Promise<unknown>);
+          await hold();
+          return result;
+        };
+      },
+    });
+  return new Proxy(prisma, {
+    get(object, prop) {
+      const value = Reflect.get(object, prop, object) as unknown;
+      if (prop === '$transaction') {
+        return (fn: (tx: Prisma.TransactionClient) => Promise<unknown>, options?: object) =>
+          object.$transaction((tx) => fn(heldTx(tx)), options as never);
+      }
+      return typeof value === 'function' ? (value as AnyFn).bind(object) : value;
+    },
+  });
+}
+
+/** Holds a non-transactional read after it returns, so another request can act in between. */
+export function withReadHold(
+  prisma: PrismaService,
+  point: { model: InterceptedModel; method: string },
+  hold: () => Promise<void>,
+): PrismaService {
+  return new Proxy(prisma, {
+    get(object, prop) {
+      const value = Reflect.get(object, prop, object) as unknown;
+      if (prop !== point.model) {
+        return typeof value === 'function' ? (value as AnyFn).bind(object) : value;
+      }
+      return new Proxy(value as object, {
+        get(delegate, method) {
+          const original = (Reflect.get(delegate, method, delegate) as AnyFn).bind(delegate);
+          if (method !== point.method) return original;
+          return async (...args: unknown[]) => {
+            const result = await (original(...args) as Promise<unknown>);
+            await hold();
+            return result;
+          };
+        },
+      });
+    },
+  });
+}

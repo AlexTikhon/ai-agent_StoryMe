@@ -116,7 +116,7 @@ curl -s -X POST $API/api/interactive/sessions/<id>/choices -H "Authorization: Be
 # -> 200 {... "revision":1, "scene":{"id":"s-caretaker"} ...}
 ```
 
-Stable error codes: `INVALID_REQUEST` (400), `SESSION_NOT_FOUND` (404), `UNKNOWN_CHOICE` / `UNKNOWN_SCENARIO` (422), `REVISION_CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `CHOICE_UNAVAILABLE`, `SESSION_TERMINAL` (409), `NARRATION_INVALID` / `NARRATION_PROVIDER_FAILED` (502), `SESSION_BUSY` (503). Phase 3 adds `SESSION_LIMIT_REACHED` (409) and the shared limiter codes `RATE_LIMITED` (429, with `Retry-After`) and `RATE_LIMIT_UNAVAILABLE` (503, fail-closed).
+Stable error codes: `INVALID_REQUEST` (400), `SESSION_NOT_FOUND` (404), `UNKNOWN_CHOICE` / `UNKNOWN_SCENARIO` (422), `REVISION_CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `CHOICE_UNAVAILABLE`, `SESSION_TERMINAL` (409), `NARRATION_INVALID` / `NARRATION_PROVIDER_FAILED` (502), `SESSION_BUSY` (503). Phase 3 adds `SESSION_LIMIT_REACHED` (409), Phase 12.1 `SESSION_REMOVED` (409) and the shared limiter codes `RATE_LIMITED` (429, with `Retry-After`) and `RATE_LIMIT_UNAVAILABLE` (503, fail-closed).
 
 ## Intentional limits
 
@@ -187,7 +187,7 @@ Order inside `createSession`: (1) resolve an existing identity from the database
 
 ### Concurrent session cap
 
-`INTERACTIVE_MAX_SESSIONS_PER_USER` (default **50**) counts **every retained session, completed ones included**. Beyond it a new creation returns `409 SESSION_LIMIT_REACHED`. Session deletion/retention does not exist yet, so a user who reaches the cap cannot free room; that is an explicit limitation of this phase.
+`INTERACTIVE_MAX_SESSIONS_PER_USER` (default **50**) counts **every retained session, completed ones included**. Beyond it a new creation returns `409 SESSION_LIMIT_REACHED`. Since Phase 12.1 only **non-removed** sessions count; a user at the cap frees a slot by removing a story (see "Phase 12.1" below).
 
 Admission is serialized per owner by locking that owner's `users` row inside the creation transaction:
 
@@ -241,7 +241,7 @@ The cap and identical-creation tests use an `AdmissionGate` (test helper): every
 
 ### Phase 3 limitations
 
-- **No retention or deletion.** Sessions are kept forever and all count toward the cap; a user at the cap cannot start another story. Retention/deletion must be designed before more than a private pilot.
+- **No erasure or retention policy.** Superseded by Phase 12.1 soft removal, which frees cap slots but erases nothing; hard deletion and retention must still be designed before more than a private pilot.
 - **No recovery across reload for creation.** The pending creation command is memory-only. After a reload the user sees the library, not a retry prompt. That is acceptable because a committed session is listed, and a creation that never reached the server leaves nothing behind.
 - Budgets and the cap are unmeasured assumptions. The cap is per user, not per organisation or IP.
 - A session whose current-revision event is missing is logged and omitted from the list rather than failing the whole page.
@@ -423,3 +423,17 @@ Tests: `src/interactive/transcript.spec.ts` (pure builder), `requests.spec.ts`, 
 - **Cost:** identical to the text transcript page (one terminal-event read plus one bounded range read, no per-chapter queries). No writes, no narrator, provider or filesystem access, and no scenario registry lookup.
 
 Tests: `presentation/presentation.spec.ts` (pure projection and strict schema), `interactive.controller.spec.ts`, `test/integration/interactive-transcript-presentation.integration.spec.ts` and the transcript artwork block of `interactive-http.integration.spec.ts` (real Postgres).
+
+## Phase 12.1: owner-scoped soft removal (API only)
+
+`DELETE /api/interactive/sessions/:id` lets a user remove an unwanted story and free a session slot. It is a **soft removal**, not erasure: a nullable `interactive_sessions.removed_at` is set (additive migration `20261011090000_interactive_session_soft_removal`; existing sessions stay active). The session row, state, events, hashes, stored public responses and the creation key/hash are all retained, and nothing is rewritten. There is no restore endpoint and no web control yet.
+
+- **Response:** `204` with no body and `Cache-Control: private, no-store` for a first removal, a repeat, a missing id and another owner's id alike (nothing distinguishes them, and another owner's session is never modified). A malformed id, any query string or any non-empty body is `400 INVALID_REQUEST`. Requests count against the choice write budget (`INTERACTIVE_CHOICE_RATE_LIMIT_*`) with their own per-endpoint counter.
+- **Behaviour after removal:** the session is excluded from `GET /sessions` and no longer counts toward `INTERACTIVE_MAX_SESSIONS_PER_USER`. `GET /sessions/:id`, `/metadata`, `/presentation`, `/transcript`, `/transcript/presentation` and `POST /sessions/:id/choices` (fresh or an idempotent replay) all answer `404 SESSION_NOT_FOUND`, including for an unfinished story (never `SESSION_NOT_COMPLETED`).
+- **Creation retries:** the creation identity survives removal. An exact retry of a removed story's creation is `409 SESSION_REMOVED` (it is never replayed, recreated or restored, and it narrates nothing); the same key with a different fingerprint is still `IDEMPOTENCY_KEY_REUSED`. A fresh key may use the freed slot. Both the fast lookup and the admission-locked lookup apply this.
+- **Locking:** removal takes the owner's admission row lock (`users ... FOR NO KEY UPDATE`, the lock creation counts under) and then the session row lock (`FOR UPDATE`, the lock a choice commits under), with the same `lock_timeout`/`statement_timeout` as other writes (`503 SESSION_BUSY` on timeout). Choices take only the session lock, so there is no lock cycle. A choice re-checks `removed_at IS NULL` under its commit lock, before idempotent replay or event insertion, so it either commits before the removal or is refused; an event is never appended after a removal commits. Removal sets only `removed_at` (not `updated_at`, revision or state) and reaches no narrator, provider or artwork code.
+- **Overlapping reads:** a read that resolved ownership just before a removal commits may return its pre-removal snapshot; reads that start afterwards are not found. Since all rows are retained, a removal cannot make an in-flight read look corrupt.
+
+Limitations: removed rows and their events stay in the database indefinitely (no hard deletion, retention worker, or user-data erasure), so this is not a privacy erasure feature; `removed_at` is internal and not exposed by any endpoint; a removed story cannot be restored; the creation key of a removed story is permanently consumed; removal only counts against the rate limiter, not the creation limiter.
+
+Tests: `interactive.controller.spec.ts` (route, 204, no-store, budget, strict input) and, on real PostgreSQL, `test/integration/interactive-removal.integration.spec.ts` (ownership, repeat, finished/unfinished, every read endpoint, creation retries on both lookup paths, cap release and concurrent admission, barrier-controlled choice/removal races, byte-identical retained rows) plus the removal block of `interactive-http.integration.spec.ts`.

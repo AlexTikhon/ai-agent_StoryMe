@@ -44,6 +44,13 @@ export const sessionLimitReached = () =>
     message: 'You have reached the maximum number of stories',
   });
 
+/** An exact creation retry whose story the owner has since removed; never restores it. */
+export const sessionRemoved = () =>
+  new ConflictException({
+    code: 'SESSION_REMOVED',
+    message: 'This story was removed; start a new one',
+  });
+
 export const unknownScenario = () =>
   new UnprocessableEntityException({
     code: 'UNKNOWN_SCENARIO',

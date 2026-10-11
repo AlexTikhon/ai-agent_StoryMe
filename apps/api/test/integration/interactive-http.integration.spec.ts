@@ -96,7 +96,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
   }
 
   async function call(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     userId: string | null,
     body?: unknown,
@@ -1044,5 +1044,130 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     expect(page2.nextCursor).toBeNull();
     const seen = [...page1.sessions, ...page2.sessions].map((s) => s.sessionId);
     expect(seen.sort()).toEqual([...ids].sort());
+  });
+
+  describe('session removal endpoint', () => {
+    const create = (userId: string, key: string) =>
+      call('POST', '', userId, { scenarioId: 'warsaw-last-delivery', idempotencyKey: key });
+
+    it('answers 204 with no body and private, no-store caching, repeatedly and for unknown ids', async () => {
+      const userId = await newUser();
+      const id = (await create(userId, 'http-remove-0001')).json.sessionId;
+
+      for (let i = 0; i < 2; i += 1) {
+        const removed = await call('DELETE', `/${id}`, userId);
+        expect(removed.status).toBe(204);
+        expect(removed.text).toBe('');
+        expect(removed.headers.get('cache-control')).toBe('private, no-store');
+      }
+      const missing = await call('DELETE', `/${randomUUID()}`, userId);
+      expect(missing.status).toBe(204);
+      expect(missing.text).toBe('');
+      expect(missing.headers.get('cache-control')).toBe('private, no-store');
+    });
+
+    it('is indistinguishable for another owner and never touches their session', async () => {
+      const [ownerId, intruderId] = [await newUser(), await newUser()];
+      const created = await create(ownerId, 'http-remove-0002');
+      const id = created.json.sessionId;
+
+      const foreign = await call('DELETE', `/${id}`, intruderId);
+      expect(foreign.status).toBe(204);
+      expect(foreign.text).toBe('');
+      expect((await call('GET', `/${id}`, ownerId)).json).toEqual(created.json);
+      expect(
+        (await prisma.interactiveSession.findUniqueOrThrow({ where: { id } })).removedAt,
+      ).toBeNull();
+
+      expect([401, 403]).toContain((await call('DELETE', `/${id}`, null)).status);
+      expect((await call('GET', `/${id}`, ownerId)).status).toBe(200);
+    });
+
+    it('makes every endpoint answer SESSION_NOT_FOUND, leaves the library, and refuses a creation retry', async () => {
+      const userId = await newUser();
+      const created = await create(userId, 'http-remove-0003');
+      const kept = (await create(userId, 'http-remove-0004')).json.sessionId;
+      const id = created.json.sessionId;
+      await call('POST', `/${id}/choices`, userId, {
+        choiceId: 'c-ask-caretaker',
+        expectedRevision: 0,
+        idempotencyKey: 'http-remove-choice',
+      });
+      expect((await call('DELETE', `/${id}`, userId)).status).toBe(204);
+
+      const probes = [
+        await call('GET', `/${id}`, userId),
+        await call('GET', `/${id}/presentation?expectedRevision=1`, userId),
+        await call('GET', `/${id}/metadata`, userId),
+        await call('GET', `/${id}/transcript`, userId),
+        await call('GET', `/${id}/transcript/presentation`, userId),
+        await call('POST', `/${id}/choices`, userId, {
+          choiceId: 'c-ask-caretaker',
+          expectedRevision: 0,
+          idempotencyKey: 'http-remove-choice',
+        }),
+        await call('POST', `/${id}/choices`, userId, {
+          choiceId: 'c-climb-from-caretaker',
+          expectedRevision: 1,
+          idempotencyKey: 'http-remove-choice-2',
+        }),
+      ];
+      const missing = await call('GET', `/${randomUUID()}`, userId);
+      for (const probe of probes) {
+        expect(probe.status).toBe(404);
+        expect(stable(probe.json)).toEqual(stable(missing.json));
+      }
+
+      const listed = await call('GET', '', userId);
+      const sessions = (listed.json as unknown as { sessions: Array<{ sessionId: string }> })
+        .sessions;
+      expect(sessions.map((s) => s.sessionId)).toEqual([kept]);
+
+      const retry = await create(userId, 'http-remove-0003');
+      expect(retry.status).toBe(409);
+      expect(retry.json.code).toBe('SESSION_REMOVED');
+      const reused = await call('POST', '', userId, {
+        scenarioId: 'warsaw-last-delivery',
+        scenarioVersion: 1,
+        idempotencyKey: 'http-remove-0003',
+      });
+      expect(reused.status).toBe(409);
+      expect(reused.json.code).toBe('IDEMPOTENCY_KEY_REUSED');
+      expect(await prisma.interactiveSession.count({ where: { userId } })).toBe(2);
+    });
+
+    it('frees a slot at the cap for a fresh creation key', async () => {
+      sessionCap = 1;
+      const userId = await newUser();
+      const id = (await create(userId, 'http-remove-0005')).json.sessionId;
+      expect((await create(userId, 'http-remove-0006')).json.code).toBe('SESSION_LIMIT_REACHED');
+
+      expect((await call('DELETE', `/${id}`, userId)).status).toBe(204);
+      const fresh = await create(userId, 'http-remove-0006');
+      expect(fresh.status).toBe(201);
+      expect(fresh.json.sessionId).not.toBe(id);
+    });
+
+    it('rejects a malformed id, any query and any body without changing anything', async () => {
+      const userId = await newUser();
+      const id = (await create(userId, 'http-remove-0007')).json.sessionId;
+
+      const rejected = [
+        await call('DELETE', '/not-a-uuid', userId),
+        await call('DELETE', `/${id}?userId=${userId}`, userId),
+        await call('DELETE', `/${id}?force=1`, userId),
+        await call('DELETE', `/${id}`, userId, { userId }),
+        await call('DELETE', `/${id}`, userId, { removedAt: '2020-01-01T00:00:00.000Z' }),
+        await call('DELETE', `/${id}`, userId, '[]'),
+      ];
+      for (const response of rejected) {
+        expect(response.status).toBe(400);
+        expect(response.json.code).toBe('INVALID_REQUEST');
+      }
+      expect((await call('GET', `/${id}`, userId)).status).toBe(200);
+      expect(
+        (await prisma.interactiveSession.findUniqueOrThrow({ where: { id } })).removedAt,
+      ).toBeNull();
+    });
   });
 });
