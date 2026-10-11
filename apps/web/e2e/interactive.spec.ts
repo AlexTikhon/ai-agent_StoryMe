@@ -1455,6 +1455,68 @@ test.describe('interactive story library — removal under browser-injected tran
     await page.context().close();
   });
 
+  test('a refresh that hides the row mid-removal keeps its progress, then the lost acknowledgement stays retryable', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const sessionId = await startStory(page);
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    const library = libraryRegion(page);
+    const stories = library.getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+
+    // Browser-injected fault: the real DELETE commits, but its answer is held back and then lost.
+    const attempts: string[] = [];
+    let committed!: () => void;
+    const hasCommitted = new Promise<void>((resolve) => (committed = resolve));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let dropped = false;
+    await page.route(sessionUrl(sessionId), async (route) => {
+      if (route.request().method() !== 'DELETE') {
+        await route.fallback();
+        return;
+      }
+      attempts.push(route.request().url());
+      if (!dropped) {
+        dropped = true;
+        await route.fetch(); // the server really removes it ...
+        committed();
+        await held; // ... the acknowledgement is held while the library refreshes ...
+        await route.abort('failed'); // ... and then never reaches the browser
+        return;
+      }
+      await route.continue();
+    });
+
+    await removeButtonIn(stories).click();
+    await stories.getByRole('button', { name: /^Yes, remove/ }).click();
+    await hasCommitted;
+    await expect(library.getByRole('status')).toContainText(/Removing/);
+
+    // The refresh no longer lists the story: the row goes, the pending command does not.
+    await library.getByRole('button', { name: 'Refresh' }).click();
+    await expect(library.getByText(/No stories yet/)).toBeVisible();
+    await expect(stories).toHaveCount(0);
+    await expect(library.getByRole('status').filter({ hasText: /Removing/ })).toHaveCount(1);
+    await expect(library.getByText(/was removed from your stories/)).toHaveCount(0);
+
+    // Absence confirmed nothing; the lost answer leaves a retry that is still reachable.
+    release();
+    const alert = library.getByRole('alert');
+    await expect(alert).toContainText(/couldn.t confirm/i);
+    await expect(library.getByText(/was removed from your stories/)).toHaveCount(0);
+    expect(attempts).toHaveLength(1); // nothing was retried automatically
+
+    await alert.getByRole('button', { name: 'Try again' }).click();
+    await expect(library.getByText(/was removed from your stories/)).toBeVisible();
+    await expect(alert).toHaveCount(0);
+    expect(attempts).toEqual([sessionUrl(sessionId), sessionUrl(sessionId)]);
+    await page.reload();
+    await expect(library.getByText(/No stories yet/)).toBeVisible();
+    await page.context().close();
+  });
+
   test('retrying a creation whose session was removed meanwhile is closed definitively, with no replacement', async ({
     browser,
   }) => {

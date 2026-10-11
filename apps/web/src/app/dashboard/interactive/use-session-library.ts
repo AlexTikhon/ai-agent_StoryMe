@@ -93,6 +93,16 @@ function removalErrorKind(cause: unknown): RemovalErrorKind {
   return name === 'AbortError' ? 'timeout' : 'network';
 }
 
+/**
+ * A submitted removal (pending or failed) whose row is not in the displayed list.
+ * Its feedback cannot live inside a row, so the library renders it on its own.
+ */
+function detachedRemoval(data: LibraryData): RemovalState | null {
+  const { removal } = data;
+  if (!removal || removal.status === 'confirming') return null;
+  return data.sessions.some((s) => s.sessionId === removal.sessionId) ? null : removal;
+}
+
 function appendUnique(
   current: InteractiveSessionSummaryDto[],
   incoming: InteractiveSessionSummaryDto[],
@@ -184,11 +194,13 @@ export function useSessionLibrary() {
         phase: 'ready',
         sessions: page.sessions,
         nextCursor: page.nextCursor,
-        // A removal in flight survives the reload; a question or failure about a
-        // story that is no longer listed has nothing left to act on.
+        // A submitted removal (pending or failed) survives the reload whether or not
+        // its row is on the first page: absence proves nothing, since an older story may
+        // simply be on a later page. Only an unsent question about an unlisted story has
+        // nothing left to act on.
         removal:
           d.removal &&
-          (d.removal.status === 'removing' ||
+          (d.removal.status !== 'confirming' ||
             page.sessions.some((s) => s.sessionId === d.removal?.sessionId))
             ? d.removal
             : null,
@@ -244,6 +256,9 @@ export function useSessionLibrary() {
       const current = dataRef.current;
       if (!scope || !isCurrent(scope) || scope.removalAttempt) return;
       if (current.phase !== 'ready' || current.removal?.status === 'removing') return;
+      // An unresolved outcome whose row is hidden must be retried or dismissed first,
+      // not replaced by starting another removal.
+      if (detachedRemoval(current)) return;
       const story = current.sessions.find((s) => s.sessionId === sessionId);
       if (!story) return;
       commit(scope, (d) => ({
@@ -350,6 +365,7 @@ export function useSessionLibrary() {
 
   return {
     ...data,
+    detachedRemoval: detachedRemoval(data),
     refresh,
     loadMore,
     requestRemoval,

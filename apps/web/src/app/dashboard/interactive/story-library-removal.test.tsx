@@ -260,6 +260,142 @@ describe('removing a story from the library', () => {
     });
   });
 
+  describe('feedback that outlives the displayed page', () => {
+    // Story 3 is only listed on the second page; a refresh reloads page one alone.
+    const older = makeSummary(3);
+    const page1 = () => makePage([active, completed], 'cursor-1');
+    const page2 = () => makePage([older], null);
+
+    async function loadOlderStory() {
+      listSessions.mockResolvedValueOnce(page1());
+      listSessions.mockResolvedValueOnce(page2());
+      const rendered = render(<InteractiveIntroPage />);
+      await within(library()).findAllByRole('listitem');
+      await userEvent.click(within(library()).getByRole('button', { name: 'Load more' }));
+      await waitFor(() => expect(hasRow(3)).toBe(true));
+      return rendered;
+    }
+
+    it('keeps progress visible when a refresh omits the row, and resolves on a later 204', async () => {
+      const ack = deferred<void>();
+      removeSession.mockReturnValueOnce(ack.promise);
+      await loadOlderStory();
+      await confirmRemoval(3);
+
+      listSessions.mockResolvedValueOnce(page1()); // the refresh no longer lists story 3
+      await userEvent.click(within(library()).getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(hasRow(3)).toBe(false));
+
+      // Progress is still shown, once, and nothing claims it was removed.
+      expect(within(library()).getAllByRole('status')).toHaveLength(1);
+      expect(within(library()).getByRole('status')).toHaveTextContent(/Removing/);
+      expect(within(library()).queryByText(/was removed from your stories/)).toBeNull();
+      expect(removeSession).toHaveBeenCalledTimes(1);
+
+      listSessions.mockResolvedValueOnce(page1());
+      await act(async () => ack.resolve());
+
+      expect(within(library()).getByRole('status')).toHaveTextContent(
+        /was removed from your stories/,
+      );
+      expect(within(library()).queryByText(/Removing/)).toBeNull();
+      expect(listSessions).toHaveBeenLastCalledWith(
+        { limit: 20, cursor: null },
+        expect.any(Object),
+      );
+    });
+
+    it('exposes a working retry for the identical id after a failure that arrives while the row is hidden', async () => {
+      const ack = deferred<void>();
+      removeSession.mockReturnValueOnce(ack.promise);
+      removeSession.mockResolvedValueOnce(undefined);
+      await loadOlderStory();
+      await confirmRemoval(3);
+      listSessions.mockResolvedValueOnce(page1());
+      await userEvent.click(within(library()).getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(hasRow(3)).toBe(false));
+
+      await act(async () => ack.reject(new TypeError('Failed to fetch')));
+
+      const alert = await within(library()).findByRole('alert');
+      expect(alert).toHaveTextContent(/couldn.t confirm/i);
+      expect(alert).toHaveTextContent(/may or may not/i);
+      expect(within(library()).queryByText(/was removed from your stories/)).toBeNull();
+      expect(removeSession).toHaveBeenCalledTimes(1);
+
+      listSessions.mockResolvedValueOnce(page1());
+      await userEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+
+      await waitFor(() => expect(removeSession).toHaveBeenCalledTimes(2));
+      expect(removeSession.mock.calls[1]![0]).toBe(older.sessionId);
+      expect(await within(library()).findByText(/was removed from your stories/)).toBeVisible();
+    });
+
+    it('keeps retry and dismissal after a refresh that follows an ambiguous failure', async () => {
+      removeSession.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      await loadOlderStory();
+      await confirmRemoval(3);
+      await within(rowFor(3)).findByRole('alert');
+
+      listSessions.mockResolvedValueOnce(page1());
+      await userEvent.click(within(library()).getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(hasRow(3)).toBe(false));
+
+      // One alert, one set of controls, no confirmed-removal announcement.
+      const alert = within(library()).getByRole('alert');
+      expect(alert).toHaveTextContent(/may or may not/i);
+      expect(within(library()).getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+      expect(within(library()).getByRole('button', { name: 'Dismiss' })).toBeEnabled();
+      expect(within(library()).queryByText(/was removed from your stories/)).toBeNull();
+      expect(removeSession).toHaveBeenCalledTimes(1);
+
+      // Another story cannot replace the unresolved outcome behind the user's back.
+      expect(within(rowFor(2)).getByRole('button', { name: /^Remove / })).toBeDisabled();
+
+      await userEvent.click(within(library()).getByRole('button', { name: 'Dismiss' }));
+      expect(within(library()).queryByRole('alert')).toBeNull();
+      expect(within(library()).getByRole('heading', { name: 'Your stories' })).toHaveFocus();
+      expect(within(rowFor(2)).getByRole('button', { name: /^Remove / })).toBeEnabled();
+      expect(removeSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a question about a story that is no longer listed, because nothing was sent', async () => {
+      await loadOlderStory();
+      await openConfirmation(3);
+
+      listSessions.mockResolvedValueOnce(page1());
+      await userEvent.click(within(library()).getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(hasRow(3)).toBe(false));
+
+      expect(within(library()).queryByRole('group')).toBeNull();
+      expect(removeSession).not.toHaveBeenCalled();
+    });
+
+    it('ignores a late result for a hidden row after the auth epoch changes', async () => {
+      const ack = deferred<void>();
+      removeSession.mockReturnValueOnce(ack.promise);
+      const { rerender } = await loadOlderStory();
+      await confirmRemoval(3);
+      listSessions.mockResolvedValueOnce(page1());
+      await userEvent.click(within(library()).getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(hasRow(3)).toBe(false));
+      expect(within(library()).getByRole('status')).toHaveTextContent(/Removing/);
+
+      advanceSessionEpoch();
+      listSessions.mockResolvedValueOnce(page1());
+      rerender(<InteractiveIntroPage />);
+      await waitFor(() => expect(within(library()).queryByText(/Removing/)).toBeNull());
+      await within(library()).findAllByRole('listitem');
+      const callsBefore = listSessions.mock.calls.length;
+
+      await act(async () => ack.resolve());
+
+      expect(listSessions).toHaveBeenCalledTimes(callsBefore);
+      expect(within(library()).queryByText(/was removed from your stories/)).toBeNull();
+      expect(within(library()).queryByRole('alert')).toBeNull();
+    });
+  });
+
   describe('lifetime and scope', () => {
     it('aborts a pending DELETE on unmount and ignores its late result', async () => {
       const ack = deferred<void>();

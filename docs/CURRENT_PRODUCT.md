@@ -68,8 +68,10 @@ language model runs during play. Implementation detail lives in the
   consumed when used, and play stops at an ending.
 - **Session library and resume.** Session creation is idempotent (a required key). The "Your
   stories" list shows in-progress and completed sessions; a reload or a link back to a session
-  fetches the stored state and never creates one. A user may retain 50 sessions
-  (`INTERACTIVE_MAX_SESSIONS_PER_USER`); there is no deletion yet.
+  fetches the stored state and never creates one. The cap of 50
+  (`INTERACTIVE_MAX_SESSIONS_PER_USER`) counts a user's nonremoved sessions, completed ones
+  included; removing a story from the library frees its slot. Removal is not erasure: the stored
+  data is retained (see "Interactive limitations").
 - **Revision conflicts and immutable retries.** Each choice carries the revision the player saw
   and an idempotency key. The server locks the session row, so a stale revision is
   `409 REVISION_CONFLICT` and an identical retry returns the saved response without a second
@@ -122,7 +124,13 @@ and that the stored data is not erased; opening or cancelling it sends nothing. 
 server answers `204`. Then it disappears at once and the list reloads from the first page; a failed
 reload never brings it back. A timeout or lost response is reported as unconfirmed, and **Try
 again** resends the identical request for the same session; nothing is retried automatically, and
-giving up waiting does not undo what the server may have done. One removal runs at a time. If a held
+giving up waiting does not undo what the server may have done. One removal runs at a time. A
+refresh reloads only the first page, so it can hide the row of a removal that is still pending or
+has failed (an older story may simply be on a later page). The progress, uncertainty, **Try again**
+and **Dismiss** controls then appear above the list instead of in the row, for the same captured
+session and title; a refresh neither cancels the request nor treats the row's absence as a result,
+and only a `204` announces the removal. While such an unresolved failure is shown, other stories'
+**Remove** controls stay disabled until it is retried or dismissed. If a held
 creation retry meets `SESSION_REMOVED`, the start is closed with a specific message and only a new
 **Start story** creates another session. A reader or transcript open in another tab learns of a
 removal on its next request (`SESSION_NOT_FOUND`); there is no polling or cross-tab messaging.

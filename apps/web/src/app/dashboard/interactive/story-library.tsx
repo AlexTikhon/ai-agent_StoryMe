@@ -44,6 +44,8 @@ function removalFailureMessage(error: RemovalErrorKind, title: string): string {
 interface RemovalControls {
   /** The removal in progress, if any (for any story). */
   removal: RemovalState | null;
+  /** Its feedback is shown outside the list, because its row is not displayed. */
+  detached: boolean;
   request: (sessionId: string) => void;
   cancel: () => void;
   confirm: () => void;
@@ -176,7 +178,7 @@ function StoryItem({
           aria-label={`Remove ${title}, ${ended ? 'completed' : 'in progress'}, started ${formatDate(story.createdAt)}`}
           aria-expanded={panelOpen}
           onClick={() => controls.request(story.sessionId)}
-          disabled={controls.removal?.status === 'removing'}
+          disabled={controls.removal?.status === 'removing' || controls.detached}
           className={SECONDARY_BUTTON}
         >
           Remove
@@ -208,12 +210,14 @@ export function StoryLibrary() {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const controls: RemovalControls = {
     removal: library.removal,
+    detached: library.detachedRemoval !== null,
     request: library.requestRemoval,
     cancel: library.cancelRemoval,
     confirm: library.confirmRemoval,
     retry: library.retryRemoval,
   };
   const removed = library.removed;
+  const detached = library.detachedRemoval;
 
   // The removed row held focus's place; move it to the section so keyboard and
   // screen-reader users are not dropped at the top of the page.
@@ -283,6 +287,23 @@ export function StoryLibrary() {
             ? "You're refreshing too quickly. Wait a moment, then try again."
             : "We couldn't refresh your stories. The list below may be out of date."}
         </p>
+      )}
+
+      {/* The row is not displayed (a refresh reloaded only the first page), so its
+          progress and failure controls are rendered here instead of inside the row. */}
+      {detached && (
+        <div role="group" aria-label="Story removal" className="mt-4 flex">
+          <RemovalPanel
+            title={scenarioTitle(detached.story)}
+            ended={detached.story.status === 'ended'}
+            removal={detached}
+            controls={controls}
+            onClose={() => {
+              library.cancelRemoval();
+              headingRef.current?.focus();
+            }}
+          />
+        </div>
       )}
 
       {phase === 'ready' && removed && (
