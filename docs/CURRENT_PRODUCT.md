@@ -107,12 +107,25 @@ derived from [interactive.controller.ts](../apps/api/src/interactive/interactive
 | GET    | `/interactive/sessions/:id/transcript`              | One page of a completed session's stored history (`private, no-store`)        | `READ`                   |
 | GET    | `/interactive/sessions/:id/transcript/presentation` | Artwork metadata for the scenes of the same page (`private, no-store`)        | `READ`                   |
 | POST   | `/interactive/sessions/:id/choices`                 | Submit one choice (`choiceId`, `expectedRevision`, `idempotencyKey`)          | `CHOICE`                 |
+| DELETE | `/interactive/sessions/:id`                         | Soft-remove an owned session; `204` even when repeated or not found           | `CHOICE`                 |
 
 Budgets are `INTERACTIVE_<KIND>_RATE_LIMIT_WINDOW_MS` and `..._MAX_ATTEMPTS`; defaults are in
 `.env.example` and are private-pilot assumptions, not measured limits. Stable error codes are listed
 in the engine document. Web routes: `/dashboard/interactive` (catalogue, "Your stories", explicit
 **Start story**), `/dashboard/interactive/[sessionId]` (the reader) and
 `/dashboard/interactive/[sessionId]/transcript` (rereading a completed story).
+
+Each entry in "Your stories", finished or not, has a **Remove** control. It opens an inline
+confirmation (focus moves to **Cancel**) saying that the story can no longer be continued or reread
+and that the stored data is not erased; opening or cancelling it sends nothing. Confirming sends one
+`DELETE` for the captured session, with a 15-second local deadline, and the row stays until the
+server answers `204`. Then it disappears at once and the list reloads from the first page; a failed
+reload never brings it back. A timeout or lost response is reported as unconfirmed, and **Try
+again** resends the identical request for the same session; nothing is retried automatically, and
+giving up waiting does not undo what the server may have done. One removal runs at a time. If a held
+creation retry meets `SESSION_REMOVED`, the start is closed with a specific message and only a new
+**Start story** creates another session. A reader or transcript open in another tab learns of a
+removal on its next request (`SESSION_NOT_FOUND`); there is no polling or cross-tab messaging.
 
 ### Rereading a completed story
 
@@ -263,7 +276,10 @@ Current status:
 
 ### Interactive limitations
 
-- No session deletion or retention; every session counts toward the per-user cap.
+- Removal is soft (API Phase 12.1, web controls Phase 12.2): a removed story leaves the library and
+  frees its cap slot, but its session row, events and creation key are retained indefinitely.
+  There is no hard deletion, retention worker, data erasure or restore, and the web confirmation
+  says the stored data is not erased.
 - Catalogue titles and synopses are English only; the catalogue shows each scenario's latest
   version, and older versions can be started only through the API.
 - Request budgets and the cap are initial private-pilot assumptions. This document makes no

@@ -413,6 +413,7 @@ pnpm --filter @book/web test
 - **Cost:** one terminal-event read plus one range read of the page and its predecessor (at most 26 rows, only `seq`, `type`, `schemaVersion`, `payload`, `response`). The next-page decision uses the terminal revision, so there is no lookahead read.
 
 Tests: `src/interactive/transcript.spec.ts` (pure builder), `requests.spec.ts`, `interactive.controller.spec.ts`, and `test/integration/interactive-transcript.integration.spec.ts` plus the transcript block of `interactive-http.integration.spec.ts` (real Postgres).
+
 ## Phase 9.3: transcript artwork API
 
 `GET /api/interactive/sessions/:id/transcript/presentation?limit=&cursor=` returns, for the same page the text transcript would return, the artwork metadata of each scene on it. API only; no web integration yet. The current-scene `GET .../presentation?expectedRevision=` endpoint and the text transcript response are unchanged (the former still rejects historical revisions).
@@ -426,7 +427,7 @@ Tests: `presentation/presentation.spec.ts` (pure projection and strict schema), 
 
 ## Phase 12.1: owner-scoped soft removal (API only)
 
-`DELETE /api/interactive/sessions/:id` lets a user remove an unwanted story and free a session slot. It is a **soft removal**, not erasure: a nullable `interactive_sessions.removed_at` is set (additive migration `20261011090000_interactive_session_soft_removal`; existing sessions stay active). The session row, state, events, hashes, stored public responses and the creation key/hash are all retained, and nothing is rewritten. There is no restore endpoint and no web control yet.
+`DELETE /api/interactive/sessions/:id` lets a user remove an unwanted story and free a session slot. It is a **soft removal**, not erasure: a nullable `interactive_sessions.removed_at` is set (additive migration `20261011090000_interactive_session_soft_removal`; existing sessions stay active). The session row, state, events, hashes, stored public responses and the creation key/hash are all retained, and nothing is rewritten. There is no restore endpoint. The web library gained a **Remove** control in Phase 12.2 (see [CURRENT_PRODUCT.md](../../../docs/CURRENT_PRODUCT.md)); it adds no API or schema change.
 
 - **Response:** `204` with no body and `Cache-Control: private, no-store` for a first removal, a repeat, a missing id and another owner's id alike (nothing distinguishes them, and another owner's session is never modified). A malformed id, any query string or any non-empty body is `400 INVALID_REQUEST`. Requests count against the choice write budget (`INTERACTIVE_CHOICE_RATE_LIMIT_*`) with their own per-endpoint counter.
 - **Behaviour after removal:** the session is excluded from `GET /sessions` and no longer counts toward `INTERACTIVE_MAX_SESSIONS_PER_USER`. `GET /sessions/:id`, `/metadata`, `/presentation`, `/transcript`, `/transcript/presentation` and `POST /sessions/:id/choices` (fresh or an idempotent replay) all answer `404 SESSION_NOT_FOUND`, including for an unfinished story (never `SESSION_NOT_COMPLETED`).

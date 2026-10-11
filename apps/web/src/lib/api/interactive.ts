@@ -110,6 +110,17 @@ export const interactiveApi = {
       { signal },
     ),
 
+  /**
+   * Hides the session from the caller's library and frees its cap slot; stored data is
+   * retained. Answers 204 even when repeated or when the session is missing or not the
+   * caller's, so an ambiguous attempt may be resent. Aborting only stops waiting.
+   */
+  removeSession: (sessionId: string, signal?: AbortSignal): Promise<void> =>
+    apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      signal,
+    }),
+
   /** Safe to resend with the identical command: the server deduplicates on `idempotencyKey`. */
   submitChoice: (
     sessionId: string,

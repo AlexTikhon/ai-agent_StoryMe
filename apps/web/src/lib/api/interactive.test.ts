@@ -184,6 +184,32 @@ describe('interactiveApi', () => {
     expect(JSON.parse(init.body as string)).toEqual(command);
   });
 
+  it('removeSession DELETEs the encoded session with no body or query and resolves on 204', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+    const controller = new AbortController();
+
+    await expect(
+      interactiveApi.removeSession('s 1/../x', controller.signal),
+    ).resolves.toBeUndefined();
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:4000/api/interactive/sessions/s%201%2F..%2Fx');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  it('removeSession surfaces a rate limit as an ApiError', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockError(429, { code: 'RATE_LIMITED', message: 'slow' }),
+    );
+
+    await expect(interactiveApi.removeSession('s1')).rejects.toMatchObject({
+      status: 429,
+      code: 'RATE_LIMITED',
+    });
+  });
+
   it('surfaces the stable API error code', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockError(409, { code: 'REVISION_CONFLICT', message: 'moved on' }),

@@ -1265,3 +1265,243 @@ test.describe('interactive-first homepage — real API journeys', () => {
     await context.close();
   });
 });
+
+// ── Removing stories (Phase 12.2) ───────────────────────────────────────────
+
+const removeButtonIn = (row: ReturnType<Page['locator']>) =>
+  row.getByRole('button', { name: /^Remove / });
+
+/** DELETE requests to the interactive API, in order (each URL is the exact target). */
+function watchDeletes(page: Page): Array<{ url: string; body: string | null }> {
+  const deletes: Array<{ url: string; body: string | null }> = [];
+  page.on('request', (request) => {
+    if (request.method() === 'DELETE' && request.url().startsWith(`${apiBaseUrl}/interactive/`)) {
+      deletes.push({ url: request.url(), body: request.postData() });
+    }
+  });
+  return deletes;
+}
+
+const sessionUrl = (id: string) => `${apiBaseUrl}/interactive/sessions/${id}`;
+const unavailableHeading = (page: Page) => page.getByRole('heading', { name: /isn.t available/ });
+
+/** Starts a story from the library page (not the dashboard) and returns to the library. */
+async function startAnotherFromLibrary(page: Page): Promise<string> {
+  await page.getByRole('button', { name: /^Start story/ }).click();
+  await expect(page).toHaveURL(SESSION_URL);
+  await expect(page.getByRole('heading', { name: 'Praga courtyard', exact: true })).toBeVisible();
+  const id = new URL(page.url()).pathname.split('/').at(-1)!;
+  await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+  await expect(page).toHaveURL(/\/dashboard\/interactive$/);
+  return id;
+}
+
+test.describe('interactive story library — removal (real API)', () => {
+  test('cancelling the confirmation sends no DELETE and leaves the story readable', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const deletes = watchDeletes(page);
+    const sessionId = await startStory(page);
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    const stories = libraryRegion(page).getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+
+    await removeButtonIn(stories).click();
+    const question = stories.getByRole('group', { name: /^Remove .* from your stories\?/ });
+    await expect(question).toContainText(/does not erase/);
+    await expect(question.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await question.getByRole('button', { name: 'Cancel' }).click();
+
+    await expect(question).toBeHidden();
+    await expect(removeButtonIn(stories)).toBeFocused();
+    expect(deletes).toHaveLength(0);
+    await stories.getByRole('link', { name: /Continue/ }).click();
+    await expect(page).toHaveURL(new RegExp(`${sessionId}$`));
+    await expect(page.getByRole('heading', { name: 'Praga courtyard', exact: true })).toBeVisible();
+    expect(deletes).toHaveLength(0);
+    await page.context().close();
+  });
+
+  test('confirming removes a completed and an unfinished story for good, and their routes become unavailable', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const deletes = watchDeletes(page);
+    const completedId = await startStory(page);
+    await playExposedRoute(page);
+    await expect(
+      page.getByRole('heading', { name: 'The Ledger Exposed', exact: true }),
+    ).toBeVisible();
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    const unfinishedId = await startAnotherFromLibrary(page);
+    const stories = libraryRegion(page).getByRole('listitem');
+    await expect(stories).toHaveCount(2);
+
+    // The completed story: confirm, observe the acknowledgement, then the row is gone.
+    const completedRow = stories.filter({
+      has: page.locator(`a[href="/dashboard/interactive/${completedId}/transcript"]`),
+    });
+    await removeButtonIn(completedRow).click();
+    await completedRow.getByRole('button', { name: /^Yes, remove/ }).click();
+    await expect(stories).toHaveCount(1);
+    await expect(libraryRegion(page).getByRole('status')).toContainText(/was removed/);
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]).toEqual({ url: sessionUrl(completedId), body: null });
+
+    // Reload: the server no longer lists it; the other story is untouched.
+    await page.reload();
+    await expect(stories).toHaveCount(1);
+    await expect(stories.getByRole('link', { name: /Continue/ })).toHaveAttribute(
+      'href',
+      `/dashboard/interactive/${unfinishedId}`,
+    );
+
+    // The removed story's reader and transcript routes both say it is unavailable.
+    await page.goto(`/dashboard/interactive/${completedId}`);
+    await expect(unavailableHeading(page)).toBeVisible();
+    await expect(page.getByRole('button', { name: /Ask|Check|Climb/ })).toHaveCount(0);
+    await page.goto(`/dashboard/interactive/${completedId}/transcript`);
+    await expect(unavailableHeading(page)).toBeVisible();
+
+    // The unfinished story goes the same way, leaving the empty library.
+    await page.goto('/dashboard/interactive');
+    await removeButtonIn(stories).click();
+    await stories.getByRole('button', { name: /^Yes, remove/ }).click();
+    await expect(libraryRegion(page).getByText(/No stories yet/)).toBeVisible();
+    expect(deletes).toHaveLength(2);
+    expect(deletes[1]).toEqual({ url: sessionUrl(unfinishedId), body: null });
+    await page.reload();
+    await expect(libraryRegion(page).getByText(/No stories yet/)).toBeVisible();
+    await page.goto(`/dashboard/interactive/${unfinishedId}`);
+    await expect(unavailableHeading(page)).toBeVisible();
+    await page.context().close();
+  });
+
+  test('an open reader stops offering gameplay once its next request finds the story removed', async ({
+    browser,
+  }) => {
+    const reader = await registerFreshUser(browser);
+    const sessionId = await startStory(reader);
+
+    // A second tab of the same account removes the story from the library.
+    const library = await reader.context().newPage();
+    await library.goto('/dashboard/interactive');
+    const stories = libraryRegion(library).getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+    await removeButtonIn(stories).click();
+    await stories.getByRole('button', { name: /^Yes, remove/ }).click();
+    await expect(libraryRegion(library).getByText(/No stories yet/)).toBeVisible();
+
+    // The first tab has not heard anything yet; its next request learns the outcome.
+    await expect(
+      reader.getByRole('heading', { name: 'Praga courtyard', exact: true }),
+    ).toBeVisible();
+    await reader.getByRole('button', { name: 'Check the mailboxes by the stairwell' }).click();
+
+    await expect(unavailableHeading(reader)).toBeVisible();
+    await expect(reader.getByRole('button', { name: /Ask|Check|Climb/ })).toHaveCount(0);
+    await expect(reader).toHaveURL(new RegExp(`${sessionId}$`));
+    await reader.context().close();
+  });
+});
+
+test.describe('interactive story library — removal under browser-injected transport failures (not a real network fault)', () => {
+  test('a lost acknowledgement after the real DELETE committed is recovered by the identical retry', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const sessionId = await startStory(page);
+    await page.getByRole('link', { name: BACK_TO_LIBRARY }).click();
+    const stories = libraryRegion(page).getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+
+    const attempts: string[] = [];
+    let dropped = false;
+    await page.route(sessionUrl(sessionId), async (route) => {
+      if (route.request().method() !== 'DELETE') {
+        await route.fallback();
+        return;
+      }
+      attempts.push(route.request().url());
+      if (!dropped) {
+        dropped = true;
+        await route.fetch(); // the server really removes it ...
+        await route.abort('failed'); // ... but the browser never hears
+        return;
+      }
+      await route.continue();
+    });
+
+    await removeButtonIn(stories).click();
+    await stories.getByRole('button', { name: /^Yes, remove/ }).click();
+
+    const alert = stories.getByRole('alert');
+    await expect(alert).toContainText(/couldn.t confirm/i);
+    await expect(stories).toHaveCount(1); // kept until acknowledged
+    expect(attempts).toHaveLength(1); // nothing was retried automatically
+
+    // The first attempt really committed: another tab already finds the story gone.
+    const other = await page.context().newPage();
+    await other.goto(`/dashboard/interactive/${sessionId}`);
+    await expect(unavailableHeading(other)).toBeVisible();
+    await other.close();
+
+    await alert.getByRole('button', { name: 'Try again' }).click();
+    await expect(libraryRegion(page).getByText(/No stories yet/)).toBeVisible();
+    expect(attempts).toEqual([sessionUrl(sessionId), sessionUrl(sessionId)]);
+    await page.reload();
+    await expect(libraryRegion(page).getByText(/No stories yet/)).toBeVisible();
+    await page.context().close();
+  });
+
+  test('retrying a creation whose session was removed meanwhile is closed definitively, with no replacement', async ({
+    browser,
+  }) => {
+    const page = await registerFreshUser(browser);
+    const bodies: string[] = [];
+    let dropped = false;
+    await page.route(`${apiBaseUrl}/interactive/sessions`, async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.fallback();
+        return;
+      }
+      bodies.push(route.request().postData() ?? '');
+      if (!dropped) {
+        dropped = true;
+        await route.fetch(); // the session is really created ...
+        await route.abort('failed'); // ... but the answer is lost
+        return;
+      }
+      await route.continue();
+    });
+    await page.getByRole('link', { name: 'Interactive story' }).click();
+    await page.getByRole('button', { name: /^Start story/ }).click();
+    await expect(page.getByRole('alert').filter({ hasText: /couldn.t confirm/i })).toBeVisible();
+
+    // Another tab finds the committed session in the library and removes it.
+    const other = await page.context().newPage();
+    await other.goto('/dashboard/interactive');
+    const stories = libraryRegion(other).getByRole('listitem');
+    await expect(stories).toHaveCount(1);
+    await removeButtonIn(stories).click();
+    await stories.getByRole('button', { name: /^Yes, remove/ }).click();
+    await expect(libraryRegion(other).getByText(/No stories yet/)).toBeVisible();
+    await other.close();
+
+    // The held command's key stays consumed: the retry is refused, and nothing replaces it.
+    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: /was removed/i })).toBeVisible();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+    await expect(page).toHaveURL(/\/dashboard\/interactive$/);
+    await expect(page.getByRole('button', { name: 'Try again', exact: true })).toHaveCount(0);
+
+    // Only a deliberate start creates a new session, with a fresh key.
+    await page.getByRole('button', { name: /^Start story/ }).click();
+    await expect(page).toHaveURL(SESSION_URL);
+    expect(bodies).toHaveLength(3);
+    expect(bodies[2]).not.toBe(bodies[0]);
+    await page.context().close();
+  });
+});

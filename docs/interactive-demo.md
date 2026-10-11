@@ -101,11 +101,29 @@ Optional checks:
 - **Rate limit.** Starting more than five stories in ten minutes returns `429 RATE_LIMITED`
   (`INTERACTIVE_CREATE_RATE_LIMIT_*`, a private-pilot default).
 
+### Remove a story
+
+Continue from step 16, back on the catalogue with "Your stories" open. Removal hides a story; it
+does not erase what is stored for it.
+
+| #   | Action                                                   | Expected result                                                                                                                                               |
+| --- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 17  | Click **Remove** on the completed story, then **Cancel** | A confirmation says you can no longer read it again and that the stored data is not erased. Cancel closes it and focus returns to **Remove**; nothing is sent |
+| 18  | Click **Remove**, then **Yes, remove story**             | The row stays until the server confirms, then disappears with "was removed from your stories"; the list is empty again                                        |
+| 19  | **Reload the page**                                      | The story is still absent. Opening its `/dashboard/interactive/<session-id>` or `.../transcript` URL says "This story isn't available"                        |
+
+Removing frees the story's place under the per-user cap. An unfinished story can be removed the
+same way. If the answer is lost, the row stays with an "unconfirmed" message and **Try again** resends
+the same request, which is safe because removal is idempotent. A reader left open in another tab
+only finds out on its next request, then stops offering choices. The data is retained: there is no
+restore, hard deletion or retention worker, so this is not privacy erasure.
+
 ### Automated coverage
 
 The browser suite plays these journeys (both endings, reload and resume, ownership, cross-tab
-conflict, lost-response retries, illustrations, desktop and mobile layout, and paginated, illustrated
-rereading of both endings including reload, ownership, unfinished stories and artwork failures)
+conflict, lost-response retries, illustrations, desktop and mobile layout, paginated, illustrated
+rereading of both endings including reload, ownership, unfinished stories and artwork failures, and
+story removal including a lost acknowledgement and a creation retry for a removed story)
 against a real API on a **disposable** PostgreSQL/Redis pair. It is guarded: Playwright replaces the database settings and
 the launcher refuses any target other than `127.0.0.1:5440/storyme_e2e` and Redis
 `127.0.0.1:6380/15`, so it cannot touch the development database. Docker must be running.
