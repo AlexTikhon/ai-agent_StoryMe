@@ -496,7 +496,9 @@ function checkConsistency(m: ParsedManifest, issues: IssueSet): void {
   }
 
   // Halt information.
-  const anyStopped = derived.stopped > 0;
+  // An entry that carries a stop (stopped, or a checkpointed `recording` entry whose
+  // STOPPED result is durable) can only exist because the runner halted.
+  const anyStopped = entries.some((e) => e.status === 'stopped' || e.stop !== null);
   if (anyStopped && halt === null) issues.add('HALT_INCONSISTENT');
   if (state === 'FINAL' && halt === null && derived.completed !== derived.total) {
     issues.add('HALT_INCONSISTENT');
@@ -504,13 +506,18 @@ function checkConsistency(m: ParsedManifest, issues: IssueSet): void {
   if (halt !== null) {
     if (!reasons.includes(halt.kind)) issues.add('HALT_INCONSISTENT');
     if (halt.entry !== null) {
-      const stopped = entries.find((e) => e.key === halt.entry);
+      const halted = entries.find((e) => e.key === halt.entry);
+      // The runner sets the halt before it checkpoints the STOPPED result as
+      // `recording`, and only a FINAL manifest has settled that entry to `stopped`.
+      const haltable =
+        halted !== undefined &&
+        (halted.status === 'stopped' ||
+          (state === 'IN_PROGRESS' && halted.status === 'recording' && halted.outcome === 'STOPPED'));
       if (
-        stopped === undefined ||
-        stopped.status !== 'stopped' ||
-        stopped.stop === null ||
-        stopped.stop.kind !== halt.kind ||
-        stopped.stop.reason !== halt.reason
+        !haltable ||
+        halted.stop === null ||
+        halted.stop.kind !== halt.kind ||
+        halted.stop.reason !== halt.reason
       ) {
         issues.add('HALT_INCONSISTENT');
       }

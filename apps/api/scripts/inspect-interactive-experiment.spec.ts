@@ -65,6 +65,7 @@ import {
   completeBundle,
   providerStoppedBundle,
   recordingBundle,
+  runFixture,
   type Bundle,
 } from './experiment-bundles.fixture';
 import { EXIT_CODES, runCli } from './inspect-interactive-experiment';
@@ -72,7 +73,14 @@ import { EXIT_CODES, runCli } from './inspect-interactive-experiment';
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 let shared: string;
-let bundles: { complete: Bundle; stopped: Bundle; awaiting: Bundle; recording: Bundle };
+let bundles: {
+  complete: Bundle;
+  stopped: Bundle;
+  awaiting: Bundle;
+  recording: Bundle;
+  /** Frozen at the instant a provider stop is durable but its artifacts are not. */
+  haltedRecording: Bundle;
+};
 let tmp: string;
 let out: string[];
 let err: string[];
@@ -86,6 +94,8 @@ beforeAll(async () => {
     stopped: await providerStoppedBundle(path.join(shared, 'stopped')),
     awaiting: await awaitingResponseBundle(path.join(shared, 'awaiting')),
     recording: await recordingBundle(path.join(shared, 'recording')),
+    haltedRecording: (await runFixture(path.join(shared, 'halted'), 'generation-provider-stop'))
+      .haltedRecording!,
   };
 });
 afterAll(() => {
@@ -154,6 +164,38 @@ describe('inspect-interactive-experiment: results', () => {
   ])('exits 0 for a %s bundle', (_name, pick) => {
     expect(runCli(['--manifest', pick().manifestPath], io())).toBe(EXIT_CODES.OK);
     expect(JSON.parse(out[0]!).status).toBe('VALID');
+  });
+
+  it('exits 0 for a frozen halted-recording bundle without claiming liveness or billing', () => {
+    const bundle = copyOf(bundles.haltedRecording);
+    const before = digest(bundle.dir);
+
+    expect(runCli(['--manifest', bundle.manifestPath], io())).toBe(EXIT_CODES.OK);
+    expect(err).toEqual([]);
+    expect(out).toHaveLength(1);
+    const result = JSON.parse(out[0]!);
+    expect(result).toMatchObject({
+      status: 'VALID',
+      checkpoint: { state: 'IN_PROGRESS' },
+      halt: { kind: 'PROVIDER_STOP', entry: 'harbour-ledger', reason: 'NETWORK' },
+      issues: [],
+    });
+    expect(result.entries[1]).toMatchObject({
+      status: 'recording',
+      outcome: 'STOPPED',
+      usage: 'REPORTED',
+      requests: 1,
+      httpAttempts: 1,
+      stop: { kind: 'PROVIDER_STOP', reason: 'NETWORK' },
+    });
+    expect(result.entries[1].artifacts.state).toBe('NOT_RECORDED');
+    expect(result.observed).toMatchObject({
+      withinBudget: null,
+      coverage: { status: 'PARTIAL' },
+    });
+    expect(out[0]).not.toMatch(/\bdead\b|crash|killed|terminated|is running|currently running/i);
+    expect(result.evidenceLimits.join(' ')).toMatch(/billing/i);
+    expect(digest(bundle.dir)).toEqual(before);
   });
 
   it('is deterministic byte for byte', () => {

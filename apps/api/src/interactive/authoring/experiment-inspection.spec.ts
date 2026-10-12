@@ -20,9 +20,13 @@ import {
   completeBundle,
   providerStoppedBundle,
   recordingBundle,
+  runFixture,
   FAST_LIMITS,
   FIXTURE_MODEL,
+  HALTING_RUNS,
   type Bundle,
+  type FixtureRun,
+  type RunCapture,
 } from '../../../scripts/experiment-bundles.fixture';
 import { deriveBudget, summarizeObservation, type ExperimentManifest } from './experiment';
 import {
@@ -48,6 +52,13 @@ let bundles: {
   awaiting: Bundle;
   recording: Bundle;
 };
+const ALL_RUNS: readonly FixtureRun[] = [
+  'success',
+  'repaired',
+  'rejection',
+  ...HALTING_RUNS,
+];
+const captures = {} as Record<FixtureRun, RunCapture>;
 let tmp: string;
 let counter = 0;
 
@@ -59,6 +70,7 @@ beforeAll(async () => {
     awaiting: await awaitingResponseBundle(path.join(shared, 'awaiting')),
     recording: await recordingBundle(path.join(shared, 'recording')),
   };
+  for (const run of ALL_RUNS) captures[run] = await runFixture(path.join(shared, `run-${run}`), run);
 });
 afterAll(() => {
   rmSync(shared, { recursive: true, force: true });
@@ -412,6 +424,161 @@ describe('parseExperimentManifest (pure)', () => {
     const parsed = parseExperimentManifest(text(bundles.complete));
     if (!parsed.ok) throw new Error('expected ok');
     expect(parsed.manifest.configuration.budget).toEqual(deriveBudget(3, FAST_LIMITS));
+  });
+});
+
+// ── Halted recording checkpoints (real runner) ──────────────────────────────
+
+describe('halted recording checkpoints (real runner)', () => {
+  const HALTED: Array<[FixtureRun, string, string]> = [
+    ['generation-provider-stop', 'PROVIDER_STOP', 'NETWORK'],
+    ['repair-provider-stop', 'PROVIDER_STOP', 'NETWORK'],
+    ['cancellation', 'CANCELLED', 'CANCELLED'],
+  ];
+  const frozen = (run: FixtureRun): Bundle => captures[run].haltedRecording!;
+  const frozenManifest = (run: FixtureRun): Json => readManifest(frozen(run));
+  const parse = (manifest: Json) => parseExperimentManifest(JSON.stringify(manifest));
+
+  describe.each(HALTED)('%s', (run, kind, reason) => {
+    it('captures the STOPPED result while its entry is still recording', () => {
+      const manifest = frozenManifest(run);
+      expect(manifest['checkpoint'].state).toBe('IN_PROGRESS');
+      expect(manifest['entries'][1]).toMatchObject({
+        key: 'harbour-ledger',
+        status: 'recording',
+        outcome: 'STOPPED',
+        usage: 'REPORTED',
+        stop: { kind, reason },
+        artifacts: null,
+      });
+      expect(manifest['halt']).toEqual({ kind, entry: 'harbour-ledger', reason });
+    });
+
+    it('is accepted by the parser with its reported counts preserved', () => {
+      const manifest = frozenManifest(run);
+      const parsed = parse(manifest);
+      if (!parsed.ok) throw new Error(`rejected: ${JSON.stringify(parsed.issues)}`);
+      const entry = parsed.manifest.entries[1]!;
+      expect(entry.requests).toBe(manifest['entries'][1].requests);
+      expect(entry.httpAttempts).toBe(manifest['entries'][1].httpAttempts);
+      expect(entry.requests).toBeGreaterThanOrEqual(1);
+      expect(parsed.manifest.halt).toEqual(manifest['halt']);
+    });
+
+    it('is inspectable as saved state without liveness or billing claims', () => {
+      const bundle = copyOf(frozen(run));
+      const before = digest(bundle.dir);
+      const inspection = inspected(inspectExperiment(bundle.manifestPath));
+      expect(inspection.checkpoint.state).toBe('IN_PROGRESS');
+      expect(inspection.completeness).toMatchObject({ recording: 1, stopped: 0, awaitingResponse: 0 });
+      expect(inspection.halt).toEqual({ kind, entry: 'harbour-ledger', reason });
+      expect(inspection.entries[1]).toMatchObject({ status: 'recording', outcome: 'STOPPED' });
+      expect(inspection.entries[1]!.artifacts.state).toBe('NOT_RECORDED');
+      expect(inspection.observed).toMatchObject({ withinBudget: null });
+      expect(inspection.observed.coverage.status).toBe('PARTIAL');
+      expect(JSON.stringify(inspection)).not.toMatch(
+        /\bdead\b|crash|killed|terminated|is running|currently running/i,
+      );
+      expect(digest(bundle.dir)).toEqual(before);
+    });
+
+    it('has a corresponding final manifest whose halt references a stopped entry', () => {
+      const manifest = readManifest(captures[run].final);
+      expect(manifest['checkpoint'].state).toBe('FINAL');
+      expect(manifest['halt']).toEqual({ kind, entry: 'harbour-ledger', reason });
+      expect(manifest['entries'][1]).toMatchObject({ status: 'stopped', outcome: 'STOPPED' });
+      expect(parse(manifest).ok).toBe(true);
+      const inspection = inspected(inspectExperiment(copyOf(captures[run].final).manifestPath));
+      expect(inspection.completeness).toMatchObject({ status: 'INCOMPLETE', stopped: 1 });
+    });
+
+    it.each([
+      ['an unattempted entry', (m: Json) => (m['halt'].entry = 'clock-blackout')],
+      ['an earlier completed entry', (m: Json) => (m['halt'].entry = 'last-tram')],
+      ['a different kind', (m: Json) => (m['halt'].kind = kind === 'CANCELLED' ? 'PROVIDER_STOP' : 'CANCELLED')],
+      ['a different reason', (m: Json) => (m['halt'].reason = 'TIMEOUT')],
+      ['no halt at all', (m: Json) => (m['halt'] = null)],
+    ])('still rejects a halt that names %s', (_name, change) => {
+      const manifest = frozenManifest(run);
+      change(manifest);
+      expect(issues(parse(manifest))).toContain('HALT_INCONSISTENT');
+    });
+
+    it('still validates reported usage and counts on the recording entry', () => {
+      for (const change of [
+        (e: Json) => (e.usage = 'UNKNOWN'),
+        (e: Json) => ((e.requests = null), (e.httpAttempts = null)),
+      ]) {
+        const manifest = frozenManifest(run);
+        change(manifest['entries'][1]);
+        reobserve(manifest);
+        expect(issues(parse(manifest))).toContain('ENTRY_STATE_ILLEGAL');
+      }
+      const inflated = frozenManifest(run);
+      inflated['entries'][1].requests += 1;
+      expect(issues(parse(inflated))).toContain('OBSERVED_TOTALS_MISMATCH');
+    });
+
+    it('rejects the same recording entry in a FINAL manifest', () => {
+      const manifest = frozenManifest(run);
+      manifest['checkpoint'].state = 'FINAL';
+      manifest['completeness'].reasons = manifest['completeness'].reasons.filter(
+        (r: string) => r !== 'IN_PROGRESS',
+      );
+      reobserve(manifest);
+      const codes = issues(parse(manifest));
+      expect(codes).toContain('ENTRY_STATE_ILLEGAL');
+      expect(codes).toContain('HALT_INCONSISTENT');
+    });
+  });
+
+  it.each([
+    ['a successful recording entry', () => bundles.recording, 0],
+    ['an awaiting_response entry', () => bundles.awaiting, 1],
+    ['an unattempted entry', () => bundles.awaiting, 2],
+    ['a completed entry', () => bundles.awaiting, 0],
+  ])('does not let an IN_PROGRESS halt attach to %s', (_name, pick, index) => {
+    const manifest = readManifest(pick());
+    manifest['halt'] = {
+      kind: 'PROVIDER_STOP',
+      entry: manifest['entries'][index].key,
+      reason: 'NETWORK',
+    };
+    manifest['completeness'].reasons = ['PROVIDER_STOP', 'IN_PROGRESS'];
+    expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain('HALT_INCONSISTENT');
+  });
+
+  it('keeps a FINAL halt that references a non-stopped entry invalid', () => {
+    const manifest = readManifest(bundles.stopped);
+    manifest['halt'].entry = 'last-tram'; // completed
+    expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain('HALT_INCONSISTENT');
+  });
+});
+
+describe('checkpoint compatibility (every checkpoint the real runner emits)', () => {
+  it.each(ALL_RUNS)('parses every checkpoint of the %s run', (run) => {
+    const { checkpoints } = captures[run];
+    expect(checkpoints.length).toBeGreaterThanOrEqual(5);
+    const sequences: number[] = [];
+    checkpoints.forEach((raw, index) => {
+      const parsed = parseExperimentManifest(raw);
+      if (!parsed.ok) {
+        throw new Error(`${run} checkpoint ${index + 1} rejected: ${JSON.stringify(parsed.issues)}`);
+      }
+      sequences.push(parsed.manifest.checkpoint.sequence);
+      expect(parsed.manifest.checkpoint.state).toBe(
+        index === checkpoints.length - 1 ? 'FINAL' : 'IN_PROGRESS',
+      );
+    });
+    expect(sequences).toEqual(sequences.map((_, i) => i + 1));
+  });
+
+  it.each(HALTING_RUNS)('emits a halted recording checkpoint in the %s run', (run) => {
+    const halted = captures[run].checkpoints
+      .map((raw) => JSON.parse(raw) as Json)
+      .filter((m) => m['halt'] !== null && m['checkpoint'].state === 'IN_PROGRESS')
+      .filter((m) => m['entries'].some((e: Json) => e.status === 'recording' && e.outcome === 'STOPPED'));
+    expect(halted.length).toBeGreaterThan(0);
   });
 });
 
