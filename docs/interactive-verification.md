@@ -436,3 +436,98 @@ three stages of the `test` script were run directly with `--force` on turbo.
   excess-property error remains in `presentation.spec.ts` (`title` in the
   `scene` literal); it is outside this repair.
 - This was a Windows / Node 24 run; no remote run exists for the repaired tree.
+
+---
+
+## 11. Follow-up: Phase 16.3 repair of finding 3 (added after Phase 16.2)
+
+Sections 1 to 10 above are not amended. This section records the repair of
+finding 3 only (the `production-browser` job's dependency installation).
+Findings 4 and 5 are deliberately untouched. Nothing was committed, pushed,
+deployed or dispatched, no remote run was started or rerun, and no paid call,
+database, API or credential was used.
+
+### 11.1 Cause and change
+
+`ci.yml` sets `NODE_ENV: production` at job level for `production-browser`, so
+`pnpm install --frozen-lockfile` skips devDependencies, including the workspace
+`typescript` and `@playwright/test`. Without a local compiler the `@book/types`
+build runs whichever `tsc` is on `PATH`.
+
+Change, one line in `.github/workflows/ci.yml`, job `production-browser` only:
+
+```diff
+-      - run: pnpm install --frozen-lockfile
++      - run: pnpm install --frozen-lockfile --prod=false
+```
+
+plus a three-line comment above it. `--frozen-lockfile` is kept and the lockfile
+is unchanged. `NODE_ENV: production` stays at job level, so the web build and
+`next start` (which the Playwright config also pins to production) are
+unchanged. No dependency moved, no retry or skip was added, and the other jobs,
+triggers, permissions, concurrency, action versions, Node 22, pnpm 9.4.0, the
+15-minute timeout and the smoke assertions are untouched.
+
+### 11.2 Method
+
+Two fresh `git -c core.autocrlf=false archive HEAD` snapshots of
+`162f2f4` at short paths (`C:\sm-163a` baseline, `C:\sm-163b` fixed). 787 files
+each, no `.env` (only the tracked `.env.example` files). Every command ran with the
+job's effective environment (workflow env overridden by job env, plus `CI=true`):
+`NODE_ENV=production`, mock providers, `PRODUCT_MODE=home`,
+`NEXT_PUBLIC_PRODUCT_MODE=home`, `NEXT_PUBLIC_API_URL=http://127.0.0.1:4100/api`,
+`NEXT_PUBLIC_AUTH_MODE=jwt`. The developer workspace's `node_modules` were not
+touched. The fixed snapshot's `ci.yml` is byte-identical to the working tree.
+
+### 11.3 Results
+
+| Step                                                 | Baseline (`C:\sm-163a`)                                                          | Fixed (`C:\sm-163b`)                                                  |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile` [`--prod=false`]    | exit 0, `+333`, "devDependencies: skipped because NODE_ENV is set to production" | exit 0, `+805`, `typescript 5.9.3`, eslint, prettier, turbo installed |
+| `typescript` in root / `packages/types` / `apps/web` | absent in all three                                                              | resolves to `C:\sm-163b\node_modules\.pnpm\typescript@5.9.3`          |
+| `@playwright/test` from `apps/web`                   | absent                                                                           | `1.62.0`, inside the snapshot                                         |
+| `pnpm --filter @book/types build`                    | **exit 2**, global `tsc` 6.0.2: `TS5107 moduleResolution=node10 is deprecated`   | exit 0, `dist/` emitted, `pnpm exec tsc` = 5.9.3                      |
+| `playwright install --with-deps chromium`            | not reached                                                                      | exit 0                                                                |
+| `pnpm --filter @book/web build`                      | not reached                                                                      | exit 0, production build, 17 routes, `BUILD_ID` written               |
+| `pnpm --filter @book/web test:e2e:production`        | not reached                                                                      | exit 0, 1 passed (12.3 s), no retry or flaky marker                   |
+
+Compiler provenance: the fixed snapshot resolved TypeScript by `require.resolve`
+from each package directory and by `pnpm exec`, both landing in the snapshot's
+own `node_modules/.pnpm/typescript@5.9.3`. The machine's global `tsc` (6.0.2)
+was still on `PATH` and was not used. The baseline failure is the same mechanism
+the audit saw (finding 3); only the diagnostic code differs by compiler version.
+
+Smoke run: Playwright's `webServer` starts `next start` with `NODE_ENV=production`
+against the freshly built `.next` output on 127.0.0.1:3200. Nothing listened on
+4100 (the configured API URL), no database or Redis was started, no `.env` and no
+provider credential existed, and the spec blocks all script requests. It passed
+with the three-line assertion set unchanged.
+
+Workflow diff: both files parsed with `js-yaml` 4.3.0; a structural comparison
+found exactly one differing value, `/jobs/production-browser/steps/3/run`.
+`git diff --check` exit 0; Prettier 3.9.4 `--check` on the two changed files is
+clean. All four jobs (`checks`, `integration`, `production-browser`,
+`interactive-browser`) still parse.
+
+### 11.4 Cleanup
+
+| Resource                                                   | Action                            | End state                |
+| ---------------------------------------------------------- | --------------------------------- | ------------------------ |
+| `C:\sm-163a`, `C:\sm-163b`                                 | created by this repair, removed   | gone                     |
+| Playwright `next start` on 3200                            | started and stopped by Playwright | no listener on 3200/4100 |
+| Pre-existing `node` processes (17988, 26120, 27664, 31468) | untouched                         | same PIDs after the run  |
+| Chromium in the user's Playwright cache                    | already present, no download      | unchanged                |
+
+### 11.5 Limits
+
+- Local verification only: Windows 11, Node v24.11.1 (CI uses Linux, Node 22,
+  and `--with-deps` installs OS packages there; that flag is a no-op here).
+  pnpm was 9.4.0, the same as CI.
+- **No remote success is claimed.** No `ci.yml` run exists for a SHA containing
+  this change; the last observed remote run (`dc5b31e`) failed this job with
+  TS5108 before the fix. Remote confirmation requires a run for the exact SHA.
+- The remote runner's compiler version remains unknown. The fix does not depend
+  on it, because the job no longer falls back to a global compiler.
+- Findings 4 (intermittent integration) and 5 (cover-endpoint 500s) are open.
+  Finding 2's `NEXT_PUBLIC_API_URL` coupling was repaired in 16.2 and does not
+  affect this job.
