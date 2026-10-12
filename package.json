@@ -37,7 +37,8 @@
     "preflight:interactive": "pnpm --filter @book/api preflight:interactive",
     "report:interactive:authoring": "pnpm --filter @book/api report:interactive:authoring",
     "review:interactive:routes": "pnpm --dir apps/api --silent review:interactive:routes",
-    "experiment:interactive:authoring": "pnpm --dir apps/api --silent experiment:interactive:authoring"
+    "experiment:interactive:authoring": "pnpm --dir apps/api --silent experiment:interactive:authoring",
+    "inspect:interactive:experiment": "pnpm --dir apps/api --silent inspect:interactive:experiment"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.5.0",

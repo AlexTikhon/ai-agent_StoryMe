@@ -357,3 +357,35 @@ Nothing resumes, retries or replaces an attempt automatically: an interrupted ex
 - `offline` replays scripted fixtures and verifies the harness. It says nothing about any model.
 - One real run is one observation per brief: no variance, no significance, no latency benchmark.
 - Real-model quality remains unverified, and every corpus scenario (including `warsaw-last-tram`) remains unpublished and unapproved.
+
+## Inspecting a saved experiment (Phase 14.3)
+
+`pnpm --silent inspect:interactive:experiment --manifest <manifest.json>` validates one saved `interactive-authoring-experiment-manifest/v2` file and summarises it as JSON. It is read-only: no resume, retry, repair, deletion or cleanup, no provider construction, no credentials, no network, no database, no file writes. It works on a `--complete`/`--partial` directory and on an `.incomplete` one a killed run left behind.
+
+```bash
+pnpm --silent inspect:interactive:experiment --manifest scenario-drafts/<experiment-dir>/manifest.json
+```
+
+**What is checked.**
+
+- The strict v2 schema (an unknown key is an error); another schema version, including v1, is refused as `SCHEMA_UNSUPPORTED` and never reinterpreted.
+- Unique entry identities; legal status/outcome/usage combinations per entry (unknown usage is never read as zero); the runner's ordering (settled entries, then at most one unresolved or stopped entry, then unattempted ones).
+- Checkpoint state versus completeness, entry counts, reasons and halt information.
+- Observed totals, coverage and `withinBudget`, recomputed with the runner's own `summarizeObservation`; the derived budget and execution policy.
+- The artifacts the checkpoint **explicitly references**, nothing else: references must be relative paths of plain segments inside the manifest's directory (absolute paths, drive letters, backslashes, `..`, and symlinks/junctions on the way are refused), counts and read sizes are bounded, each referenced run report is re-parsed with `parseRunReport` and compared with the manifest (brief hash, provider/model, prompt/schema versions, outcome, repaired flag or stop reason, request and HTTP-attempt counts), and candidate, review and route-review files are checked for existence only (their prose is never read). Artifacts that were never recorded (an `awaiting_response` or `recording` entry has none yet) are valid; unreferenced files in the directory are not discovered or recovered.
+
+**Output and exit codes.** One JSON document on stdout (`interactive-authoring-experiment-inspection/v1`): checkpoint and completeness state, per-entry status with reported or `UNKNOWN` usage (counts are `null`, never `0`), known totals with `coverage` and `totalsAreLowerBound`, artifact-check counts, and fixed `evidenceLimits` sentences. Only identifiers, enums, counts and fixed vocabulary are echoed: no absolute path, credential, prose, diagnostic message or raw exception.
+
+| Exit | Meaning |
+| ---- | ------- |
+| `0` | valid inspection, including a valid incomplete checkpoint |
+| `1` | unreadable, unsupported or inconsistent manifest or artifacts: stdout carries only `{ "status": "INVALID", "issues": [{ "code", "entry"? }] }`, never a partial summary |
+| `2` | usage error (nothing on stdout) |
+
+`pnpm` 9.4 reports any failed script as exit `1`, including through `pnpm --dir apps/api`; the exact `1`/`2` distinction is visible on the script process itself (`pnpm exec ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/inspect-interactive-experiment.ts ...`). The `status` field in stdout always tells the cases apart.
+
+**Evidence limits.**
+
+- An `IN_PROGRESS` checkpoint is the last saved state. It does not show whether a process is active, whether any process ended, or that any request failed or completed; `awaiting_response` means only that no result had been recorded.
+- Unknown usage stays unknown and known counts are a lower bound unless `coverage` is `COMPLETE`. Nothing here establishes what was billed.
+- A valid inspection means the checkpoint and the artifacts it names agree with each other. It is not editorial approval, not evidence of prose quality and not evidence that a model performed well.

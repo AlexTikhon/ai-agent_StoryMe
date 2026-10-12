@@ -1,9 +1,12 @@
-import { fork, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { fork, spawnSync, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AUTHORING_CORPUS } from '../src/interactive/authoring/corpus';
+import { inspectExperiment } from '../src/interactive/authoring/experiment-inspection';
+import { runCli as inspectCli } from './inspect-interactive-experiment';
 
 /**
  * A real process, terminated for real. The only synchronisation is IPC: the
@@ -31,6 +34,23 @@ afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+/** Content hash and mtime of every file under a directory. */
+function digest(root: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else {
+        result[path.relative(root, full)] =
+          createHash('sha256').update(readFileSync(full)).digest('hex') + `:${statSync(full).mtimeMs}`;
+      }
+    }
+  };
+  walk(root);
+  return result;
+}
 
 function waitFor<T>(proc: ChildProcess, predicate: (message: unknown) => T | undefined): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -120,5 +140,67 @@ describe('experiment interruption (real child process)', () => {
     });
     // The first run's artifacts really are on disk where the checkpoint says.
     expect(readdirSync(path.join(work, first!['artifacts'].dir))).toContain('validation-report.json');
-  }, 90_000);
+
+    // Inspecting the checkpoint a killed process left behind: read-only, and the
+    // unresolved second entry stays unresolved (unknown usage, not failed, not zero).
+    const before = digest(work);
+    const namesBefore = readdirSync(draftsRoot);
+    const outcome = inspectExperiment(path.join(work, 'manifest.json'));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('inspection failed');
+    const inspection = outcome.inspection;
+    expect(inspection.checkpoint.state).toBe('IN_PROGRESS');
+    expect(inspection.completeness).toMatchObject({
+      status: 'INCOMPLETE',
+      completed: 1,
+      awaitingResponse: 1,
+      unattempted: 1,
+    });
+    expect(inspection.entries.map((e) => [e.key, e.status, e.usage])).toEqual([
+      [AUTHORING_CORPUS[0]!.key, 'completed', 'REPORTED'],
+      [AUTHORING_CORPUS[1]!.key, 'awaiting_response', 'UNKNOWN'],
+      [AUTHORING_CORPUS[2]!.key, 'unattempted', 'NONE'],
+    ]);
+    expect(inspection.entries[1]).toMatchObject({ requests: null, httpAttempts: null, outcome: null });
+    expect(inspection.entries[0]!.artifacts.state).toBe('VERIFIED');
+    expect(inspection.observed).toMatchObject({
+      requests: 1,
+      withinBudget: null,
+      totalsAreLowerBound: true,
+      coverage: { status: 'PARTIAL', reported: 1, unknown: 1, notDispatched: 1 },
+    });
+
+    const printed: string[] = [];
+    const code = inspectCli(['--manifest', path.join(work, 'manifest.json')], {
+      out: (text) => printed.push(text),
+      err: (line) => printed.push(line),
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(printed[0]!).entries[1].usage).toBe('UNKNOWN');
+
+    // The same checkpoint through the real pnpm entry point.
+    const viaPnpm = spawnSync(
+      'pnpm',
+      ['--silent', 'inspect:interactive:experiment', '--manifest', `"${path.join(work, 'manifest.json')}"`],
+      {
+        cwd: API_ROOT,
+        encoding: 'utf8',
+        shell: process.platform === 'win32',
+        env: { ...process.env, OPENAI_API_KEY: '' },
+        timeout: 120_000,
+      },
+    );
+    expect(viaPnpm.status).toBe(0);
+    expect(viaPnpm.stderr).toBe('');
+    expect(JSON.parse(viaPnpm.stdout)).toMatchObject({
+      status: 'VALID',
+      checkpoint: { state: 'IN_PROGRESS' },
+    });
+
+    // Nothing changed: same names, same bytes, same timestamps, still .incomplete.
+    expect(readdirSync(draftsRoot)).toEqual(namesBefore);
+    expect(digest(work)).toEqual(before);
+    const after = JSON.parse(readFileSync(path.join(work, 'manifest.json'), 'utf8')) as Record<string, any>;
+    expect(after['entries'][1]).toMatchObject({ status: 'awaiting_response', usage: 'UNKNOWN' });
+  }, 150_000);
 });

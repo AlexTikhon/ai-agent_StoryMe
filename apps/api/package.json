@@ -45,6 +45,7 @@
     "report:interactive:authoring": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/report-interactive-authoring.ts",
     "review:interactive:routes": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/review-interactive-routes.ts",
     "experiment:interactive:authoring": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/experiment-interactive-authoring.ts",
+    "inspect:interactive:experiment": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/inspect-interactive-experiment.ts",
     "eval:story:openai": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts openai"
   },
   "dependencies": {
