@@ -219,13 +219,16 @@ evidence (see [interactive-demo.md](interactive-demo.md#automated-coverage)).
 
 Authoring is a set of local commands with no endpoint, database, queue or editor UI:
 
-| Command                                             | Purpose                                                                    |
-| --------------------------------------------------- | -------------------------------------------------------------------------- |
-| `pnpm author:interactive --mode mock`               | Brief to candidate, at most one generation and one repair, then validation |
-| `pnpm playtest:interactive --candidate <file>`      | Play a candidate through the production engine; read-only                  |
-| `pnpm review:interactive:routes --candidate <file>` | List every playable route with its narration (JSON or Markdown); read-only |
-| `pnpm preflight:interactive --candidate --approval` | Re-validate a candidate and check its approval record; read-only           |
-| `pnpm eval:interactive:authoring:offline`           | Fixture evaluation of the authoring pipeline; no services, keys or network |
+| Command                                                 | Purpose                                                                            |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `pnpm author:interactive --mode mock`                   | Brief to candidate, at most one generation and one repair, then validation         |
+| `pnpm playtest:interactive --candidate <file>`          | Play a candidate through the production engine; read-only                          |
+| `pnpm review:interactive:routes --candidate <file>`     | List every playable route with its narration (JSON or Markdown); read-only         |
+| `pnpm preflight:interactive --candidate --approval`     | Re-validate a candidate and check its approval record; read-only                   |
+| `pnpm eval:interactive:authoring:offline`               | Fixture evaluation of the authoring pipeline; no services, keys or network         |
+| `pnpm report:interactive:authoring --report <file>`     | Compare saved run reports by group; no model call; unknown usage stays unknown     |
+| `pnpm experiment:interactive:authoring`                 | Plan (default) or offline run over the three-entry corpus; `--mode openai` is paid |
+| `pnpm inspect:interactive:experiment --manifest <file>` | Validate and summarize a saved experiment manifest; read-only                      |
 
 A successful run writes a `--review-required` directory: the normalized candidate, a validation
 report, a human-readable review report, and an approval template that is `pending`. There is no

@@ -16,6 +16,9 @@ StoryMe is a pnpm/Turborepo monorepo with two supported products:
 
 **Start here:**
 
+- **[Engineering case study](docs/interactive-case-study.md)** — the interactive
+  product's design decisions, failure behavior, evidence and limits, with links
+  to the code and tests behind each claim.
 - **[Interactive demo](docs/interactive-demo.md)** — a reproducible walkthrough
   of the reader and of the offline authoring workflow (Windows PowerShell).
 - [Interactive section of CURRENT_PRODUCT](docs/CURRENT_PRODUCT.md#interactive-illustrated-stories)
@@ -39,9 +42,10 @@ flowchart LR
   I -.->|versioned scenario in source| C
 ```
 
-No language model runs during play, and real-model authoring quality is
-unverified: the authoring workflow has only been exercised end to end with its
-deterministic mock provider.
+No language model runs during play. Real-model authoring quality is
+unverified: the authoring workflow has been exercised only with a deterministic
+mock provider, scripted fixtures over a three-entry offline corpus, and
+intercepted HTTP for the OpenAI adapter. No paid experiment has been run.
 
 ## Durable integration tests
 
