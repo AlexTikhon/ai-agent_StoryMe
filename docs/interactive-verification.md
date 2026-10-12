@@ -875,3 +875,187 @@ production code was never modified.
 - The real-database settle test and the 12.5/13.5 controls cover one service and
   one lock. Local run only: Windows 11, Node 24, Linux containers.
 - Finding 5 (cover-endpoint 500s) is open and is the next task.
+
+---
+
+## 14. Follow-up: Phase 16.5 repair of finding 5 (added after Phase 16.4.1)
+
+Sections 1 to 13 are left as written. Section 5 said the failing handler path
+was `getOrCreateCoverThumbnail` and `renderCoverThumbnail`, and that the cause was
+not established. **That attribution was wrong and is corrected here.** The
+`cover` image id reads the original published asset; only `cover-thumb` calls
+`getOrCreateCoverThumbnail`. Neither the thumbnail code nor storage was involved.
+
+### 14.1 Established cause
+
+The asset service succeeds. The 500 is raised afterwards, in Nest's Express
+adapter, when the browser has already aborted the request.
+
+1. The published-book reader requests `/images/cover` on mount and aborts that
+   request when its effect re-runs (slide change, remount, development
+   double-invoke). The client is then gone.
+2. `BookAssetService.getPublishedImage` still resolves with the image bytes.
+3. The controller returns `new StreamableFile(buffer)`.
+   `ExpressAdapter.reply` calls `stream.pipeline(stream, response)` on a response
+   that is already destroyed, which throws `ERR_STREAM_UNABLE_TO_PIPE`
+   (`Cannot pipe to a closed or destroyed stream`) synchronously.
+4. `HttpExceptionFilter` receives a plain `Error`, logs `Unhandled exception on
+GET ... errorName=Error` and tries to write a 500 to a dead socket.
+
+No user sees a failure: the cover the reader asked for was the one it had
+already abandoned. The defect is a false 500 in logs and error accounting, and an
+error response attempted on a destroyed socket.
+
+What is inferred, not tested: that development-mode double-invoked effects are
+the trigger in these runs. The abort itself is established (`req.aborted` and
+`res.destroyed` were both true in the filter, headers not sent). A production
+build, where every slide change or navigation also aborts, was not run.
+
+### 14.2 Reproduction and mapping
+
+Method: `git archive HEAD` with `core.autocrlf=false`, extracted to
+`C:\sm-p165` (788 files; 3 binary files contain CR bytes, no text file does),
+`pnpm install --frozen-lockfile --offline`, `prisma generate`, `@book/types`
+built. No `.env` in the snapshot; the working tree's `apps/api/.env` was not
+opened. The tree was clean at the start. Targets: `docker-compose.e2e.yml` under
+project `p165-cover` (not the repo's `storyme-integration` project, whose exited
+containers were left alone). Temporary instrumentation existed only in the
+snapshot (a wrapper around `getPublishedImage` and extra fields in the filter)
+and was removed before the fix was verified; both files were hash-compared with
+`HEAD` afterwards.
+
+`storyme.smoke.spec.ts`, retries off, two runs on unmodified `HEAD` code:
+
+| Run | Result    | Unhandled `GET .../images/cover` 500s | Distinct books |
+| --- | --------- | ------------------------------------- | -------------- |
+| 1   | 14 passed | 8                                     | 5              |
+| 2   | 14 passed | 7 (all `ERR_STREAM_UNABLE_TO_PIPE`)   | 4              |
+
+Run 2 entries, mapped to Playwright test windows by timestamp and book id:
+
+| Test                                                      | 500s | Book                   | Asset service result for that request |
+| --------------------------------------------------------- | ---- | ---------------------- | ------------------------------------- |
+| logs in, generates a mock book, and downloads its PDF     | 1    | generated, `complete`  | `cover: ok` (74-byte PNG)             |
+| corrects page text and confirms one page-image regen      | 2    | generated, `complete`  | `cover: ok`                           |
+| retries a failed book through the worker (seeded `...06`) | 1    | `complete` after retry | `cover: ok`                           |
+| atomically replaces a successful publication              | 3    | generated, `complete`  | `cover: ok`                           |
+
+In run 1 the same mechanism also hit the permanent-deletion test once (a race:
+the reader's cover request was still in flight when the book was deleted). The
+count differs between runs because the abort is timing dependent. The audit's
+"one a seeded fixture" is the retry fixture `...06`, which is a real generation
+by the time it is read; it is not one of the four publication fixtures.
+
+Every throw inside `BookAssetService.getPublishedImage` in both runs was a
+`NotFoundException` (404). None was a 500.
+
+### 14.3 Incomplete fixtures, separately
+
+The four publication fixtures (`...11` to `...14`) carry `bookPreview` and
+`previewPdfUrl` but no image bytes. They resolve to the legacy namespace and the
+key `<bookId>/cover` does not exist, so their cover and `cover-thumb` requests
+return **404 `Published image not found in storage`** (run 1: 6 `cover` plus 9
+`cover-thumb` entries, all 404). That is the existing contract and is a fixture
+gap, not a production defect. It had hidden real regressions: no test asserted
+that these books show a cover.
+
+### 14.4 Regression, failing first
+
+New file `apps/api/src/books/books.controller.published-image-http.spec.ts`
+drives the real controller through Nest's Express adapter over HTTP, with a stub
+`BooksService`. The abort test opens a request, destroys the client socket once
+the handler has been reached, waits for the server-side close, then lets the
+service resolve with a valid PNG.
+
+| Test                                                                 | Unfixed controller                                                        | Fixed controller |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------- |
+| client aborts before the cover is ready: no unhandled-exception log  | **failed**: `Unhandled exception on GET .../images/cover errorName=Error` | passed           |
+| connected client gets 200, `image/png`, nosniff, no-store, decodable | passed                                                                    | passed           |
+| missing/not-visible image keeps the 404 body                         | passed                                                                    | passed           |
+| stale `edition` keeps 409 and forwards the edition                   | passed                                                                    | passed           |
+
+Two harness errors of mine were fixed before this result was trusted, and are
+not product findings: vitest's esbuild transform emits no `design:paramtypes`,
+so Nest injected nothing (every test returned 500 until the constructor type was
+declared in the spec), and a first instrumentation patch mangled a source file
+through shell and `String.replace` escaping, so the API did not start.
+
+### 14.5 What changed
+
+| File                                                               | Change                                                                                                                              |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api/src/books/books.controller.ts`                           | `getPublishedImage` returns `undefined` when `res.destroyed` after the service call (return type widened)                           |
+| `apps/api/src/books/books.controller.published-image-http.spec.ts` | new, the four tests above                                                                                                           |
+| `apps/api/scripts/e2e-fixtures.ts`                                 | seeds legacy-key `cover`, `page-1`, `back-cover` PNGs for the four publication fixtures; cleanup also removes `tmp/images/<bookId>` |
+| `apps/web/e2e/storyme.smoke.spec.ts`                               | cover assertions below                                                                                                              |
+
+Unchanged: publication pointers, ownership and edition checks, storage-key
+validation, deletion fencing, `BookAssetService`, the exception filter, PDF
+routes, CI workflows, dependencies, schema and all web application code.
+
+Smoke assertions added: the cover route returns 200, `image/png`, non-empty bytes
+and a PNG whose IHDR width and height are positive; the reader's
+`Illustration for cover` image is visible with `naturalWidth > 0`, for a
+generated book and for the complete, running, failed and cancelled fixtures; the
+previous edition's cover stays served during an active regeneration, the new
+edition is served afterwards and the replaced edition returns 409; a new test
+checks anonymous 401, another user 404 and stale edition 409 with the
+`PUBLISHED_EDITION_CHANGED` body; the deletion test asserts cover 200 before and
+404 after.
+
+### 14.6 Verification (local only)
+
+| Check                                                                    | Result                                                                       |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| regression spec on unfixed controller                                    | 1 failed, 3 passed                                                           |
+| regression + controller + asset-service specs, fixed                     | 3 files, 60 passed                                                           |
+| `pnpm --filter @book/api test`                                           | exit 0, 175 files, 2642 passed, 3 skipped                                    |
+| `pnpm --filter @book/api typecheck`                                      | exit 0                                                                       |
+| `typecheck:scripts`, `typecheck:integration:hardening`                   | exit 0 each                                                                  |
+| `pnpm --filter @book/api lint`                                           | exit 0 after one Prettier error in the new spec was fixed (first run exit 1) |
+| `pnpm --filter @book/web typecheck` (includes the e2e spec), `lint`      | exit 0 each; ESLint on `e2e/storyme.smoke.spec.ts` clean                     |
+| `pnpm format:check` in the snapshot                                      | flagged only 4 untracked `.diag/*.json` files of mine; no tracked file       |
+| `git diff --check` (working tree)                                        | exit 0                                                                       |
+| new assertions, fix applied, fixtures **not** seeded                     | 6 failed, 9 passed (see below)                                               |
+| new assertions, fixtures seeded                                          | 15 passed, 0 unhandled exceptions                                            |
+| complete `storyme.smoke.spec.ts`, guarded launcher, `--retries=0`, final | **15 passed** in 2.4 min, 0 unhandled exceptions, "E2E fixtures cleaned up." |
+
+The 6 failures with unseeded fixtures: the four fixture reader tests (no
+`<img>`, because the cover is a 404) and the refusal test (current-edition cover 404) are the incomplete-fixture evidence. The sixth, the generated-book test,
+was my helper: the lazy-loaded illustration has no height until it nears the
+viewport and the reader sits below the fold on that long page. The helper now
+scrolls the reader into view first. That is not a product defect.
+
+Not run, because nothing they cover changed: web unit tests and build (no web
+application code changed; only an e2e spec), `render:pdf` (no PDF code changed),
+the integration suite.
+
+### 14.7 Cleanup
+
+| Resource                                              | Action                              | End state                                            |
+| ----------------------------------------------------- | ----------------------------------- | ---------------------------------------------------- |
+| compose project `p165-cover` (postgres, redis)        | created by this task, `down -v`     | containers, volume, network gone                     |
+| LF snapshot `C:\sm-p165` (incl. test results, logs)   | created by this task, removed       | gone                                                 |
+| `storyme-integration-*` containers and other projects | untouched                           | same names and status, still exited                  |
+| ports 5440, 6380, 4100, 3100                          | free at start                       | no listener; only `TIME_WAIT` sockets, which age out |
+| working tree `apps/api/tmp`, `apps/api/.env`          | never used by any run, never opened | unchanged                                            |
+
+### 14.8 Limits and what is still open
+
+- No remote success is claimed. Nothing was committed, pushed or deployed and no
+  workflow ran. Local only: Windows 11, Node 24, Linux containers.
+- The browser suite cannot observe the server-side classification of an aborted
+  request, because the client has already left. The API HTTP spec is the
+  detector; the smoke assertions cover the served cover, the reader and the
+  refusal contract. A deliberate E2E abort test was not added for that reason.
+- `GET /api/books/:id/pdf/preview` returns a `StreamableFile` through the same
+  adapter path and should have the same latent defect for aborted downloads. It
+  was not reproduced and was not changed, to keep this phase to the demonstrated
+  cause and to avoid touching PDF behavior. It is open.
+- The `cover-thumb` route shares the controller guard but its abort case was not
+  separately exercised.
+- Finding 5 is repaired for `/images/*` aborts only. CI still does not run
+  `storyme.smoke.spec.ts` (finding 5's second point); that is unchanged.
+- Each suite ran once after the final change, except the smoke spec, which ran
+  twice after it (15 passed each time). Timing-dependent aborts were not stress
+  tested.

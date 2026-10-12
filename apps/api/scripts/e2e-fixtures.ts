@@ -3,6 +3,8 @@ import { BookStatus, PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { imageAssetKey, LocalImageAssetStorage } from '../src/images/image-asset-storage';
+import { generateMockImagePng } from '../src/images/mock-image-producer';
 
 export const E2E_EMAIL_SUFFIX = '@e2e.storyme.test';
 export const E2E_LOGIN_EMAIL = `verified-login${E2E_EMAIL_SUFFIX}`;
@@ -66,6 +68,18 @@ function assertDedicatedE2eTargets(): void {
   }
 }
 
+async function seedPublicationImages(bookId: string): Promise<void> {
+  const storage = new LocalImageAssetStorage();
+  const slots: Array<[string, string]> = [
+    [imageAssetKey(bookId, 'cover'), 'cover'],
+    [imageAssetKey(bookId, 'page', 1), 'page-1'],
+    [imageAssetKey(bookId, 'back_cover'), 'back-cover'],
+  ];
+  for (const [key, slot] of slots) {
+    await storage.saveImageAsset(key, generateMockImagePng(`${bookId}:${slot}`), 'image/png');
+  }
+}
+
 async function resetFixtures(seed: boolean): Promise<void> {
   assertDedicatedE2eTargets();
   const prisma = new PrismaClient();
@@ -96,6 +110,9 @@ async function resetFixtures(seed: boolean): Promise<void> {
       bookIds.flatMap((bookId) => [
         rm(join(tmpRoot, 'books', bookId), { recursive: true, force: true }),
         rm(join(tmpRoot, 'images', 'books', bookId), { recursive: true, force: true }),
+        // Legacy (pre-claim) image keys are `<bookId>/<slot>`, used by the
+        // seeded publication fixtures below.
+        rm(join(tmpRoot, 'images', bookId), { recursive: true, force: true }),
       ]),
     );
 
@@ -160,6 +177,10 @@ async function resetFixtures(seed: boolean): Promise<void> {
             bookPreview: publicationPreview,
           },
         });
+        // The fixtures carry no publication pointers, so they resolve to the
+        // legacy namespace. Without bytes at those keys every illustration
+        // request is (correctly) a 404, which hides real cover regressions.
+        await seedPublicationImages(fixture.id);
       }
       await prisma.book.create({
         data: {

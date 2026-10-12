@@ -175,8 +175,13 @@ export class BooksController {
     @Param('imageId') imageId: string,
     @Res({ passthrough: true }) res: Response,
     @Query('edition') edition?: string,
-  ): Promise<StreamableFile> {
+  ): Promise<StreamableFile | undefined> {
     const result = await this.booksService.getPublishedImage(id, user.id, imageId, edition);
+    // The reader aborts in-flight image requests when a slide changes or the
+    // component remounts. By now there is nobody to stream to, and piping into
+    // a destroyed response throws ERR_STREAM_UNABLE_TO_PIPE, which would be
+    // reported as an unhandled 500 although the image itself was served fine.
+    if (res.destroyed) return undefined;
     res.set({
       'Content-Type': result.contentType,
       'Content-Disposition': `inline; filename="${result.filename}"`,
