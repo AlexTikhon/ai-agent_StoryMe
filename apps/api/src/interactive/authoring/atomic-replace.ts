@@ -23,9 +23,19 @@ export interface ReplaceOps {
 
 export const defaultReplaceOps: ReplaceOps = {
   writeTemp: (file, text) => {
+    const bytes = Buffer.from(text, 'utf8');
     const fd = openSync(file, 'wx');
     try {
-      writeSync(fd, text, null, 'utf8');
+      // writeSync may accept fewer bytes than offered: advance by the returned
+      // byte count and never treat one call as a complete write.
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = writeSync(fd, bytes, offset, bytes.length - offset, null);
+        if (!(written > 0)) {
+          throw new Error(`temporary file write made no progress at byte ${offset} of ${bytes.length}`);
+        }
+        offset += written;
+      }
       fsyncSync(fd);
     } finally {
       closeSync(fd);
