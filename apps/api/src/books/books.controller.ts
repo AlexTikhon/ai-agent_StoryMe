@@ -158,8 +158,12 @@ export class BooksController {
     @Param('id', ParseUUIDPipe) id: string,
     @Res({ passthrough: true }) res: Response,
     @Query('edition') edition?: string,
-  ): Promise<StreamableFile> {
+  ): Promise<StreamableFile | undefined> {
     const result = await this.booksService.getPreviewPdfBuffer(id, user.id, edition);
+    // Same abort race as getPublishedImage: if the client left while the PDF was
+    // being read, piping into the destroyed response would throw
+    // ERR_STREAM_UNABLE_TO_PIPE and be reported as an unhandled 500.
+    if (res.destroyed) return undefined;
     res.set({
       'Content-Type': result.contentType,
       'Content-Disposition': `inline; filename="${result.filename}"`,

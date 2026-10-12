@@ -1059,3 +1059,166 @@ the integration suite.
 - Each suite ran once after the final change, except the smoke spec, which ran
   twice after it (15 passed each time). Timing-dependent aborts were not stress
   tested.
+
+## 15. Follow-up: Phase 16.6 aborted PDF preview requests (added after Phase 16.5)
+
+Sections 1 to 14 are left as written. Section 14.8 recorded that
+`GET /api/books/:id/pdf/preview` returns a `StreamableFile` through the same
+adapter path and "should have the same latent defect for aborted downloads", and
+that it was not reproduced. **It is now reproduced and repaired.**
+
+### 15.1 Established cause
+
+Identical to 14.1 steps 3 and 4, on a different route.
+
+1. `BooksController.getPreviewPdf` awaits `BooksService.getPreviewPdfBuffer`.
+   The client can leave while that call is still pending.
+2. The service resolves with the PDF bytes for a client that is gone.
+3. The handler set headers and returned `new StreamableFile(buffer)` without
+   looking at `res.destroyed`. `ExpressAdapter.reply` then calls
+   `stream.pipeline(stream, response)` on a destroyed response, which throws
+   `ERR_STREAM_UNABLE_TO_PIPE` synchronously.
+4. `HttpExceptionFilter` receives a plain `Error` and logs
+   `Unhandled exception on GET .../pdf/preview errorName=Error`.
+
+`getPublishedImage` already had the guard from Phase 16.5; `getPreviewPdf` did
+not. Neither the PDF service, storage, publication nor rendering is involved: the
+read succeeds and the failure is raised afterwards, in the adapter.
+
+What is established: the real-socket regression below fails on the unfixed
+controller with exactly this log line. What is not established: that a browser
+in normal use hits this route with aborts as often as `/images/cover`. The PDF
+link is a user-initiated open or download, so aborts are plausibly less
+frequent. The smoke suite was run only after the change, not before, so it
+offers no before/after comparison for this route (see 15.5).
+
+### 15.2 Regression, failing first
+
+New file `apps/api/src/books/books.controller.pdf-preview-http.spec.ts` follows
+`books.controller.published-image-http.spec.ts`: the real `BooksController`
+through Nest's Express adapter over a real socket, a stub `BooksService`, the
+real `HttpExceptionFilter`, `Logger.prototype.error` spied.
+
+| Test                                                                        | Unfixed controller                                                       | Fixed controller |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------- |
+| client aborts before the PDF is ready: no unhandled-exception log/rejection | **failed**: `Unhandled exception on GET .../pdf/preview errorName=Error` | passed           |
+| connected client: 200, `application/pdf`, disposition, length, exact bytes  | passed                                                                   | passed           |
+| missing or inaccessible PDF keeps the 404 body                              | passed                                                                   | passed           |
+| not ready keeps the 409 body                                                | passed                                                                   | passed           |
+| stale `edition` keeps 409 `PUBLISHED_EDITION_CHANGED`, forwards the edition | passed                                                                   | passed           |
+| genuine service failure keeps the sanitized 500 and is still logged once    | passed                                                                   | passed           |
+
+Unfixed run: 1 failed, 5 passed. The five that passed are the point: they show
+the contracts the fix must not move were already being asserted.
+
+The exact-bytes fixture contains bytes that are not valid UTF-8 (`0xe2 0xe3 0xcf
+0xd3 0x00 0xff 0xfe`), so any text re-encoding on the way out would fail the
+assertion. The sanitized-500 test asserts that neither the thrown message nor the
+internal host name appears in the response body.
+
+A unit test was added to `books.controller.spec.ts`: with `res.destroyed` true
+the handler returns `undefined`, still calls the service once with the same
+arguments, and sets no headers.
+
+### 15.3 What changed
+
+| File                                                           | Change                                                                                                               |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `apps/api/src/books/books.controller.ts`                       | `getPreviewPdf` returns `undefined` when `res.destroyed` after the service call, before headers; return type widened |
+| `apps/api/src/books/books.controller.pdf-preview-http.spec.ts` | new, the six tests above                                                                                             |
+| `apps/api/src/books/books.controller.spec.ts`                  | one unit test for the destroyed-response branch                                                                      |
+| `docs/interactive-verification.md`                             | this section                                                                                                         |
+
+The production change is one guard and a return type:
+`if (res.destroyed) return undefined;` placed after the `await` and before
+`res.set(...)`. The route path, headers, `BookAssetService`, storage,
+publication, deletion fencing, the exception filter, PDF rendering, generation,
+CI, dependencies and web code are unchanged. The image guard is unchanged.
+
+### 15.4 Abort timing covered, and not
+
+Covered by the regression, in order:
+
+1. The request has reached the handler and the stub service call is pending. No
+   header has been written and no response byte has been sent.
+2. The client socket is destroyed.
+3. The server-side socket `close` event is awaited, then one `setImmediate` tick.
+4. Only then does the stub service resolve, successfully, with the PDF bytes.
+5. Two further ticks let the handler, adapter and filter settle, then the log
+   and unhandled rejections are asserted empty.
+
+Not covered:
+
+- A client that leaves **after** headers were sent and while the body is being
+  piped. Nothing was changed for that case; the guard is only before headers.
+- A client that leaves before the handler is reached (guards, pipes).
+- A close event arriving between the `res.destroyed` check and the adapter's
+  `pipeline` call. This is reasoned, not tested: there is no I/O between the two
+  (the handler returns, then the adapter replies), so a socket event cannot be
+  delivered in that gap on a single thread.
+- The service **rejecting** after an abort. The filter would then still try to
+  write an error to a destroyed response; that is unchanged and was not touched.
+
+### 15.5 Verification (local only)
+
+All in a snapshot of the working tree (below), no `.env`, mock providers, local
+storage.
+
+| Check                                                            | Result                                                                        |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| PDF regression spec on the unfixed controller                    | 1 failed, 5 passed                                                            |
+| PDF HTTP + image HTTP + `books.controller.spec.ts`, fixed        | 3 files, 43 passed (6 + 4 + 33)                                               |
+| `pnpm --filter @book/api test`                                   | exit 0, 176 files, 2649 passed, 3 skipped                                     |
+| `pnpm --filter @book/api typecheck`                              | exit 0                                                                        |
+| `pnpm --filter @book/api lint` (`--max-warnings 0`)              | exit 0 after one Prettier error in the new spec was fixed (first run: exit 1) |
+| `prettier --check` on the three touched TypeScript files         | clean after the same fix                                                      |
+| `pnpm --filter @book/api render:pdf`                             | exit 0, 42,691 bytes                                                          |
+| `storyme.smoke.spec.ts`, guarded disposable infra, `--retries=0` | **15 passed** in 2.1 min, exit 0                                              |
+| API log of that smoke run                                        | 1,187 lines captured; 0 `Unhandled exception`, 0 `ERR_STREAM_UNABLE_TO_PIPE`  |
+| `git diff --check` (working tree)                                | exit 0                                                                        |
+| manual whitespace check of the untracked spec                    | no trailing whitespace, no tabs, LF, final newline                            |
+
+The full-suite count is +1 file and +7 tests against 14.6 (175 files, 2642
+passed): six HTTP tests and one unit test.
+
+Not run, because nothing they cover changed: web unit tests, typecheck and build
+(no web or shared-types change), `typecheck:scripts`, the integration suite, and
+a root `pnpm format:check` (only the touched files and this section were
+checked).
+
+The smoke suite does include "logs in, generates a mock book, and downloads its
+PDF", so the connected-client PDF path ran end to end through a browser. It does
+not abort a PDF request, so its 0 is a no-regression result, not evidence for the
+fix; the HTTP regression is the detector.
+
+### 15.6 Method and cleanup
+
+| Item                | What was done                                                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| snapshot            | `git ls-files -co --exclude-standard` of the working tree (790 files, includes the untracked spec, excludes ignored files) copied to `C:\sm-p166`; no `.env` present |
+| line endings        | the working tree has 271 CRLF files from `autocrlf=true` (index is LF); 273 text files were normalized to LF **in the snapshot only**, matching the index            |
+| install             | `pnpm install --frozen-lockfile --offline`, `prisma generate`, `@book/types` built                                                                                   |
+| snapshot-only tweak | `stdout: 'pipe'` on the API `webServer` in `playwright.config.ts`, so the API log could be counted; not in the working tree                                          |
+| infra               | `docker compose -p p166-pdf -f docker-compose.e2e.yml up -d --wait postgres-e2e redis-e2e`, the exact disposable targets (5440, 6380) the launcher allows            |
+
+| Resource                                         | Action                          | End state                                 |
+| ------------------------------------------------ | ------------------------------- | ----------------------------------------- |
+| compose project `p166-pdf` (postgres, redis)     | created by this task, `down -v` | containers, volumes, network gone         |
+| snapshot `C:\sm-p166` (incl. test results, logs) | created by this task, removed   | gone                                      |
+| all other containers, networks and volumes       | untouched                       | list compared before and after: identical |
+| ports 5440, 6380, 4100, 3100                     | free at start                   | no listener at the end                    |
+| working tree `apps/api/.env`, `apps/api/tmp`     | never opened, never written     | unchanged                                 |
+
+### 15.7 Limits and what is still open
+
+- No remote success is claimed. Nothing was committed, pushed or deployed, and
+  no workflow ran. Local only: Windows 11, Node 24, Linux containers.
+- The Prettier error and the 29,245 `␍` lint errors seen on the way were both
+  harness-side: the first was a real formatting slip in my new spec (fixed), the
+  second was the CRLF working-tree copy (normalized in the snapshot).
+- The abort case is deterministic in the HTTP spec, but it was run once after
+  the final change and not stress tested.
+- The `cover-thumb` abort case from 14.8 remains separately unexercised.
+- Aborts during body streaming, and a service that rejects after an abort, are
+  open (15.4).
+- CI still does not run `storyme.smoke.spec.ts`; unchanged.
