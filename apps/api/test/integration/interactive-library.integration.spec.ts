@@ -9,6 +9,7 @@ import {
   InteractiveTestKit,
   SCENARIO_ID,
   configWithCap,
+  settleAll,
   startCommand,
   withTransactionFault,
 } from './fixtures/interactive-helpers';
@@ -70,7 +71,7 @@ describe('Interactive session creation identity (real Postgres)', () => {
     // all of them from inserting.
     kit.narrator.barrier = new Barrier(parties);
     const racing = kit.gatedService({ model: 'interactiveSession', method: 'findUnique' }, parties);
-    const views = await Promise.all(
+    const views = await settleAll(
       Array.from({ length: parties }, () =>
         racing.createSession(userId, startCommand(SCENARIO_ID, 'same-key')),
       ),

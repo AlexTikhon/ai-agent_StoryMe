@@ -531,3 +531,347 @@ clean. All four jobs (`checks`, `integration`, `production-browser`,
 - Findings 4 (intermittent integration) and 5 (cover-endpoint 500s) are open.
   Finding 2's `NEXT_PUBLIC_API_URL` coupling was repaired in 16.2 and does not
   affect this job.
+
+---
+
+## 12. Follow-up: Phase 16.4 repair of finding 4 (added after Phase 16.3)
+
+Scope: the remote integration failures of finding 4 (two `SESSION_BUSY` from
+concurrent creation, one 30 s timeout at cap minus one). The defect is in the
+test harness. Production code, lock/statement/transaction timeouts, pooling,
+caller counts and assertions are unchanged. Finding 5 is untouched.
+
+### 12.1 Cause
+
+Hypothesis, stated before any change: the gate needs all `parties` transactions
+queued and observes them through the same Prisma client, so a pool smaller than
+`parties + 1` leaves the observer and some participants unable to get a
+connection while the lock holder waits for the gate. **Confirmed.**
+
+Mechanism, in order (6 callers):
+
+1. Each caller opens an interactive transaction and keeps one pooled connection
+   for its whole duration (`interactive.service.ts:139`).
+2. One caller wins the owner's `FOR NO KEY UPDATE` (`:148`), reaches the gate and
+   waits there with its transaction open. The other five hold connections while
+   blocked on that lock.
+3. The gate polls `pg_stat_activity` through the same client
+   (`countBlockedAdmissions`). When the pool holds no more than 6 connections,
+   every one is taken, so the observer queues for a connection.
+4. The five blocked callers run `SET LOCAL lock_timeout = 2000ms`. They fail at
+   about 2.05 s with `SESSION_BUSY`. The gate has seen one arrival and at most one
+   blocked backend, and the failed callers will never arrive, so it cannot open.
+5. The spin loop had no bound. Where the test collects with `Promise.all`
+   (identical creation, library and catalogue) the first `SESSION_BUSY` rejects the
+   test. Where it uses `Promise.allSettled` (cap minus one) nothing rejects, and
+   the test waits for the 30 s test timeout.
+
+Prisma's default pool is `physical cores * 2 + 1`. This machine reports 16
+logical CPUs, so the default is large and the suite passes here. A small CI
+runner gets a small default; the observed failure signature fits any default of
+6 or less (5 on a 2-core runner). The runner's real value was not observed.
+
+### 12.2 Evidence
+
+All runs used the same six callers, the same service code and the same
+disposable targets. Only the pool capacity changed.
+
+**A. Instrumented diagnostic (snapshot only).** The tested client was tagged with
+its own `application_name`; a separate two-connection admin client sampled
+`pg_stat_activity` for it, so the measurement could not itself be starved. The
+gate was bounded at 8 s.
+
+| Scenario              | Pool | Outcomes                        | Gate             | Observer's slowest query | Peak backends |
+| --------------------- | ---- | ------------------------------- | ---------------- | ------------------------ | ------------- |
+| identical creation    | 4    | 5 `SESSION_BUSY`, gate deadline | never opened     | 4017 ms                  | 4             |
+| identical creation    | 5    | 5 `SESSION_BUSY`, gate deadline | never opened     | 2016 ms                  | 5             |
+| identical creation    | 6    | 5 `SESSION_BUSY`, gate deadline | never opened     | 2017 ms                  | 6             |
+| identical creation    | 7    | 6 ok, 1 session                 | opened at 127 ms | 19 ms                    | 7             |
+| identical creation    | 8    | 6 ok, 1 session                 | opened at 128 ms | 37 ms                    | 7             |
+| cap minus one (cap 3) | 4    | 5 `SESSION_BUSY`, gate deadline | never opened     | 4015 ms                  | 4             |
+| cap minus one (cap 3) | 5    | 5 `SESSION_BUSY`, gate deadline | never opened     | 2017 ms                  | 5             |
+| cap minus one (cap 3) | 6    | 5 `SESSION_BUSY`, gate deadline | never opened     | 2018 ms                  | 6             |
+| cap minus one (cap 3) | 7    | 1 ok, 5 `SESSION_LIMIT_REACHED` | opened at 154 ms | 21 ms                    | 7             |
+| cap minus one (cap 3) | 8    | 1 ok, 5 `SESSION_LIMIT_REACHED` | opened at 166 ms | 20 ms                    | 7             |
+
+The threshold is exactly `parties + 1`: seven backends at pools 7 and 8 are six
+participants plus the observer. In every failing row the observer's first slow
+query returned only after the waiters' 2 s `lock_timeout` had killed them, and
+the failed callers settled at about 2.03 to 2.07 s, then 4 s and 6 s as the
+queue drained.
+
+**B. The real specs, real gate, unmodified harness.** A temporary patch in the
+snapshot let the kit read its pool size from an environment variable.
+
+| Pool | Result                         | Failures                                                                                                                                |
+| ---- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| 5    | 3 failed, 29 passed (32 tests) | library identical creation `SESSION_BUSY`; library cap minus one `Test timed out in 30000ms`; catalogue explicit-version `SESSION_BUSY` |
+| 7    | 32 passed                      | none                                                                                                                                    |
+
+These are the three remote failures. The two `SESSION_BUSY` tests were reported
+at about 10 s rather than 2 s; the cause of the extra time was not isolated (the
+unbounded gate left the holder's transaction open into cleanup, whose 10 s
+transaction timeout would explain it, but that was not verified).
+
+### 12.3 What changed
+
+| File                                                                  | Change                                                                             |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `apps/api/test/integration/fixtures/interactive-helpers.ts`           | explicit connection budget, scoped observer, bounded gate and barrier, `settleAll` |
+| `apps/api/test/integration/interactive-library.integration.spec.ts`   | identical-creation test collects with `settleAll` instead of `Promise.all`         |
+| `apps/api/test/integration/interactive-catalogue.integration.spec.ts` | identical explicit-version test collects with `settleAll` instead of `Promise.all` |
+| `apps/api/test/integration/interactive-harness.integration.spec.ts`   | new: 4 tests pinning the budget formula and the bounded waits                      |
+| `docs/interactive-verification.md`                                    | this section                                                                       |
+
+Harness behaviour:
+
+- The kit's client gets an explicit `connection_limit` (`KIT_CONNECTION_LIMIT`,
+  16, overridable per kit) and a per-kit `application_name`. The URL is built
+  only when `DATABASE_URL` equals the disposable URL exactly; otherwise the kit
+  throws. `setup.ts` and the runner guards are untouched.
+- `gatedService` throws at once if `parties + 1` exceeds the kit's budget, so a
+  too-small pool is a clear error, not a hang.
+- `countBlockedAdmissions` counts only backends with the kit's `application_name`
+  (the participants) and excludes its own backend. It previously counted every
+  waiting backend in the database. It is not filtered by owner row: each gated
+  test races one owner on one kit, so the two coincide, and an owner filter
+  would need the row's `ctid`.
+- `AdmissionGate` and `Barrier` wait at most 8 s (`HARNESS_WAIT_TIMEOUT_MS`,
+  below the 10 s transaction and 30 s test timeouts). The first failure is kept
+  and every participant, present or later, rejects with it, so transactions roll
+  back and release the lock. An error from the observer fails the gate instead
+  of spinning.
+- `settleAll` awaits every caller before reporting the first failure, so a failed
+  assertion cannot leave operations running into cleanup. The cap-minus-one test
+  already used `Promise.allSettled`.
+- Unchanged: 6 callers in every race, every assertion (one session and one
+  genesis event for identical commands; one admission and five
+  `SESSION_LIMIT_REACHED` at cap minus one), and all production code.
+
+### 12.4 Verification (local only)
+
+Method: `git archive HEAD` of the clean tree, normalized to LF (784 files),
+`pnpm install --frozen-lockfile --offline`, `prisma generate`, no `.env` anywhere
+in the snapshot (0 found; the working tree's `apps/api/.env` was not opened).
+The four changed files were then copied in. Targets: `docker-compose.e2e.yml`
+under the project name `p164-itest` (postgres 16 on 5440, redis 7 on 6380) with
+the runner's guards active. Windows 11, Node v24.11.1, pnpm 9.4.0, Prisma 5.22.0.
+
+| Check                                                                   | Result                                    |
+| ----------------------------------------------------------------------- | ----------------------------------------- |
+| before the fix: library + catalogue specs at pool 5 (real gate)         | 3 failed, 29 passed (see 12.2 B)          |
+| after the fix: harness + library + catalogue specs                      | 3 files, 36 passed                        |
+| complete guarded integration suite, once                                | exit 0, 27 files, 306 tests passed        |
+| `pnpm --filter @book/api test`                                          | exit 0, 174 files, 2638 passed, 3 skipped |
+| `pnpm --filter @book/api typecheck`                                     | exit 0                                    |
+| `pnpm --filter @book/api typecheck:integration:hardening`               | exit 0                                    |
+| ad hoc `tsc` of helper + library + harness + catalogue specs            | exit 0                                    |
+| `pnpm --filter @book/api lint`                                          | exit 0 (`--max-warnings 0`)               |
+| ESLint `--max-warnings 0` and Prettier `--check` on the four test files | exit 0, clean                             |
+| `git diff --check` on the working tree                                  | exit 0                                    |
+
+The complete suite was 26 files / 302 tests in finding 4; the difference is the
+new harness spec (+1 file, +4 tests). Neither `typecheck` nor
+`typecheck:integration:hardening` includes the library or harness specs, which
+is why they were checked ad hoc; `tsconfig.integration.json` was not changed.
+
+### 12.5 Negative control
+
+In the snapshot only, the admission lock in `createSession` was reduced to a
+plain `SELECT id FROM users WHERE id = ...` (the `FOR NO KEY UPDATE` clause
+removed), then the fixed harness was run on the same three specs:
+
+| Result | Count | Detail                                                                                                                            |
+| ------ | ----- | --------------------------------------------------------------------------------------------------------------------------------- |
+| failed | 5     | both identical-creation tests, cap minus one (`expected length 1 but got 6`), the lock-timeout mapping test, the budget-race test |
+| passed | 31    | unrelated tests                                                                                                                   |
+
+Each failure took 25 to 140 ms: with no lock the gate opens on arrivals alone,
+and nothing hangs. The file was restored from a copy and its SHA-256 matched the
+original (`1cda9dd7391f4009af1ea4b11af243a2840030ca220a5833adaa01b25e404d47`).
+The working tree's production code was never modified.
+
+### 12.6 Cleanup
+
+| Resource                                           | Action                          | End state                        |
+| -------------------------------------------------- | ------------------------------- | -------------------------------- |
+| compose project `p164-itest` (postgres, redis)     | created by this task, `down -v` | containers, volume, network gone |
+| LF snapshot and diagnostic files in the scratchpad | created by this task, removed   | gone                             |
+| Pre-existing containers, running and exited        | untouched                       | same names and status            |
+
+### 12.7 Limits
+
+- **No remote success is claimed.** No `ci.yml` run exists for a SHA containing
+  this change. Remote confirmation requires a run for the exact SHA; because the
+  failure was intermittent, one green run is weak evidence and several are
+  needed.
+- The CI runner's CPU count and Prisma default pool were not observed. The
+  mechanism does not depend on them: the budget is now explicit, so the runner
+  size no longer decides the outcome.
+- Local run: Windows 11, Node 24, with Linux Postgres/Redis containers. Node 22
+  on Linux was not used: the guards pin `127.0.0.1:5440/6380`, which a client
+  container cannot reach without weakening them.
+- Only the three named tests were shown to fail from this cause. The other
+  failures behind finding 4's "5 of the last 8" were not read, so they may have
+  a different cause.
+- Finding 5 (cover-endpoint 500s) is open. `interactive-http` passed 40/40 in
+  the complete run.
+
+## 13. Follow-up: Phase 16.4.1 terminal harness deadlines (added after Phase 16.4)
+
+Scope: review of the Phase 16.4 harness found three ways its deadlines could be
+bypassed. Section 12.3 described the gate and barrier as bounded and failing
+"for every participant"; that was stronger than the code, and sections 12.1 to
+12.7 are left as written. Only test-harness files changed. Production code, the
+explicit pool budget, the disposable-target guard, the scoped observation, the
+caller counts and every race assertion are unchanged. Finding 5 (cover-endpoint
+500s) is untouched.
+
+### 13.1 Defects, each reproduced by a test before any change
+
+| #   | Defect in the 16.4 harness                                      | Cause                                                                                          | Result against it          |
+| --- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------- |
+| 1   | `AdmissionGate.pass` stays pending when the observer never ends | the deadline was compared only after the observer returned, so the observer wait was unbounded | still `pending` after 25ms |
+| 2   | an observation returning after the deadline opens the gate      | the deadline was checked only when the count was insufficient                                  | `fulfilled`                |
+| 3   | `Barrier(2, 20)`: a second caller after expiry releases it      | each `wait()` raced one shared promise with its own timer; the release was not gated by expiry | `fulfilled`                |
+
+Two further weaknesses surfaced while writing the tests:
+
+- Each caller had its own deadline and its own polling loop, so one caller's
+  observer failure left another caller pending on its own observation, and
+  callers rejected with different `Error` instances rather than one decision.
+- Every participant that reached the gate ran its own observer query, so by
+  reading the code the number of concurrent observations was bounded by arrivals,
+  not by the single connection `OBSERVER_CONNECTIONS` reserves. Not measured.
+
+### 13.2 What changed
+
+| File                                                                | Change                                                             |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `apps/api/test/integration/fixtures/interactive-helpers.ts`         | shared terminal decision; `AdmissionGate` and `Barrier` rebuilt    |
+| `apps/api/test/integration/interactive-harness.integration.spec.ts` | 10 new tests (9 on controlled timers, 1 against the real database) |
+| `docs/interactive-verification.md`                                  | this section                                                       |
+
+Behaviour:
+
+- One deadline per gate or barrier, started by its first participant. For the
+  gate it covers every wait on the lock observer.
+- Opening or failing is terminal and first-wins. Every pending caller and every
+  later caller receives that same decision; for failure, the same `Error` object.
+  A late arrival cannot open a failed barrier or gate, and arrivals after the
+  decision are not counted.
+- The gate observes through one shared loop with at most one observation in
+  flight. A result that arrives after the decision is discarded; a rejection that
+  arrives after it is consumed and dropped, so it cannot become an unhandled
+  rejection. An observer error before the decision fails the gate for everyone.
+- The deadline timer and the poll timer are cleared when the decision is made.
+  Nothing polls after a failure.
+- The deadline message reports the last completed observation (or `unobserved`)
+  and says when an observation was still in flight at expiry.
+- `settleAll` is unchanged. Every gated race still collects its callers with
+  `settleAll` or `Promise.allSettled`, so a failed gate rejects the started
+  transactions, they roll back, and they have settled before `cleanup()` runs.
+
+Timeout is not cancellation. Expiry stops the harness waiting for the observer's
+query; it does not stop the query. A `Promise.race`-style bound cannot cancel
+Prisma work and this code does not try to: the abandoned `pg_stat_activity` read
+keeps its pooled connection until it returns, and its result is ignored. The
+read is a short catalogue query, but whether Prisma or Postgres cancels it on
+disconnect was not verified.
+
+### 13.3 Failing first
+
+The new timer tests were run against the 16.4 helpers (same snapshot, same
+runner configuration) before the helpers were changed.
+
+| Test                                                                      | Against the 16.4 harness           |
+| ------------------------------------------------------------------------- | ---------------------------------- |
+| observer never settles: every gate participant rejects within the bound   | failed: `pending`                  |
+| observation returns after the deadline: gate does not open                | failed: `fulfilled`                |
+| sufficient observation resolves after expiration: gate stays failed       | failed: `pending`                  |
+| observer rejection after expiration: ignored, no unhandled rejection      | failed: `pending`                  |
+| observer failure while another observation is pending: one shared failure | failed: second caller `pending`    |
+| `Barrier(2, 20)`: a caller after expiry is rejected, not released         | failed: `fulfilled`                |
+| pending and later barrier callers receive the one expiry failure          | failed: distinct `Error` instances |
+| gate opening clears deadline and poll timers                              | passed (guard)                     |
+| barrier completing clears its deadline timer                              | passed (guard)                     |
+
+Result: 7 failed, 2 passed. The two timer-cleanup tests also passed on the old
+code; they guard the new implementation, whose extra poll timer must not leak.
+The unhandled-rejection test turned red on its state assertion (the gate had not
+expired), not on the unhandled-rejection check, so that check is a guard rather
+than a demonstrated detector.
+
+The tenth new test runs two real callers through a gate that can never open
+(3 parties, 2 callers, 300 ms bound) and requires both to reject, no session to
+be written and no kit backend left `idle in transaction`. It pins the
+settle-before-cleanup behaviour. It was not run against the 16.4 implementation.
+
+### 13.4 Verification (local only)
+
+Method: `git archive HEAD` normalized to LF, with the five working-tree files
+that differ from HEAD overlaid (the phase 16.4 harness work is still
+uncommitted), `pnpm install --frozen-lockfile --offline`, `prisma generate`,
+`@book/types` built. No `.env` in the snapshot (none found); the working tree's
+`apps/api/.env` was not opened. Targets: `docker-compose.e2e.yml` under the
+project name `p1641-itest`, with the runner's guards active. The tested helper
+and spec files were hash-compared with the working tree afterwards (identical
+after LF normalization).
+
+| Check                                                                         | Result                                    |
+| ----------------------------------------------------------------------------- | ----------------------------------------- |
+| harness spec, timer tests only, 16.4 helpers                                  | 7 failed, 2 passed (13.3)                 |
+| harness spec, timer tests only, new helpers                                   | 9 passed                                  |
+| harness + library + catalogue specs, guarded runner                           | 3 files, 46 passed                        |
+| same three specs, repeated three more times                                   | 46 passed each time                       |
+| all `interactive-*` integration specs, guarded runner                         | 9 files, 163 passed                       |
+| `pnpm --filter @book/api test`                                                | exit 0, 174 files, 2638 passed, 3 skipped |
+| `pnpm --filter @book/api typecheck`                                           | exit 0                                    |
+| `pnpm --filter @book/api typecheck:integration:hardening`                     | exit 0                                    |
+| ad hoc `tsc` of helper + harness + library + catalogue specs                  | exit 0                                    |
+| `pnpm --filter @book/api lint`                                                | exit 0 (`--max-warnings 0`)               |
+| ESLint `--max-warnings 0` and Prettier `--check` on the four test files + doc | exit 0, clean                             |
+
+The complete 27-file integration suite was not rerun for this change; the nine
+interactive files were, because `Barrier` is shared by `interactive-concurrency`.
+`typecheck` and `typecheck:integration:hardening` do not include the library or
+harness specs, which is why they were also checked ad hoc;
+`tsconfig.integration.json` was not changed.
+
+### 13.5 Negative control
+
+In the snapshot only, `FOR NO KEY UPDATE` was removed from the two admission
+statements in `interactive.service.ts` that end the clause (3 occurrences
+became 1), then the gated specs were run with the new harness:
+
+| Result | Count | Detail                                                                                                                        |
+| ------ | ----- | ----------------------------------------------------------------------------------------------------------------------------- |
+| failed | 5     | both identical-creation tests, cap minus one, lock-timeout mapping, the minimum-budget race: the same five as in section 12.5 |
+| passed | 41    | unrelated tests                                                                                                               |
+
+The file was restored from a copy and its SHA-256 matched. The working tree's
+production code was never modified.
+
+### 13.6 Cleanup
+
+| Resource                                         | Action                          | End state                           |
+| ------------------------------------------------ | ------------------------------- | ----------------------------------- |
+| compose project `p1641-itest` (postgres, redis)  | created by this task, `down -v` | containers, volume, network gone    |
+| LF snapshot and install log in the scratchpad    | created by this task, removed   | gone                                |
+| `storyme-integration-*` and all other containers | untouched                       | same names and status, still exited |
+
+### 13.7 Limits
+
+- No remote success is claimed. Nothing was committed or pushed and no workflow
+  ran; the CI runner's behaviour was not observed.
+- Fake timers prove the deadline logic. They do not show how long a real
+  Postgres observer query takes under load, only that its duration can no longer
+  extend the gate's bound.
+- The abandoned observer query is not cancelled (13.2), and its connection stays
+  in the pool until it returns. If that query hung, a kit disconnect could wait
+  on it. This was not observed and not tested.
+- The unhandled-rejection assertion and the two timer-cleanup tests are guards
+  that were green before the change, not demonstrated detectors (13.3).
+- The real-database settle test and the 12.5/13.5 controls cover one service and
+  one lock. Local run only: Windows 11, Node 24, Linux containers.
+- Finding 5 (cover-endpoint 500s) is open and is the next task.
