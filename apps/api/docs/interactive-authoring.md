@@ -211,7 +211,26 @@ The real registry (`scenarios/index.ts`) is composed through `createGuardedScena
 
 ## Offline evaluation
 
-`pnpm eval:interactive:authoring:offline` (also a CI step) runs fixed fixtures through the real pipeline with a scripted provider and an intercepted fetch: the valid original candidate and both ending routes; malformed JSON, unknown fields/effects, duplicate entries; changed or already-published identity; duplicate ids and unresolved references; a cyclic graph (rejected before exhaustive exploration); an unreachable ending, an unusable choice, a reachable dead end and a speaker-knowledge violation; over-long canonical narration; a valid repair and a repair that stays invalid; refusal, truncation, authentication, timeout, network and cancellation without repair; exhausted and exceeded call budgets; disabled implicit HTTP/network/timeout retries; mechanical validity without approval; and identical candidate hashes across repeated mock runs.
+`pnpm eval:interactive:authoring:offline` (also a CI step) runs fixed fixtures through the real pipeline with a scripted provider and an intercepted fetch: the valid original candidate and both ending routes; malformed JSON, unknown fields/effects, duplicate entries; changed or already-published identity; duplicate ids and unresolved references; a cyclic graph (rejected before exhaustive exploration); an unreachable ending, an unusable choice, a reachable dead end and a speaker-knowledge violation; over-long canonical narration; a valid repair and a repair that stays invalid; refusal, truncation, authentication, timeout, network and cancellation without repair; exhausted and exceeded call budgets; disabled implicit HTTP/network/timeout retries; mechanical validity without approval; and identical candidate hashes across repeated mock runs. It also runs the corpus cases described next.
+
+### Evaluation corpus
+
+The evaluation fixtures are a versioned corpus (`interactive-authoring-corpus/v1`, `src/interactive/authoring/corpus/`) of three entries. Each records its brief and candidate identity, canonical brief and candidate hashes, every terminal choice sequence with its ending, representative narration selected on different paths, the choices that must stay locked (with the engine's refusal code), and the gameplay it exercises.
+
+| Entry | Identity | Emphasis | Terminal routes |
+| ----- | -------- | -------- | --------------- |
+| `last-tram` | `warsaw-last-tram@1` | the original fixture, reused by reference: item-gated and knowledge-gated choices, flag-conditional narration | 5 (2 endings) |
+| `harbour-ledger` | `harbour-night-ledger@1` | knowledge-dependent dialogue: three `playerKnows` gates, `npcLearns` plus speaker knowledge, the same character speaking differently by what the player knows; no items | 6 (2 endings) |
+| `clock-blackout` | `clock-museum-blackout@1` | single-use inventory: a key spendable on only one of two jobs, a one-time fuse, choices locked by a consumed or never-held item, four routes reconverging on one scene and two on one ending with narration recording what was spent | 6 (2 endings) |
+
+Each new entry has distinct characters, scenes, choices, facts, narration and endings, and stays inside the authoring format (6-8 scenes, 3 decision points, 3 characters, 2 endings). The offline evaluation runs each of them through the real pipeline with the scripted provider: a first-pass success, a deliberate broken reference followed by exactly one repair (two requests, same brief), and its candidate paired with the other new entry's brief, which must be refused at the identity stage after the bounded repair. Accepted runs are also checked against the recorded hashes and, through the exhaustive route review, the recorded terminal sequences. The corpus spec additionally cross-checks the run reports (`parseRunReport`), the comparison aggregation (different brief hashes stay in separate groups, a wrong-brief refusal is filed under the brief it was run with), production replay and canonical narration validation, and that no corpus identity appears in the scenario registry, catalogue or presentation packs.
+
+**Limitations.**
+
+- The fixtures are hand-authored and every provider answer is scripted. A pass is deterministic regression coverage for validation, repair, reporting and route review across different story shapes. It is not evidence of real-model performance, and no paid call is made.
+- All three entries are unpublished: none is in the scenario registry, the catalogue or a presentation pack, and none has an approval record. `warsaw-last-tram` remains unapproved and unregistered, and the mock provider still returns it only.
+- Mechanical validity is still not editorial approval; the prose of the new fixtures has not been reviewed by an editor. Recorded narration probes pin which templates are selected and a few literal fragments, not prose quality.
+- Editing a fixture changes its recorded hash, routes or narration probes and fails the corpus spec until the expectations are re-recorded on purpose.
 
 ## Comparing saved runs (offline report)
 

@@ -10,19 +10,28 @@ import {
   ScriptedDraftProvider,
   type ScriptStep,
 } from '../src/interactive/authoring/scripted-provider';
+import {
+  AUTHORING_CORPUS,
+  AUTHORING_CORPUS_VERSION,
+  type CorpusEntry,
+} from '../src/interactive/authoring/corpus';
+import { buildRouteReview } from '../src/interactive/authoring/route-review';
 import { LAST_TRAM_BRIEF, LAST_TRAM_SCENARIO } from '../src/interactive/authoring/the-last-tram';
 import { validateCandidate } from '../src/interactive/authoring/validate';
 import { scenarioToWire, type WireScenario } from '../src/interactive/authoring/wire';
-import { listScenarioIds } from '../src/interactive/scenarios';
+import { getPresentationPack } from '../src/interactive/presentation/presentation';
+import { getScenario, getScenarioCatalogue, listScenarioIds } from '../src/interactive/scenarios';
 
 /**
  * Offline evaluation of the scenario-authoring workflow: fixed fixtures, an
  * in-memory scripted provider and an intercepted fetch. No PostgreSQL, Redis,
  * Nest application, API keys or network.
  *
- * It proves the deterministic validation and the call-budget behaviour on fixed
- * inputs. It says NOTHING about the quality of real model output, and a
- * REVIEW_REQUIRED outcome never means a candidate is approved.
+ * The fixtures are the versioned evaluation corpus: the original Last Tram
+ * candidate plus two hand-authored, scripted fixtures of different shape. It
+ * proves the deterministic validation, repair and call-budget behaviour on
+ * fixed inputs. It says NOTHING about the quality of real model output, and a
+ * REVIEW_REQUIRED outcome never means a candidate is approved or published.
  */
 
 export type AuthoringEvalKind = 'valid' | 'adversarial';
@@ -109,8 +118,86 @@ async function transportOutcome(fetchImpl: (init: RequestInit) => Promise<Respon
 const invalid = () => mutated((w) => (choiceOf(w, 'c-leave-cab').to = 's-missing'));
 const valid = () => text(baseWire());
 
-export function buildAuthoringEvalCases(): AuthoringEvalCase[] {
+// ── Corpus helpers (the two fixtures added to the Last Tram baseline) ───────
+
+const corpusEntry = (key: CorpusEntry['key']): CorpusEntry => {
+  const entry = AUTHORING_CORPUS.find((e) => e.key === key);
+  if (!entry) throw new Error(`unknown corpus entry ${key}`);
+  return entry;
+};
+const corpusValid = (entry: CorpusEntry): string => JSON.stringify(scenarioToWire(entry.scenario));
+/** The same candidate with its first choice pointing at a scene that does not exist. */
+const corpusInvalid = (entry: CorpusEntry): string => {
+  const wire = structuredClone(scenarioToWire(entry.scenario));
+  wire.scenes.flatMap((s) => s.choices)[0]!.to = 's-missing';
+  return JSON.stringify(wire);
+};
+
+/**
+ * Pipeline summary for a corpus entry. An accepted candidate must also carry the
+ * recorded brief and candidate hashes and, replayed exhaustively by the real
+ * route review, exactly the recorded terminal sequences and endings.
+ */
+async function corpusOutcome(entry: CorpusEntry, steps: readonly ScriptStep[]): Promise<string> {
+  const { result } = await scripted(steps, entry.brief);
+  const base = summary(result);
+  if (result.status !== 'REVIEW_REQUIRED') return base;
+  if (result.provenance.briefHash !== entry.expect.briefHash) return `${base}:BRIEF_HASH_MISMATCH`;
+  if (result.candidateHash !== entry.expect.candidateHash) return `${base}:CANDIDATE_HASH_MISMATCH`;
+  const review = buildRouteReview({ scenario: result.scenario });
+  if (!review.ok) return `${base}:ROUTE_REVIEW_${review.code}`;
+  const actual = review.report.routes.map(
+    (r) => `${r.choices.map((c) => c.id).join('>')}=>${r.ending.id}`,
+  );
+  const expected = entry.expect.routes.map((r) => `${r.choices.join('>')}=>${r.endingId}`);
+  return JSON.stringify(actual) === JSON.stringify(expected)
+    ? `${base}:routes=${actual.length}`
+    : `${base}:ROUTES_MISMATCH`;
+}
+
+/** Another entry's brief with this entry's candidate: must never be accepted. */
+const wrongBriefOutcome = (entry: CorpusEntry, wrongBrief: CorpusEntry): Promise<string> =>
+  pipelineSummary(
+    [{ candidate: corpusValid(entry) }, { candidate: corpusValid(entry) }],
+    wrongBrief.brief,
+  );
+
+function corpusCases(
+  slug: string,
+  entry: CorpusEntry,
+  wrongBrief: CorpusEntry,
+): AuthoringEvalCase[] {
   return [
+    {
+      id: `valid.corpus.${slug}-first-pass`,
+      kind: 'valid',
+      expected: `REVIEW_REQUIRED:repaired=false:calls=1:routes=${entry.expect.routes.length}`,
+      run: () => corpusOutcome(entry, [{ candidate: corpusValid(entry) }]),
+    },
+    {
+      id: `valid.corpus.${slug}-repair`,
+      kind: 'valid',
+      expected: `REVIEW_REQUIRED:repaired=true:calls=2:routes=${entry.expect.routes.length}`,
+      run: () =>
+        corpusOutcome(entry, [
+          { candidate: corpusInvalid(entry) },
+          { candidate: corpusValid(entry) },
+        ]),
+    },
+    {
+      id: `adv.corpus.${slug}-wrong-brief`,
+      kind: 'adversarial',
+      expected: 'REJECTED:identity:repair=attempted:calls=2',
+      run: () => wrongBriefOutcome(entry, wrongBrief),
+    },
+  ];
+}
+
+export function buildAuthoringEvalCases(): AuthoringEvalCase[] {
+  const harbour = corpusEntry('harbour-ledger');
+  const blackout = corpusEntry('clock-blackout');
+
+  const lastTramCases: AuthoringEvalCase[] = [
     // ── Valid ───────────────────────────────────────────────────────────────
     {
       id: 'valid.candidate.original-episode',
@@ -496,6 +583,29 @@ export function buildAuthoringEvalCases(): AuthoringEvalCase[] {
       },
     },
   ];
+
+  // Appended after the Last Tram cases so those keep their ids and order.
+  const corpusFixtureCases: AuthoringEvalCase[] = [
+    ...corpusCases('harbour', harbour, blackout),
+    ...corpusCases('blackout', blackout, harbour),
+    {
+      id: 'valid.corpus.not-published',
+      kind: 'valid',
+      expected: 'ACCEPTED',
+      run: () =>
+        AUTHORING_CORPUS.some(
+          ({ scenario }) =>
+            getScenario(scenario.id, scenario.version) !== undefined ||
+            listScenarioIds().includes(scenario.id) ||
+            getScenarioCatalogue().some((c) => c.scenarioId === scenario.id) ||
+            getPresentationPack(scenario.id, scenario.version) !== undefined,
+        )
+          ? 'REGISTERED'
+          : 'ACCEPTED',
+    },
+  ];
+
+  return [...lastTramCases, ...corpusFixtureCases];
 }
 
 export async function evaluateAuthoringCases(
@@ -536,8 +646,14 @@ async function main(): Promise<void> {
   console.log('Interactive scenario authoring offline evaluation');
   console.log('');
   console.log(
-    `Candidate under test: ${LAST_TRAM_SCENARIO.id}@${LAST_TRAM_SCENARIO.version} (mock, unpublished)`,
+    `Corpus: ${AUTHORING_CORPUS_VERSION}, ${AUTHORING_CORPUS.length} entries (hand-authored, scripted, unpublished)`,
   );
+  for (const entry of AUTHORING_CORPUS) {
+    const endings = new Set(entry.expect.routes.map((r) => r.endingId)).size;
+    console.log(
+      `  - ${entry.key}: ${entry.scenario.id}@${entry.scenario.version}, ${entry.expect.routes.length} routes, ${endings} endings`,
+    );
+  }
   console.log(
     `Cases: ${results.length} (valid ${count('valid')}, adversarial ${count('adversarial')})`,
   );
@@ -547,7 +663,7 @@ async function main(): Promise<void> {
   console.log('External API calls: 0');
   console.log('API keys required: 0');
   console.log(
-    'Note: proves deterministic validation and call limits only; not real-model quality.',
+    'Note: proves deterministic validation, repair and call limits on fixed, hand-authored, scripted fixtures only; not real-model quality, and nothing is approved or published.',
   );
   console.log('');
   for (const result of results) {
