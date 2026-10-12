@@ -313,6 +313,47 @@ describe('report-interactive-authoring: invalid input (exit 1, never dropped)', 
   });
 });
 
+describe('report-interactive-authoring: budget-inconsistent reports', () => {
+  it.each([
+    [
+      'a skipped repair although both budgets remained',
+      'run-report.json',
+      () => runScripted([{ candidate: invalidCandidate(), httpAttempts: 2 }]),
+      (r: Record<string, any>) => {
+        r.provenance.requests[0].httpAttempts = 1;
+        r.provenance.totalHttpAttempts = 1;
+      },
+      'repair-disposition',
+    ],
+    [
+      'a repair dispatched after generation exhausted the HTTP budget',
+      'validation-report.json',
+      () => runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate(), httpAttempts: 0 }]),
+      (r: Record<string, any>) => {
+        r.provenance.requests[0].httpAttempts = 2;
+        r.provenance.totalHttpAttempts = 2;
+      },
+      'repair-budget',
+    ],
+  ])('exits 1 without partial JSON for %s', async (_name, fileName, make, mutate, detail) => {
+    const files = await mixed();
+    const source = await make();
+    const bad = loose(fileName, mutateReport(reportText(source), mutate));
+    const before = digest(tmp);
+
+    const code = runCli(['--report', files.first, '--report', bad, '--report', files.stopped], io());
+
+    expect(code).toBe(EXIT_CODES.INVALID_INPUT);
+    expect(out).toEqual([]);
+    expect(stderr()).toContain(`report #2: INCONSISTENT_TELEMETRY (${detail})`);
+    expect(stderr()).toContain('1 of 3 supplied reports');
+    const sensitive = [tmp, 'scenario-drafts', LAST_TRAM_SCENARIO.title, JSON.parse(reportText(source)).provenance.briefHash];
+    for (const value of sensitive) expect(stderr()).not.toContain(value);
+    expect(digest(tmp)).toEqual(before);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('report-interactive-authoring: module import', () => {
   it('starts no work, reads no file and sets no exit code when imported', async () => {
     vi.resetModules();

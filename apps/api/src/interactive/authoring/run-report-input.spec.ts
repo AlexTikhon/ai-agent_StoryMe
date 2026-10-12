@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FAST_LIMITS,
+  fakeClock,
   invalidCandidate,
   mutateReport,
   reportFileNameFor,
@@ -7,7 +9,9 @@ import {
   runScripted,
   validCandidate,
 } from '../../common/test-utils/authoring-run-fixtures';
-import { LAST_TRAM_SCENARIO } from './the-last-tram';
+import { runAuthoring } from './pipeline';
+import { ScriptedDraftProvider } from './scripted-provider';
+import { LAST_TRAM_BRIEF, LAST_TRAM_SCENARIO } from './the-last-tram';
 import { parseRunReport, type ReportFileName } from './run-report-input';
 
 const firstPass = async () => runScripted([{ candidate: validCandidate() }]);
@@ -21,6 +25,48 @@ const rejected = async () =>
 const budgetExhausted = async () =>
   runScripted([{ candidate: invalidCandidate(), httpAttempts: 2 }]);
 const stopped = async () => runScripted([{ fail: 'network' }]);
+
+// Budget-boundary fixtures. All come from the real pipeline; the zero-attempt
+// repair steps leave HTTP headroom so one field can be changed in isolation.
+const repairedZeroAttempt = async () =>
+  runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate(), httpAttempts: 0 }]);
+const rejectedZeroAttempt = async () =>
+  runScripted([{ candidate: invalidCandidate() }, { candidate: invalidCandidate(), httpAttempts: 0 }]);
+const stoppedDuringRepair = async () =>
+  runScripted([{ candidate: invalidCandidate() }, { fail: 'network' }]);
+const overrunInGeneration = async () =>
+  runScripted([{ candidate: validCandidate(), httpAttempts: 3 }]);
+const overrunInRepair = async () =>
+  runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate(), httpAttempts: 2 }]);
+// The provider exception path reports its attempts without the normal budget check.
+const providerFailureOverBudget = async () => runScripted([{ fail: 'network', httpAttempts: 5 }]);
+const providerFailureInRepairOverBudget = async () =>
+  runScripted([{ candidate: invalidCandidate() }, { fail: 'timeout', httpAttempts: 4 }]);
+
+async function runWithSignal(
+  steps: ConstructorParameters<typeof ScriptedDraftProvider>[0],
+  abortOnIdentityCheck: number | null,
+) {
+  const controller = new AbortController();
+  if (abortOnIdentityCheck === null) controller.abort();
+  let calls = 0;
+  return runAuthoring({
+    rawBrief: LAST_TRAM_BRIEF,
+    provider: new ScriptedDraftProvider(steps),
+    limits: FAST_LIMITS,
+    now: fakeClock(),
+    signal: controller.signal,
+    // Call 1 is the brief identity check; call 2 runs inside validation of the
+    // first candidate, so aborting there lands exactly before the repair dispatch.
+    isPublished: () => {
+      calls += 1;
+      if (calls === abortOnIdentityCheck) controller.abort();
+      return false;
+    },
+  });
+}
+const cancelledBeforeGeneration = async () => runWithSignal([], null);
+const cancelledBeforeRepair = async () => runWithSignal([{ candidate: invalidCandidate() }], 2);
 
 async function parsed(make: () => ReturnType<typeof firstPass>) {
   const result = await make();
@@ -320,6 +366,56 @@ describe('parseRunReport: inconsistent telemetry', () => {
       'stop-phase',
     ],
     [
+      'a skipped repair although the request and HTTP budgets both remained',
+      async () => reportText(await budgetExhausted()),
+      'run-report.json',
+      (r) => {
+        r.provenance.requests[0].httpAttempts = 1;
+        r.provenance.totalHttpAttempts = 1;
+      },
+      'repair-disposition',
+    ],
+    [
+      'a repair dispatched after generation exhausted the HTTP budget',
+      async () => reportText(await repairedZeroAttempt()),
+      'validation-report.json',
+      (r) => {
+        r.provenance.requests[0].httpAttempts = 2;
+        r.provenance.totalHttpAttempts = 2;
+      },
+      'repair-budget',
+    ],
+    [
+      'a rejected repair dispatched after generation exhausted the HTTP budget',
+      async () => reportText(await rejectedZeroAttempt()),
+      'run-report.json',
+      (r) => {
+        r.provenance.requests[0].httpAttempts = 2;
+        r.provenance.totalHttpAttempts = 2;
+      },
+      'repair-budget',
+    ],
+    [
+      'a repair stopped after generation exhausted the HTTP budget',
+      async () => reportText(await stoppedDuringRepair()),
+      'run-report.json',
+      (r) => {
+        r.provenance.requests[0].httpAttempts = 2;
+        r.provenance.totalHttpAttempts = 3;
+      },
+      'repair-budget',
+    ],
+    [
+      'a pre-repair cancellation after generation exhausted the HTTP budget',
+      async () => reportText(await cancelledBeforeRepair()),
+      'run-report.json',
+      (r) => {
+        r.provenance.requests[0].httpAttempts = 2;
+        r.provenance.totalHttpAttempts = 2;
+      },
+      'repair-budget',
+    ],
+    [
       'mock provider reporting HTTP attempts',
       validation,
       'validation-report.json',
@@ -366,5 +462,47 @@ describe('parseRunReport: inconsistent telemetry', () => {
         model: 'offline-fixture-model',
       });
     }
+  });
+});
+
+describe('parseRunReport: budget consistency on genuine pipeline reports', () => {
+  const accepted: Array<[string, () => ReturnType<typeof firstPass>, Record<string, unknown>]> = [
+    ['an exhausted HTTP budget that skipped repair', budgetExhausted, { status: 'REJECTED', repairDisposition: 'skipped_budget_exhausted' }],
+    ['a repaired success', repaired, { status: 'REVIEW_REQUIRED', repaired: true }],
+    ['a repaired success with a zero-attempt repair', repairedZeroAttempt, { status: 'REVIEW_REQUIRED', repaired: true }],
+    ['a repaired rejection', rejected, { status: 'REJECTED', repairDisposition: 'attempted' }],
+    ['a stop during generation', stopped, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'NETWORK' }],
+    ['a stop during repair', stoppedDuringRepair, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'NETWORK' }],
+    ['a cancellation before generation is dispatched', cancelledBeforeGeneration, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'CANCELLED' }],
+    ['a cancellation before repair is dispatched', cancelledBeforeRepair, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'CANCELLED' }],
+    ['a call-budget overrun in generation', overrunInGeneration, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'CALL_BUDGET_EXCEEDED' }],
+    ['a call-budget overrun in repair', overrunInRepair, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'CALL_BUDGET_EXCEEDED' }],
+    ['a provider failure that reported attempts over budget', providerFailureOverBudget, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'NETWORK' }],
+    ['a provider failure in repair that reported attempts over budget', providerFailureInRepairOverBudget, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'TIMEOUT' }],
+  ];
+
+  it.each(accepted)('accepts %s', async (_name, make, expected) => {
+    const outcome = await parsed(make);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.observation).toMatchObject(expected);
+  });
+
+  it('accepts a skipped repair when the declared request budget is already used', async () => {
+    const text = mutateReport(reportText(await budgetExhausted()), (r) => {
+      r.provenance.requests[0].httpAttempts = 1;
+      r.provenance.totalHttpAttempts = 1;
+      r.provenance.callBudget.maxRequests = 1;
+    });
+    const outcome = parseRunReport('run-report.json', text);
+    expect(outcome.ok).toBe(true);
+  });
+
+  it('keeps failure details to a fixed vocabulary', async () => {
+    const text = mutateReport(reportText(await repairedZeroAttempt()), (r) => {
+      r.provenance.requests[0].httpAttempts = 2;
+      r.provenance.totalHttpAttempts = 2;
+    });
+    const outcome = parseRunReport('validation-report.json', text);
+    expect(outcome).toEqual({ ok: false, code: 'INCONSISTENT_TELEMETRY', detail: 'repair-budget' });
   });
 });

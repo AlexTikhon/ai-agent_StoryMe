@@ -265,6 +265,19 @@ function commonTelemetryProblem(p: Provenance): string | null {
 const isFailed = (r: RequestRecord): boolean =>
   r.outcome === 'ok' && r.validation !== undefined && r.validation !== 'passed';
 
+/**
+ * Mirrors the pipeline's gate after a failed first candidate: a repair starts
+ * only while fewer than `maxRequests` requests were made and fewer than
+ * `maxHttpAttempts` HTTP attempts were used. `prior` must be requests that
+ * completed normally (they passed the pipeline's post-response budget check);
+ * the final, stopped request of a provider failure is never part of it, because
+ * the exception path reports its attempts before any budget check.
+ */
+function budgetAllowsDispatch(p: Provenance, prior: readonly RequestRecord[]): boolean {
+  const attempts = prior.reduce((sum, r) => sum + r.httpAttempts, 0);
+  return prior.length < p.callBudget.maxRequests && attempts < p.callBudget.maxHttpAttempts;
+}
+
 function validationReportProblem(report: ValidationReport): string | null {
   const { requests } = report.provenance;
   const last = requests[requests.length - 1];
@@ -276,6 +289,10 @@ function validationReportProblem(report: ValidationReport): string | null {
   if (report.provenance.candidateHash !== report.candidate.hash) return 'candidate-hash';
   if (report.provenance.totalHttpAttempts > report.provenance.callBudget.maxHttpAttempts) {
     return 'http-budget';
+  }
+  // A repair request was dispatched: the budgets must have allowed it.
+  if (requests.length > 1 && !budgetAllowsDispatch(report.provenance, requests.slice(0, -1))) {
+    return 'repair-budget';
   }
   return null;
 }
@@ -294,6 +311,11 @@ function runReportProblem(report: RunReport): string | null {
     const attempted = report.repair === 'attempted';
     if (attempted ? requests.length !== 2 : requests.length !== 1) return 'repair-disposition';
     if (p.totalHttpAttempts > p.callBudget.maxHttpAttempts) return 'http-budget';
+    // Skipping is only legitimate when a declared budget was actually used up;
+    // dispatching is only legitimate when both were still available.
+    const allowed = budgetAllowsDispatch(p, requests.slice(0, 1));
+    if (!attempted && allowed) return 'repair-disposition';
+    if (attempted && !allowed) return 'repair-budget';
     return null;
   }
 
@@ -309,6 +331,9 @@ function runReportProblem(report: RunReport): string | null {
   if (!abortedBeforeDispatch && last && last.outcome !== report.stopReason) return 'stop-outcome';
   if (!prior.every(isFailed)) return 'request-validation';
   if (!abortedBeforeDispatch && last && last.validation !== undefined) return 'request-validation';
+  // Reaching the repair phase (dispatched, or aborted at the top of its loop
+  // iteration) passed the budget gate after the failed first candidate.
+  if (report.phase === 'repair' && !budgetAllowsDispatch(p, prior)) return 'repair-budget';
   if (
     report.stopReason === 'CALL_BUDGET_EXCEEDED' &&
     p.totalHttpAttempts <= p.callBudget.maxHttpAttempts
