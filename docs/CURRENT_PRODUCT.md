@@ -223,6 +223,7 @@ Authoring is a set of local commands with no endpoint, database, queue or editor
 | --------------------------------------------------- | -------------------------------------------------------------------------- |
 | `pnpm author:interactive --mode mock`               | Brief to candidate, at most one generation and one repair, then validation |
 | `pnpm playtest:interactive --candidate <file>`      | Play a candidate through the production engine; read-only                  |
+| `pnpm review:interactive:routes --candidate <file>` | List every playable route with its narration (JSON or Markdown); read-only |
 | `pnpm preflight:interactive --candidate --approval` | Re-validate a candidate and check its approval record; read-only           |
 | `pnpm eval:interactive:authoring:offline`           | Fixture evaluation of the authoring pipeline; no services, keys or network |
 

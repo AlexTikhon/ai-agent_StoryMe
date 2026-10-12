@@ -147,6 +147,25 @@ Bounds: candidate file 200 000 bytes, interactive line 256 bytes, 100 input line
 
 **This is not review.** Playing every route does not approve the prose, write or change an approval record, register the scenario or publish anything, and there is no web draft-preview endpoint. "The Last Tram" stays `REVIEW_REQUIRED` with a pending approval template. The editorial checklist below still applies in full.
 
+## Exhaustive route review (offline)
+
+The playtest follows one route you choose. An editor also needs the player-visible narration along **every** playable choice sequence, including different paths that reach the same ending.
+
+```bash
+pnpm --silent review:interactive:routes --candidate <validated-candidate.json> --format json
+pnpm --silent review:interactive:routes --candidate <validated-candidate.json> --format markdown
+```
+
+It reads one explicitly supplied `validated-candidate.json`, re-runs the same mechanical validation as the playtest, then walks the production engine (`availableChoices` through the public projection, `applyChoice`, `verifyReplay`, canonical narration validation, `buildPublicView`) and reproduces no transition or narration rule. A pending or unpublished candidate is accepted; approval is neither required nor created. Nothing is written: no database, provider, network, registry or file.
+
+- **Routes are never merged.** Different choice sequences stay separate even when they reach the same state or ending. Order is the engine's depth-first walk in authored choice order, so it is the same for the same candidate hash.
+- **Per route:** ordered choice ids and labels, then each scene's title and player-visible narration, and the ending title and summary. Candidate id, version and canonical hash, `REVIEW_REQUIRED`, `approved: false`, `NOT_PUBLISHED`, and route and ending counts head the report. Full state, NPC knowledge, internal flags, template ids and raw events are not included; this is an editorial artifact, not a public API response or a session transcript.
+- **Bounds** (a bound that is exceeded fails the run and prints no report, so a partial report is never presented as exhaustive): 100 routes, 32 choices per route, 1 000 explored transitions, 500 000 characters of output, and the 200 000-byte candidate file limit. The authoring format (at most 8 scenes, 3 decision points, 3 choices per scene) stays far below these.
+- **Output.** JSON is deterministic and independent of how the candidate file is formatted; characters a terminal may act on (C1 controls, bidi overrides, line separators) are written as `\uXXXX` escapes and the authored text parses back unchanged. Markdown escapes Markdown and HTML syntax so authored text displays literally, quotes every authored line, and replaces terminal control characters with U+FFFD; use the JSON for the exact text.
+- **Exit codes:** `0` report printed; `1` unreadable, oversized, non-JSON or mechanically invalid candidate, or a bound exceeded (nothing on stdout, a fixed code on stderr); `2` usage error. As elsewhere, `pnpm` reports any non-zero exit as `1`. Paths resolve from `apps/api` under `pnpm`, so use absolute paths.
+
+**Limits.** Exhaustive route coverage helps a person read every playable path. It does not establish prose quality, detect contradictions or unannotated secrets, approve anything, register anything or publish anything. `warsaw-last-tram` remains unapproved and unregistered, and real-model quality remains unverified.
+
 ## Review and publication
 
 1. A human reads `review-report.md` and the candidate prose, optionally playing it with `pnpm playtest:interactive`, and completes the checklist.

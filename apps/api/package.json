@@ -43,6 +43,7 @@
     "playtest:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/playtest-interactive-scenario.ts",
     "preflight:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-interactive-publication.ts",
     "report:interactive:authoring": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/report-interactive-authoring.ts",
+    "review:interactive:routes": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/review-interactive-routes.ts",
     "eval:story:openai": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts openai"
   },
   "dependencies": {
