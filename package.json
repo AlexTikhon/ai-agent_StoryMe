@@ -34,7 +34,8 @@
     "eval:interactive:authoring:offline": "pnpm --filter @book/api eval:interactive:authoring:offline",
     "author:interactive": "pnpm --filter @book/api author:interactive",
     "playtest:interactive": "pnpm --filter @book/api playtest:interactive",
-    "preflight:interactive": "pnpm --filter @book/api preflight:interactive"
+    "preflight:interactive": "pnpm --filter @book/api preflight:interactive",
+    "report:interactive:authoring": "pnpm --filter @book/api report:interactive:authoring"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.5.0",

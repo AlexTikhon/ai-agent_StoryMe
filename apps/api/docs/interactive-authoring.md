@@ -193,3 +193,42 @@ The real registry (`scenarios/index.ts`) is composed through `createGuardedScena
 ## Offline evaluation
 
 `pnpm eval:interactive:authoring:offline` (also a CI step) runs fixed fixtures through the real pipeline with a scripted provider and an intercepted fetch: the valid original candidate and both ending routes; malformed JSON, unknown fields/effects, duplicate entries; changed or already-published identity; duplicate ids and unresolved references; a cyclic graph (rejected before exhaustive exploration); an unreachable ending, an unusable choice, a reachable dead end and a speaker-knowledge violation; over-long canonical narration; a valid repair and a repair that stays invalid; refusal, truncation, authentication, timeout, network and cancellation without repair; exhausted and exceeded call budgets; disabled implicit HTTP/network/timeout retries; mechanical validity without approval; and identical candidate hashes across repeated mock runs.
+
+## Comparing saved runs (offline report)
+
+`pnpm report:interactive:authoring` summarizes runs you already have on disk, so authoring behaviour can be measured instead of remembered. It runs no model and makes no call.
+
+```bash
+pnpm report:interactive:authoring \
+  --report apps/api/scenario-drafts/<run>--review-required/validation-report.json \
+  --report apps/api/scenario-drafts/<run>--rejected/run-report.json \
+  --format json
+```
+
+Paths are resolved from the directory the script runs in (`apps/api` under `pnpm`), so absolute paths are the safe choice. Only `validation-report.json` and `run-report.json` are accepted; there is no directory discovery, and candidate, review and approval files are never opened. At most 100 reports of at most 256 KiB each. `--format json` is the only format and the default.
+
+**Exit codes:** `0` a valid report was printed (even if every supplied run failed authoring); `1` any supplied report is unreadable, malformed, duplicated (same file, symlink or identical bytes) or has inconsistent telemetry — nothing is printed to stdout, so an invalid input can never silently leave a denominator; `2` usage error. Failures name the report by position (`report #2`) and a fixed code, never a path, value or exception message. `pnpm` reports any non-zero script exit as `1`; the distinct `2` is visible only when the script is run directly (for example with `ts-node`). For clean machine-readable stdout, run `pnpm --silent report:interactive:authoring ...` from `apps/api`: the root wrapper and `--filter` runs print pnpm's own banner lines to stdout before the JSON.
+
+**Grouping.** Runs are compared only inside a group of identical provider, model, prompt version, wire schema version and brief hash. The output is sorted and byte-identical for any argument order.
+
+**Metrics** (every rate is `null` when its denominator is 0, otherwise rounded to 4 decimals):
+
+| Metric | Definition |
+| ------ | ---------- |
+| `samples`, `outcomes` | valid supplied reports; counts of REVIEW_REQUIRED / REJECTED / STOPPED |
+| `firstPass` | `evaluated` = runs whose first candidate was validated; `passed` = of those, mechanically valid; `notEvaluated` = stopped before a first candidate was validated; `rate = passed / evaluated` |
+| `repair` | `attempted` = repair requests dispatched; `evaluated` = repair candidates validated; `succeeded` = runs accepted from the repair candidate; `stoppedDuringRepair`; `skippedBudgetExhausted`; `successRate = succeeded / evaluated` |
+| `finalValidity` | `evaluated` = REVIEW_REQUIRED + REJECTED; `valid` = REVIEW_REQUIRED; `rate = valid / evaluated`. STOPPED runs stay visible in `outcomes` |
+| `rejectionStages`, `stopReasons` | counts for every stage and stop reason, zero-filled in pipeline order |
+| `providerRequests`, `httpAttempts` | recorded request records and summed HTTP attempts (a mock request records no HTTP attempt) |
+| `totalRunDurationMs` | min / median / max / mean of the recorded total run duration |
+| `tokenUsage.input` / `.output` | `reportedTotal` sums only requests that reported the value (`null` if none did, `0` only when a provider really reported 0); `requestsReporting`, `requestsObserved`, `coverage`, `complete` |
+
+**What this does not show.**
+
+- The output is observations from the supplied artifacts, not a population estimate or a significance test.
+- Mechanical validity means the deterministic stages passed. It is not editorial approval, prose quality or publication readiness.
+- Mock, scripted and OpenAI-labelled runs are separate groups (`evidenceClass`), but a provider label does not prove a real paid call happened: reports are not authenticated.
+- Unknown token usage is never zero or estimated, and no cost is computed.
+- Durations are recorded run totals, not latency benchmarks.
+- Real-model quality remains unverified, and `warsaw-last-tram` remains unapproved and unregistered.
