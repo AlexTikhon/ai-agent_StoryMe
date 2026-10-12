@@ -6,7 +6,10 @@ import { AUTHORING_CORPUS, type CorpusEntry } from '../src/interactive/authoring
 import { runExperiment } from '../src/interactive/authoring/experiment';
 import type { PipelineLimits } from '../src/interactive/authoring/pipeline';
 import type { ScenarioDraftProvider } from '../src/interactive/authoring/provider';
-import { ScriptedDraftProvider, type ScriptStep } from '../src/interactive/authoring/scripted-provider';
+import {
+  ScriptedDraftProvider,
+  type ScriptStep,
+} from '../src/interactive/authoring/scripted-provider';
 import { scenarioToWire } from '../src/interactive/authoring/wire';
 
 /**
@@ -123,7 +126,8 @@ export async function awaitingResponseBundle(root: string): Promise<Bundle> {
         name: provider.name,
         model: provider.model,
         draft: (request) => {
-          if (!existsSync(copy)) cpSync(onlyDirectory(options.draftsRoot), copy, { recursive: true });
+          if (!existsSync(copy))
+            cpSync(onlyDirectory(options.draftsRoot), copy, { recursive: true });
           return provider.draft(request);
         },
       };
@@ -214,7 +218,10 @@ export async function runFixture(root: string, run: FixtureRun): Promise<RunCapt
       scripts['last-tram'] = [{ candidate: invalid(tram) }, { candidate: valid(tram) }];
       break;
     case 'rejection':
-      scripts['harbour-ledger'] = [{ candidate: invalid(harbour) }, { candidate: invalid(harbour) }];
+      scripts['harbour-ledger'] = [
+        { candidate: invalid(harbour) },
+        { candidate: invalid(harbour) },
+      ];
       break;
     case 'generation-provider-stop':
       scripts['harbour-ledger'] = [{ fail: 'network' }];

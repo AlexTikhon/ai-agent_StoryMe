@@ -145,8 +145,7 @@ export function buildExperimentPlan(input: {
       offline: {
         requires: ['--mode offline'],
         httpRequests: 0,
-        evidence:
-          'Harness verification only: scripted fixture responses, not model performance.',
+        evidence: 'Harness verification only: scripted fixture responses, not model performance.',
       },
       openai: {
         requires: ['--mode openai', '--allow-paid-calls', '--model', 'OPENAI_API_KEY'],
@@ -195,11 +194,7 @@ export type IncompleteReason =
  *   artifacts are being written.
  */
 export type EntryStatus =
-  | 'unattempted'
-  | 'awaiting_response'
-  | 'recording'
-  | 'completed'
-  | 'stopped';
+  'unattempted' | 'awaiting_response' | 'recording' | 'completed' | 'stopped';
 
 /**
  * What is known about an entry's provider usage:
@@ -396,7 +391,8 @@ export async function runExperiment(options: RunExperimentOptions): Promise<Expe
     return { ok: false, code: 'EXPERIMENT_DIR_UNAVAILABLE' };
   }
 
-  const writeManifest = options.writeManifest ?? ((file, text) => replaceFileAtomically(file, text));
+  const writeManifest =
+    options.writeManifest ?? ((file, text) => replaceFileAtomically(file, text));
   const manifestFile = path.join(workDir, 'manifest.json');
   const budget = deriveBudget(corpus.length, options.limits);
 
@@ -429,8 +425,7 @@ export async function runExperiment(options: RunExperimentOptions): Promise<Expe
     sequence += 1;
     const count = (status: EntryStatus) => entries.filter((e) => e.status === status).length;
     const inProgress = state === 'IN_PROGRESS';
-    const complete =
-      !inProgress && reasons.size === 0 && count('completed') === entries.length;
+    const complete = !inProgress && reasons.size === 0 && count('completed') === entries.length;
     return {
       schema: EXPERIMENT_MANIFEST_SCHEMA,
       mode: options.mode,

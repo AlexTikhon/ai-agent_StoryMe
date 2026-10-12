@@ -1,10 +1,6 @@
 import { VALIDATION_STAGES, type ValidationStage } from './diagnostics';
 import type { StopReason } from './pipeline';
-import {
-  STOP_REASONS,
-  type RunGroupKey,
-  type RunObservation,
-} from './run-report-input';
+import { STOP_REASONS, type RunGroupKey, type RunObservation } from './run-report-input';
 
 /**
  * Aggregation of already-parsed run observations into a versioned, allowlisted
@@ -92,9 +88,11 @@ const DEFINITIONS: Record<string, string> = {
     'attempted = repair requests dispatched; evaluated = repair candidates that were validated; succeeded = runs accepted from the repair candidate; stoppedDuringRepair = repair requests that ended in a stop; skippedBudgetExhausted = runs whose repair was not dispatched because the call budget was spent; successRate = succeeded / evaluated.',
   finalValidity:
     'evaluated = runs that ended with a validation verdict (REVIEW_REQUIRED or REJECTED); valid = REVIEW_REQUIRED; rate = valid / evaluated. STOPPED runs are outside this denominator and counted in outcomes.',
-  providerRequests: 'Request records in the reports; a mock request is recorded but sends no HTTP attempt.',
+  providerRequests:
+    'Request records in the reports; a mock request is recorded but sends no HTTP attempt.',
   httpAttempts: 'Sum of recorded HTTP attempts, retries included.',
-  totalRunDurationMs: 'Distribution of the recorded total run duration over all samples in the group.',
+  totalRunDurationMs:
+    'Distribution of the recorded total run duration over all samples in the group.',
   tokenUsage:
     'reportedTotal sums requests that reported the value (null if none did); coverage = requestsReporting / requestsObserved.',
 };

@@ -317,7 +317,9 @@ describe('transcript presentation projection', () => {
     (name) => {
       const route = WARSAW_ROUTES[name];
       const dto = projectTranscriptPresentation(pageOf(route));
-      expect(dto.steps.map((s) => s.revision)).toEqual(Array.from({ length: route.length + 1 }, (_, i) => i));
+      expect(dto.steps.map((s) => s.revision)).toEqual(
+        Array.from({ length: route.length + 1 }, (_, i) => i),
+      );
       for (const [i, step] of dto.steps.entries()) {
         const current = projectPresentation(viewAt(route.slice(0, i)));
         expect(step.sceneId).toBe(current.sceneId);
@@ -391,15 +393,17 @@ describe('transcript presentation projection', () => {
 
   it('is validated by a strict schema that rejects extra fields at every level', () => {
     const dto = projectTranscriptPresentation(pageOf(['c-ask-caretaker']));
-    const accepts = (mutate: (copy: any) => void) => {
-      const copy = JSON.parse(JSON.stringify(dto));
-      mutate(copy);
+    const accepts = (tamper: (copy: typeof dto) => void) => {
+      const copy = JSON.parse(JSON.stringify(dto)) as typeof dto;
+      tamper(copy);
       return transcriptPresentationResponseSchema.safeParse(copy).success;
     };
     expect(accepts(() => undefined)).toBe(true);
-    expect(accepts((c) => (c.narration = 'x'))).toBe(false);
-    expect(accepts((c) => (c.steps[0].choices = []))).toBe(false);
-    expect(accepts((c) => (c.steps[0].presentation.manifest = {}))).toBe(false);
-    expect(accepts((c) => (c.steps[0].presentation.panels[0].extra = 1))).toBe(false);
+    expect(accepts((c) => Object.assign(c, { narration: 'x' }))).toBe(false);
+    expect(accepts((c) => Object.assign(c.steps[0]!, { choices: [] }))).toBe(false);
+    expect(accepts((c) => Object.assign(c.steps[0]!.presentation!, { manifest: {} }))).toBe(false);
+    expect(accepts((c) => Object.assign(c.steps[0]!.presentation!.panels[0]!, { extra: 1 }))).toBe(
+      false,
+    );
   });
 });

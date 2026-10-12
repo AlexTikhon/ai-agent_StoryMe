@@ -89,7 +89,13 @@ const shortWrites =
     const bytes = isText ? Buffer.from(data, 'utf8') : data;
     const start = isText ? 0 : (offset ?? 0);
     const wanted = isText || typeof length !== 'number' ? bytes.length - start : length;
-    return fsHooks.realWriteSync!(fd, bytes, start, Math.min(cap, wanted), isText ? null : (position ?? null));
+    return fsHooks.realWriteSync!(
+      fd,
+      bytes,
+      start,
+      Math.min(cap, wanted),
+      isText ? null : (position ?? null),
+    );
   };
 
 /**
@@ -112,7 +118,11 @@ function stallingManifestWriter(stallFrom: number) {
   };
 }
 
-const workDir = () => path.join(draftsRoot, readdirSync(draftsRoot).find((n) => n.endsWith('.incomplete'))!);
+const workDir = () =>
+  path.join(
+    draftsRoot,
+    readdirSync(draftsRoot).find((n) => n.endsWith('.incomplete'))!,
+  );
 const tempLeftovers = (dir: string) => readdirSync(dir).filter((n) => n.endsWith('.tmp'));
 
 describe('runExperiment (checkpoint writer short writes)', () => {

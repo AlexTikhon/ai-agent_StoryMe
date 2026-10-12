@@ -3,10 +3,12 @@ import {
   fakeClock,
   FAST_LIMITS,
   invalidCandidate,
+  type JsonObject,
   mutateReport,
   reportFileNameFor,
   reportText,
   runScripted,
+  setAt,
   validCandidate,
 } from '../../common/test-utils/authoring-run-fixtures';
 import { VALIDATION_STAGES } from './diagnostics';
@@ -25,7 +27,7 @@ import {
 } from './run-report-input';
 import { LAST_TRAM_BRIEF, LAST_TRAM_SCENARIO } from './the-last-tram';
 
-function observe(result: AuthoringResult, mutate?: (r: Record<string, any>) => void): RunObservation {
+function observe(result: AuthoringResult, mutate?: (r: JsonObject) => void): RunObservation {
   const text = mutate ? mutateReport(reportText(result), mutate) : reportText(result);
   const outcome = parseRunReport(reportFileNameFor(result) as ReportFileName, text);
   if (!outcome.ok) throw new Error(`fixture must parse: ${outcome.code}/${outcome.detail}`);
@@ -186,9 +188,7 @@ describe('buildComparisonReport: exact denominators', () => {
 
   it('treats input and output coverage independently', async () => {
     const report = buildComparisonReport([
-      observe(
-        await runScripted([{ candidate: validCandidate(), usage: { inputTokens: 10 } }]),
-      ),
+      observe(await runScripted([{ candidate: validCandidate(), usage: { inputTokens: 10 } }])),
     ]);
     const { input, output } = report.groups[0]!.tokenUsage;
     expect(input.reportedTotal).toBe(10);
@@ -237,19 +237,19 @@ describe('buildComparisonReport: exact denominators', () => {
 describe('buildComparisonReport: grouping and evidence', () => {
   it('never merges runs that differ in provider, model, prompt, wire schema or brief', async () => {
     const result = await runScripted([{ candidate: validCandidate() }]);
-    const variants: Array<(r: Record<string, any>) => void> = [
+    const variants: Array<(r: JsonObject) => void> = [
       () => undefined,
       (r) => {
-        r.provenance.provider = 'openai';
-        r.provenance.model = 'model-a';
+        setAt(r, ['provenance', 'provider'], 'openai');
+        setAt(r, ['provenance', 'model'], 'model-a');
       },
       (r) => {
-        r.provenance.provider = 'openai';
-        r.provenance.model = 'model-b';
+        setAt(r, ['provenance', 'provider'], 'openai');
+        setAt(r, ['provenance', 'model'], 'model-b');
       },
-      (r) => (r.provenance.promptVersion = 'interactive-authoring-prompt/v2'),
-      (r) => (r.provenance.schemaVersion = 'interactive-authoring-wire/v2'),
-      (r) => (r.provenance.briefHash = 'b'.repeat(64)),
+      (r) => setAt(r, ['provenance', 'promptVersion'], 'interactive-authoring-prompt/v2'),
+      (r) => setAt(r, ['provenance', 'schemaVersion'], 'interactive-authoring-wire/v2'),
+      (r) => setAt(r, ['provenance', 'briefHash'], 'b'.repeat(64)),
     ];
     const report = buildComparisonReport(variants.map((v) => observe(result, v)));
     expect(report.groups).toHaveLength(variants.length);
@@ -265,9 +265,9 @@ describe('buildComparisonReport: grouping and evidence', () => {
       limits: FAST_LIMITS,
       now: fakeClock(),
     });
-    const openaiLabelled = (r: Record<string, any>) => {
-      r.provenance.provider = 'openai';
-      r.provenance.model = 'offline-fixture-model';
+    const openaiLabelled = (r: JsonObject) => {
+      setAt(r, ['provenance', 'provider'], 'openai');
+      setAt(r, ['provenance', 'model'], 'offline-fixture-model');
     };
     const report = buildComparisonReport([
       observe(scripted),
@@ -294,17 +294,19 @@ describe('buildComparisonReport: grouping and evidence', () => {
       ...runs.map((r) => observe(r)),
       ...runs.map((r) =>
         observe(r, (rep) => {
-          rep.provenance.provider = 'openai';
-          rep.provenance.model = 'offline-fixture-model';
+          setAt(rep, ['provenance', 'provider'], 'openai');
+          setAt(rep, ['provenance', 'model'], 'offline-fixture-model');
         }),
       ),
     ];
     const forward = JSON.stringify(buildComparisonReport(observations));
     const backward = JSON.stringify(buildComparisonReport([...observations].reverse()));
     const shuffled = JSON.stringify(
-      buildComparisonReport(observations.filter((_, i) => i % 2 === 0).concat(
-        observations.filter((_, i) => i % 2 === 1),
-      )),
+      buildComparisonReport(
+        observations
+          .filter((_, i) => i % 2 === 0)
+          .concat(observations.filter((_, i) => i % 2 === 1)),
+      ),
     );
     expect(backward).toBe(forward);
     expect(shuffled).toBe(forward);
@@ -331,21 +333,59 @@ describe('buildComparisonReport: output allowlist and labelling', () => {
   });
 
   it('contains only allowlisted keys and no source, candidate or diagnostic content', async () => {
-    const report = buildComparisonReport(
-      Object.values(await mixedRuns()).map((r) => observe(r)),
-    );
+    const report = buildComparisonReport(Object.values(await mixedRuns()).map((r) => observe(r)));
     const allowed = new Set([
-      'schema', 'evidenceLabel', 'limitations', 'definitions', 'inputs', 'reports', 'groups',
-      'key', 'provider', 'model', 'promptVersion', 'wireSchemaVersion', 'briefHash',
-      'evidenceClass', 'samples', 'outcomes', 'reviewRequired', 'rejected', 'stopped',
-      'firstPass', 'evaluated', 'passed', 'notEvaluated', 'rate',
-      'repair', 'attempted', 'succeeded', 'stoppedDuringRepair', 'skippedBudgetExhausted',
-      'successRate', 'finalValidity', 'valid',
-      'rejectionStages', 'stopReasons', 'providerRequests', 'httpAttempts',
-      'totalRunDurationMs', 'minMs', 'medianMs', 'maxMs', 'meanMs',
-      'tokenUsage', 'input', 'output', 'reportedTotal', 'requestsReporting', 'requestsObserved',
-      'coverage', 'complete',
-      ...VALIDATION_STAGES, ...STOP_REASONS,
+      'schema',
+      'evidenceLabel',
+      'limitations',
+      'definitions',
+      'inputs',
+      'reports',
+      'groups',
+      'key',
+      'provider',
+      'model',
+      'promptVersion',
+      'wireSchemaVersion',
+      'briefHash',
+      'evidenceClass',
+      'samples',
+      'outcomes',
+      'reviewRequired',
+      'rejected',
+      'stopped',
+      'firstPass',
+      'evaluated',
+      'passed',
+      'notEvaluated',
+      'rate',
+      'repair',
+      'attempted',
+      'succeeded',
+      'stoppedDuringRepair',
+      'skippedBudgetExhausted',
+      'successRate',
+      'finalValidity',
+      'valid',
+      'rejectionStages',
+      'stopReasons',
+      'providerRequests',
+      'httpAttempts',
+      'totalRunDurationMs',
+      'minMs',
+      'medianMs',
+      'maxMs',
+      'meanMs',
+      'tokenUsage',
+      'input',
+      'output',
+      'reportedTotal',
+      'requestsReporting',
+      'requestsObserved',
+      'coverage',
+      'complete',
+      ...VALIDATION_STAGES,
+      ...STOP_REASONS,
     ]);
     const unexpected = [...keysIn(report)].filter((k) => !allowed.has(k));
     expect(unexpected).toEqual([]);

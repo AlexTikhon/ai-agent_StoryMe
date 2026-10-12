@@ -124,7 +124,13 @@ describe('plan mode (default)', () => {
   });
 
   it('reports a selected model without needing or reading a key', async () => {
-    const code = await runCli(['--mode', 'plan', '--model', 'model-x'], {}, io(), undefined, deps());
+    const code = await runCli(
+      ['--mode', 'plan', '--model', 'model-x'],
+      {},
+      io(),
+      undefined,
+      deps(),
+    );
     expect(code).toBe(EXIT_CODES.OK);
     expect(JSON.parse(out[0]!)['selectedModel']).toBe('model-x');
     expect(constructed.count).toBe(0);
@@ -151,22 +157,23 @@ describe('paid gates', () => {
     ['no paid flag', ['--mode', 'openai', '--model', 'm1'], { OPENAI_API_KEY: SECRET }],
     ['no model', ['--mode', 'openai', '--allow-paid-calls'], { OPENAI_API_KEY: SECRET }],
     ['no key', ['--mode', 'openai', '--allow-paid-calls', '--model', 'm1'], {}],
-    ['paid flag without openai', ['--allow-paid-calls', '--model', 'm1'], { OPENAI_API_KEY: SECRET }],
+    [
+      'paid flag without openai',
+      ['--allow-paid-calls', '--model', 'm1'],
+      { OPENAI_API_KEY: SECRET },
+    ],
     ['key and model env only', [], { OPENAI_API_KEY: SECRET, INTERACTIVE_AUTHORING_MODEL: 'm1' }],
   ];
 
-  it.each(refusals.slice(0, 4))(
-    'refuses before any side effect: %s',
-    async (_label, argv, env) => {
-      const code = await runCli(argv, env, io(), undefined, deps());
-      expect(code).toBe(EXIT_CODES.USAGE);
-      expect(fetchSpy).not.toHaveBeenCalled();
-      expect(constructed.count).toBe(0);
-      expect(existsSync(draftsRoot)).toBe(false);
-      expect(treeOf(tmp)).toEqual([]);
-      expect(stdout() + stderr()).not.toContain(SECRET);
-    },
-  );
+  it.each(refusals.slice(0, 4))('refuses before any side effect: %s', async (_label, argv, env) => {
+    const code = await runCli(argv, env, io(), undefined, deps());
+    expect(code).toBe(EXIT_CODES.USAGE);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(constructed.count).toBe(0);
+    expect(existsSync(draftsRoot)).toBe(false);
+    expect(treeOf(tmp)).toEqual([]);
+    expect(stdout() + stderr()).not.toContain(SECRET);
+  });
 
   it('an API key and model in the environment alone never execute anything', async () => {
     const [, , env] = refusals[4]!;
@@ -195,7 +202,13 @@ describe('paid gates', () => {
 
 describe('offline mode', () => {
   it('runs all three corpus briefs with scripted fixtures and says it is harness verification', async () => {
-    const code = await runCli(['--mode', 'offline'], { OPENAI_API_KEY: SECRET }, io(), undefined, deps());
+    const code = await runCli(
+      ['--mode', 'offline'],
+      { OPENAI_API_KEY: SECRET },
+      io(),
+      undefined,
+      deps(),
+    );
     expect(code).toBe(EXIT_CODES.OK);
     expect(stdout()).toMatch(/HARNESS VERIFICATION ONLY/);
     expect(stdout()).toMatch(/not model performance/i);
@@ -236,7 +249,9 @@ describe('offline mode', () => {
     expect(code).toBe(EXIT_CODES.INCOMPLETE);
     expect(stdout()).toMatch(/Completeness: INCOMPLETE/);
     expect(stdout()).toMatch(/CANCELLED/);
-    expect(manifestOf(experimentDir())['entries'].every((e: any) => e.status === 'unattempted')).toBe(true);
+    expect(
+      manifestOf(experimentDir())['entries'].every((e: any) => e.status === 'unattempted'),
+    ).toBe(true);
   });
 });
 
@@ -264,7 +279,11 @@ describe('openai mode (intercepted transport)', () => {
     const manifest = manifestOf(experimentDir());
     expect(manifest['configuration'].model).toBe('test-model-1');
     expect(manifest['configuration'].provider).toBe('openai');
-    expect(manifest['observed']).toMatchObject({ requests: 3, httpAttempts: 3, withinBudget: true });
+    expect(manifest['observed']).toMatchObject({
+      requests: 3,
+      httpAttempts: 3,
+      withinBudget: true,
+    });
     expect(manifest['completeness'].status).toBe('COMPLETE');
     // Generated variations are validated against their brief, not fixture hashes.
     expect(manifest['entries'].map((e: any) => e.outcome)).toEqual([
@@ -319,7 +338,9 @@ describe('openai mode (intercepted transport)', () => {
     const injected = vi.fn(
       (_url: string, init: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
         }),
     );
     const pending = runCli(argv, env, io(), controller.signal, deps({ fetchImpl: injected }));
@@ -377,7 +398,9 @@ describe('pnpm entry points', () => {
 
   it('root plan prints the plan and writes nothing, even with a key in the environment', () => {
     const before = { tmp: treeOf(tmp), drafts: listing() };
-    const result = pnpm(['--silent', 'experiment:interactive:authoring'], { OPENAI_API_KEY: SECRET });
+    const result = pnpm(['--silent', 'experiment:interactive:authoring'], {
+      OPENAI_API_KEY: SECRET,
+    });
     expect(result.code).toBe(0);
     const plan = JSON.parse(result.stdout) as Record<string, any>;
     expect(plan['schema']).toBe('interactive-authoring-experiment-plan/v1');
@@ -415,7 +438,17 @@ describe('pnpm entry points', () => {
 
   it('the API package entry point refuses an ungated paid run without side effects', () => {
     const result = pnpm(
-      ['--dir', 'apps/api', 'experiment:interactive:authoring', '--mode', 'openai', '--model', 'm1', '--drafts-root', draftsRoot],
+      [
+        '--dir',
+        'apps/api',
+        'experiment:interactive:authoring',
+        '--mode',
+        'openai',
+        '--model',
+        'm1',
+        '--drafts-root',
+        draftsRoot,
+      ],
       { OPENAI_API_KEY: SECRET },
     );
     expect(result.code).toBe(2);

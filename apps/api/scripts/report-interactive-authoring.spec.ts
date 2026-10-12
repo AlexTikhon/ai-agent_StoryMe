@@ -14,16 +14,23 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   invalidCandidate,
+  type JsonObject,
   mutateReport,
   reportFileNameFor,
   reportText,
   runScripted,
+  setAt,
   validCandidate,
 } from '../src/common/test-utils/authoring-run-fixtures';
 import { writeRunArtifacts } from '../src/interactive/authoring/artifacts';
 import type { AuthoringResult } from '../src/interactive/authoring/pipeline';
 import { LAST_TRAM_SCENARIO } from '../src/interactive/authoring/the-last-tram';
-import { EXIT_CODES, MAX_REPORT_FILE_BYTES, MAX_REPORTS, runCli } from './report-interactive-authoring';
+import {
+  EXIT_CODES,
+  MAX_REPORT_FILE_BYTES,
+  MAX_REPORTS,
+  runCli,
+} from './report-interactive-authoring';
 
 let tmp: string;
 let out: string[];
@@ -61,7 +68,10 @@ function digest(root: string): Record<string, string> {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else result[path.relative(root, full)] = createHash('sha256').update(readFileSync(full)).digest('hex');
+      else
+        result[path.relative(root, full)] = createHash('sha256')
+          .update(readFileSync(full))
+          .digest('hex');
     }
   };
   walk(root);
@@ -83,12 +93,21 @@ const canSymlink = (() => {
 
 async function mixed() {
   return {
-    first: artifact(await runScripted([{ candidate: validCandidate(), usage: { inputTokens: 10, outputTokens: 5 } }], { stepMs: 3 })),
+    first: artifact(
+      await runScripted(
+        [{ candidate: validCandidate(), usage: { inputTokens: 10, outputTokens: 5 } }],
+        { stepMs: 3 },
+      ),
+    ),
     repaired: artifact(
-      await runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate() }], { stepMs: 4 }),
+      await runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate() }], {
+        stepMs: 4,
+      }),
     ),
     rejected: artifact(
-      await runScripted([{ candidate: invalidCandidate() }, { candidate: invalidCandidate() }], { stepMs: 5 }),
+      await runScripted([{ candidate: invalidCandidate() }, { candidate: invalidCandidate() }], {
+        stepMs: 5,
+      }),
     ),
     stopped: artifact(await runScripted([{ fail: 'timeout' }], { stepMs: 6 })),
   };
@@ -113,7 +132,18 @@ describe('report-interactive-authoring: valid reports', () => {
   it('prints one versioned JSON report and exits 0', async () => {
     const files = await mixed();
     const code = runCli(
-      ['--report', files.first, '--report', files.repaired, '--report', files.rejected, '--report', files.stopped, '--format', 'json'],
+      [
+        '--report',
+        files.first,
+        '--report',
+        files.repaired,
+        '--report',
+        files.rejected,
+        '--report',
+        files.stopped,
+        '--format',
+        'json',
+      ],
       io(),
     );
     expect(code).toBe(EXIT_CODES.OK);
@@ -146,7 +176,10 @@ describe('report-interactive-authoring: valid reports', () => {
     const files = await mixed();
     const run = (order: string[]) => {
       out = [];
-      runCli(order.flatMap((f) => ['--report', f]), io());
+      runCli(
+        order.flatMap((f) => ['--report', f]),
+        io(),
+      );
       return stdout();
     };
     const forward = run([files.first, files.repaired, files.rejected, files.stopped]);
@@ -157,14 +190,20 @@ describe('report-interactive-authoring: valid reports', () => {
   it('does not mutate or add any artifact, and does no network I/O', async () => {
     const files = await mixed();
     const before = digest(tmp);
-    runCli(Object.values(files).flatMap((f) => ['--report', f]), io());
+    runCli(
+      Object.values(files).flatMap((f) => ['--report', f]),
+      io(),
+    );
     expect(digest(tmp)).toEqual(before);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('emits no source path, directory name, candidate title or run time', async () => {
     const files = await mixed();
-    runCli(Object.values(files).flatMap((f) => ['--report', f]), io());
+    runCli(
+      Object.values(files).flatMap((f) => ['--report', f]),
+      io(),
+    );
     const text = stdout();
     expect(text).not.toContain(tmp);
     expect(text).not.toContain('scenario-drafts');
@@ -179,11 +218,20 @@ describe('report-interactive-authoring: valid reports', () => {
       loose(
         'validation-report.json',
         mutateReport(base, (r) => {
-          r.provenance.startedAt = new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString();
+          setAt(
+            r,
+            ['provenance', 'startedAt'],
+            new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+          );
         }),
       ),
     );
-    expect(runCli(files.flatMap((f) => ['--report', f]), io())).toBe(0);
+    expect(
+      runCli(
+        files.flatMap((f) => ['--report', f]),
+        io(),
+      ),
+    ).toBe(0);
     expect(json().inputs.reports).toBe(MAX_REPORTS);
   });
 });
@@ -204,7 +252,10 @@ describe('report-interactive-authoring: usage errors (exit 2)', () => {
   });
 
   it('rejects more reports than the bound before reading any file', () => {
-    const argv = Array.from({ length: MAX_REPORTS + 1 }, (_, i) => ['--report', `nope-${i}.json`]).flat();
+    const argv = Array.from({ length: MAX_REPORTS + 1 }, (_, i) => [
+      '--report',
+      `nope-${i}.json`,
+    ]).flat();
     expect(runCli(argv, io())).toBe(EXIT_CODES.USAGE);
     expect(stderr()).toContain(`at most ${MAX_REPORTS}`);
     expect(out).toEqual([]);
@@ -221,7 +272,10 @@ describe('report-interactive-authoring: invalid input (exit 1, never dropped)', 
   it('emits no partial comparison when one of several reports is invalid', async () => {
     const files = await mixed();
     const broken = loose('run-report.json', '{"status": ');
-    const code = runCli(['--report', files.first, '--report', broken, '--report', files.stopped], io());
+    const code = runCli(
+      ['--report', files.first, '--report', broken, '--report', files.stopped],
+      io(),
+    );
     expectInvalid(code, 'report #2: MALFORMED_JSON');
     expect(stderr()).toContain('1 of 3 supplied reports');
     expect(stderr()).not.toContain(tmp);
@@ -230,7 +284,15 @@ describe('report-interactive-authoring: invalid input (exit 1, never dropped)', 
   it('rejects an unreadable path and a directory', async () => {
     const files = await mixed();
     expectInvalid(
-      runCli(['--report', path.join(tmp, 'missing', 'run-report.json'), '--report', path.dirname(files.first)], io()),
+      runCli(
+        [
+          '--report',
+          path.join(tmp, 'missing', 'run-report.json'),
+          '--report',
+          path.dirname(files.first),
+        ],
+        io(),
+      ),
       'report #1: REPORT_UNREADABLE',
       'report #2: UNSUPPORTED_FILE_NAME',
     );
@@ -254,7 +316,12 @@ describe('report-interactive-authoring: invalid input (exit 1, never dropped)', 
 
   it('rejects the same file given twice, including a different spelling of its path', async () => {
     const files = await mixed();
-    const respelled = path.join(path.dirname(files.first), '..', path.basename(path.dirname(files.first)), path.basename(files.first));
+    const respelled = path.join(
+      path.dirname(files.first),
+      '..',
+      path.basename(path.dirname(files.first)),
+      path.basename(files.first),
+    );
     expectInvalid(
       runCli(['--report', files.first, '--report', files.first, '--report', respelled], io()),
       'report #2: DUPLICATE_REPORT',
@@ -294,9 +361,14 @@ describe('report-interactive-authoring: invalid input (exit 1, never dropped)', 
     const files = await mixed();
     const bad = loose(
       'validation-report.json',
-      mutateReport(readFileSync(files.first, 'utf8'), (r) => (r.provenance.provider = 'sk-SECRET')),
+      mutateReport(readFileSync(files.first, 'utf8'), (r) =>
+        setAt(r, ['provenance', 'provider'], 'sk-SECRET'),
+      ),
     );
-    expectInvalid(runCli(['--report', bad], io()), 'report #1: SCHEMA_INVALID (provenance.provider)');
+    expectInvalid(
+      runCli(['--report', bad], io()),
+      'report #1: SCHEMA_INVALID (provenance.provider)',
+    );
     expect(stderr()).not.toContain('sk-SECRET');
   });
 
@@ -304,7 +376,9 @@ describe('report-interactive-authoring: invalid input (exit 1, never dropped)', 
     const files = await mixed();
     const bad = loose(
       'validation-report.json',
-      mutateReport(readFileSync(files.first, 'utf8'), (r) => (r.provenance.totalHttpAttempts = 9)),
+      mutateReport(readFileSync(files.first, 'utf8'), (r) =>
+        setAt(r, ['provenance', 'totalHttpAttempts'], 9),
+      ),
     );
     expectInvalid(
       runCli(['--report', bad], io()),
@@ -319,19 +393,23 @@ describe('report-interactive-authoring: budget-inconsistent reports', () => {
       'a skipped repair although both budgets remained',
       'run-report.json',
       () => runScripted([{ candidate: invalidCandidate(), httpAttempts: 2 }]),
-      (r: Record<string, any>) => {
-        r.provenance.requests[0].httpAttempts = 1;
-        r.provenance.totalHttpAttempts = 1;
+      (r: JsonObject) => {
+        setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 1);
+        setAt(r, ['provenance', 'totalHttpAttempts'], 1);
       },
       'repair-disposition',
     ],
     [
       'a repair dispatched after generation exhausted the HTTP budget',
       'validation-report.json',
-      () => runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate(), httpAttempts: 0 }]),
-      (r: Record<string, any>) => {
-        r.provenance.requests[0].httpAttempts = 2;
-        r.provenance.totalHttpAttempts = 2;
+      () =>
+        runScripted([
+          { candidate: invalidCandidate() },
+          { candidate: validCandidate(), httpAttempts: 0 },
+        ]),
+      (r: JsonObject) => {
+        setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 2);
+        setAt(r, ['provenance', 'totalHttpAttempts'], 2);
       },
       'repair-budget',
     ],
@@ -341,13 +419,21 @@ describe('report-interactive-authoring: budget-inconsistent reports', () => {
     const bad = loose(fileName, mutateReport(reportText(source), mutate));
     const before = digest(tmp);
 
-    const code = runCli(['--report', files.first, '--report', bad, '--report', files.stopped], io());
+    const code = runCli(
+      ['--report', files.first, '--report', bad, '--report', files.stopped],
+      io(),
+    );
 
     expect(code).toBe(EXIT_CODES.INVALID_INPUT);
     expect(out).toEqual([]);
     expect(stderr()).toContain(`report #2: INCONSISTENT_TELEMETRY (${detail})`);
     expect(stderr()).toContain('1 of 3 supplied reports');
-    const sensitive = [tmp, 'scenario-drafts', LAST_TRAM_SCENARIO.title, JSON.parse(reportText(source)).provenance.briefHash];
+    const sensitive = [
+      tmp,
+      'scenario-drafts',
+      LAST_TRAM_SCENARIO.title,
+      JSON.parse(reportText(source)).provenance.briefHash,
+    ];
     for (const value of sensitive) expect(stderr()).not.toContain(value);
     expect(digest(tmp)).toEqual(before);
     expect(fetchSpy).not.toHaveBeenCalled();

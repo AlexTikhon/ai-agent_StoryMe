@@ -10,13 +10,13 @@
 
 The gameplay graph is unchanged. There are exactly five terminal routes (enumerated from the production engine and each replay-verified in `the-last-tram.spec.ts`; each was also played through `pnpm playtest:interactive`).
 
-| # | Route (choice ids after the opening) | Box | Borrowing known | Ending |
-| - | ------------------------------------ | --- | --------------- | ------ |
-| 1 | `c-ask-driver, c-leave-cab, c-open-panel, c-report-to-depot` | recovered | no | report-filed |
-| 2 | `c-ask-driver, c-leave-cab, c-wait-for-terminus, c-report-to-depot` | missing | no | report-filed |
-| 3 | `c-inspect-carriage, c-pocket-receipt, c-show-receipt, c-report-to-depot` | missing | yes (Hanna confessed) | report-filed |
-| 4 | `c-inspect-carriage, c-pocket-receipt, c-show-receipt, c-let-hanna-repay` | missing | yes | quiet-repayment |
-| 5 | `c-inspect-carriage, c-pocket-receipt, c-wait-for-terminus, c-report-to-depot` | missing | no | report-filed |
+| #   | Route (choice ids after the opening)                                           | Box       | Borrowing known       | Ending          |
+| --- | ------------------------------------------------------------------------------ | --------- | --------------------- | --------------- |
+| 1   | `c-ask-driver, c-leave-cab, c-open-panel, c-report-to-depot`                   | recovered | no                    | report-filed    |
+| 2   | `c-ask-driver, c-leave-cab, c-wait-for-terminus, c-report-to-depot`            | missing   | no                    | report-filed    |
+| 3   | `c-inspect-carriage, c-pocket-receipt, c-show-receipt, c-report-to-depot`      | missing   | yes (Hanna confessed) | report-filed    |
+| 4   | `c-inspect-carriage, c-pocket-receipt, c-show-receipt, c-let-hanna-repay`      | missing   | yes                   | quiet-repayment |
+| 5   | `c-inspect-carriage, c-pocket-receipt, c-wait-for-terminus, c-report-to-depot` | missing   | no                    | report-filed    |
 
 `c-let-hanna-repay` is available only after `f-hanna-borrowed` is known, so only route 4 reaches the quiet ending.
 

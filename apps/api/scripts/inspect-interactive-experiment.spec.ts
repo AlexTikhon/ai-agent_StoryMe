@@ -45,7 +45,8 @@ vi.mock('node:fs', async (importOriginal) => {
   const openSync = actual.openSync as (...a: unknown[]) => number;
   wrapped['openSync'] = (...args: unknown[]) => {
     const flags = args[1];
-    if (hooks.counting && flags !== undefined && flags !== 'r') hooks.mutations.push(`openSync:${String(flags)}`);
+    if (hooks.counting && flags !== undefined && flags !== 'r')
+      hooks.mutations.push(`openSync:${String(flags)}`);
     return openSync(...args);
   };
   return { ...actual, ...wrapped };
@@ -115,7 +116,8 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-const copyOf = (bundle: Bundle): Bundle => cloneBundle(bundle, path.join(tmp, `bundle-${counter++}`));
+const copyOf = (bundle: Bundle): Bundle =>
+  cloneBundle(bundle, path.join(tmp, `bundle-${counter++}`));
 
 function digest(root: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -154,7 +156,11 @@ describe('inspect-interactive-experiment: results', () => {
     expect(runCli(['--manifest', bundles.awaiting.manifestPath], io())).toBe(EXIT_CODES.OK);
     const result = JSON.parse(out[0]!);
     expect(result.checkpoint.state).toBe('IN_PROGRESS');
-    expect(result.entries[1]).toMatchObject({ usage: 'UNKNOWN', requests: null, httpAttempts: null });
+    expect(result.entries[1]).toMatchObject({
+      usage: 'UNKNOWN',
+      requests: null,
+      httpAttempts: null,
+    });
     expect(result.observed).toMatchObject({ withinBudget: null, totalsAreLowerBound: true });
   });
 
@@ -334,7 +340,12 @@ describe('inspect-interactive-experiment: the pnpm entry point', () => {
 
   it('inspects a complete experiment from the repository root', () => {
     const result = pnpm(
-      ['--silent', 'inspect:interactive:experiment', '--manifest', `"${bundles.complete.manifestPath}"`],
+      [
+        '--silent',
+        'inspect:interactive:experiment',
+        '--manifest',
+        `"${bundles.complete.manifestPath}"`,
+      ],
       REPO_ROOT,
     );
     expect(result.status).toBe(0);
@@ -345,7 +356,12 @@ describe('inspect-interactive-experiment: the pnpm entry point', () => {
 
   it('inspects an interrupted checkpoint from the API package and exits 0', () => {
     const result = pnpm(
-      ['--silent', 'inspect:interactive:experiment', '--manifest', `"${bundles.awaiting.manifestPath}"`],
+      [
+        '--silent',
+        'inspect:interactive:experiment',
+        '--manifest',
+        `"${bundles.awaiting.manifestPath}"`,
+      ],
       path.join(REPO_ROOT, 'apps', 'api'),
     );
     expect(result.status).toBe(0);

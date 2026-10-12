@@ -44,8 +44,11 @@ describe('parseExperimentArgs', () => {
     expect(errorOf(['--mode', 'openai', '--allow-paid-calls', '--model', 'm1'])).toContain(
       'OPENAI_API_KEY',
     );
-    expect(errorOf(['--mode', 'openai', '--allow-paid-calls', '--model', 'm1'], { OPENAI_API_KEY: '  ' }))
-      .toContain('OPENAI_API_KEY');
+    expect(
+      errorOf(['--mode', 'openai', '--allow-paid-calls', '--model', 'm1'], {
+        OPENAI_API_KEY: '  ',
+      }),
+    ).toContain('OPENAI_API_KEY');
 
     const config = configOf(['--mode', 'openai', '--allow-paid-calls', '--model', 'm1'], env);
     expect(config).toMatchObject({ mode: 'openai', model: 'm1', apiKey: SECRET });
@@ -60,8 +63,11 @@ describe('parseExperimentArgs', () => {
   });
 
   it('rejects malformed model names', () => {
-    expect(errorOf(['--mode', 'openai', '--allow-paid-calls', '--model', 'bad model'], { OPENAI_API_KEY: SECRET }))
-      .toContain('--model');
+    expect(
+      errorOf(['--mode', 'openai', '--allow-paid-calls', '--model', 'bad model'], {
+        OPENAI_API_KEY: SECRET,
+      }),
+    ).toContain('--model');
     expect(errorOf(['--model', '-x'])).toContain('--model');
   });
 

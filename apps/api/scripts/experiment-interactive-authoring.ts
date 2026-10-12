@@ -69,7 +69,9 @@ function describeEntry(entry: ManifestEntry, index: number, total: number): stri
       : entry.usage === 'UNKNOWN'
         ? 'usage unknown'
         : 'no request dispatched';
-  const stop = entry.stop ? ` [${entry.stop.kind}${entry.stop.reason ? `:${entry.stop.reason}` : ''}]` : '';
+  const stop = entry.stop
+    ? ` [${entry.stop.kind}${entry.stop.reason ? `:${entry.stop.reason}` : ''}]`
+    : '';
   const repaired = entry.repaired ? ', repaired' : '';
   return `${head} ${entry.outcome ?? 'UNKNOWN'}${stop} (${counts}${repaired})`;
 }

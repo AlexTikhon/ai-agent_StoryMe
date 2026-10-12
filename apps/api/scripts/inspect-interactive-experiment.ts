@@ -67,7 +67,11 @@ export function runCli(argv: readonly string[], io: CliIo): number {
   const outcome = inspectExperiment(args.manifest);
   if (!outcome.ok) {
     io.out(
-      JSON.stringify({ schema: INSPECTION_SCHEMA, status: 'INVALID', issues: outcome.issues }, null, 2),
+      JSON.stringify(
+        { schema: INSPECTION_SCHEMA, status: 'INVALID', issues: outcome.issues },
+        null,
+        2,
+      ),
     );
     io.err('Inspection failed: no inspection was produced. See the issue codes on stdout.');
     return EXIT_CODES.INVALID;

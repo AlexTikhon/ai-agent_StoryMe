@@ -1,12 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +13,7 @@ import {
   offlineProviderFor,
   runExperiment,
   summarizeObservation,
+  type ExperimentManifest,
   type ManifestEntry,
   type RunExperimentOptions,
 } from './experiment';
@@ -28,6 +22,7 @@ import type { PipelineLimits } from './pipeline';
 import { writeRunArtifacts } from './artifacts';
 import { DraftProviderError, type ScenarioDraftProvider } from './provider';
 import { ScriptedDraftProvider, type ScriptStep } from './scripted-provider';
+import type { ComparisonReport } from './run-report-aggregate';
 import { scenarioToWire } from './wire';
 
 const FAST: PipelineLimits = { maxOutputTokens: 4000, requestTimeoutMs: 20, deadlineMs: 5000 };
@@ -95,8 +90,8 @@ async function runOk(options: Parameters<typeof run>[0]) {
   return result;
 }
 
-const readJson = (dir: string, rel: string) =>
-  JSON.parse(readFileSync(path.join(dir, rel), 'utf8')) as Record<string, any>;
+const readJson = <T = unknown>(dir: string, rel: string): T =>
+  JSON.parse(readFileSync(path.join(dir, rel), 'utf8')) as T;
 
 function digest(root: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -130,7 +125,8 @@ describe('buildExperimentPlan', () => {
     expect(plan.entries.map((e) => e.key)).toEqual(AUTHORING_CORPUS.map((e) => e.key));
     for (const [i, entry] of AUTHORING_CORPUS.entries()) {
       const parsed = parseBrief(entry.brief);
-      expect(parsed.ok && plan.entries[i]!.briefHash).toBe(hashBrief((parsed as any).brief));
+      if (!parsed.ok) throw new Error(`corpus brief ${entry.key} must parse`);
+      expect(plan.entries[i]!.briefHash).toBe(hashBrief(parsed.brief));
       expect(plan.entries[i]!.briefHash).toBe(entry.expect.briefHash);
     }
     expect(plan.budget).toEqual({
@@ -235,7 +231,10 @@ describe('runExperiment (offline)', () => {
           'approval-template.json',
         ]),
       );
-      const approval = readJson(dir, `${artifacts.dir}/approval-template.json`);
+      const approval = readJson<{ decision: string }>(
+        dir,
+        `${artifacts.dir}/approval-template.json`,
+      );
       expect(approval['decision']).toBe('pending');
       expect(entry.approval).toBe('PENDING');
       expect(entry.routeReview).toMatchObject({ status: 'EXPORTED' });
@@ -248,23 +247,28 @@ describe('runExperiment (offline)', () => {
   it('exports the exhaustive route review of every mechanically accepted candidate', async () => {
     const { dir, manifest } = await runOk({ providerFor: offlineProviderFor });
     for (const entry of manifest.entries) {
-      const json = readJson(dir, `route-reviews/${entry.key}.json`);
+      const json = readJson<{ schemaVersion: string; exhaustive: boolean; routes: unknown[] }>(
+        dir,
+        `route-reviews/${entry.key}.json`,
+      );
       expect(json['schemaVersion']).toBe('interactive-route-review/v1');
       expect(json['exhaustive']).toBe(true);
       expect(json['routes'].length).toBe(
         AUTHORING_CORPUS.find((c) => c.key === entry.key)!.expect.routes.length,
       );
-      expect(readFileSync(path.join(dir, `route-reviews/${entry.key}.md`), 'utf8').length).toBeGreaterThan(0);
+      expect(
+        readFileSync(path.join(dir, `route-reviews/${entry.key}.md`), 'utf8').length,
+      ).toBeGreaterThan(0);
     }
   });
 
   it('writes a comparison report from the written reports that agrees with the manifest', async () => {
     const { dir, manifest } = await runOk({ providerFor: offlineProviderFor });
     expect(manifest.comparisonReport).toBe('comparison-report.json');
-    const report = readJson(dir, 'comparison-report.json');
+    const report = readJson<ComparisonReport>(dir, 'comparison-report.json');
     expect(report['schema']).toBe('interactive-authoring-run-comparison/v1');
     expect(report['inputs']).toEqual({ reports: 3, groups: 3 });
-    const groups = report['groups'] as Array<Record<string, any>>;
+    const groups = report.groups;
     expect(groups.every((g) => g['evidenceClass'] === 'OFFLINE_SCRIPTED')).toBe(true);
     expect(groups.reduce((n, g) => n + g['providerRequests'], 0)).toBe(manifest.observed.requests);
     expect(groups.reduce((n, g) => n + g['httpAttempts'], 0)).toBe(manifest.observed.httpAttempts);
@@ -306,13 +310,17 @@ describe('runExperiment (budget and content outcomes)', () => {
       'clock-blackout': [{ candidate: invalid(CLOCK) }, { candidate: valid(CLOCK) }],
     });
     const { manifest } = await runOk({ providerFor: s.providerFor });
-    expect(manifest.entries.map((e) => [e.outcome, e.repaired, e.requests, e.httpAttempts])).toEqual([
+    expect(
+      manifest.entries.map((e) => [e.outcome, e.repaired, e.requests, e.httpAttempts]),
+    ).toEqual([
       ['REVIEW_REQUIRED', true, 2, 2],
       ['REVIEW_REQUIRED', true, 2, 2],
       ['REVIEW_REQUIRED', true, 2, 2],
     ]);
     expect(manifest.observed).toMatchObject({ requests: 6, httpAttempts: 6, withinBudget: true });
-    expect(manifest.observed.httpAttempts).toBeLessThanOrEqual(manifest.configuration.budget.maxHttpAttempts);
+    expect(manifest.observed.httpAttempts).toBeLessThanOrEqual(
+      manifest.configuration.budget.maxHttpAttempts,
+    );
     for (const key of ['last-tram', 'harbour-ledger', 'clock-blackout'] as const) {
       expect(s.dispatched(key)).toBe(2);
     }
@@ -320,7 +328,11 @@ describe('runExperiment (budget and content outcomes)', () => {
 
   it('observes every brief after a content REJECTED result and never starts a third request', async () => {
     const s = scripted({
-      'last-tram': [{ candidate: invalid(TRAM) }, { candidate: invalid(TRAM) }, { candidate: valid(TRAM) }],
+      'last-tram': [
+        { candidate: invalid(TRAM) },
+        { candidate: invalid(TRAM) },
+        { candidate: valid(TRAM) },
+      ],
       'harbour-ledger': [{ candidate: valid(HARBOUR) }],
       'clock-blackout': [{ candidate: valid(CLOCK) }],
     });
@@ -362,7 +374,10 @@ describe('runExperiment (budget and content outcomes)', () => {
     ]);
     expect(manifest.completeness.status).toBe('COMPLETE');
     for (const entry of manifest.entries) {
-      const report = readJson(dir, `${entry.artifacts!.dir}/validation-report.json`);
+      const report = readJson<{ candidate: { hash: string } }>(
+        dir,
+        `${entry.artifacts!.dir}/validation-report.json`,
+      );
       const fixture = AUTHORING_CORPUS.find((c) => c.key === entry.key)!;
       expect(report['candidate']['hash']).not.toBe(fixture.expect.candidateHash);
       expect(manifest.completeness.reasons).toEqual([]);
@@ -397,7 +412,11 @@ describe('runExperiment (stops)', () => {
       requests: null,
       httpAttempts: null,
     });
-    expect(manifest.halt).toEqual({ kind: 'PROVIDER_STOP', entry: 'harbour-ledger', reason: 'NETWORK' });
+    expect(manifest.halt).toEqual({
+      kind: 'PROVIDER_STOP',
+      entry: 'harbour-ledger',
+      reason: 'NETWORK',
+    });
     expect(manifest.completeness).toMatchObject({
       status: 'INCOMPLETE',
       completed: 1,
@@ -409,21 +428,29 @@ describe('runExperiment (stops)', () => {
     // Completed work and the stop report itself are preserved and compared.
     expect(manifest.entries[0]!.artifacts).not.toBeNull();
     expect(manifest.entries[1]!.artifacts!.files).toEqual(['run-report.json']);
-    const report = readJson(dir, 'comparison-report.json');
+    const report = readJson<ComparisonReport>(dir, 'comparison-report.json');
     expect(report['inputs'].reports).toBe(2);
     expect(manifest.observed.requests).toBe(2);
   });
 
-  it.each(['refusal', 'truncated', 'authentication', 'rate_limit', 'timeout', 'provider_error'] as const)(
-    'treats a %s stop as a stop, not as a content rejection',
-    async (fail) => {
-      const s = scripted({ 'last-tram': [{ fail }] });
-      const { manifest } = await runOk({ providerFor: s.providerFor });
-      expect(manifest.entries.map((e) => e.status)).toEqual(['stopped', 'unattempted', 'unattempted']);
-      expect(s.dispatched('harbour-ledger')).toBe(0);
-      expect(s.dispatched('last-tram')).toBe(1);
-    },
-  );
+  it.each([
+    'refusal',
+    'truncated',
+    'authentication',
+    'rate_limit',
+    'timeout',
+    'provider_error',
+  ] as const)('treats a %s stop as a stop, not as a content rejection', async (fail) => {
+    const s = scripted({ 'last-tram': [{ fail }] });
+    const { manifest } = await runOk({ providerFor: s.providerFor });
+    expect(manifest.entries.map((e) => e.status)).toEqual([
+      'stopped',
+      'unattempted',
+      'unattempted',
+    ]);
+    expect(s.dispatched('harbour-ledger')).toBe(0);
+    expect(s.dispatched('last-tram')).toBe(1);
+  });
 
   it('stops on cancellation mid-brief and starts nothing afterwards', async () => {
     const controller = new AbortController();
@@ -437,7 +464,11 @@ describe('runExperiment (stops)', () => {
     controller.abort();
     const result = await pending;
     if (!result.ok) throw new Error('expected a manifest');
-    expect(result.manifest.entries.map((e) => e.status)).toEqual(['completed', 'stopped', 'unattempted']);
+    expect(result.manifest.entries.map((e) => e.status)).toEqual([
+      'completed',
+      'stopped',
+      'unattempted',
+    ]);
     expect(result.manifest.halt).toMatchObject({ kind: 'CANCELLED', entry: 'harbour-ledger' });
     expect(result.manifest.completeness.reasons).toContain('CANCELLED');
     expect(s.dispatched('clock-blackout')).toBe(0);
@@ -470,7 +501,11 @@ describe('runExperiment (stops)', () => {
     release();
     const result = await pending;
     if (!result.ok) throw new Error('expected a manifest');
-    expect(result.manifest.entries.map((e) => e.status)).toEqual(['completed', 'stopped', 'unattempted']);
+    expect(result.manifest.entries.map((e) => e.status)).toEqual([
+      'completed',
+      'stopped',
+      'unattempted',
+    ]);
     expect(s.dispatched('clock-blackout')).toBe(0);
   });
 
@@ -478,7 +513,10 @@ describe('runExperiment (stops)', () => {
     const controller = new AbortController();
     controller.abort();
     const s = scripted(allValid());
-    const { manifest, dir } = await runOk({ providerFor: s.providerFor, signal: controller.signal });
+    const { manifest, dir } = await runOk({
+      providerFor: s.providerFor,
+      signal: controller.signal,
+    });
     expect(manifest.entries.every((e) => e.status === 'unattempted')).toBe(true);
     expect(manifest.halt).toMatchObject({ kind: 'CANCELLED', entry: null });
     expect(manifest.completeness.status).toBe('INCOMPLETE');
@@ -501,7 +539,11 @@ describe('runExperiment (stops)', () => {
         return written;
       },
     });
-    expect(manifest.entries.map((e) => e.status)).toEqual(['completed', 'unattempted', 'unattempted']);
+    expect(manifest.entries.map((e) => e.status)).toEqual([
+      'completed',
+      'unattempted',
+      'unattempted',
+    ]);
     expect(manifest.halt).toMatchObject({ kind: 'CANCELLED' });
     expect(s.dispatched('harbour-ledger')).toBe(0);
   });
@@ -527,7 +569,9 @@ describe('runExperiment (stops)', () => {
     expect(manifest.halt).toMatchObject({ kind: 'ARTIFACT_WRITE_FAILED', entry: 'harbour-ledger' });
     expect(manifest.completeness.reasons).toContain('ARTIFACT_WRITE_FAILED');
     expect(s.dispatched('clock-blackout')).toBe(0);
-    expect(existsSync(path.join(dir, manifest.entries[0]!.artifacts!.dir, 'validation-report.json'))).toBe(true);
+    expect(
+      existsSync(path.join(dir, manifest.entries[0]!.artifacts!.dir, 'validation-report.json')),
+    ).toBe(true);
     expect(readFileSync(path.join(dir, 'manifest.json'), 'utf8')).not.toContain(SECRET);
     expect(path.basename(dir)).toMatch(/--partial$/);
   });
@@ -537,7 +581,8 @@ describe('runExperiment (stops)', () => {
     const { manifest } = await runOk({
       providerFor: s.providerFor,
       writeText: (file, text) => {
-        if (file.includes('harbour-ledger') && file.includes('route-reviews')) throw new Error('nope');
+        if (file.includes('harbour-ledger') && file.includes('route-reviews'))
+          throw new Error('nope');
         writeFileSync(file, text, { flag: 'wx' });
       },
     });
@@ -555,7 +600,7 @@ describe('runExperiment (stops)', () => {
       routeReviewBounds: { maxRoutes: 1 },
     });
     expect(manifest.entries.map((e) => e.status)).toEqual(['completed', 'completed', 'completed']);
-    expect(manifest.entries.some((e) => (e.routeReview as any)?.status === 'FAILED')).toBe(true);
+    expect(manifest.entries.some((e) => e.routeReview?.status === 'FAILED')).toBe(true);
     expect(manifest.completeness.status).toBe('INCOMPLETE');
     expect(manifest.completeness.reasons).toContain('ROUTE_REVIEW_FAILED');
     expect(manifest.halt).toBeNull();
@@ -576,14 +621,14 @@ describe('runExperiment (stops)', () => {
     expect(names).toHaveLength(1);
     expect(names[0]).toMatch(/\.incomplete$/);
     // The last good checkpoint is still there, parseable and explicitly in progress.
-    const checkpoint = readJson(path.join(draftsRoot, names[0]!), 'manifest.json');
+    const checkpoint = readJson<Snapshot>(path.join(draftsRoot, names[0]!), 'manifest.json');
     expect(checkpoint['checkpoint'].state).toBe('IN_PROGRESS');
   });
 });
 
 // ── Progress checkpoints ────────────────────────────────────────────────────
 
-type Snapshot = Record<string, any>;
+type Snapshot = ExperimentManifest;
 
 /** Records every manifest write in order (and every dispatch), persisting it for real. */
 function checkpointLog(options: { failAt?: (call: number, snapshot: Snapshot) => boolean } = {}) {
@@ -631,7 +676,7 @@ function checkpointLog(options: { failAt?: (call: number, snapshot: Snapshot) =>
 const onDiskCheckpoint = (): Snapshot => {
   const dir = readdirSync(draftsRoot).find((n) => n.endsWith('.incomplete'));
   if (!dir) throw new Error('no work directory');
-  return readJson(path.join(draftsRoot, dir), 'manifest.json');
+  return readJson<Snapshot>(path.join(draftsRoot, dir), 'manifest.json');
 };
 
 describe('runExperiment (progress checkpoints)', () => {
@@ -746,7 +791,9 @@ describe('runExperiment (progress checkpoints)', () => {
       writeManifest: log.writeManifest,
     });
     expect(atSecondDispatch).not.toBeNull();
-    const [first, second, third] = (atSecondDispatch as unknown as Snapshot)['entries'] as ManifestEntry[];
+    const [first, second, third] = (atSecondDispatch as unknown as Snapshot)[
+      'entries'
+    ] as ManifestEntry[];
     expect(first).toMatchObject({
       key: 'last-tram',
       status: 'completed',
@@ -836,7 +883,10 @@ describe('runExperiment (progress checkpoints)', () => {
       stop: { kind: 'CHECKPOINT_WRITE_FAILED' },
     });
     expect(manifest.entries[2]!.status).toBe('unattempted');
-    expect(manifest.halt).toMatchObject({ kind: 'CHECKPOINT_WRITE_FAILED', entry: 'harbour-ledger' });
+    expect(manifest.halt).toMatchObject({
+      kind: 'CHECKPOINT_WRITE_FAILED',
+      entry: 'harbour-ledger',
+    });
     expect(manifest.completeness.reasons).toContain('CHECKPOINT_WRITE_FAILED');
     expect(manifest.completeness.status).toBe('INCOMPLETE');
   });
@@ -892,7 +942,7 @@ describe('runExperiment (progress checkpoints)', () => {
     });
     expect(result).toMatchObject({ ok: false, code: 'MANIFEST_WRITE_FAILED' });
     const work = path.join(draftsRoot, readdirSync(draftsRoot)[0]!);
-    const survivor = readJson(work, 'manifest.json');
+    const survivor = readJson<Snapshot>(work, 'manifest.json');
     expect(survivor['checkpoint'].state).toBe('IN_PROGRESS');
     expect(survivor['entries'][0]).toMatchObject({
       status: 'recording',
@@ -914,7 +964,7 @@ describe('runExperiment (progress checkpoints)', () => {
       writeManifest: log.writeManifest,
       mode: 'openai',
     });
-    const onDisk = readJson(dir, 'manifest.json');
+    const onDisk = readJson<Snapshot>(dir, 'manifest.json');
     expect(onDisk).toEqual(JSON.parse(JSON.stringify(manifest)));
     expect(onDisk['checkpoint'].state).toBe('FINAL');
     expect(onDisk['completeness'].reasons).not.toContain('IN_PROGRESS');
@@ -931,8 +981,8 @@ describe('runExperiment (progress checkpoints)', () => {
       withinBudget: true,
       coverage: { status: 'COMPLETE', unknown: 0 },
     });
-    const report = readJson(dir, 'comparison-report.json');
-    const groups = report['groups'] as Array<Record<string, any>>;
+    const report = readJson<ComparisonReport>(dir, 'comparison-report.json');
+    const groups = report.groups;
     expect(groups.reduce((n, g) => n + g['providerRequests'], 0)).toBe(onDisk['observed'].requests);
     expect(groups.reduce((n, g) => n + g['httpAttempts'], 0)).toBe(onDisk['observed'].httpAttempts);
     // Sequence numbers only ever increase.
@@ -967,7 +1017,11 @@ describe('summarizeObservation', () => {
     usage: ManifestEntry['usage'],
     requests: number | null,
     httpAttempts: number | null,
-  ): Pick<ManifestEntry, 'usage' | 'requests' | 'httpAttempts'> => ({ usage, requests, httpAttempts });
+  ): Pick<ManifestEntry, 'usage' | 'requests' | 'httpAttempts'> => ({
+    usage,
+    requests,
+    httpAttempts,
+  });
 
   it('is definitive within budget only when final and every entry is accounted for', () => {
     const summary = summarizeObservation(
@@ -1025,7 +1079,11 @@ describe('runExperiment (what is recorded)', () => {
       draft: () => Promise.reject(new DraftProviderError('authentication', 1)),
     };
     for (const provider of [leaky, typed]) {
-      const { dir } = await runOk({ providerFor: () => provider, mode: 'openai', model: 'model-x' });
+      const { dir } = await runOk({
+        providerFor: () => provider,
+        mode: 'openai',
+        model: 'model-x',
+      });
       const text = readdirRecursiveText(dir);
       expect(text).not.toContain(SECRET);
       expect(text).not.toContain('body:');

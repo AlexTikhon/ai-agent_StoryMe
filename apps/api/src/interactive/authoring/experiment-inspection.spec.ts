@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { setAt, type JsonObject } from '../../common/test-utils/authoring-run-fixtures';
 import {
   awaitingResponseBundle,
   cloneBundle,
@@ -28,7 +29,12 @@ import {
   type FixtureRun,
   type RunCapture,
 } from '../../../scripts/experiment-bundles.fixture';
-import { deriveBudget, summarizeObservation, type ExperimentManifest } from './experiment';
+import {
+  deriveBudget,
+  summarizeObservation,
+  type ExperimentManifest,
+  type ManifestEntry,
+} from './experiment';
 import {
   INSPECTION_SCHEMA,
   MAX_REPORT_BYTES,
@@ -43,7 +49,8 @@ import {
   type InspectIssue,
 } from './experiment-manifest-input';
 
-type Json = Record<string, any>;
+type Manifest = ExperimentManifest;
+type Entry = ManifestEntry;
 
 let shared: string;
 let bundles: {
@@ -52,12 +59,7 @@ let bundles: {
   awaiting: Bundle;
   recording: Bundle;
 };
-const ALL_RUNS: readonly FixtureRun[] = [
-  'success',
-  'repaired',
-  'rejection',
-  ...HALTING_RUNS,
-];
+const ALL_RUNS: readonly FixtureRun[] = ['success', 'repaired', 'rejection', ...HALTING_RUNS];
 const captures = {} as Record<FixtureRun, RunCapture>;
 let tmp: string;
 let counter = 0;
@@ -70,7 +72,8 @@ beforeAll(async () => {
     awaiting: await awaitingResponseBundle(path.join(shared, 'awaiting')),
     recording: await recordingBundle(path.join(shared, 'recording')),
   };
-  for (const run of ALL_RUNS) captures[run] = await runFixture(path.join(shared, `run-${run}`), run);
+  for (const run of ALL_RUNS)
+    captures[run] = await runFixture(path.join(shared, `run-${run}`), run);
 });
 afterAll(() => {
   rmSync(shared, { recursive: true, force: true });
@@ -82,12 +85,13 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-const copyOf = (bundle: Bundle): Bundle => cloneBundle(bundle, path.join(tmp, `bundle-${counter++}`));
-const readManifest = (bundle: Bundle): Json =>
-  JSON.parse(readFileSync(bundle.manifestPath, 'utf8')) as Json;
-const writeManifest = (bundle: Bundle, manifest: Json): void =>
+const copyOf = (bundle: Bundle): Bundle =>
+  cloneBundle(bundle, path.join(tmp, `bundle-${counter++}`));
+const readManifest = (bundle: Bundle): Manifest =>
+  JSON.parse(readFileSync(bundle.manifestPath, 'utf8')) as Manifest;
+const writeManifest = (bundle: Bundle, manifest: Manifest): void =>
   writeFileSync(bundle.manifestPath, JSON.stringify(manifest, null, 2));
-function edit(bundle: Bundle, change: (manifest: Json) => void): Bundle {
+function edit(bundle: Bundle, change: (manifest: Manifest) => void): Bundle {
   const manifest = readManifest(bundle);
   change(manifest);
   writeManifest(bundle, manifest);
@@ -96,7 +100,7 @@ function edit(bundle: Bundle, change: (manifest: Json) => void): Bundle {
 const text = (bundle: Bundle): string => readFileSync(bundle.manifestPath, 'utf8');
 
 /** Recomputes the observed block so only the tampering under test is inconsistent. */
-function reobserve(manifest: Json): void {
+function reobserve(manifest: Manifest): void {
   manifest['observed'] = summarizeObservation(
     manifest['entries'],
     manifest['configuration'].budget,
@@ -110,7 +114,8 @@ function issues(outcome: { ok: boolean; issues?: InspectIssue[] }): string[] {
 }
 
 function inspected(outcome: InspectionOutcome) {
-  if (!outcome.ok) throw new Error(`expected a valid inspection, got ${JSON.stringify(outcome.issues)}`);
+  if (!outcome.ok)
+    throw new Error(`expected a valid inspection, got ${JSON.stringify(outcome.issues)}`);
   return outcome.inspection;
 }
 
@@ -156,19 +161,19 @@ describe('parseExperimentManifest (pure)', () => {
       'interactive-authoring-experiment-manifest/v3',
     ]) {
       const manifest = readManifest(bundles.complete);
-      manifest['schema'] = schema;
+      Object.assign(manifest, { schema });
       expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toEqual([
         'SCHEMA_UNSUPPORTED',
       ]);
     }
     const manifest = readManifest(bundles.complete);
-    delete manifest['schema'];
+    delete (manifest as Partial<Manifest>).schema;
     expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toEqual(['SCHEMA_INVALID']);
   });
 
   it('rejects unknown keys instead of ignoring them', () => {
     const manifest = readManifest(bundles.complete);
-    manifest['entries'][0].surprise = true;
+    Object.assign(manifest['entries'][0], { surprise: true });
     const outcome = parseExperimentManifest(JSON.stringify(manifest));
     expect(issues(outcome)).toEqual(['SCHEMA_INVALID']);
   });
@@ -190,9 +195,17 @@ describe('parseExperimentManifest (pure)', () => {
   });
 
   describe('entry state', () => {
-    const entryTamper: Array<[string, (e: Json) => void, number]> = [
-      ['awaiting_response claiming reported usage', (e) => ((e.usage = 'REPORTED'), (e.requests = 1), (e.httpAttempts = 0)), 1],
-      ['an unattempted entry reporting zero requests', (e) => ((e.requests = 0), (e.httpAttempts = 0)), 2],
+    const entryTamper: Array<[string, (e: Entry) => void, number]> = [
+      [
+        'awaiting_response claiming reported usage',
+        (e) => ((e.usage = 'REPORTED'), (e.requests = 1), (e.httpAttempts = 0)),
+        1,
+      ],
+      [
+        'an unattempted entry reporting zero requests',
+        (e) => ((e.requests = 0), (e.httpAttempts = 0)),
+        2,
+      ],
       ['unknown usage turned into zero counts', (e) => ((e.requests = 0), (e.httpAttempts = 0)), 1],
     ];
     it.each(entryTamper)('rejects %s', (_name, change, index) => {
@@ -205,11 +218,11 @@ describe('parseExperimentManifest (pure)', () => {
 
     it('rejects a completed entry without usage, outcome or artifacts', () => {
       for (const change of [
-        (e: Json) => (e.usage = 'UNKNOWN'),
-        (e: Json) => (e.outcome = null),
-        (e: Json) => (e.artifacts = null),
-        (e: Json) => (e.requests = null),
-        (e: Json) => (e.stop = { kind: 'PROVIDER_STOP', reason: 'NETWORK' }),
+        (e: Entry) => (e.usage = 'UNKNOWN'),
+        (e: Entry) => (e.outcome = null),
+        (e: Entry) => (e.artifacts = null),
+        (e: Entry) => (e.requests = null),
+        (e: Entry) => (e.stop = { kind: 'PROVIDER_STOP', reason: 'NETWORK' }),
       ]) {
         const manifest = readManifest(bundles.complete);
         change(manifest['entries'][0]);
@@ -222,8 +235,8 @@ describe('parseExperimentManifest (pure)', () => {
 
     it('rejects a report file that does not belong to the recorded outcome', () => {
       const manifest = readManifest(bundles.complete);
-      manifest['entries'][0].artifacts.reportFile = 'run-report.json';
-      manifest['entries'][0].artifacts.files = ['run-report.json'];
+      manifest['entries'][0].artifacts!.reportFile = 'run-report.json';
+      manifest['entries'][0].artifacts!.files = ['run-report.json'];
       expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain(
         'ENTRY_STATE_ILLEGAL',
       );
@@ -241,8 +254,17 @@ describe('parseExperimentManifest (pure)', () => {
       const manifest = readManifest(bundles.complete);
       manifest['entries'][0].status = 'unattempted';
       manifest['entries'][0].usage = 'NONE';
-      for (const k of ['outcome', 'stop', 'repaired', 'requests', 'httpAttempts', 'artifacts', 'routeReview', 'approval']) {
-        manifest['entries'][0][k] = null;
+      for (const k of [
+        'outcome',
+        'stop',
+        'repaired',
+        'requests',
+        'httpAttempts',
+        'artifacts',
+        'routeReview',
+        'approval',
+      ]) {
+        Object.assign(manifest['entries'][0], { [k]: null });
       }
       const codes = issues(parseExperimentManifest(JSON.stringify(manifest)));
       expect(codes).toContain('ENTRY_ORDER_ILLEGAL');
@@ -295,15 +317,19 @@ describe('parseExperimentManifest (pure)', () => {
     it('rejects a halt that names no stopped entry or the wrong cause', () => {
       const missing = readManifest(bundles.stopped);
       missing['halt'] = null;
-      expect(issues(parseExperimentManifest(JSON.stringify(missing)))).toContain('HALT_INCONSISTENT');
+      expect(issues(parseExperimentManifest(JSON.stringify(missing)))).toContain(
+        'HALT_INCONSISTENT',
+      );
 
       const wrong = readManifest(bundles.stopped);
-      wrong['halt'].kind = 'CANCELLED';
+      wrong['halt']!.kind = 'CANCELLED';
       expect(issues(parseExperimentManifest(JSON.stringify(wrong)))).toContain('HALT_INCONSISTENT');
 
       const unknown = readManifest(bundles.stopped);
-      unknown['halt'].entry = 'clock-blackout';
-      expect(issues(parseExperimentManifest(JSON.stringify(unknown)))).toContain('HALT_INCONSISTENT');
+      unknown['halt']!.entry = 'clock-blackout';
+      expect(issues(parseExperimentManifest(JSON.stringify(unknown)))).toContain(
+        'HALT_INCONSISTENT',
+      );
     });
 
     it('rejects a configuration whose budget was not derived from its limits', () => {
@@ -337,7 +363,9 @@ describe('parseExperimentManifest (pure)', () => {
       const manifest = readManifest(bundles.awaiting);
       manifest['observed'].coverage.unknown = 0;
       manifest['observed'].coverage.notDispatched += 1;
-      expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain('COVERAGE_MISMATCH');
+      expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain(
+        'COVERAGE_MISMATCH',
+      );
     });
 
     it('rejects a within-budget claim made while usage is unresolved', () => {
@@ -378,7 +406,7 @@ describe('parseExperimentManifest (pure)', () => {
     ];
     it.each(bad)('rejects the report directory reference %j', (reference) => {
       const manifest = readManifest(bundles.complete);
-      manifest['entries'][0].artifacts.dir = reference;
+      manifest['entries'][0].artifacts!.dir = reference;
       expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain(
         'REFERENCE_INVALID',
       );
@@ -386,7 +414,7 @@ describe('parseExperimentManifest (pure)', () => {
 
     it('rejects file names that carry a path and a comparison report that is not the fixed one', () => {
       const manifest = readManifest(bundles.complete);
-      manifest['entries'][0].artifacts.files.push('../manifest.json');
+      manifest['entries'][0].artifacts!.files.push('../manifest.json');
       expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain(
         'REFERENCE_INVALID',
       );
@@ -398,7 +426,10 @@ describe('parseExperimentManifest (pure)', () => {
 
     it('rejects route-review references that are not the entry’s own pair', () => {
       const manifest = readManifest(bundles.complete);
-      manifest['entries'][0].routeReview.files = ['route-reviews/../../x.json', 'route-reviews/x.md'];
+      (manifest['entries'][0].routeReview as { files: string[] }).files = [
+        'route-reviews/../../x.json',
+        'route-reviews/x.md',
+      ];
       expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain(
         'REFERENCE_INVALID',
       );
@@ -406,17 +437,22 @@ describe('parseExperimentManifest (pure)', () => {
 
     it('bounds entries and file counts', () => {
       const manyEntries = readManifest(bundles.complete);
-      manyEntries['entries'] = Array.from({ length: MAX_ENTRIES + 1 }, () => manyEntries['entries'][0]);
+      manyEntries['entries'] = Array.from(
+        { length: MAX_ENTRIES + 1 },
+        () => manyEntries['entries'][0],
+      );
       expect(issues(parseExperimentManifest(JSON.stringify(manyEntries)))).toContain(
         'BOUND_EXCEEDED',
       );
 
       const manyFiles = readManifest(bundles.complete);
-      manyFiles['entries'][0].artifacts.files = Array.from(
+      manyFiles['entries'][0].artifacts!.files = Array.from(
         { length: MAX_FILES_PER_ENTRY + 1 },
         (_, i) => `f${i}.json`,
       );
-      expect(issues(parseExperimentManifest(JSON.stringify(manyFiles)))).toContain('BOUND_EXCEEDED');
+      expect(issues(parseExperimentManifest(JSON.stringify(manyFiles)))).toContain(
+        'BOUND_EXCEEDED',
+      );
     });
   });
 
@@ -436,8 +472,8 @@ describe('halted recording checkpoints (real runner)', () => {
     ['cancellation', 'CANCELLED', 'CANCELLED'],
   ];
   const frozen = (run: FixtureRun): Bundle => captures[run].haltedRecording!;
-  const frozenManifest = (run: FixtureRun): Json => readManifest(frozen(run));
-  const parse = (manifest: Json) => parseExperimentManifest(JSON.stringify(manifest));
+  const frozenManifest = (run: FixtureRun): Manifest => readManifest(frozen(run));
+  const parse = (manifest: Manifest) => parseExperimentManifest(JSON.stringify(manifest));
 
   describe.each(HALTED)('%s', (run, kind, reason) => {
     it('captures the STOPPED result while its entry is still recording', () => {
@@ -470,10 +506,14 @@ describe('halted recording checkpoints (real runner)', () => {
       const before = digest(bundle.dir);
       const inspection = inspected(inspectExperiment(bundle.manifestPath));
       expect(inspection.checkpoint.state).toBe('IN_PROGRESS');
-      expect(inspection.completeness).toMatchObject({ recording: 1, stopped: 0, awaitingResponse: 0 });
+      expect(inspection.completeness).toMatchObject({
+        recording: 1,
+        stopped: 0,
+        awaitingResponse: 0,
+      });
       expect(inspection.halt).toEqual({ kind, entry: 'harbour-ledger', reason });
       expect(inspection.entries[1]).toMatchObject({ status: 'recording', outcome: 'STOPPED' });
-      expect(inspection.entries[1]!.artifacts.state).toBe('NOT_RECORDED');
+      expect(inspection.entries[1]!.artifacts!.state).toBe('NOT_RECORDED');
       expect(inspection.observed).toMatchObject({ withinBudget: null });
       expect(inspection.observed.coverage.status).toBe('PARTIAL');
       expect(JSON.stringify(inspection)).not.toMatch(
@@ -493,11 +533,14 @@ describe('halted recording checkpoints (real runner)', () => {
     });
 
     it.each([
-      ['an unattempted entry', (m: Json) => (m['halt'].entry = 'clock-blackout')],
-      ['an earlier completed entry', (m: Json) => (m['halt'].entry = 'last-tram')],
-      ['a different kind', (m: Json) => (m['halt'].kind = kind === 'CANCELLED' ? 'PROVIDER_STOP' : 'CANCELLED')],
-      ['a different reason', (m: Json) => (m['halt'].reason = 'TIMEOUT')],
-      ['no halt at all', (m: Json) => (m['halt'] = null)],
+      ['an unattempted entry', (m: Manifest) => (m['halt']!.entry = 'clock-blackout')],
+      ['an earlier completed entry', (m: Manifest) => (m['halt']!.entry = 'last-tram')],
+      [
+        'a different kind',
+        (m: Manifest) => (m['halt']!.kind = kind === 'CANCELLED' ? 'PROVIDER_STOP' : 'CANCELLED'),
+      ],
+      ['a different reason', (m: Manifest) => (m['halt']!.reason = 'TIMEOUT')],
+      ['no halt at all', (m: Manifest) => (m['halt'] = null)],
     ])('still rejects a halt that names %s', (_name, change) => {
       const manifest = frozenManifest(run);
       change(manifest);
@@ -506,8 +549,8 @@ describe('halted recording checkpoints (real runner)', () => {
 
     it('still validates reported usage and counts on the recording entry', () => {
       for (const change of [
-        (e: Json) => (e.usage = 'UNKNOWN'),
-        (e: Json) => ((e.requests = null), (e.httpAttempts = null)),
+        (e: Entry) => (e.usage = 'UNKNOWN'),
+        (e: Entry) => ((e.requests = null), (e.httpAttempts = null)),
       ]) {
         const manifest = frozenManifest(run);
         change(manifest['entries'][1]);
@@ -515,7 +558,7 @@ describe('halted recording checkpoints (real runner)', () => {
         expect(issues(parse(manifest))).toContain('ENTRY_STATE_ILLEGAL');
       }
       const inflated = frozenManifest(run);
-      inflated['entries'][1].requests += 1;
+      inflated['entries'][1].requests! += 1;
       expect(issues(parse(inflated))).toContain('OBSERVED_TOTALS_MISMATCH');
     });
 
@@ -545,13 +588,17 @@ describe('halted recording checkpoints (real runner)', () => {
       reason: 'NETWORK',
     };
     manifest['completeness'].reasons = ['PROVIDER_STOP', 'IN_PROGRESS'];
-    expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain('HALT_INCONSISTENT');
+    expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain(
+      'HALT_INCONSISTENT',
+    );
   });
 
   it('keeps a FINAL halt that references a non-stopped entry invalid', () => {
     const manifest = readManifest(bundles.stopped);
-    manifest['halt'].entry = 'last-tram'; // completed
-    expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain('HALT_INCONSISTENT');
+    manifest['halt']!.entry = 'last-tram'; // completed
+    expect(issues(parseExperimentManifest(JSON.stringify(manifest)))).toContain(
+      'HALT_INCONSISTENT',
+    );
   });
 });
 
@@ -563,7 +610,9 @@ describe('checkpoint compatibility (every checkpoint the real runner emits)', ()
     checkpoints.forEach((raw, index) => {
       const parsed = parseExperimentManifest(raw);
       if (!parsed.ok) {
-        throw new Error(`${run} checkpoint ${index + 1} rejected: ${JSON.stringify(parsed.issues)}`);
+        throw new Error(
+          `${run} checkpoint ${index + 1} rejected: ${JSON.stringify(parsed.issues)}`,
+        );
       }
       sequences.push(parsed.manifest.checkpoint.sequence);
       expect(parsed.manifest.checkpoint.state).toBe(
@@ -575,9 +624,11 @@ describe('checkpoint compatibility (every checkpoint the real runner emits)', ()
 
   it.each(HALTING_RUNS)('emits a halted recording checkpoint in the %s run', (run) => {
     const halted = captures[run].checkpoints
-      .map((raw) => JSON.parse(raw) as Json)
+      .map((raw) => JSON.parse(raw) as Manifest)
       .filter((m) => m['halt'] !== null && m['checkpoint'].state === 'IN_PROGRESS')
-      .filter((m) => m['entries'].some((e: Json) => e.status === 'recording' && e.outcome === 'STOPPED'));
+      .filter((m) =>
+        m['entries'].some((e: Entry) => e.status === 'recording' && e.outcome === 'STOPPED'),
+      );
     expect(halted.length).toBeGreaterThan(0);
   });
 });
@@ -644,7 +695,7 @@ describe('inspectExperiment (real runner bundles)', () => {
       state: 'VERIFIED',
       reportFile: 'run-report.json',
     });
-    expect(inspection.entries[2]!.artifacts.state).toBe('NOT_RECORDED');
+    expect(inspection.entries[2]!.artifacts!.state).toBe('NOT_RECORDED');
     expect(inspection.model).toBe(FIXTURE_MODEL);
   });
 
@@ -664,7 +715,7 @@ describe('inspectExperiment (real runner bundles)', () => {
       requests: null,
       httpAttempts: null,
     });
-    expect(inspection.entries[1]!.artifacts.state).toBe('NOT_RECORDED');
+    expect(inspection.entries[1]!.artifacts!.state).toBe('NOT_RECORDED');
     expect(inspection.observed).toMatchObject({
       requests: 1,
       withinBudget: null,
@@ -682,14 +733,16 @@ describe('inspectExperiment (real runner bundles)', () => {
       outcome: 'REVIEW_REQUIRED',
       requests: 1,
     });
-    expect(inspection.entries[0]!.artifacts.state).toBe('NOT_RECORDED');
+    expect(inspection.entries[0]!.artifacts!.state).toBe('NOT_RECORDED');
     expect(inspection.completeness).toMatchObject({ recording: 1, awaitingResponse: 0 });
   });
 
   it('describes an IN_PROGRESS checkpoint only as saved state, never as a process or a failure', () => {
     const inspection = inspected(inspectExperiment(copyOf(bundles.awaiting).manifestPath));
     const serialized = JSON.stringify(inspection);
-    expect(serialized).not.toMatch(/\bdead\b|crash|killed|terminated|is running|currently running|failed request/i);
+    expect(serialized).not.toMatch(
+      /\bdead\b|crash|killed|terminated|is running|currently running|failed request/i,
+    );
     expect(inspection.evidenceLimits.join(' ')).toMatch(/does not (show|establish)/i);
     expect(inspection.evidenceLimits.join(' ')).toMatch(/billing/i);
     expect(inspection.evidenceLimits.join(' ')).toMatch(/approval/i);
@@ -743,7 +796,7 @@ describe('inspectExperiment (invalid input)', () => {
 
   it('rejects an unsupported schema, malformed JSON and tampered counts as failures with no summary', () => {
     const v1 = edit(copyOf(bundles.complete), (m) => {
-      m['schema'] = 'interactive-authoring-experiment-manifest/v1';
+      Object.assign(m, { schema: 'interactive-authoring-experiment-manifest/v1' });
     });
     const unsupported = inspectExperiment(v1.manifestPath);
     expect(issues(unsupported)).toEqual(['SCHEMA_UNSUPPORTED']);
@@ -775,7 +828,7 @@ describe('inspectExperiment (invalid input)', () => {
 describe('inspectExperiment (referenced artifacts)', () => {
   const firstRunDir = (bundle: Bundle): string => {
     const manifest = readManifest(bundle);
-    return path.join(bundle.dir, ...String(manifest['entries'][0].artifacts.dir).split('/'));
+    return path.join(bundle.dir, ...String(manifest['entries'][0].artifacts!.dir).split('/'));
   };
 
   it('reports a missing referenced run report', () => {
@@ -834,22 +887,25 @@ describe('inspectExperiment (referenced artifacts)', () => {
 
   it('flags a run report that does not parse', () => {
     const bundle = copyOf(bundles.complete);
-    writeFileSync(path.join(firstRunDir(bundle), 'validation-report.json'), '{"status":"REVIEW_REQUIRED"}');
+    writeFileSync(
+      path.join(firstRunDir(bundle), 'validation-report.json'),
+      '{"status":"REVIEW_REQUIRED"}',
+    );
     const outcome = inspectExperiment(bundle.manifestPath);
     expect(issues(outcome)).toContain('RUN_REPORT_INVALID');
   });
 
   describe('run report versus manifest', () => {
-    const patchReport = (bundle: Bundle, change: (report: Json) => void) => {
+    const patchReport = (bundle: Bundle, change: (report: JsonObject) => void) => {
       const file = path.join(firstRunDir(bundle), 'validation-report.json');
-      const report = JSON.parse(readFileSync(file, 'utf8')) as Json;
+      const report = JSON.parse(readFileSync(file, 'utf8')) as JsonObject;
       change(report);
       writeFileSync(file, JSON.stringify(report, null, 2));
     };
 
     it('detects a different brief hash', () => {
       const bundle = copyOf(bundles.complete);
-      patchReport(bundle, (r) => (r['provenance'].briefHash = 'a'.repeat(64)));
+      patchReport(bundle, (r) => setAt(r, ['provenance', 'briefHash'], 'a'.repeat(64)));
       expect(issues(inspectExperiment(bundle.manifestPath))).toContain(
         'RUN_REPORT_BRIEF_HASH_MISMATCH',
       );
@@ -858,8 +914,8 @@ describe('inspectExperiment (referenced artifacts)', () => {
     it('detects a different provider or model', () => {
       const bundle = copyOf(bundles.complete);
       patchReport(bundle, (r) => {
-        r['provenance'].provider = 'openai';
-        r['provenance'].model = 'some-model';
+        setAt(r, ['provenance', 'provider'], 'openai');
+        setAt(r, ['provenance', 'model'], 'some-model');
       });
       expect(issues(inspectExperiment(bundle.manifestPath))).toContain(
         'RUN_REPORT_PROVIDER_MISMATCH',
@@ -868,12 +924,12 @@ describe('inspectExperiment (referenced artifacts)', () => {
 
     it('detects different prompt or schema versions', () => {
       const prompt = copyOf(bundles.complete);
-      patchReport(prompt, (r) => (r['provenance'].promptVersion = 'other-prompt/v9'));
+      patchReport(prompt, (r) => setAt(r, ['provenance', 'promptVersion'], 'other-prompt/v9'));
       expect(issues(inspectExperiment(prompt.manifestPath))).toContain(
         'RUN_REPORT_VERSION_MISMATCH',
       );
       const schema = copyOf(bundles.complete);
-      patchReport(schema, (r) => (r['provenance'].schemaVersion = 'other-schema/v9'));
+      patchReport(schema, (r) => setAt(r, ['provenance', 'schemaVersion'], 'other-schema/v9'));
       expect(issues(inspectExperiment(schema.manifestPath))).toContain(
         'RUN_REPORT_VERSION_MISMATCH',
       );
@@ -900,7 +956,9 @@ describe('inspectExperiment (referenced artifacts)', () => {
         };
         reobserve(m);
       });
-      expect(issues(inspectExperiment(bundle.manifestPath))).toEqual(['RUN_REPORT_OUTCOME_MISMATCH']);
+      expect(issues(inspectExperiment(bundle.manifestPath))).toEqual([
+        'RUN_REPORT_OUTCOME_MISMATCH',
+      ]);
     });
 
     it('detects a repaired flag the report does not support', () => {
@@ -941,8 +999,8 @@ describe('inspectExperiment (referenced artifacts)', () => {
     it('detects a stop reason the report does not support', () => {
       const bundle = copyOf(bundles.stopped);
       edit(bundle, (m) => {
-        m['entries'][1].stop.reason = 'TIMEOUT';
-        m['halt'].reason = 'TIMEOUT';
+        m['entries'][1].stop!.reason = 'TIMEOUT';
+        m['halt']!.reason = 'TIMEOUT';
       });
       expect(issues(inspectExperiment(bundle.manifestPath))).toContain(
         'RUN_REPORT_OUTCOME_MISMATCH',
@@ -969,14 +1027,16 @@ describe('inspectExperiment (referenced artifacts)', () => {
       cpOutside(reviews, outside);
       rmSync(reviews, { recursive: true, force: true });
       symlinkSync(outside, reviews, 'junction');
-      expect(issues(inspectExperiment(bundle.manifestPath))).toContain('ARTIFACT_ESCAPES_DIRECTORY');
+      expect(issues(inspectExperiment(bundle.manifestPath))).toContain(
+        'ARTIFACT_ESCAPES_DIRECTORY',
+      );
     });
 
     it('never follows a reference that escapes lexically (the file is not even looked up)', () => {
       const bundle = copyOf(bundles.complete);
       writeFileSync(path.join(tmp, 'secret.json'), '{"secret":"do-not-read"}');
       edit(bundle, (m) => {
-        m['entries'][0].artifacts.dir = '../secret-dir';
+        m['entries'][0].artifacts!.dir = '../secret-dir';
       });
       const outcome = inspectExperiment(bundle.manifestPath);
       expect(issues(outcome)).toContain('REFERENCE_INVALID');
@@ -993,7 +1053,7 @@ describe('inspectExperiment (referenced artifacts)', () => {
       writeFileSync(path.join(stray, 'validation-report.json'), 'not even json');
       writeFileSync(path.join(bundle.dir, 'comparison-report.json'), 'not even json');
       const inspection = inspected(inspectExperiment(bundle.manifestPath));
-      expect(inspection.entries[1]!.artifacts.state).toBe('NOT_RECORDED');
+      expect(inspection.entries[1]!.artifacts!.state).toBe('NOT_RECORDED');
       expect(inspection.entries[1]!.status).toBe('awaiting_response');
       expect(inspection.artifactChecks.comparisonReport).toBe('NOT_RECORDED');
       expect(JSON.stringify(inspection)).not.toContain('stray');

@@ -1,7 +1,4 @@
-import type {
-  InteractivePresentationDto,
-  InteractiveTranscriptPresentationDto,
-} from '@book/types';
+import type { InteractivePresentationDto, InteractiveTranscriptPresentationDto } from '@book/types';
 import { z } from 'zod';
 import { getScenario } from '../scenarios';
 import { WARSAW_NOIR_V1_DATA } from './packs';

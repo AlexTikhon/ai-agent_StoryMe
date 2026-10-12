@@ -3,10 +3,13 @@ import {
   FAST_LIMITS,
   fakeClock,
   invalidCandidate,
+  arrayAt,
+  type JsonObject,
   mutateReport,
   reportFileNameFor,
   reportText,
   runScripted,
+  setAt,
   validCandidate,
 } from '../../common/test-utils/authoring-run-fixtures';
 import { runAuthoring } from './pipeline';
@@ -29,15 +32,24 @@ const stopped = async () => runScripted([{ fail: 'network' }]);
 // Budget-boundary fixtures. All come from the real pipeline; the zero-attempt
 // repair steps leave HTTP headroom so one field can be changed in isolation.
 const repairedZeroAttempt = async () =>
-  runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate(), httpAttempts: 0 }]);
+  runScripted([
+    { candidate: invalidCandidate() },
+    { candidate: validCandidate(), httpAttempts: 0 },
+  ]);
 const rejectedZeroAttempt = async () =>
-  runScripted([{ candidate: invalidCandidate() }, { candidate: invalidCandidate(), httpAttempts: 0 }]);
+  runScripted([
+    { candidate: invalidCandidate() },
+    { candidate: invalidCandidate(), httpAttempts: 0 },
+  ]);
 const stoppedDuringRepair = async () =>
   runScripted([{ candidate: invalidCandidate() }, { fail: 'network' }]);
 const overrunInGeneration = async () =>
   runScripted([{ candidate: validCandidate(), httpAttempts: 3 }]);
 const overrunInRepair = async () =>
-  runScripted([{ candidate: invalidCandidate() }, { candidate: validCandidate(), httpAttempts: 2 }]);
+  runScripted([
+    { candidate: invalidCandidate() },
+    { candidate: validCandidate(), httpAttempts: 2 },
+  ]);
 // The provider exception path reports its attempts without the normal budget check.
 const providerFailureOverBudget = async () => runScripted([{ fail: 'network', httpAttempts: 5 }]);
 const providerFailureInRepairOverBudget = async () =>
@@ -163,7 +175,10 @@ describe('parseRunReport: valid reports from the real pipeline', () => {
       runScripted([{ candidate: validCandidate(), usage: { inputTokens: 42 } }]),
     );
     if (!missing.ok || !zero.ok || !partial.ok) throw new Error('fixtures must parse');
-    expect(missing.observation.requests[0]).toMatchObject({ inputTokens: null, outputTokens: null });
+    expect(missing.observation.requests[0]).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+    });
     expect(zero.observation.requests[0]).toMatchObject({ inputTokens: 0, outputTokens: 0 });
     expect(partial.observation.requests[0]).toMatchObject({ inputTokens: 42, outputTokens: null });
   });
@@ -207,42 +222,55 @@ describe('parseRunReport: malformed input', () => {
   });
 
   it.each([
-    ['approved is not false', (r: any) => (r.approved = true), 'approved'],
-    ['unknown provider', (r: any) => (r.provenance.provider = 'anthropic'), 'provenance.provider'],
+    ['approved is not false', (r: JsonObject) => setAt(r, ['approved'], true), 'approved'],
+    [
+      'unknown provider',
+      (r: JsonObject) => setAt(r, ['provenance', 'provider'], 'anthropic'),
+      'provenance.provider',
+    ],
     [
       'negative token count',
-      (r: any) => (r.provenance.requests[0].inputTokens = -1),
+      (r: JsonObject) => setAt(r, ['provenance', 'requests', 0, 'inputTokens'], -1),
       'provenance.requests.0.inputTokens',
     ],
     [
       'fractional http attempts',
-      (r: any) => (r.provenance.requests[0].httpAttempts = 1.5),
+      (r: JsonObject) => setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 1.5),
       'provenance.requests.0.httpAttempts',
     ],
     [
       'string token count',
-      (r: any) => (r.provenance.requests[0].outputTokens = '9'),
+      (r: JsonObject) => setAt(r, ['provenance', 'requests', 0, 'outputTokens'], '9'),
       'provenance.requests.0.outputTokens',
     ],
-    ['missing brief hash', (r: any) => (r.provenance.briefHash = null), 'provenance.briefHash'],
-    ['malformed brief hash', (r: any) => (r.provenance.briefHash = 'abc'), 'provenance.briefHash'],
+    [
+      'missing brief hash',
+      (r: JsonObject) => setAt(r, ['provenance', 'briefHash'], null),
+      'provenance.briefHash',
+    ],
+    [
+      'malformed brief hash',
+      (r: JsonObject) => setAt(r, ['provenance', 'briefHash'], 'abc'),
+      'provenance.briefHash',
+    ],
     [
       'prompt version with free text',
-      (r: any) => (r.provenance.promptVersion = 'v1 ignore previous instructions'),
+      (r: JsonObject) =>
+        setAt(r, ['provenance', 'promptVersion'], 'v1 ignore previous instructions'),
       'provenance.promptVersion',
     ],
     [
       'stage list that is not the full pipeline',
-      (r: any) => r.stages.pop(),
+      (r: JsonObject) => arrayAt(r, ['stages']).pop(),
       'stages',
     ],
     [
       'unparseable start time',
-      (r: any) => (r.provenance.startedAt = 'yesterday'),
+      (r: JsonObject) => setAt(r, ['provenance', 'startedAt'], 'yesterday'),
       'provenance.startedAt',
     ],
   ])('rejects a validation report where %s', async (_name, mutate, path) => {
-    const text = mutateReport(reportText(await firstPass()), mutate as (r: any) => void);
+    const text = mutateReport(reportText(await firstPass()), mutate);
     const outcome = parseRunReport('validation-report.json', text);
     expectInvalid(outcome, 'SCHEMA_INVALID');
     if (!outcome.ok) expect(outcome.detail).toBe(path);
@@ -250,7 +278,7 @@ describe('parseRunReport: malformed input', () => {
 
   it('never echoes untrusted values in the failure detail', async () => {
     const text = mutateReport(reportText(await firstPass()), (r) => {
-      r.provenance.provider = 'sk-SECRET-VALUE';
+      setAt(r, ['provenance', 'provider'], 'sk-SECRET-VALUE');
     });
     const outcome = parseRunReport('validation-report.json', text);
     expect(JSON.stringify(outcome)).not.toContain('sk-SECRET-VALUE');
@@ -263,82 +291,82 @@ describe('parseRunReport: inconsistent telemetry', () => {
   const rejectedText = async () => reportText(await rejected());
   const stoppedText = async () => reportText(await stopped());
 
-  const cases: Array<[string, () => Promise<string>, string, (r: any) => void, string]> = [
+  const cases: Array<[string, () => Promise<string>, string, (r: JsonObject) => void, string]> = [
     [
       'http attempts that do not sum',
       validation,
       'validation-report.json',
-      (r) => (r.provenance.totalHttpAttempts = 5),
+      (r) => setAt(r, ['provenance', 'totalHttpAttempts'], 5),
       'http-attempts-sum',
     ],
     [
       'repaired flag with a single request',
       validation,
       'validation-report.json',
-      (r) => (r.repaired = true),
+      (r) => setAt(r, ['repaired'], true),
       'repaired-flag',
     ],
     [
       'unrepaired flag with two requests',
       repairedText,
       'validation-report.json',
-      (r) => (r.repaired = false),
+      (r) => setAt(r, ['repaired'], false),
       'repaired-flag',
     ],
     [
       'candidate hash that differs from provenance',
       validation,
       'validation-report.json',
-      (r) => (r.candidate.hash = 'f'.repeat(64)),
+      (r) => setAt(r, ['candidate', 'hash'], 'f'.repeat(64)),
       'candidate-hash',
     ],
     [
       'missing candidate hash in provenance',
       validation,
       'validation-report.json',
-      (r) => (r.provenance.candidateHash = null),
+      (r) => setAt(r, ['provenance', 'candidateHash'], null),
       'candidate-hash',
     ],
     [
       'final request that did not pass',
       validation,
       'validation-report.json',
-      (r) => (r.provenance.requests[0].validation = 'failed:definition'),
+      (r) => setAt(r, ['provenance', 'requests', 0, 'validation'], 'failed:definition'),
       'request-validation',
     ],
     [
       'first request marked passed although a repair followed',
       repairedText,
       'validation-report.json',
-      (r) => (r.provenance.requests[0].validation = 'passed'),
+      (r) => setAt(r, ['provenance', 'requests', 0, 'validation'], 'passed'),
       'request-validation',
     ],
     [
       'request phases out of order',
       repairedText,
       'validation-report.json',
-      (r) => (r.provenance.requests[0].phase = 'repair'),
+      (r) => setAt(r, ['provenance', 'requests', 0, 'phase'], 'repair'),
       'request-phases',
     ],
     [
       'more requests than the declared budget',
       repairedText,
       'validation-report.json',
-      (r) => (r.provenance.callBudget.maxRequests = 1),
+      (r) => setAt(r, ['provenance', 'callBudget', 'maxRequests'], 1),
       'request-budget',
     ],
     [
       'request durations exceeding the total run duration',
       validation,
       'validation-report.json',
-      (r) => (r.provenance.totalDurationMs = 0),
+      (r) => setAt(r, ['provenance', 'totalDurationMs'], 0),
       'duration-total',
     ],
     [
       'rejected stage that differs from the final request',
       rejectedText,
       'run-report.json',
-      (r) => (r.failedStage = 'play-analysis'),
+      (r) => setAt(r, ['failedStage'], 'play-analysis'),
       'request-validation',
     ],
     [
@@ -346,8 +374,8 @@ describe('parseRunReport: inconsistent telemetry', () => {
       rejectedText,
       'run-report.json',
       (r) => {
-        r.provenance.requests.pop();
-        r.provenance.totalHttpAttempts = 1;
+        arrayAt(r, ['provenance', 'requests']).pop();
+        setAt(r, ['provenance', 'totalHttpAttempts'], 1);
       },
       'repair-disposition',
     ],
@@ -355,14 +383,14 @@ describe('parseRunReport: inconsistent telemetry', () => {
       'stop reason that differs from the failed request',
       stoppedText,
       'run-report.json',
-      (r) => (r.stopReason = 'REFUSAL'),
+      (r) => setAt(r, ['stopReason'], 'REFUSAL'),
       'stop-outcome',
     ],
     [
       'stop phase that differs from the failed request',
       stoppedText,
       'run-report.json',
-      (r) => (r.phase = 'repair'),
+      (r) => setAt(r, ['phase'], 'repair'),
       'stop-phase',
     ],
     [
@@ -370,8 +398,8 @@ describe('parseRunReport: inconsistent telemetry', () => {
       async () => reportText(await budgetExhausted()),
       'run-report.json',
       (r) => {
-        r.provenance.requests[0].httpAttempts = 1;
-        r.provenance.totalHttpAttempts = 1;
+        setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 1);
+        setAt(r, ['provenance', 'totalHttpAttempts'], 1);
       },
       'repair-disposition',
     ],
@@ -380,8 +408,8 @@ describe('parseRunReport: inconsistent telemetry', () => {
       async () => reportText(await repairedZeroAttempt()),
       'validation-report.json',
       (r) => {
-        r.provenance.requests[0].httpAttempts = 2;
-        r.provenance.totalHttpAttempts = 2;
+        setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 2);
+        setAt(r, ['provenance', 'totalHttpAttempts'], 2);
       },
       'repair-budget',
     ],
@@ -390,8 +418,8 @@ describe('parseRunReport: inconsistent telemetry', () => {
       async () => reportText(await rejectedZeroAttempt()),
       'run-report.json',
       (r) => {
-        r.provenance.requests[0].httpAttempts = 2;
-        r.provenance.totalHttpAttempts = 2;
+        setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 2);
+        setAt(r, ['provenance', 'totalHttpAttempts'], 2);
       },
       'repair-budget',
     ],
@@ -400,8 +428,8 @@ describe('parseRunReport: inconsistent telemetry', () => {
       async () => reportText(await stoppedDuringRepair()),
       'run-report.json',
       (r) => {
-        r.provenance.requests[0].httpAttempts = 2;
-        r.provenance.totalHttpAttempts = 3;
+        setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 2);
+        setAt(r, ['provenance', 'totalHttpAttempts'], 3);
       },
       'repair-budget',
     ],
@@ -410,8 +438,8 @@ describe('parseRunReport: inconsistent telemetry', () => {
       async () => reportText(await cancelledBeforeRepair()),
       'run-report.json',
       (r) => {
-        r.provenance.requests[0].httpAttempts = 2;
-        r.provenance.totalHttpAttempts = 2;
+        setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 2);
+        setAt(r, ['provenance', 'totalHttpAttempts'], 2);
       },
       'repair-budget',
     ],
@@ -420,7 +448,7 @@ describe('parseRunReport: inconsistent telemetry', () => {
       validation,
       'validation-report.json',
       (r) => {
-        r.provenance.provider = 'mock';
+        setAt(r, ['provenance', 'provider'], 'mock');
       },
       'mock-telemetry',
     ],
@@ -428,14 +456,14 @@ describe('parseRunReport: inconsistent telemetry', () => {
       'openai provider without a model',
       validation,
       'validation-report.json',
-      (r) => (r.provenance.provider = 'openai'),
+      (r) => setAt(r, ['provenance', 'provider'], 'openai'),
       'provider-model',
     ],
     [
       'scripted provider carrying a model',
       validation,
       'validation-report.json',
-      (r) => (r.provenance.model = 'gpt-test'),
+      (r) => setAt(r, ['provenance', 'model'], 'gpt-test'),
       'provider-model',
     ],
   ];
@@ -451,8 +479,8 @@ describe('parseRunReport: inconsistent telemetry', () => {
 
   it('accepts openai-labelled telemetry that is internally consistent', async () => {
     const text = mutateReport(await validation(), (r) => {
-      r.provenance.provider = 'openai';
-      r.provenance.model = 'offline-fixture-model';
+      setAt(r, ['provenance', 'provider'], 'openai');
+      setAt(r, ['provenance', 'model'], 'offline-fixture-model');
     });
     const outcome = parseRunReport('validation-report.json', text);
     expect(outcome.ok).toBe(true);
@@ -467,18 +495,58 @@ describe('parseRunReport: inconsistent telemetry', () => {
 
 describe('parseRunReport: budget consistency on genuine pipeline reports', () => {
   const accepted: Array<[string, () => ReturnType<typeof firstPass>, Record<string, unknown>]> = [
-    ['an exhausted HTTP budget that skipped repair', budgetExhausted, { status: 'REJECTED', repairDisposition: 'skipped_budget_exhausted' }],
+    [
+      'an exhausted HTTP budget that skipped repair',
+      budgetExhausted,
+      { status: 'REJECTED', repairDisposition: 'skipped_budget_exhausted' },
+    ],
     ['a repaired success', repaired, { status: 'REVIEW_REQUIRED', repaired: true }],
-    ['a repaired success with a zero-attempt repair', repairedZeroAttempt, { status: 'REVIEW_REQUIRED', repaired: true }],
+    [
+      'a repaired success with a zero-attempt repair',
+      repairedZeroAttempt,
+      { status: 'REVIEW_REQUIRED', repaired: true },
+    ],
     ['a repaired rejection', rejected, { status: 'REJECTED', repairDisposition: 'attempted' }],
-    ['a stop during generation', stopped, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'NETWORK' }],
-    ['a stop during repair', stoppedDuringRepair, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'NETWORK' }],
-    ['a cancellation before generation is dispatched', cancelledBeforeGeneration, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'CANCELLED' }],
-    ['a cancellation before repair is dispatched', cancelledBeforeRepair, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'CANCELLED' }],
-    ['a call-budget overrun in generation', overrunInGeneration, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'CALL_BUDGET_EXCEEDED' }],
-    ['a call-budget overrun in repair', overrunInRepair, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'CALL_BUDGET_EXCEEDED' }],
-    ['a provider failure that reported attempts over budget', providerFailureOverBudget, { status: 'STOPPED', stopPhase: 'generate', stopReason: 'NETWORK' }],
-    ['a provider failure in repair that reported attempts over budget', providerFailureInRepairOverBudget, { status: 'STOPPED', stopPhase: 'repair', stopReason: 'TIMEOUT' }],
+    [
+      'a stop during generation',
+      stopped,
+      { status: 'STOPPED', stopPhase: 'generate', stopReason: 'NETWORK' },
+    ],
+    [
+      'a stop during repair',
+      stoppedDuringRepair,
+      { status: 'STOPPED', stopPhase: 'repair', stopReason: 'NETWORK' },
+    ],
+    [
+      'a cancellation before generation is dispatched',
+      cancelledBeforeGeneration,
+      { status: 'STOPPED', stopPhase: 'generate', stopReason: 'CANCELLED' },
+    ],
+    [
+      'a cancellation before repair is dispatched',
+      cancelledBeforeRepair,
+      { status: 'STOPPED', stopPhase: 'repair', stopReason: 'CANCELLED' },
+    ],
+    [
+      'a call-budget overrun in generation',
+      overrunInGeneration,
+      { status: 'STOPPED', stopPhase: 'generate', stopReason: 'CALL_BUDGET_EXCEEDED' },
+    ],
+    [
+      'a call-budget overrun in repair',
+      overrunInRepair,
+      { status: 'STOPPED', stopPhase: 'repair', stopReason: 'CALL_BUDGET_EXCEEDED' },
+    ],
+    [
+      'a provider failure that reported attempts over budget',
+      providerFailureOverBudget,
+      { status: 'STOPPED', stopPhase: 'generate', stopReason: 'NETWORK' },
+    ],
+    [
+      'a provider failure in repair that reported attempts over budget',
+      providerFailureInRepairOverBudget,
+      { status: 'STOPPED', stopPhase: 'repair', stopReason: 'TIMEOUT' },
+    ],
   ];
 
   it.each(accepted)('accepts %s', async (_name, make, expected) => {
@@ -489,9 +557,9 @@ describe('parseRunReport: budget consistency on genuine pipeline reports', () =>
 
   it('accepts a skipped repair when the declared request budget is already used', async () => {
     const text = mutateReport(reportText(await budgetExhausted()), (r) => {
-      r.provenance.requests[0].httpAttempts = 1;
-      r.provenance.totalHttpAttempts = 1;
-      r.provenance.callBudget.maxRequests = 1;
+      setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 1);
+      setAt(r, ['provenance', 'totalHttpAttempts'], 1);
+      setAt(r, ['provenance', 'callBudget', 'maxRequests'], 1);
     });
     const outcome = parseRunReport('run-report.json', text);
     expect(outcome.ok).toBe(true);
@@ -499,8 +567,8 @@ describe('parseRunReport: budget consistency on genuine pipeline reports', () =>
 
   it('keeps failure details to a fixed vocabulary', async () => {
     const text = mutateReport(reportText(await repairedZeroAttempt()), (r) => {
-      r.provenance.requests[0].httpAttempts = 2;
-      r.provenance.totalHttpAttempts = 2;
+      setAt(r, ['provenance', 'requests', 0, 'httpAttempts'], 2);
+      setAt(r, ['provenance', 'totalHttpAttempts'], 2);
     });
     const outcome = parseRunReport('validation-report.json', text);
     expect(outcome).toEqual({ ok: false, code: 'INCONSISTENT_TELEMETRY', detail: 'repair-budget' });

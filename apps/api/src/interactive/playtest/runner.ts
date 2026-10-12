@@ -408,7 +408,12 @@ export async function runInteractivePlaytest(options: InteractiveOptions): Promi
         return run.result('CANCELLED', 'playtest was cancelled', null, rejected);
       }
       if (read.kind === 'overflow') {
-        return run.result('FAILED', 'input exceeded the read buffer limit', 'INPUT_LIMIT', rejected);
+        return run.result(
+          'FAILED',
+          'input exceeded the read buffer limit',
+          'INPUT_LIMIT',
+          rejected,
+        );
       }
       if (read.kind === 'eof') {
         return run.result('INCOMPLETE', 'input ended before an ending was reached', null, rejected);

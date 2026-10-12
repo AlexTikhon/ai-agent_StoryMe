@@ -1,3 +1,4 @@
+import '@/test-support/fixture-api-base';
 import { describe, it, expect } from 'vitest';
 import { resolveAssetUrl } from './asset-url';
 

@@ -44,7 +44,8 @@ function digest(root: string): Record<string, string> {
       if (entry.isDirectory()) walk(full);
       else {
         result[path.relative(root, full)] =
-          createHash('sha256').update(readFileSync(full)).digest('hex') + `:${statSync(full).mtimeMs}`;
+          createHash('sha256').update(readFileSync(full)).digest('hex') +
+          `:${statSync(full).mtimeMs}`;
       }
     }
   };
@@ -52,7 +53,10 @@ function digest(root: string): Record<string, string> {
   return result;
 }
 
-function waitFor<T>(proc: ChildProcess, predicate: (message: unknown) => T | undefined): Promise<T> {
+function waitFor<T>(
+  proc: ChildProcess,
+  predicate: (message: unknown) => T | undefined,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     proc.on('message', (message) => {
       const found = predicate(message);
@@ -79,7 +83,9 @@ describe('experiment interruption (real child process)', () => {
     );
 
     await waitFor(proc, (m) =>
-      typeof m === 'object' && m !== null && (m as { type?: string }).type === 'waiting' ? true : undefined,
+      typeof m === 'object' && m !== null && (m as { type?: string }).type === 'waiting'
+        ? true
+        : undefined,
     );
     // Abrupt termination: no handlers run, nothing is finalised.
     proc.kill('SIGKILL');
@@ -139,7 +145,9 @@ describe('experiment interruption (real child process)', () => {
       coverage: { status: 'PARTIAL', reported: 1, unknown: 1, notDispatched: 1 },
     });
     // The first run's artifacts really are on disk where the checkpoint says.
-    expect(readdirSync(path.join(work, first!['artifacts'].dir))).toContain('validation-report.json');
+    expect(readdirSync(path.join(work, first!['artifacts'].dir))).toContain(
+      'validation-report.json',
+    );
 
     // Inspecting the checkpoint a killed process left behind: read-only, and the
     // unresolved second entry stays unresolved (unknown usage, not failed, not zero).
@@ -161,7 +169,11 @@ describe('experiment interruption (real child process)', () => {
       [AUTHORING_CORPUS[1]!.key, 'awaiting_response', 'UNKNOWN'],
       [AUTHORING_CORPUS[2]!.key, 'unattempted', 'NONE'],
     ]);
-    expect(inspection.entries[1]).toMatchObject({ requests: null, httpAttempts: null, outcome: null });
+    expect(inspection.entries[1]).toMatchObject({
+      requests: null,
+      httpAttempts: null,
+      outcome: null,
+    });
     expect(inspection.entries[0]!.artifacts.state).toBe('VERIFIED');
     expect(inspection.observed).toMatchObject({
       requests: 1,
@@ -181,7 +193,12 @@ describe('experiment interruption (real child process)', () => {
     // The same checkpoint through the real pnpm entry point.
     const viaPnpm = spawnSync(
       'pnpm',
-      ['--silent', 'inspect:interactive:experiment', '--manifest', `"${path.join(work, 'manifest.json')}"`],
+      [
+        '--silent',
+        'inspect:interactive:experiment',
+        '--manifest',
+        `"${path.join(work, 'manifest.json')}"`,
+      ],
       {
         cwd: API_ROOT,
         encoding: 'utf8',
@@ -200,7 +217,10 @@ describe('experiment interruption (real child process)', () => {
     // Nothing changed: same names, same bytes, same timestamps, still .incomplete.
     expect(readdirSync(draftsRoot)).toEqual(namesBefore);
     expect(digest(work)).toEqual(before);
-    const after = JSON.parse(readFileSync(path.join(work, 'manifest.json'), 'utf8')) as Record<string, any>;
+    const after = JSON.parse(readFileSync(path.join(work, 'manifest.json'), 'utf8')) as Record<
+      string,
+      any
+    >;
     expect(after['entries'][1]).toMatchObject({ status: 'awaiting_response', usage: 'UNKNOWN' });
   }, 150_000);
 });
