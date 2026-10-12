@@ -272,3 +272,70 @@ Paths are resolved from the directory the script runs in (`apps/api` under `pnpm
 - Unknown token usage is never zero or estimated, and no cost is computed.
 - Durations are recorded run totals, not latency benchmarks.
 - Real-model quality remains unverified, and `warsaw-last-tram` remains unapproved and unregistered.
+
+## Authoring experiment runner (Phase 14.1)
+
+`pnpm experiment:interactive:authoring` connects the corpus, the run reports, the comparison aggregation and the exhaustive route review into one small, reproducible workflow, so a separately authorized real-model evaluation is a single bounded command instead of a hand-assembled sequence. It is a harness, not a verdict.
+
+```bash
+# plan (default): prints the versioned JSON plan; no provider, no network, no file writes
+pnpm --silent experiment:interactive:authoring
+pnpm --silent experiment:interactive:authoring --model <name>       # plan naming a model (informational)
+
+# offline: scripted fixture responses for all three briefs - HARNESS VERIFICATION, not model performance
+pnpm experiment:interactive:authoring --mode offline
+
+# openai: PAID. Do not run without separate authorization.
+OPENAI_API_KEY=... pnpm experiment:interactive:authoring \
+  --mode openai --allow-paid-calls --model <name>
+```
+
+The root script runs `pnpm --dir apps/api --silent experiment:interactive:authoring`; add `--silent` at the root (as for `review:interactive:routes`) to keep pnpm's own banner out of the plan JSON.
+
+**Modes.**
+
+| Mode | What it does | Side effects |
+| ---- | ------------ | ------------ |
+| `plan` (default) | prints `interactive-authoring-experiment-plan/v1` | none: no provider is constructed, the API key is not read, nothing is written |
+| `offline` | runs the three corpus briefs with each entry's scripted fixture candidate | writes a fresh experiment directory; reports 0 HTTP attempts |
+| `openai` | runs the same briefs through the existing OpenAI adapter | paid requests, plus the directory |
+
+`openai` needs all of `--mode openai`, `--allow-paid-calls`, an explicit model (`--model` or `INTERACTIVE_AUTHORING_MODEL`) and `OPENAI_API_KEY`. An API key in the environment never enables execution: without the explicit mode the key is not even read. `--allow-paid-calls` is rejected in `plan` and `offline`, and `--model` is rejected in `offline`. There is no way to choose a different brief: the corpus is fixed (`interactive-authoring-corpus/v1`).
+
+**Execution.** Exactly one authoring attempt per brief, sequentially, through `runAuthoring`, so each brief gets at most one generation plus one content repair. There are no transport retries, no concurrency, no repetitions, no automatic resume and no replacement attempts. The experiment directory is created before the first dispatch, so a paid request is never spent without somewhere to record it.
+
+**Budgets (derived, not estimated).** With the three briefs and the existing per-brief limits, the maximum is 6 requests, 6 HTTP attempts, `6 x maxOutputTokens` output tokens (a per-request cap handed to the provider, not a usage figure) and `3 x deadlineMs` runtime (defaults: 8000 tokens per request, 300000 ms per brief, i.e. 48000 tokens and 900000 ms). No money is estimated and unreported usage is never guessed; observed counts come from what the pipeline recorded.
+
+**Outcomes and stops.**
+
+- A content `REJECTED` result is recorded and the next brief still runs, so all three are observed.
+- A provider/transport stop (refusal, truncation, auth, rate limit, timeout, network, invalid response, deadline), a cancellation or an artifact-write failure stops before the next brief. Completed artifacts are preserved and unfinished work is marked `stopped` or `unattempted`.
+- `SIGINT` aborts the in-flight request and no later brief starts, even if a provider answers late.
+- Credentials, provider bodies and raw exception messages are never printed or recorded; only stable codes are.
+
+**Artifacts.** Under the guarded drafts root (same rules as `author:interactive`: directory named `scenario-drafts`, not inside source/assets/build output/public, not a symlink), each experiment gets a fresh directory that is never overwritten:
+
+```
+<stamp>-authoring-experiment-<hex>.incomplete/   while running; renamed when finished
+<stamp>-authoring-experiment-<hex>--complete/    every brief completed, every artifact written
+<stamp>-authoring-experiment-<hex>--partial/     anything stopped, unattempted or missing
+  manifest.json                  interactive-authoring-experiment-manifest/v1
+  comparison-report.json         existing aggregation over the written run reports
+  runs/<run>--review-required/   validated-candidate.json, validation-report.json,
+                                 review-report.md, approval-template.json (PENDING)
+  runs/<run>--rejected|--stopped/ run-report.json
+  route-reviews/<key>.json|.md   exhaustive route review, mechanically accepted candidates only
+```
+
+The manifest records the configuration (corpus/prompt/schema versions, model, limits, derived budget, execution policy), each brief's identity and hash, its status (`completed` / `stopped` / `unattempted`), relative artifact references, observed request and HTTP-attempt counts, an explicit `completeness` status with reason codes, and the halt cause. Approval templates stay `pending`; nothing is approved or published. If the manifest itself cannot be written the directory is left `.incomplete` and the command says so.
+
+**Validation of real output.** A generated candidate is validated against its own brief (identity, characters, endings, structure, analysis, narration). It is deliberately not compared with the corpus fixtures' recorded candidate hash or routes: those pin hand-authored regression fixtures, not the only valid model output.
+
+**Exit codes.** `0` plan printed, or the experiment is `COMPLETE` (all three briefs reached a final authoring result and every artifact was written; individual content rejections are observations, not failures); `1` the experiment is `INCOMPLETE` (stopped, cancelled, unattempted entries, artifact failure, failed route review) or its directory could not be created or finalised; `2` usage or configuration error, refused before any side effect. `pnpm` may collapse a non-zero script exit to `1` depending on how it is invoked; `pnpm --dir apps/api` preserves it.
+
+**What a completed experiment does not show.**
+
+- It is not approval, publication readiness or evidence of prose quality; mechanical validity only means the deterministic stages passed.
+- `offline` replays scripted fixtures and verifies the harness. It says nothing about any model.
+- One real run is one observation per brief: no variance, no significance, no latency benchmark.
+- Real-model quality remains unverified, and every corpus scenario (including `warsaw-last-tram`) remains unpublished and unapproved.

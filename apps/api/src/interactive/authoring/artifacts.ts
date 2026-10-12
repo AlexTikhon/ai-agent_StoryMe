@@ -63,7 +63,7 @@ export function validateDraftsRoot(
   return { ok: true, root };
 }
 
-function stamp(date: Date): string {
+export function stamp(date: Date): string {
   return date
     .toISOString()
     .replace(/[-:]/g, '')
