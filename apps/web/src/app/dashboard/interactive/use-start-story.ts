@@ -20,7 +20,9 @@ const MESSAGES = {
   unavailable: 'The service is having trouble. Please try again in a moment.',
   rateLimited: "You're starting stories too quickly. Wait a moment, then try again.",
   limitReached:
-    "You've reached the maximum number of stories for now. Open one of your existing stories below.",
+    "You've reached the maximum number of stories for now. Open one of your existing stories below, or remove one you no longer need to free a place.",
+  sessionRemoved:
+    'This story was removed, so this attempt to start it is closed. Choose Start story to begin a new one.',
   rejected: "The story couldn't be started. Please try again.",
 } as const;
 
@@ -41,6 +43,11 @@ function classify(cause: unknown): Failure {
   if (!(cause instanceof ApiError)) return { message: MESSAGES.ambiguous, retryable: true };
   if (cause.code === 'SESSION_LIMIT_REACHED') {
     return { message: MESSAGES.limitReached, retryable: false };
+  }
+  // The held command's session was hidden by its owner; its key stays consumed, so
+  // the command can never succeed. Releasing it leaves any new start deliberate.
+  if (cause.code === 'SESSION_REMOVED') {
+    return { message: MESSAGES.sessionRemoved, retryable: false };
   }
   // Refused before anything ran (rate limit); the identical command is still the right one.
   if (cause.status === 429) return { message: MESSAGES.rateLimited, retryable: true };

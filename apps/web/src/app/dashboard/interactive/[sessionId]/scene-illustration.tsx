@@ -12,9 +12,9 @@ const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300';
 
 /** Space reserved while artwork is on its way: every published panel is 3:2. */
-const RESERVED_ASPECT = '3 / 2';
+export const RESERVED_ASPECT = '3 / 2';
 
-function Placeholder({ aspect }: { aspect: string }) {
+export function Placeholder({ aspect }: { aspect: string }) {
   return (
     <div
       aria-hidden="true"
@@ -25,7 +25,7 @@ function Placeholder({ aspect }: { aspect: string }) {
   );
 }
 
-function UnavailableNote({ onRetry }: { onRetry: (() => void) | null }) {
+export function UnavailableNote({ onRetry }: { onRetry: (() => void) | null }) {
   return (
     <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-stone-500">
       <span>The illustration isn&apos;t available right now. The story continues in text.</span>
@@ -45,8 +45,16 @@ function UnavailableNote({ onRetry }: { onRetry: (() => void) | null }) {
 /**
  * Renders the panels of one scene. Mounted per scene scope (keyed by the
  * caller), so image-failure state can never carry over to another scene.
+ * Shared by the live reader and the rereading view.
  */
-function Panels({ panels }: { panels: InteractivePresentationPanelDto[] }) {
+export function Panels({
+  panels,
+  lazy = false,
+}: {
+  panels: readonly InteractivePresentationPanelDto[];
+  /** Defer fetching until the image nears the viewport; for artwork below the fold. */
+  lazy?: boolean;
+}) {
   const [loaded, setLoaded] = useState<ReadonlySet<string>>(new Set());
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const [imageRetries, setImageRetries] = useState(0);
@@ -88,6 +96,7 @@ function Panels({ panels }: { panels: InteractivePresentationPanelDto[] }) {
                 setLoaded((current) => new Set(current).add(panel.id));
               }
             }}
+            loading={lazy ? 'lazy' : undefined}
             decoding="async"
             draggable={false}
             onLoad={() => setLoaded((current) => new Set(current).add(panel.id))}

@@ -13,6 +13,12 @@ export const DEFAULT_READER_TITLE = 'Interactive story';
 
 const MAX_TITLE_LENGTH = 80;
 
+/** The identity fields the title request is scoped by; a full session view satisfies it. */
+export type SessionMetadataIdentity = Pick<
+  InteractiveSessionViewDto,
+  'sessionId' | 'scenarioId' | 'scenarioVersion'
+>;
+
 export interface SessionMetadataState {
   /** Plain text: render it escaped, never as markup. */
   title: string;
@@ -43,14 +49,14 @@ function usableTitle(value: unknown): string | null {
  * scenario id and version — so a title can never be adopted from another
  * session, a newer version or a previous account.
  */
-export function useSessionMetadata(view: InteractiveSessionViewDto | null): SessionMetadataState {
+export function useSessionMetadata(identity: SessionMetadataIdentity | null): SessionMetadataState {
   const { status: authStatus, user } = useAuth();
   const userId = user?.id ?? null;
   const epoch = getSessionEpoch();
 
-  const sessionId = view?.sessionId ?? null;
-  const scenarioId = view?.scenarioId ?? null;
-  const scenarioVersion = view?.scenarioVersion ?? null;
+  const sessionId = identity?.sessionId ?? null;
+  const scenarioId = identity?.scenarioId ?? null;
+  const scenarioVersion = identity?.scenarioVersion ?? null;
   const active = authStatus === 'authed' && sessionId !== null;
   const key = `${sessionId}|${scenarioId}@${scenarioVersion}|u${userId}|e${epoch}`;
 

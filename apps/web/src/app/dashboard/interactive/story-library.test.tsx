@@ -100,7 +100,7 @@ describe('Your stories library', () => {
     expect(within(items[1]!).getByText('Ending: A Quiet Delivery')).toBeInTheDocument();
     expect(within(items[1]!).getByRole('link', { name: /Read again/ })).toHaveAttribute(
       'href',
-      `/dashboard/interactive/${done.sessionId}`,
+      `/dashboard/interactive/${done.sessionId}/transcript`,
     );
   });
 

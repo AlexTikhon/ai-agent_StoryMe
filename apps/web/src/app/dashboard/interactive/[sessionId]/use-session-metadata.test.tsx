@@ -225,4 +225,17 @@ describe('useSessionMetadata', () => {
     await act(async () => gate.resolve(makeMetadata({ title: 'Account Two' })));
     expect(hook.result.current.title).toBe('Account Two');
   });
+
+  it('needs only the session identity fields, not a full session view', async () => {
+    getSessionMetadata.mockResolvedValueOnce(makeMetadata({ title: 'Identity Only' }));
+    const hook = renderHook(() =>
+      useSessionMetadata({
+        sessionId: SESSION_ID,
+        scenarioId: 'warsaw-last-delivery',
+        scenarioVersion: 1,
+      }),
+    );
+    await waitFor(() => expect(hook.result.current.title).toBe('Identity Only'));
+    expect(getSessionMetadata).toHaveBeenCalledTimes(1);
+  });
 });

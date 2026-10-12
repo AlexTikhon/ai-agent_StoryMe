@@ -96,7 +96,7 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
   }
 
   async function call(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     userId: string | null,
     body?: unknown,
@@ -481,6 +481,282 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     });
   });
 
+  describe('transcript endpoint', () => {
+    const ROUTE = ['c-ask-caretaker', 'c-climb-from-caretaker', 'c-leave-parcel'];
+
+    async function finished(userId: string, key: string) {
+      let view = (
+        await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery', idempotencyKey: key })
+      ).json;
+      const sessionId = view.sessionId;
+      for (const [i, choiceId] of ROUTE.entries()) {
+        view = (
+          await call('POST', `/${sessionId}/choices`, userId, {
+            choiceId,
+            expectedRevision: view.revision,
+            idempotencyKey: `${key}-c${i}`,
+          })
+        ).json;
+      }
+      return sessionId;
+    }
+
+    it('pages the completed path privately and uncacheable', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-tr-0001');
+
+      const first = await call('GET', `/${id}/transcript?limit=3`, userId);
+      expect(first.status).toBe(200);
+      expect(first.headers.get('cache-control')).toBe('private, no-store');
+      const firstBody = first.json as unknown as {
+        steps: Array<{ revision: number; arrivedByChoiceLabel: string | null }>;
+        nextCursor: string;
+        completedRevision: number;
+      };
+      expect(firstBody.completedRevision).toBe(3);
+      expect(firstBody.steps.map((s) => s.revision)).toEqual([0, 1, 2]);
+      expect(firstBody.steps[0]!.arrivedByChoiceLabel).toBeNull();
+      expect(firstBody.steps[1]!.arrivedByChoiceLabel).toEqual(expect.any(String));
+
+      const second = await call(
+        'GET',
+        `/${id}/transcript?limit=3&cursor=${firstBody.nextCursor}`,
+        userId,
+      );
+      expect(second.status).toBe(200);
+      const secondBody = second.json as unknown as {
+        steps: Array<{ revision: number }>;
+        nextCursor: null;
+      };
+      expect(secondBody.steps.map((s) => s.revision)).toEqual([3]);
+      expect(secondBody.nextCursor).toBeNull();
+
+      const defaults = await call('GET', `/${id}/transcript`, userId);
+      expect((defaults.json as unknown as { steps: unknown[] }).steps).toHaveLength(4);
+      for (const leaked of [
+        'stateHash',
+        'payload',
+        'idempotency',
+        'requestHash',
+        'choices',
+        'knowledge',
+      ]) {
+        expect(defaults.text).not.toContain(leaked);
+      }
+    });
+
+    it('answers missing and foreign sessions with the identical 404, and unauthenticated with a refusal', async () => {
+      const ownerId = await newUser();
+      const intruderId = await newUser();
+      const id = await finished(ownerId, 'http-tr-0002');
+
+      const missing = await call('GET', `/${randomUUID()}/transcript`, ownerId);
+      const foreign = await call('GET', `/${id}/transcript`, intruderId);
+      expect(missing.status).toBe(404);
+      expect(foreign.status).toBe(404);
+      expect(missing.json.code).toBe('SESSION_NOT_FOUND');
+      expect(stable(foreign.json)).toEqual(stable(missing.json));
+      expect((await call('GET', `/${id}/transcript`, null)).status).toBe(403);
+    });
+
+    it('answers an in-progress session with 409 SESSION_NOT_COMPLETED', async () => {
+      const userId = await newUser();
+      const created = (
+        await call('POST', '', userId, {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: 'http-tr-0003',
+        })
+      ).json;
+      const response = await call('GET', `/${created.sessionId}/transcript`, userId);
+      expect(response.status).toBe(409);
+      expect(response.json.code).toBe('SESSION_NOT_COMPLETED');
+    });
+
+    it('rejects malformed queries and cross-session cursors with INVALID_REQUEST', async () => {
+      const userId = await newUser();
+      const a = await finished(userId, 'http-tr-0004');
+      const b = await finished(userId, 'http-tr-0005');
+      const cursorA = (
+        (await call('GET', `/${a}/transcript?limit=1`, userId)).json as unknown as {
+          nextCursor: string;
+        }
+      ).nextCursor;
+
+      for (const bad of [
+        'limit=0',
+        'limit=26',
+        'limit=abc',
+        'limit=2&limit=3',
+        'cursor=%21%21',
+        `cursor=${'a'.repeat(201)}`,
+        'userId=someone-else',
+        `cursor=${cursorA}&cursor=${cursorA}`,
+      ]) {
+        const response = await call('GET', `/${a}/transcript?${bad}`, userId);
+        expect(response.status, bad).toBe(400);
+        expect(response.json.code, bad).toBe('INVALID_REQUEST');
+      }
+      const crossed = await call('GET', `/${b}/transcript?cursor=${cursorA}`, userId);
+      expect(crossed.status).toBe(400);
+      expect(crossed.json.code).toBe('INVALID_REQUEST');
+      expect((await call('GET', '/not-a-uuid/transcript', userId)).status).toBe(400);
+    });
+
+    it('reports corrupt stored history as SESSION_STATE_INVALID without echoing details', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-tr-0006');
+      await prisma.sessionEvent.delete({ where: { sessionId_seq: { sessionId: id, seq: 1 } } });
+      const response = await call('GET', `/${id}/transcript`, userId);
+      expect(response.status).toBe(500);
+      expect(response.json.code).toBe('SESSION_STATE_INVALID');
+    });
+  });
+
+  describe('transcript artwork endpoint', () => {
+    const ROUTE = ['c-ask-caretaker', 'c-climb-from-caretaker', 'c-leave-parcel'];
+    const PATH = '/transcript/presentation';
+
+    async function finished(userId: string, key: string) {
+      let view = (
+        await call('POST', '', userId, { scenarioId: 'warsaw-last-delivery', idempotencyKey: key })
+      ).json;
+      const sessionId = view.sessionId;
+      for (const [i, choiceId] of ROUTE.entries()) {
+        view = (
+          await call('POST', `/${sessionId}/choices`, userId, {
+            choiceId,
+            expectedRevision: view.revision,
+            idempotencyKey: `${key}-c${i}`,
+          })
+        ).json;
+      }
+      return sessionId;
+    }
+
+    it('pages artwork privately and uncacheable, in step with the text transcript', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-ar-0001');
+
+      for (const query of ['?limit=3', '', '?limit=1']) {
+        const text = await call('GET', `/${id}/transcript${query}`, userId);
+        const art = await call('GET', `/${id}${PATH}${query}`, userId);
+        expect(art.status, query).toBe(200);
+        expect(art.headers.get('cache-control')).toBe('private, no-store');
+        const textBody = text.json as unknown as {
+          steps: Array<{ revision: number; scene: { id: string } }>;
+          nextCursor: string | null;
+        };
+        const artBody = art.json as unknown as {
+          steps: Array<{ revision: number; sceneId: string; presentation: unknown }>;
+          nextCursor: string | null;
+          completedRevision: number;
+        };
+        expect(artBody.steps.map((s) => [s.revision, s.sceneId])).toEqual(
+          textBody.steps.map((s) => [s.revision, s.scene.id]),
+        );
+        expect(artBody.nextCursor).toBe(textBody.nextCursor);
+        expect(artBody.completedRevision).toBe(3);
+        expect(artBody.steps.every((s) => s.presentation !== null)).toBe(true);
+      }
+
+      const first = await call('GET', `/${id}${PATH}?limit=3`, userId);
+      const cursor = (first.json as unknown as { nextCursor: string }).nextCursor;
+      const second = await call('GET', `/${id}${PATH}?limit=3&cursor=${cursor}`, userId);
+      expect(second.status).toBe(200);
+      expect(
+        (second.json as unknown as { steps: Array<{ revision: number }> }).steps.map(
+          (s) => s.revision,
+        ),
+      ).toEqual([3]);
+      for (const leaked of ['narration', 'choices', 'stateHash', 'payload', 'idempotency']) {
+        expect(first.text).not.toContain(leaked);
+      }
+    });
+
+    it('answers missing and foreign sessions with the identical 404, and unauthenticated with a refusal', async () => {
+      const ownerId = await newUser();
+      const intruderId = await newUser();
+      const id = await finished(ownerId, 'http-ar-0002');
+
+      const missing = await call('GET', `/${randomUUID()}${PATH}`, ownerId);
+      const foreign = await call('GET', `/${id}${PATH}`, intruderId);
+      expect(missing.status).toBe(404);
+      expect(foreign.status).toBe(404);
+      expect(missing.json.code).toBe('SESSION_NOT_FOUND');
+      expect(stable(foreign.json)).toEqual(stable(missing.json));
+      expect((await call('GET', `/${id}${PATH}`, null)).status).toBe(403);
+    });
+
+    it('answers an in-progress session with 409 SESSION_NOT_COMPLETED', async () => {
+      const userId = await newUser();
+      const created = (
+        await call('POST', '', userId, {
+          scenarioId: 'warsaw-last-delivery',
+          idempotencyKey: 'http-ar-0003',
+        })
+      ).json;
+      const response = await call('GET', `/${created.sessionId}${PATH}`, userId);
+      expect(response.status).toBe(409);
+      expect(response.json.code).toBe('SESSION_NOT_COMPLETED');
+    });
+
+    it('rejects malformed or repeated queries and cross-session cursors with INVALID_REQUEST', async () => {
+      const userId = await newUser();
+      const a = await finished(userId, 'http-ar-0004');
+      const b = await finished(userId, 'http-ar-0005');
+      const cursorA = (
+        (await call('GET', `/${a}${PATH}?limit=1`, userId)).json as unknown as {
+          nextCursor: string;
+        }
+      ).nextCursor;
+
+      for (const bad of [
+        'limit=0',
+        'limit=26',
+        'limit=abc',
+        'limit=2&limit=3',
+        'cursor=%21%21',
+        `cursor=${'a'.repeat(201)}`,
+        'userId=someone-else',
+        `cursor=${cursorA}&cursor=${cursorA}`,
+      ]) {
+        const response = await call('GET', `/${a}${PATH}?${bad}`, userId);
+        expect(response.status, bad).toBe(400);
+        expect(response.json.code, bad).toBe('INVALID_REQUEST');
+      }
+      const crossed = await call('GET', `/${b}${PATH}?cursor=${cursorA}`, userId);
+      expect(crossed.status).toBe(400);
+      expect(crossed.json.code).toBe('INVALID_REQUEST');
+      expect((await call('GET', `/not-a-uuid${PATH}`, userId)).status).toBe(400);
+    });
+
+    it('reports corrupt stored history as SESSION_STATE_INVALID', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-ar-0006');
+      await prisma.sessionEvent.delete({ where: { sessionId_seq: { sessionId: id, seq: 1 } } });
+      const response = await call('GET', `/${id}${PATH}`, userId);
+      expect(response.status).toBe(500);
+      expect(response.json.code).toBe('SESSION_STATE_INVALID');
+    });
+
+    it('leaves the text transcript and the current-scene presentation endpoints unchanged', async () => {
+      const userId = await newUser();
+      const id = await finished(userId, 'http-ar-0007');
+      const textBefore = (await call('GET', `/${id}/transcript`, userId)).text;
+      const currentBefore = (await call('GET', `/${id}/presentation?expectedRevision=3`, userId))
+        .text;
+
+      await call('GET', `/${id}${PATH}`, userId);
+
+      expect((await call('GET', `/${id}/transcript`, userId)).text).toBe(textBefore);
+      const current = await call('GET', `/${id}/presentation?expectedRevision=3`, userId);
+      expect(current.text).toBe(currentBefore);
+      const historical = await call('GET', `/${id}/presentation?expectedRevision=1`, userId);
+      expect(historical.status).toBe(409);
+      expect(historical.json.code).toBe('REVISION_CONFLICT');
+    });
+  });
+
   it('answers malformed input with the stable INVALID_REQUEST code', async () => {
     const userId = await newUser();
     const created = await call('POST', '', userId, {
@@ -768,5 +1044,130 @@ describe('Interactive HTTP endpoints (real Postgres)', () => {
     expect(page2.nextCursor).toBeNull();
     const seen = [...page1.sessions, ...page2.sessions].map((s) => s.sessionId);
     expect(seen.sort()).toEqual([...ids].sort());
+  });
+
+  describe('session removal endpoint', () => {
+    const create = (userId: string, key: string) =>
+      call('POST', '', userId, { scenarioId: 'warsaw-last-delivery', idempotencyKey: key });
+
+    it('answers 204 with no body and private, no-store caching, repeatedly and for unknown ids', async () => {
+      const userId = await newUser();
+      const id = (await create(userId, 'http-remove-0001')).json.sessionId;
+
+      for (let i = 0; i < 2; i += 1) {
+        const removed = await call('DELETE', `/${id}`, userId);
+        expect(removed.status).toBe(204);
+        expect(removed.text).toBe('');
+        expect(removed.headers.get('cache-control')).toBe('private, no-store');
+      }
+      const missing = await call('DELETE', `/${randomUUID()}`, userId);
+      expect(missing.status).toBe(204);
+      expect(missing.text).toBe('');
+      expect(missing.headers.get('cache-control')).toBe('private, no-store');
+    });
+
+    it('is indistinguishable for another owner and never touches their session', async () => {
+      const [ownerId, intruderId] = [await newUser(), await newUser()];
+      const created = await create(ownerId, 'http-remove-0002');
+      const id = created.json.sessionId;
+
+      const foreign = await call('DELETE', `/${id}`, intruderId);
+      expect(foreign.status).toBe(204);
+      expect(foreign.text).toBe('');
+      expect((await call('GET', `/${id}`, ownerId)).json).toEqual(created.json);
+      expect(
+        (await prisma.interactiveSession.findUniqueOrThrow({ where: { id } })).removedAt,
+      ).toBeNull();
+
+      expect([401, 403]).toContain((await call('DELETE', `/${id}`, null)).status);
+      expect((await call('GET', `/${id}`, ownerId)).status).toBe(200);
+    });
+
+    it('makes every endpoint answer SESSION_NOT_FOUND, leaves the library, and refuses a creation retry', async () => {
+      const userId = await newUser();
+      const created = await create(userId, 'http-remove-0003');
+      const kept = (await create(userId, 'http-remove-0004')).json.sessionId;
+      const id = created.json.sessionId;
+      await call('POST', `/${id}/choices`, userId, {
+        choiceId: 'c-ask-caretaker',
+        expectedRevision: 0,
+        idempotencyKey: 'http-remove-choice',
+      });
+      expect((await call('DELETE', `/${id}`, userId)).status).toBe(204);
+
+      const probes = [
+        await call('GET', `/${id}`, userId),
+        await call('GET', `/${id}/presentation?expectedRevision=1`, userId),
+        await call('GET', `/${id}/metadata`, userId),
+        await call('GET', `/${id}/transcript`, userId),
+        await call('GET', `/${id}/transcript/presentation`, userId),
+        await call('POST', `/${id}/choices`, userId, {
+          choiceId: 'c-ask-caretaker',
+          expectedRevision: 0,
+          idempotencyKey: 'http-remove-choice',
+        }),
+        await call('POST', `/${id}/choices`, userId, {
+          choiceId: 'c-climb-from-caretaker',
+          expectedRevision: 1,
+          idempotencyKey: 'http-remove-choice-2',
+        }),
+      ];
+      const missing = await call('GET', `/${randomUUID()}`, userId);
+      for (const probe of probes) {
+        expect(probe.status).toBe(404);
+        expect(stable(probe.json)).toEqual(stable(missing.json));
+      }
+
+      const listed = await call('GET', '', userId);
+      const sessions = (listed.json as unknown as { sessions: Array<{ sessionId: string }> })
+        .sessions;
+      expect(sessions.map((s) => s.sessionId)).toEqual([kept]);
+
+      const retry = await create(userId, 'http-remove-0003');
+      expect(retry.status).toBe(409);
+      expect(retry.json.code).toBe('SESSION_REMOVED');
+      const reused = await call('POST', '', userId, {
+        scenarioId: 'warsaw-last-delivery',
+        scenarioVersion: 1,
+        idempotencyKey: 'http-remove-0003',
+      });
+      expect(reused.status).toBe(409);
+      expect(reused.json.code).toBe('IDEMPOTENCY_KEY_REUSED');
+      expect(await prisma.interactiveSession.count({ where: { userId } })).toBe(2);
+    });
+
+    it('frees a slot at the cap for a fresh creation key', async () => {
+      sessionCap = 1;
+      const userId = await newUser();
+      const id = (await create(userId, 'http-remove-0005')).json.sessionId;
+      expect((await create(userId, 'http-remove-0006')).json.code).toBe('SESSION_LIMIT_REACHED');
+
+      expect((await call('DELETE', `/${id}`, userId)).status).toBe(204);
+      const fresh = await create(userId, 'http-remove-0006');
+      expect(fresh.status).toBe(201);
+      expect(fresh.json.sessionId).not.toBe(id);
+    });
+
+    it('rejects a malformed id, any query and any body without changing anything', async () => {
+      const userId = await newUser();
+      const id = (await create(userId, 'http-remove-0007')).json.sessionId;
+
+      const rejected = [
+        await call('DELETE', '/not-a-uuid', userId),
+        await call('DELETE', `/${id}?userId=${userId}`, userId),
+        await call('DELETE', `/${id}?force=1`, userId),
+        await call('DELETE', `/${id}`, userId, { userId }),
+        await call('DELETE', `/${id}`, userId, { removedAt: '2020-01-01T00:00:00.000Z' }),
+        await call('DELETE', `/${id}`, userId, '[]'),
+      ];
+      for (const response of rejected) {
+        expect(response.status).toBe(400);
+        expect(response.json.code).toBe('INVALID_REQUEST');
+      }
+      expect((await call('GET', `/${id}`, userId)).status).toBe(200);
+      expect(
+        (await prisma.interactiveSession.findUniqueOrThrow({ where: { id } })).removedAt,
+      ).toBeNull();
+    });
   });
 });

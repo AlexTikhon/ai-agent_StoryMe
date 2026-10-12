@@ -94,6 +94,87 @@ describe('LoginPage', () => {
     });
   });
 
+  it.each([
+    'https://evil.example/dashboard',
+    '//evil.example',
+    '/login',
+    '/dashboard/../login',
+    '/dashboard\\evil',
+  ])('falls back to /dashboard for the unsafe ?next=%s', async (next) => {
+    loginMock.mockResolvedValueOnce(undefined);
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ next }) as unknown as ReturnType<typeof useSearchParams>,
+    );
+    const user = userEvent.setup();
+    render(<LoginPage />);
+
+    await user.type(screen.getByLabelText(/email/i), 'emma@example.com');
+    await user.type(screen.getByLabelText(/password/i), 'Passw0rd!');
+    await user.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/dashboard');
+    });
+  });
+
+  it('redirects an already-authenticated visitor to the validated ?next= path', () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: null,
+      status: 'authed',
+      authMode: 'jwt',
+      login: loginMock,
+      register: vi.fn(),
+      logout: vi.fn(),
+      retrySession: vi.fn(),
+    });
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams('next=/dashboard/interactive') as unknown as ReturnType<
+        typeof useSearchParams
+      >,
+    );
+    render(<LoginPage />);
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard/interactive');
+  });
+
+  it('redirects an already-authenticated visitor with an unsafe ?next= to /dashboard', () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: null,
+      status: 'authed',
+      authMode: 'jwt',
+      login: loginMock,
+      register: vi.fn(),
+      logout: vi.fn(),
+      retrySession: vi.fn(),
+    });
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams('next=//evil.example') as unknown as ReturnType<typeof useSearchParams>,
+    );
+    render(<LoginPage />);
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard');
+  });
+
+  it('preserves a valid ?next= destination on the register link', () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams('next=/dashboard/interactive') as unknown as ReturnType<
+        typeof useSearchParams
+      >,
+    );
+    render(<LoginPage />);
+    expect(screen.getByRole('link', { name: /register/i }).getAttribute('href')).toBe(
+      '/register?next=%2Fdashboard%2Finteractive',
+    );
+  });
+
+  it('drops an unsafe ?next= from the register link', () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams('next=https://evil.example') as unknown as ReturnType<
+        typeof useSearchParams
+      >,
+    );
+    render(<LoginPage />);
+    expect(screen.getByRole('link', { name: /register/i }).getAttribute('href')).toBe('/register');
+  });
+
   it('shows an error message on invalid credentials', async () => {
     loginMock.mockRejectedValueOnce(new Error('Invalid email or password'));
     const user = userEvent.setup();

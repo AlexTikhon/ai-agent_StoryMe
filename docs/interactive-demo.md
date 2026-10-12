@@ -1,0 +1,350 @@
+# Interactive story demo
+
+A reproducible walkthrough of the interactive illustrated-story product, in two parts:
+
+1. **Published reader** — start "The Last Delivery", make choices, reload and resume, reach an
+   ending, then reread the finished story page by page with its illustrations.
+2. **Mock draft** — author the unpublished "The Last Tram" offline, play both of its endings, and
+   watch publication preflight reject it because no human has approved it.
+
+Everything here uses deterministic mock components. There are no external provider calls and no paid
+calls, and nothing is published. (The reader in Part 1 makes ordinary local HTTP requests between the
+web app and the API on your machine.) Commands are Windows PowerShell and run from the repository root.
+For what the product implements and its limits, see
+[CURRENT_PRODUCT.md](CURRENT_PRODUCT.md#interactive-illustrated-stories).
+
+## Part 1: published reader
+
+### Set up
+
+The reader needs the same setup as the book demo — [local-demo.md](local-demo.md) steps 1–6 — except
+that **no generation worker is needed**. PostgreSQL and Redis are required (Redis holds the request
+budgets, which fail closed).
+
+```powershell
+pnpm install
+docker compose up -d postgres redis
+if (-not (Test-Path apps\api\.env)) { Copy-Item .env.example apps\api\.env }
+pnpm --filter @book/api prisma:migrate:deploy
+pnpm --filter @book/api dev        # terminal 1: http://localhost:4000
+pnpm --filter @book/web dev        # terminal 2: http://localhost:3000
+```
+
+This is your normal local development database. The account and sessions you create stay in it;
+the product has no session deletion (see Cleanup).
+
+### Walk through
+
+Open <http://localhost:3000/register> and create an account (JWT mode is the default; see
+[local-demo.md §7](local-demo.md#7-sign-in)). Then:
+
+| #   | Action                                                    | Expected result                                                                                       |
+| --- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| 1   | Click **Interactive story** in the dashboard header       | `/dashboard/interactive` shows a "The Last Delivery" card and an empty "Your stories" list            |
+| 2   | Click **Start story**                                     | URL becomes `/dashboard/interactive/<session-id>`; scene "Praga courtyard" with an illustration       |
+| 3   | Choose **Ask the caretaker where Tomasz is**              | Scene "The caretaker's broom"; **Carrying** lists "Single-use entry card"                             |
+| 4   | **Reload the page**                                       | Same scene and same card. No new session is created; the reader fetched the stored state              |
+| 5   | Choose **Climb to the fourth floor**                      | Scene "Flat 4"                                                                                        |
+| 6   | Choose **Use the single-use entry card on the lock**      | Scene "Inside flat 4"; the card disappears from **Carrying** (a one-time item is consumed)            |
+| 7   | Choose **Take the service stairs down to the cellar**     | Scene "The cellar workshop"                                                                           |
+| 8   | Choose **Carry the original ledger up and confront Ines** | Ending "The Ledger Exposed"; no more choices; a **Start another story** link appears                  |
+| 9   | Click **← Interactive story**                             | "Your stories" lists one entry, "Completed", "Ending: The Ledger Exposed", with a **Read again** link |
+
+### Reread the finished story
+
+Continue from step 9, with "Your stories" open. Rereading reads the history stored for the completed
+session. It creates no session and submits no choice, so the list still shows one story afterwards.
+
+| #   | Action                                                  | Expected result                                                                                                                                                                                                                                                    |
+| --- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 10  | Click **Read again** on the completed story             | URL becomes `/dashboard/interactive/<session-id>/transcript`; heading "Read again", story title "The Last Delivery", and "Showing 3 of 6 chapters."                                                                                                                |
+| 11  | Read the three chapters shown                           | "Chapter 1 Praga courtyard" (no choice label); "Chapter 2 The caretaker's broom", "You chose: Ask the caretaker where Tomasz is"; "Chapter 3 Flat 4", "You chose: Climb to the fourth floor". Each chapter shows its own illustration. No ending card yet          |
+| 12  | Click **Load more**                                     | Chapters 4–6 follow: "Inside flat 4" ("You chose: Use the single-use entry card on the lock"), "The cellar workshop" ("You chose: Take the service stairs down to the cellar"), "The ledger exposed" ("You chose: Carry the original ledger up and confront Ines") |
+| 13  | Read the end of chapter 6                               | A "The end" card titled "The Ledger Exposed" with its summary; "All 6 chapters, from the beginning to the end."; no **Load more** button                                                                                                                           |
+| 14  | **Reload the page**                                     | Rereading starts again at the first page: "Showing 3 of 6 chapters." and chapters 1–3 only. The loaded pages reset; the completed session and its stored history are unchanged                                                                                     |
+| 15  | Click **Load more** again                               | Chapters 4–6 and the "The end" card return, and **Back to the ending** and **Start another story** appear again (they are shown only once the whole transcript has loaded). **← Interactive story** is available throughout                                        |
+| 16  | Click **Back to the ending** or **← Interactive story** | **Back to the ending** returns to the finished reader at `/dashboard/interactive/<session-id>`; **← Interactive story** returns to the catalogue                                                                                                                   |
+
+The exposed route has six chapters because it makes five choices (the opening scene plus one chapter
+per choice); the quiet route below makes three choices and has four. The page requests three chapters
+at a time, so even the four-chapter route needs **Load more**. From the finished reader, the **Read
+the story from the beginning** link opens the same page.
+
+The text of each chapter and every "You chose" label come from the responses saved when the story was
+played, so they cannot change if the scenario files are edited later. The pictures are different:
+they are looked up when the page is read from the illustration pack for that scenario version. Today
+that is the same local pack the reader used, but rereading does not record or prove which picture
+was shown at the time.
+
+Illustrations are fetched separately from the text, one request per page of chapters, and a failure
+never blocks reading. If a metadata request fails or is rejected, or an image file cannot be loaded,
+the affected chapters show no picture (a note and **Reload illustration** where a retry is allowed),
+while the text and **Load more** keep working. The automated suite below exercises these failures with
+browser-injected faults; this walkthrough does not ask you to cause them.
+
+Optional checks:
+
+- **The other ending.** Start another story and choose **Check the mailboxes by the stairwell**, then
+  **Climb to the fourth floor**, then **Slip a delivery slip under the door and leave the parcel**.
+  It ends at "A Quiet Delivery". Choices such as using the entry card are not offered on this route
+  because the earlier choice that grants the card was never made. Click **Read again** on it: the
+  page shows "Showing 3 of 4 chapters.", then after **Load more** "All 4 chapters, from the
+  beginning to the end." with the chapters "Praga courtyard", "Behind the mailboxes", "Flat 4" and
+  "A quiet delivery".
+- **Unfinished stories.** Open `/dashboard/interactive/<session-id>/transcript` for a story you have
+  not finished: the page says "Rereading comes after the ending" and offers **Continue the story**.
+  The same URL for another account's session, or one that does not exist, says "This story isn't
+  available".
+- **Revision conflict.** Open the same session URL in a second tab and advance the story there.
+  Back in the first tab, click a choice from the old scene. The reader explains that the story moved
+  on, shows the current scene, and applies nothing on your behalf.
+- **Rate limit.** Starting more than five stories in ten minutes returns `429 RATE_LIMITED`
+  (`INTERACTIVE_CREATE_RATE_LIMIT_*`, a private-pilot default).
+
+### Remove a story
+
+Continue from step 16, back on the catalogue with "Your stories" open. Removal hides a story; it
+does not erase what is stored for it.
+
+| #   | Action                                                   | Expected result                                                                                                                                               |
+| --- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 17  | Click **Remove** on the completed story, then **Cancel** | A confirmation says you can no longer read it again and that the stored data is not erased. Cancel closes it and focus returns to **Remove**; nothing is sent |
+| 18  | Click **Remove**, then **Yes, remove story**             | The row stays until the server confirms, then disappears with "was removed from your stories"; the list is empty again                                        |
+| 19  | **Reload the page**                                      | The story is still absent. Opening its `/dashboard/interactive/<session-id>` or `.../transcript` URL says "This story isn't available"                        |
+
+Removing frees the story's place under the per-user cap. An unfinished story can be removed the
+same way. If the answer is lost, the row stays with an "unconfirmed" message and **Try again** resends
+the same request, which is safe because removal is idempotent. A reader left open in another tab
+only finds out on its next request, then stops offering choices. The data is retained: there is no
+restore, hard deletion or retention worker, so this is not privacy erasure.
+
+### Automated coverage
+
+The browser suite plays these journeys (both endings, reload and resume, ownership, cross-tab
+conflict, lost-response retries, illustrations, desktop and mobile layout, paginated, illustrated
+rereading of both endings including reload, ownership, unfinished stories and artwork failures, and
+story removal including a lost acknowledgement and a creation retry for a removed story)
+against a real API on a **disposable** PostgreSQL/Redis pair. It is guarded: Playwright replaces the database settings and
+the launcher refuses any target other than `127.0.0.1:5440/storyme_e2e` and Redis
+`127.0.0.1:6380/15`, so it cannot touch the development database. Docker must be running.
+
+```powershell
+pnpm test:infra:up
+pnpm --filter @book/web test:e2e e2e/interactive.spec.ts
+pnpm test:infra:down
+```
+
+`test:infra:down` removes the containers and volumes of that named disposable project only. The
+suite uses web port 3100 and API port 4100; see [E2E_TESTING.md](E2E_TESTING.md). The full-suite
+command `pnpm test:e2e:home` runs every spec, not just the interactive one.
+
+The workflow [ci.yml](../.github/workflows/ci.yml) configures an `Interactive browser journey` job
+that runs the same spec on a CI runner. Treat the two kinds of evidence separately: a local run
+shows the suite passed on one machine at one commit, and a remote run would show the configured job
+passed on a runner. This document records no successful remote run, because none has been inspected.
+
+### Clean up the reader demo
+
+Stop both dev servers (Ctrl+C). `docker compose down` stops PostgreSQL and Redis and keeps their data.
+To drop the demo account and sessions, use a throwaway account, or remove the volumes with
+`docker compose down -v` — **which deletes all local development data**, so only do that if you do
+not need it.
+
+## Part 2: mock draft walkthrough
+
+This part needs no database, Redis, network access or API key once dependencies are installed
+(`pnpm install`). Each invocation creates its own fresh temporary directory and writes only there; it
+changes nothing under `apps/`. Run the steps in order in one PowerShell session, because they share
+variables. Steps 2–4 stop immediately if step 1 did not finish.
+
+### 1. Author the candidate
+
+Create a new, uniquely named demo root for this invocation, then author into a `scenario-drafts`
+child of it (the authoring tool requires that exact name). Nothing from an earlier invocation is
+reused, so an older run can never be mistaken for this one.
+
+```powershell
+# Forget anything left over from an earlier invocation in this session.
+$demo = $drafts = $out = $run = $cand = $appr = $before = $null
+
+$demo = Join-Path ([IO.Path]::GetTempPath()) ('storyme-interactive-demo-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $demo | Out-Null   # no -Force: fails if it already exists
+Set-Content -LiteralPath (Join-Path $demo '.storyme-demo-owner') -Value 'created by docs/interactive-demo.md'
+$drafts = Join-Path $demo 'scenario-drafts'
+New-Item -ItemType Directory -Path $drafts | Out-Null
+
+$out = pnpm --silent author:interactive --mode mock --drafts-root $drafts
+$code = $LASTEXITCODE
+$out = @($out | ForEach-Object { "$_" })
+$out
+if ($code -ne 0) { throw "Authoring failed (exit $code); no artifacts were selected." }
+```
+
+Expected output, abridged (the hash is the same on every run at a given commit; the `Artifacts:`
+path differs per run):
+
+```text
+Mode: mock (offline, deterministic, no network)
+Call budget: at most 2 requests / 2 HTTP attempts (1 generation + 1 repair)
+Result: REVIEW_REQUIRED (mechanically valid; NOT approved, NOT published)
+Candidate: warsaw-last-tram@1 hash=<64 hex characters>
+Requests: 1, HTTP attempts: 0
+Artifacts: <demo root>\scenario-drafts\<timestamp>-warsaw-last-tram-v1-<hex>--review-required
+Files: validated-candidate.json, validation-report.json, review-report.md, approval-template.json
+```
+
+A later edit to the episode changes the hash. `REVIEW_REQUIRED` means mechanically valid, not
+approved.
+
+Now select the run this invocation created. The `Artifacts:` line printed by the authoring tool names
+the run; the check then confirms it is the only entry in the fresh drafts folder and holds exactly the
+four expected files. Directory ordering is never used to choose a run, and an absent or ambiguous
+result stops here.
+
+```powershell
+$names = 'validated-candidate.json', 'validation-report.json', 'review-report.md', 'approval-template.json'
+$lines = @($out | Where-Object { $_ -like 'Artifacts: *' })
+if ($lines.Count -ne 1) { throw "Expected exactly one 'Artifacts:' line, found $($lines.Count)." }
+$printed = Split-Path -Leaf $lines[0].Substring('Artifacts: '.Length).Trim()
+$entries = @(Get-ChildItem -LiteralPath $drafts -Force)
+if ($entries.Count -ne 1) { throw "Expected exactly one run in the fresh drafts folder, found $($entries.Count)." }
+if ($entries[0].Name -ne $printed -or -not $entries[0].PSIsContainer -or $printed -notlike '*--review-required') {
+  throw "The run on disk ('$($entries[0].Name)') is not the reported REVIEW_REQUIRED run ('$printed')."
+}
+$files = @(Get-ChildItem -LiteralPath $entries[0].FullName -Force | ForEach-Object Name | Sort-Object)
+if (($files -join '|') -ne (($names | Sort-Object) -join '|')) { throw "Unexpected artifact set: $($files -join ', ')" }
+
+$run  = $entries[0]
+$cand = Join-Path $run.FullName 'validated-candidate.json'
+$appr = Join-Path $run.FullName 'approval-template.json'
+```
+
+Snapshot the four artifacts so you can prove they are not modified later:
+
+```powershell
+$snapshot = { Get-ChildItem -LiteralPath $run.FullName -Force | Sort-Object Name | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash) $(Split-Path -Leaf $_.Path)" } }
+$before = @(& $snapshot)
+$before
+```
+
+Open `$run\review-report.md`: it lists the witness route to each ending and the editorial checklist a
+person must complete. `$appr` has `"decision": "pending"`, no reviewer and every checklist item
+`false`.
+
+### 2. Play both endings
+
+The playtest drives the production engine over the candidate file and only reads it.
+
+```powershell
+if (-not $cand -or -not $before) { throw 'Step 1 did not select a run; stop.' }
+# Quiet ending
+pnpm --silent playtest:interactive --candidate $cand --choices 'c-inspect-carriage,c-pocket-receipt,c-show-receipt,c-let-hanna-repay'
+# Report ending
+pnpm --silent playtest:interactive --candidate $cand --choices 'c-ask-driver,c-leave-cab,c-open-panel,c-report-to-depot'
+```
+
+Expected final lines of each run:
+
+```text
+Result: PLAYTEST_COMPLETED ending=quiet-repayment
+Route: c-inspect-carriage, c-pocket-receipt, c-show-receipt, c-let-hanna-repay
+Playtest only: nothing was approved, registered or published.
+```
+
+```text
+Result: PLAYTEST_COMPLETED ending=report-filed
+Route: c-ask-driver, c-leave-cab, c-open-panel, c-report-to-depot
+Playtest only: nothing was approved, registered or published.
+```
+
+A route that stops early is never reported as completed:
+
+```powershell
+if (-not $cand) { throw 'Step 1 did not select a run; stop.' }
+pnpm --silent playtest:interactive --candidate $cand --choices 'c-ask-driver'
+```
+
+```text
+Result: PLAYTEST_INCOMPLETE (no ending was reached)
+the route stopped before reaching an ending
+Route: c-ask-driver
+```
+
+To play by hand instead, omit `--choices`: it shows numbered choices, and `q` quits.
+
+Notes for PowerShell:
+
+- Quote the comma-separated `--choices` value. Unquoted, PowerShell passes an array and the run fails
+  with `PLAYTEST_FAILED [ROUTE_MALFORMED]`.
+- Use absolute paths. `pnpm` runs these scripts from `apps\api`, so a repo-relative path would
+  resolve against that directory.
+- Through `pnpm`, every non-zero script exit shows as `1`. The documented exit codes (`3` for
+  incomplete, `4` for cancelled) appear only when the script runs directly; the `Result:` line is
+  the reliable signal. See [Offline playtest](../apps/api/docs/interactive-authoring.md#offline-playtest).
+
+### 3. Preflight rejects the pending approval
+
+```powershell
+if (-not $cand -or -not $appr) { throw 'Step 1 did not select a run; stop.' }
+pnpm --silent preflight:interactive --candidate $cand --approval $appr
+```
+
+```text
+Interactive publication preflight (read-only)
+Result: PUBLICATION_PREFLIGHT_FAILED [APPROVAL_PENDING]
+approval is still pending
+```
+
+Preflight re-runs every mechanical check and recomputes the hash, then refuses because the approval
+record is not an approved, complete, hash-bound human attestation. The tooling never writes one. The
+specification of an approval record and of the rest of the publication sequence is in
+[interactive-authoring.md](../apps/api/docs/interactive-authoring.md#publication-boundary-manual-sequence).
+This demo deliberately does not fabricate an approval.
+
+### 4. Confirm nothing changed and nothing was published
+
+```powershell
+if (-not $before) { throw 'Step 1 did not select a run; stop.' }
+$after = @(& $snapshot)
+"Artifacts unchanged: $(($before.Count -eq 4) -and (($before -join '|') -ceq ($after -join '|')))"
+```
+
+Expected: `Artifacts unchanged: True`, comparing the SHA-256 hashes of the four artifacts of this
+invocation's run. "The Last Tram" is also absent from the web app: the catalogue
+(`GET /api/interactive/scenarios`) and the **Interactive story** page list only "The Last
+Delivery", because the static registry does not contain the draft, and session creation for it
+returns `422 UNKNOWN_SCENARIO` ([engine document](../apps/api/docs/interactive-engine.md#catalogue)).
+
+### Clean up the draft demo
+
+Remove the demo root only after checking that it is the directory this invocation created: a real
+directory (not a link) directly under the temporary directory, with the generated name and the
+ownership marker file written in step 1.
+
+```powershell
+if (-not $demo) { throw 'No demo root in this session; nothing to remove.' }
+$tempRoot = (Get-Item -LiteralPath ([IO.Path]::GetTempPath())).FullName.TrimEnd('\')
+$target = Get-Item -LiteralPath $demo -Force -ErrorAction Stop
+$owned = $target.PSIsContainer -and
+  -not $target.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -and
+  $target.Parent.FullName.TrimEnd('\') -eq $tempRoot -and
+  $target.Name -match '^storyme-interactive-demo-[0-9a-f]{32}$' -and
+  (Test-Path -LiteralPath (Join-Path $target.FullName '.storyme-demo-owner') -PathType Leaf)
+if (-not $owned) { throw "Refusing to delete '$demo': it is not this demo's temporary root." }
+Remove-Item -LiteralPath $target.FullName -Recurse -Force
+```
+
+This removes only this invocation's demo root. Roots left by earlier invocations (for example after a
+failed step) are separate directories under the temporary directory named
+`storyme-interactive-demo-<32 hex characters>`; remove each the same way, after confirming its path.
+
+## What this demonstrates and what it does not
+
+It demonstrates a deterministic, replayable runtime and an authoring workflow whose mechanical gates
+and human gate are separate. It does not demonstrate real-model authoring (that mode needs
+`--allow-paid-calls` and has never been run here, so its quality is unverified), prose quality
+(mechanical validation cannot judge it), a deployed service, or generated artwork (the illustrations
+are local SVG files, and rereading shows the artwork selected at read time rather than a record of
+what was shown originally). "The Last Tram" remains unapproved and unpublished, and rereading applies
+only to published, completed sessions. The trade-offs behind those choices are in
+[CURRENT_PRODUCT.md](CURRENT_PRODUCT.md#design-trade-offs).

@@ -60,7 +60,12 @@ export const USAGE = [
   '  (model may also come from INTERACTIVE_AUTHORING_MODEL; an explicit brief is required)',
 ].join('\n');
 
-function parseFlags(argv: readonly string[]): Map<string, string | true> | string {
+/** Shared with the experiment CLI, which has its own flag vocabulary. */
+export function parseFlags(
+  argv: readonly string[],
+  valueFlags: ReadonlySet<string> = VALUE_FLAGS,
+  booleanFlags: ReadonlySet<string> = BOOLEAN_FLAGS,
+): Map<string, string | true> | string {
   const flags = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -68,10 +73,10 @@ function parseFlags(argv: readonly string[]): Map<string, string | true> | strin
     const eq = arg.indexOf('=');
     const name = arg.slice(2, eq === -1 ? undefined : eq);
     if (flags.has(name)) return `duplicate flag --${name}`;
-    if (BOOLEAN_FLAGS.has(name)) {
+    if (booleanFlags.has(name)) {
       if (eq !== -1) return `--${name} does not take a value`;
       flags.set(name, true);
-    } else if (VALUE_FLAGS.has(name)) {
+    } else if (valueFlags.has(name)) {
       const value = eq !== -1 ? arg.slice(eq + 1) : argv[(i += 1)];
       if (value === undefined || value === '' || value.startsWith('--')) {
         return `--${name} requires a value`;
@@ -84,7 +89,7 @@ function parseFlags(argv: readonly string[]): Map<string, string | true> | strin
   return flags;
 }
 
-function boundedInt(
+export function boundedInt(
   name: string,
   raw: string | undefined,
   fallback: number,

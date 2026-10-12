@@ -189,6 +189,11 @@ describe('interactive reader page', () => {
     const another = screen.getByRole('link', { name: 'Start another story' });
     expect(another).toHaveAttribute('href', '/dashboard/interactive');
     expect(screen.queryByRole('button', { name: 'Start another story' })).toBeNull();
+    // Rereading is a separate read-only route for the completed session.
+    expect(screen.getByRole('link', { name: 'Read the story from the beginning' })).toHaveAttribute(
+      'href',
+      `/dashboard/interactive/${SESSION_ID}/transcript`,
+    );
     expect(createSession).not.toHaveBeenCalled();
     expect(pushMock).not.toHaveBeenCalled();
   });

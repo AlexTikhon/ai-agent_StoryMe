@@ -5,6 +5,8 @@ import type {
   InteractiveSessionMetadataDto,
   InteractiveSessionListDto,
   InteractiveSessionViewDto,
+  InteractiveTranscriptDto,
+  InteractiveTranscriptPresentationDto,
   SubmitInteractiveChoiceInput,
 } from '@book/types';
 import { apiFetch } from './client';
@@ -56,6 +58,45 @@ export const interactiveApi = {
     apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}/metadata`, { signal }),
 
   /**
+   * One page of a *completed* session's transcript, oldest step first. Read-only; an
+   * unfinished session is answered with SESSION_NOT_COMPLETED. `cursor` is the opaque
+   * `nextCursor` of the previous page and must be resent unchanged to retry a page.
+   */
+  getTranscript: (
+    sessionId: string,
+    params: { limit?: number; cursor?: string | null } = {},
+    signal?: AbortSignal,
+  ): Promise<InteractiveTranscriptDto> => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.cursor) query.set('cursor', params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}/transcript${suffix}`, {
+      signal,
+    });
+  },
+
+  /**
+   * Artwork for one page of a *completed* session's transcript, with the exact query
+   * (`limit`, `cursor`) of the text page it illustrates. Read-only; artwork is selected
+   * at read time, so this is not a record of what the player originally saw.
+   */
+  getTranscriptPresentation: (
+    sessionId: string,
+    params: { limit?: number; cursor?: string | null } = {},
+    signal?: AbortSignal,
+  ): Promise<InteractiveTranscriptPresentationDto> => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.cursor) query.set('cursor', params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return apiFetch(
+      `/interactive/sessions/${encodeURIComponent(sessionId)}/transcript/presentation${suffix}`,
+      { signal },
+    );
+  },
+
+  /**
    * Artwork metadata for the scene at `expectedRevision`. Read-only; a different
    * current revision is answered with REVISION_CONFLICT. Never changes story state.
    */
@@ -68,6 +109,17 @@ export const interactiveApi = {
       `/interactive/sessions/${encodeURIComponent(sessionId)}/presentation?expectedRevision=${encodeURIComponent(String(expectedRevision))}`,
       { signal },
     ),
+
+  /**
+   * Hides the session from the caller's library and frees its cap slot; stored data is
+   * retained. Answers 204 even when repeated or when the session is missing or not the
+   * caller's, so an ambiguous attempt may be resent. Aborting only stops waiting.
+   */
+  removeSession: (sessionId: string, signal?: AbortSignal): Promise<void> =>
+    apiFetch(`/interactive/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      signal,
+    }),
 
   /** Safe to resend with the identical command: the server deduplicates on `idempotencyKey`. */
   submitChoice: (

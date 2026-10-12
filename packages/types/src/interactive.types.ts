@@ -119,10 +119,42 @@ export interface InteractiveSessionListDto {
   nextCursor: string | null;
 }
 
+/**
+ * One step of a completed session's transcript, taken from the public response
+ * stored when that revision was reached. Deliberately no choices, player
+ * state, event data or ending id.
+ */
+export interface InteractiveTranscriptStepDto {
+  revision: number;
+  scene: { id: string; title: string };
+  narration: string;
+  /** Label the player picked to arrive here, as shown at the previous revision; `null` at revision 0. */
+  arrivedByChoiceLabel: string | null;
+  /** Set only on the terminal step. */
+  ending: { title: string; summary: string } | null;
+}
+
+/**
+ * GET /api/interactive/sessions/:id/transcript?limit=&cursor= response: the
+ * path a player actually completed, oldest step first, read-only.
+ */
+export interface InteractiveTranscriptDto {
+  sessionId: string;
+  scenarioId: string;
+  scenarioVersion: number;
+  /** Revision of the terminal (ending) step. */
+  completedRevision: number;
+  steps: InteractiveTranscriptStepDto[];
+  /** Opaque; pass back as `cursor` for the next page. `null` on the last page. */
+  nextCursor: string | null;
+}
+
 /** Stable `code` values the interactive endpoints return on failure. */
 export type InteractiveErrorCode =
   | 'INVALID_REQUEST'
   | 'SESSION_NOT_FOUND'
+  | 'SESSION_NOT_COMPLETED'
+  | 'SESSION_STATE_INVALID'
   | 'UNKNOWN_CHOICE'
   | 'UNKNOWN_SCENARIO'
   | 'REVISION_CONFLICT'
@@ -133,6 +165,7 @@ export type InteractiveErrorCode =
   | 'NARRATION_PROVIDER_FAILED'
   | 'SESSION_BUSY'
   | 'SESSION_LIMIT_REACHED'
+  | 'SESSION_REMOVED'
   | 'RATE_LIMITED'
   | 'RATE_LIMIT_UNAVAILABLE';
 
@@ -162,4 +195,36 @@ export interface InteractivePresentationDto {
     packVersion: number;
     panels: InteractivePresentationPanelDto[];
   } | null;
+}
+
+/**
+ * One step of the artwork transcript. Keyed by the text transcript's `revision`
+ * and scene id so the two pages can be zipped; carries no narration, choices or
+ * title. `presentation` is `null` when no artwork is configured for the scene.
+ */
+export interface InteractiveTranscriptPresentationStepDto {
+  revision: number;
+  sceneId: string;
+  presentation: {
+    packId: string;
+    packVersion: number;
+    panels: InteractivePresentationPanelDto[];
+  } | null;
+}
+
+/**
+ * GET /api/interactive/sessions/:id/transcript/presentation?limit=&cursor=
+ * response. Same query, identity, steps' revisions/scene ids and cursor as the
+ * text transcript page. Artwork is selected from the pack registry at read time
+ * for the session's pinned scenario version; pack identity is not stored with
+ * gameplay events, so this is not a record of the artwork originally shown.
+ */
+export interface InteractiveTranscriptPresentationDto {
+  sessionId: string;
+  scenarioId: string;
+  scenarioVersion: number;
+  completedRevision: number;
+  steps: InteractiveTranscriptPresentationStepDto[];
+  /** Opaque; pass back as `cursor` for the next page. `null` on the last page. */
+  nextCursor: string | null;
 }

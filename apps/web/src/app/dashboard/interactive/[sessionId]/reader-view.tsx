@@ -14,7 +14,7 @@ const LINK_BUTTON = `rounded-lg bg-amber-400 px-5 py-2.5 text-sm font-semibold t
 const PRIMARY_BUTTON = `${LINK_BUTTON} disabled:cursor-not-allowed disabled:opacity-60`;
 
 /** Narration is plain text: React escapes it, and blank lines become paragraphs. */
-function Narration({ text }: { text: string }) {
+export function Narration({ text }: { text: string }) {
   const paragraphs = text.split(/\n{2,}/).filter((paragraph) => paragraph.trim() !== '');
   return (
     <div className="space-y-4 font-book text-lg leading-relaxed text-stone-200">
@@ -255,9 +255,17 @@ export function InteractiveReaderView({ reader }: { reader: Reader }) {
             {view.ending.summary}
           </p>
           {/* Choosing the next story is the catalogue's job; nothing is created from here. */}
-          <Link href="/dashboard/interactive" className={`mt-5 inline-flex ${LINK_BUTTON}`}>
-            Start another story
-          </Link>
+          <div className="mt-5 flex flex-wrap items-center gap-4">
+            <Link href="/dashboard/interactive" className={LINK_BUTTON}>
+              Start another story
+            </Link>
+            <Link
+              href={`/dashboard/interactive/${encodeURIComponent(view.sessionId)}/transcript`}
+              className={`rounded text-sm font-semibold text-amber-300 underline hover:text-amber-200 ${FOCUS_RING}`}
+            >
+              Read the story from the beginning
+            </Link>
+          </div>
         </section>
       )}
 

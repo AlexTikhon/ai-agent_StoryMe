@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, RequestMethod } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { AuthModeGuard } from '../auth/auth-mode.guard';
@@ -17,8 +17,11 @@ function setup() {
     listSessions: vi.fn().mockResolvedValue({ sessions: [], nextCursor: null }),
     getSession: vi.fn().mockResolvedValue({ ok: 'get' }),
     submitChoice: vi.fn().mockResolvedValue({ ok: 'choose' }),
+    removeSession: vi.fn().mockResolvedValue(undefined),
     getPresentation: vi.fn().mockResolvedValue({ ok: 'presentation' }),
     getSessionMetadata: vi.fn().mockResolvedValue({ ok: 'metadata' }),
+    getTranscript: vi.fn().mockResolvedValue({ ok: 'transcript' }),
+    getTranscriptPresentation: vi.fn().mockResolvedValue({ ok: 'transcript-presentation' }),
   };
   return {
     service,
@@ -52,6 +55,18 @@ describe('InteractiveController', () => {
 
     await controller.metadata(USER, SESSION_ID, {});
     expect(service.getSessionMetadata).toHaveBeenCalledWith(USER.id, SESSION_ID);
+
+    await controller.transcript(USER, SESSION_ID, { limit: '5' });
+    expect(service.getTranscript).toHaveBeenCalledWith(USER.id, SESSION_ID, {
+      limit: 5,
+      cursor: null,
+    });
+
+    await controller.transcriptPresentation(USER, SESSION_ID, { limit: '5' });
+    expect(service.getTranscriptPresentation).toHaveBeenCalledWith(USER.id, SESSION_ID, {
+      limit: 5,
+      cursor: null,
+    });
 
     const command = {
       choiceId: 'c-ask-caretaker',
@@ -94,6 +109,27 @@ describe('InteractiveController', () => {
     expect(() => controller.metadata(USER, SESSION_ID, { refresh: '1' })).toThrow(
       BadRequestException,
     );
+    expect(() => controller.transcript(USER, 'not-a-uuid', {})).toThrow(BadRequestException);
+    expect(() => controller.transcript(USER, SESSION_ID, { limit: '26' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => controller.transcript(USER, SESSION_ID, { userId: 'someone-else' })).toThrow(
+      BadRequestException,
+    );
+    expect(service.getTranscript).not.toHaveBeenCalled();
+    expect(() => controller.transcriptPresentation(USER, 'not-a-uuid', {})).toThrow(
+      BadRequestException,
+    );
+    expect(() => controller.transcriptPresentation(USER, SESSION_ID, { limit: '26' })).toThrow(
+      BadRequestException,
+    );
+    expect(() =>
+      controller.transcriptPresentation(USER, SESSION_ID, { cursor: 'x', userId: 'someone-else' }),
+    ).toThrow(BadRequestException);
+    expect(() => controller.transcriptPresentation(USER, SESSION_ID, { cursor: '!!' })).toThrow(
+      BadRequestException,
+    );
+    expect(service.getTranscriptPresentation).not.toHaveBeenCalled();
     expect(() =>
       controller.choose(USER, SESSION_ID, {
         choiceId: 'c-ask-caretaker',
@@ -117,10 +153,12 @@ describe('InteractiveController', () => {
       windowMsEnvKey: 'INTERACTIVE_CREATE_RATE_LIMIT_WINDOW_MS',
       maxAttemptsEnvKey: 'INTERACTIVE_CREATE_RATE_LIMIT_MAX_ATTEMPTS',
     });
-    expect(budget('choose')).toEqual({
+    const write = {
       windowMsEnvKey: 'INTERACTIVE_CHOICE_RATE_LIMIT_WINDOW_MS',
       maxAttemptsEnvKey: 'INTERACTIVE_CHOICE_RATE_LIMIT_MAX_ATTEMPTS',
-    });
+    };
+    expect(budget('choose')).toEqual(write);
+    expect(budget('remove')).toEqual(write);
     const read = {
       windowMsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_WINDOW_MS',
       maxAttemptsEnvKey: 'INTERACTIVE_READ_RATE_LIMIT_MAX_ATTEMPTS',
@@ -129,6 +167,24 @@ describe('InteractiveController', () => {
     expect(budget('list')).toEqual(read);
     expect(budget('presentation')).toEqual(read);
     expect(budget('metadata')).toEqual(read);
+    expect(budget('transcript')).toEqual(read);
+    expect(budget('transcriptPresentation')).toEqual(read);
+  });
+
+  it('marks the transcript artwork as a private, uncacheable read on its own sub-path', () => {
+    const handler = InteractiveController.prototype.transcriptPresentation;
+    expect(Reflect.getMetadata('__httpCode__', handler)).toBeUndefined();
+    expect(Reflect.getMetadata('__headers__', handler)).toEqual([
+      { name: 'Cache-Control', value: 'private, no-store' },
+    ]);
+    expect(Reflect.getMetadata('path', handler)).toBe(':id/transcript/presentation');
+    // The text transcript and current-scene presentation routes are untouched.
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.transcript)).toBe(
+      ':id/transcript',
+    );
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.presentation)).toBe(
+      ':id/presentation',
+    );
   });
 
   it('marks session metadata as a private, uncacheable read', () => {
@@ -143,6 +199,18 @@ describe('InteractiveController', () => {
     );
   });
 
+  it('marks the transcript as a private, uncacheable read', () => {
+    expect(
+      Reflect.getMetadata('__httpCode__', InteractiveController.prototype.transcript),
+    ).toBeUndefined();
+    expect(Reflect.getMetadata('__headers__', InteractiveController.prototype.transcript)).toEqual([
+      { name: 'Cache-Control', value: 'private, no-store' },
+    ]);
+    expect(Reflect.getMetadata('path', InteractiveController.prototype.transcript)).toBe(
+      ':id/transcript',
+    );
+  });
+
   it('marks presentation metadata as private and uncacheable', () => {
     expect(
       Reflect.getMetadata('__httpCode__', InteractiveController.prototype.presentation),
@@ -153,5 +221,45 @@ describe('InteractiveController', () => {
     expect(Reflect.getMetadata('path', InteractiveController.prototype.presentation)).toBe(
       ':id/presentation',
     );
+  });
+
+  describe('remove', () => {
+    it('is DELETE :id answering 204 with a private, uncacheable response', () => {
+      const handler = InteractiveController.prototype.remove;
+      expect(Reflect.getMetadata('method', handler)).toBe(RequestMethod.DELETE);
+      expect(Reflect.getMetadata('path', handler)).toBe(':id');
+      expect(Reflect.getMetadata('__httpCode__', handler)).toBe(204);
+      expect(Reflect.getMetadata('__headers__', handler)).toEqual([
+        { name: 'Cache-Control', value: 'private, no-store' },
+      ]);
+    });
+
+    it('removes only the authenticated owner session and returns nothing', async () => {
+      const { controller, service } = setup();
+      await expect(controller.remove(USER, SESSION_ID, {}, {})).resolves.toBeUndefined();
+      await expect(controller.remove(USER, SESSION_ID, {}, undefined)).resolves.toBeUndefined();
+      expect(service.removeSession).toHaveBeenCalledTimes(2);
+      expect(service.removeSession).toHaveBeenCalledWith(USER.id, SESSION_ID);
+    });
+
+    it('rejects a bad id, any query or any body before reaching the service', async () => {
+      const { controller, service } = setup();
+      const bad: [string, unknown, unknown][] = [
+        ['not-a-uuid', {}, {}],
+        [SESSION_ID, { userId: 'someone-else' }, {}],
+        [SESSION_ID, { force: '1' }, {}],
+        [SESSION_ID, {}, { userId: 'someone-else' }],
+        [SESSION_ID, {}, { removedAt: '2020-01-01' }],
+        [SESSION_ID, {}, []],
+        [SESSION_ID, {}, 'x'],
+        [SESSION_ID, {}, null],
+      ];
+      for (const [id, query, body] of bad) {
+        await expect(controller.remove(USER, id, query, body)).rejects.toBeInstanceOf(
+          BadRequestException,
+        );
+      }
+      expect(service.removeSession).not.toHaveBeenCalled();
+    });
   });
 });

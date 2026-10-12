@@ -998,6 +998,9 @@ model InteractiveSession {
   // `creationRequestHash` fingerprints the validated creation command without the key.
   creationIdempotencyKey String?  @map("creation_idempotency_key")
   creationRequestHash    String?  @map("creation_request_hash")
+  // Soft removal: set once by the owner; the row, state, events and creation
+  // identity are all retained. Null means active. There is no restore.
+  removedAt       DateTime? @map("removed_at")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 

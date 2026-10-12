@@ -9,11 +9,27 @@ function getApiHealthStatus(): { url: string | null; error: string | null } {
   }
 }
 
+const HOW_IT_WORKS = [
+  {
+    title: 'Choose a path',
+    body: 'At each scene you decide what happens next, and your choices lead to different endings.',
+  },
+  {
+    title: 'Resume later',
+    body: 'Your progress is saved to your account, so you can leave and pick up at the scene where you stopped.',
+  },
+  {
+    title: 'Reread with illustrations',
+    body: 'Once you reach an ending, read the story you played again, page by page, alongside its illustrations.',
+  },
+] as const;
+
 export default function HomePage() {
-  const apiHealth = getApiHealthStatus();
+  // Diagnostics are for local development only; production output never names the API.
+  const apiHealth = process.env.NODE_ENV === 'development' ? getApiHealthStatus() : null;
 
   return (
-    <main className="flex min-h-dvh flex-col items-center justify-center bg-bg-base px-4">
+    <main className="flex min-h-dvh flex-col items-center justify-center bg-bg-base px-4 py-12">
       <div className="max-w-container-sm text-center">
         {/* Logo mark */}
         <div className="mx-auto mb-8 flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-brand shadow-brand">
@@ -39,35 +55,51 @@ export default function HomePage() {
 
         <h1 className="mb-4 font-display text-5xl font-bold text-text-primary">StoryMe</h1>
 
-        <p className="mb-2 text-xl text-text-secondary">Personalized AI Children&apos;s Books</p>
+        <p className="mb-2 text-xl text-text-secondary">
+          Interactive illustrated stories you steer with your choices
+        </p>
 
         <p className="mb-10 text-base text-text-muted">
-          Create beautifully illustrated stories starring your child — powered by AI.
+          Pick a story, choose your path through it, and come back to it whenever you like.
         </p>
 
         <HomeAuthCta />
 
-        {/* Infrastructure status indicator (dev only) */}
-        <div className="mt-16 rounded-xl border border-border-subtle bg-bg-subtle p-4 text-sm text-text-muted">
-          <p className="font-semibold text-text-secondary">MVP Demo</p>
-          <p className="mt-1">
-            <a
-              href="/dashboard"
-              className="font-medium text-violet-600 underline underline-offset-2 hover:text-violet-500"
+        <ol className="mt-14 grid gap-4 text-left sm:grid-cols-3">
+          {HOW_IT_WORKS.map((step) => (
+            <li
+              key={step.title}
+              className="rounded-xl border border-border-subtle bg-bg-surface p-4"
             >
-              Open Dashboard
-            </a>
-            {' · '}
-            API:{' '}
-            {apiHealth.url ? (
-              <code className="rounded bg-stone-200 px-1 py-0.5 font-mono text-xs">
-                {apiHealth.url}
-              </code>
-            ) : (
-              <span className="font-medium text-red-600">{apiHealth.error}</span>
-            )}
-          </p>
-        </div>
+              <h2 className="font-display text-base font-semibold text-text-primary">
+                {step.title}
+              </h2>
+              <p className="mt-1 text-sm text-text-muted">{step.body}</p>
+            </li>
+          ))}
+        </ol>
+
+        <p className="mt-8 text-sm text-text-muted">
+          Gameplay is deterministic: the same choices always lead to the same scenes. AI helps
+          authors draft scenarios; it does not run the story while you play, and the illustrations
+          are part of the story rather than generated on the fly.
+        </p>
+
+        {apiHealth && (
+          <div className="mt-12 rounded-xl border border-border-subtle bg-bg-subtle p-4 text-sm text-text-muted">
+            <p className="font-semibold text-text-secondary">Development diagnostics</p>
+            <p className="mt-1">
+              API:{' '}
+              {apiHealth.url ? (
+                <code className="rounded bg-stone-200 px-1 py-0.5 font-mono text-xs">
+                  {apiHealth.url}
+                </code>
+              ) : (
+                <span className="font-medium text-red-600">{apiHealth.error}</span>
+              )}
+            </p>
+          </div>
+        )}
       </div>
     </main>
   );

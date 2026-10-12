@@ -14,6 +14,12 @@ import { NarrationRejectedError } from './narrator/narrator';
 export const sessionNotFound = () =>
   new NotFoundException({ code: 'SESSION_NOT_FOUND', message: 'Session not found' });
 
+export const sessionNotCompleted = () =>
+  new ConflictException({
+    code: 'SESSION_NOT_COMPLETED',
+    message: 'The story has not ended yet',
+  });
+
 export const revisionConflict = () =>
   new ConflictException({
     code: 'REVISION_CONFLICT',
@@ -36,6 +42,13 @@ export const sessionLimitReached = () =>
   new ConflictException({
     code: 'SESSION_LIMIT_REACHED',
     message: 'You have reached the maximum number of stories',
+  });
+
+/** An exact creation retry whose story the owner has since removed; never restores it. */
+export const sessionRemoved = () =>
+  new ConflictException({
+    code: 'SESSION_REMOVED',
+    message: 'This story was removed; start a new one',
   });
 
 export const unknownScenario = () =>

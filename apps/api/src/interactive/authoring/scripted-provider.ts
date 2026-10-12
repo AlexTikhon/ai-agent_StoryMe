@@ -9,7 +9,9 @@ import {
 
 /**
  * Offline test double that replays a fixed script of provider behaviours.
- * Used by specs and the offline evaluation; never selectable from the CLI.
+ * Used by specs and the offline evaluation; never selectable from the
+ * single-brief CLI. The experiment runner's offline mode replays each corpus
+ * entry's fixture through it, as harness verification only.
  */
 export type ScriptStep =
   | { candidate: unknown; httpAttempts?: number; usage?: DraftUsage }

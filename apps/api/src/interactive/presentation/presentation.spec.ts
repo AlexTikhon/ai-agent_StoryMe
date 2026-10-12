@@ -14,6 +14,8 @@ import {
   loadPresentationPack,
   presentationResponseSchema,
   projectPresentation,
+  projectTranscriptPresentation,
+  transcriptPresentationResponseSchema,
 } from './presentation';
 import { PresentationPackError, parsePresentationPack } from './presentation-schema';
 
@@ -283,5 +285,121 @@ describe('shared quiet ending artwork', () => {
     const exposed = projectPresentation(viewAt(WARSAW_ROUTES.exposed));
     expect(exposed.sceneId).toBe('s-end-exposed');
     expect(exposed.presentation?.panels[0]?.id).toBe('p-end-exposed');
+  });
+});
+
+describe('transcript presentation projection', () => {
+  /** The narrow shape of a transcript page that the projection needs. */
+  function pageOf(route: readonly string[], patch: Record<string, unknown> = {}) {
+    const steps = Array.from({ length: route.length + 1 }, (_, i) => {
+      const view = viewAt(route.slice(0, i));
+      return {
+        revision: view.revision,
+        scene: { id: view.scene.id, title: view.scene.title },
+        narration: view.narration,
+        arrivedByChoiceLabel: null,
+        ending: null,
+      };
+    });
+    return {
+      sessionId: SESSION_ID,
+      scenarioId: 'warsaw-last-delivery',
+      scenarioVersion: 1,
+      completedRevision: route.length,
+      steps,
+      nextCursor: null,
+      ...patch,
+    };
+  }
+
+  it.each(['exposed', 'quietAtDoor'] as const)(
+    'selects, per stored step, the same artwork the current-scene projection selects (%s)',
+    (name) => {
+      const route = WARSAW_ROUTES[name];
+      const dto = projectTranscriptPresentation(pageOf(route));
+      expect(dto.steps.map((s) => s.revision)).toEqual(Array.from({ length: route.length + 1 }, (_, i) => i));
+      for (const [i, step] of dto.steps.entries()) {
+        const current = projectPresentation(viewAt(route.slice(0, i)));
+        expect(step.sceneId).toBe(current.sceneId);
+        expect(step.presentation).toEqual(current.presentation);
+        expect(step.presentation?.panels.length).toBeGreaterThan(0);
+      }
+    },
+  );
+
+  it('carries identity, completed revision and cursor through unchanged, with only allow-listed fields', () => {
+    const dto = projectTranscriptPresentation(
+      pageOf(WARSAW_ROUTES.quietAtDoor, { nextCursor: 'opaque-cursor' }),
+    );
+    expect(transcriptPresentationResponseSchema.parse(dto)).toEqual(dto);
+    expect(Object.keys(dto).sort()).toEqual(
+      [
+        'completedRevision',
+        'nextCursor',
+        'scenarioId',
+        'scenarioVersion',
+        'sessionId',
+        'steps',
+      ].sort(),
+    );
+    expect(dto).toMatchObject({
+      sessionId: SESSION_ID,
+      completedRevision: 3,
+      nextCursor: 'opaque-cursor',
+    });
+    for (const step of dto.steps) {
+      expect(Object.keys(step).sort()).toEqual(['presentation', 'revision', 'sceneId']);
+    }
+    const wire = JSON.stringify(dto);
+    for (const hidden of ['narration', 'choices', 'title', 'arrivedBy', 'ending', 'flags']) {
+      expect(wire).not.toContain(hidden);
+    }
+  });
+
+  it('shows artwork only for scenes that were visited', () => {
+    const dto = projectTranscriptPresentation(pageOf(WARSAW_ROUTES.quietAtDoor));
+    const wire = JSON.stringify(dto);
+    const visited = new Set(dto.steps.map((s) => s.sceneId));
+    for (const [sceneId, panels] of Object.entries(WARSAW_NOIR_V1.scenes)) {
+      if (visited.has(sceneId)) continue;
+      expect(wire).not.toContain(sceneId);
+      for (const panel of panels) expect(wire).not.toContain(panel.src);
+    }
+  });
+
+  it('returns presentation: null for an unconfigured scenario version, an unknown scenario or an unmapped scene', () => {
+    for (const patch of [{ scenarioVersion: 2 }, { scenarioId: 'unknown-story' }]) {
+      const dto = projectTranscriptPresentation(pageOf(['c-ask-caretaker'], patch));
+      expect(dto.steps).toHaveLength(2);
+      expect(dto.steps.every((s) => s.presentation === null)).toBe(true);
+    }
+    const page = pageOf([]);
+    page.steps[0]!.scene = { id: 's-unmapped', title: 'Unmapped' };
+    expect(projectTranscriptPresentation(page).steps[0]).toEqual({
+      revision: 0,
+      sceneId: 's-unmapped',
+      presentation: null,
+    });
+  });
+
+  it('is pure: it does not mutate its input', () => {
+    const page = pageOf(WARSAW_ROUTES.exposed);
+    const frozen = JSON.stringify(page);
+    projectTranscriptPresentation(page);
+    expect(JSON.stringify(page)).toBe(frozen);
+  });
+
+  it('is validated by a strict schema that rejects extra fields at every level', () => {
+    const dto = projectTranscriptPresentation(pageOf(['c-ask-caretaker']));
+    const accepts = (mutate: (copy: any) => void) => {
+      const copy = JSON.parse(JSON.stringify(dto));
+      mutate(copy);
+      return transcriptPresentationResponseSchema.safeParse(copy).success;
+    };
+    expect(accepts(() => undefined)).toBe(true);
+    expect(accepts((c) => (c.narration = 'x'))).toBe(false);
+    expect(accepts((c) => (c.steps[0].choices = []))).toBe(false);
+    expect(accepts((c) => (c.steps[0].presentation.manifest = {}))).toBe(false);
+    expect(accepts((c) => (c.steps[0].presentation.panels[0].extra = 1))).toBe(false);
   });
 });

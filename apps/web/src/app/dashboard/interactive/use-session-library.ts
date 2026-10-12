@@ -11,8 +11,24 @@ export const LIBRARY_PAGE_SIZE = 20;
 /** Local deadline per request; cancelling stops waiting, not necessarily server work. */
 export const LIBRARY_DEADLINE_MS = 15_000;
 
+/** Local deadline for one removal request; giving up waiting does not undo server work. */
+export const REMOVAL_DEADLINE_MS = 15_000;
+
 export type LibraryPhase = 'loading' | 'ready' | 'error';
 export type LibraryErrorKind = 'rate-limited' | 'failed';
+/** `timeout` and `network` are ambiguous outcomes; `rejected` is definitive and not retryable. */
+export type RemovalErrorKind = 'timeout' | 'network' | 'rate-limited' | 'unavailable' | 'rejected';
+
+/**
+ * The one removal the library is working on. `story` and `sessionId` are captured
+ * when the confirmation opens and are what confirm and retry act on.
+ */
+export interface RemovalState {
+  readonly sessionId: string;
+  readonly story: InteractiveSessionSummaryDto;
+  readonly status: 'confirming' | 'removing' | 'failed';
+  readonly error: RemovalErrorKind | null;
+}
 
 interface LibraryData {
   phase: LibraryPhase;
@@ -25,6 +41,9 @@ interface LibraryData {
   loadingMore: boolean;
   loadMoreFailed: boolean;
   error: LibraryErrorKind | null;
+  removal: RemovalState | null;
+  /** The story whose removal the server last acknowledged (for the confirmation notice). */
+  removed: InteractiveSessionSummaryDto | null;
 }
 
 const INITIAL: LibraryData = {
@@ -36,6 +55,8 @@ const INITIAL: LibraryData = {
   loadingMore: false,
   loadMoreFailed: false,
   error: null,
+  removal: null,
+  removed: null,
 };
 
 /**
@@ -49,10 +70,37 @@ interface Scope {
   readonly epoch: number;
   generation: number;
   readonly controllers: Set<AbortController>;
+  /**
+   * The removal request in flight. Kept apart from `controllers` so a refresh
+   * abandons its own requests without cancelling the wait for a removal.
+   */
+  removalAttempt: { readonly controller: AbortController } | null;
 }
 
 function errorKind(cause: unknown): LibraryErrorKind {
   return cause instanceof ApiError && cause.status === 429 ? 'rate-limited' : 'failed';
+}
+
+function removalErrorKind(cause: unknown): RemovalErrorKind {
+  if (cause instanceof ApiError) {
+    if (cause.status === 429) return 'rate-limited';
+    return cause.status >= 500 ? 'unavailable' : 'rejected';
+  }
+  // Only this hook's own deadline aborts a removal (scope teardown ignores the result).
+  // Matched by name: a DOMException is not reliably `instanceof Error` across realms.
+  const name =
+    typeof cause === 'object' && cause !== null ? (cause as { name?: unknown }).name : null;
+  return name === 'AbortError' ? 'timeout' : 'network';
+}
+
+/**
+ * A submitted removal (pending or failed) whose row is not in the displayed list.
+ * Its feedback cannot live inside a row, so the library renders it on its own.
+ */
+function detachedRemoval(data: LibraryData): RemovalState | null {
+  const { removal } = data;
+  if (!removal || removal.status === 'confirming') return null;
+  return data.sessions.some((s) => s.sessionId === removal.sessionId) ? null : removal;
 }
 
 function appendUnique(
@@ -73,11 +121,18 @@ export function useSessionLibrary() {
 
   // The owner is stored with the data so another account's list can never be
   // rendered, not even for the render before the reset effect runs.
-  const [store, setStore] = useState<{ ownerId: string | null; data: LibraryData }>({
-    ownerId: null,
-    data: INITIAL,
-  });
-  const data = store.ownerId !== null && store.ownerId === userId ? store.data : INITIAL;
+  // The auth epoch is part of the owner: the same account in a new auth session
+  // (logout, then login) is a different scope and must not inherit state.
+  const epoch = getSessionEpoch();
+  const [store, setStore] = useState<{
+    ownerId: string | null;
+    epoch: number;
+    data: LibraryData;
+  }>({ ownerId: null, epoch, data: INITIAL });
+  const data =
+    store.ownerId !== null && store.ownerId === userId && store.epoch === epoch
+      ? store.data
+      : INITIAL;
 
   const scopeRef = useRef<Scope | null>(null);
   const dataRef = useRef<LibraryData>(INITIAL);
@@ -91,7 +146,7 @@ export function useSessionLibrary() {
   const commit = useCallback((scope: Scope, update: (current: LibraryData) => LibraryData) => {
     const next = update(dataRef.current);
     dataRef.current = next;
-    setStore({ ownerId: scope.userId, data: next });
+    setStore({ ownerId: scope.userId, epoch: scope.epoch, data: next });
   }, []);
 
   const abortRequests = useCallback((scope: Scope) => {
@@ -134,11 +189,22 @@ export function useSessionLibrary() {
     try {
       const page = await fetchPage(scope, null);
       if (!isCurrent(scope) || scope.generation !== generation) return;
-      commit(scope, () => ({
+      commit(scope, (d) => ({
         ...INITIAL,
         phase: 'ready',
         sessions: page.sessions,
         nextCursor: page.nextCursor,
+        // A submitted removal (pending or failed) survives the reload whether or not
+        // its row is on the first page: absence proves nothing, since an older story may
+        // simply be on a later page. Only an unsent question about an unlisted story has
+        // nothing left to act on.
+        removal:
+          d.removal &&
+          (d.removal.status !== 'confirming' ||
+            page.sessions.some((s) => s.sessionId === d.removal?.sessionId))
+            ? d.removal
+            : null,
+        removed: d.removed,
       }));
     } catch (cause) {
       if (!isCurrent(scope) || scope.generation !== generation) return;
@@ -183,6 +249,90 @@ export function useSessionLibrary() {
     }
   }, [commit, fetchPage, isCurrent]);
 
+  /** Opens the confirmation for a listed story. Nothing is sent until `confirmRemoval`. */
+  const requestRemoval = useCallback(
+    (sessionId: string) => {
+      const scope = scopeRef.current;
+      const current = dataRef.current;
+      if (!scope || !isCurrent(scope) || scope.removalAttempt) return;
+      if (current.phase !== 'ready' || current.removal?.status === 'removing') return;
+      // An unresolved outcome whose row is hidden must be retried or dismissed first,
+      // not replaced by starting another removal.
+      if (detachedRemoval(current)) return;
+      const story = current.sessions.find((s) => s.sessionId === sessionId);
+      if (!story) return;
+      commit(scope, (d) => ({
+        ...d,
+        removal: { sessionId, story, status: 'confirming', error: null },
+        removed: null,
+      }));
+    },
+    [commit, isCurrent],
+  );
+
+  /** Closes a confirmation or dismisses a failure. Never cancels a request in flight. */
+  const cancelRemoval = useCallback(() => {
+    const scope = scopeRef.current;
+    if (!scope || !isCurrent(scope) || scope.removalAttempt) return;
+    if (dataRef.current.removal?.status === 'removing') return;
+    commit(scope, (d) => ({ ...d, removal: null }));
+  }, [commit, isCurrent]);
+
+  /** Sends one DELETE for `removal.sessionId`; the row stays until it is acknowledged. */
+  const sendRemoval = useCallback(
+    (scope: Scope, removal: RemovalState) => {
+      if (scope.removalAttempt) return;
+      const attempt = { controller: new AbortController() };
+      scope.removalAttempt = attempt;
+      const timer = setTimeout(() => attempt.controller.abort(), REMOVAL_DEADLINE_MS);
+      const live = () => isCurrent(scope) && scope.removalAttempt === attempt;
+      commit(scope, (d) => ({ ...d, removal: { ...removal, status: 'removing', error: null } }));
+
+      interactiveApi
+        .removeSession(removal.sessionId, attempt.controller.signal)
+        .then(() => {
+          if (!live()) return;
+          scope.removalAttempt = null;
+          // Gone at once, whatever the reload says; the reload below also obsoletes
+          // every refresh and pagination request that started before this point.
+          commit(scope, (d) => ({
+            ...d,
+            sessions: d.sessions.filter((s) => s.sessionId !== removal.sessionId),
+            removal: null,
+            removed: removal.story,
+            loadingMore: false,
+            loadMoreFailed: false,
+          }));
+          void refresh();
+        })
+        .catch((cause: unknown) => {
+          if (!live()) return;
+          scope.removalAttempt = null;
+          const error = removalErrorKind(cause);
+          commit(scope, (d) => ({ ...d, removal: { ...removal, status: 'failed', error } }));
+        })
+        .finally(() => clearTimeout(timer));
+    },
+    [commit, isCurrent, refresh],
+  );
+
+  /** Confirms the removal opened by `requestRemoval`, for exactly that session. */
+  const confirmRemoval = useCallback(() => {
+    const scope = scopeRef.current;
+    const removal = dataRef.current.removal;
+    if (!scope || !isCurrent(scope) || removal?.status !== 'confirming') return;
+    sendRemoval(scope, removal);
+  }, [isCurrent, sendRemoval]);
+
+  /** Resends the removal that failed, for the same session; ignored for a definitive rejection. */
+  const retryRemoval = useCallback(() => {
+    const scope = scopeRef.current;
+    const removal = dataRef.current.removal;
+    if (!scope || !isCurrent(scope) || removal?.status !== 'failed') return;
+    if (removal.error === 'rejected') return;
+    sendRemoval(scope, removal);
+  }, [isCurrent, sendRemoval]);
+
   // A new scope per account/auth session: the previous one is orphaned and its
   // requests aborted before the new account's list is requested.
   useEffect(() => {
@@ -190,7 +340,7 @@ export function useSessionLibrary() {
     loadingMoreRef.current = false;
     if (!userId) {
       scopeRef.current = null;
-      setStore({ ownerId: null, data: INITIAL });
+      setStore({ ownerId: null, epoch, data: INITIAL });
       return;
     }
     const scope: Scope = {
@@ -198,16 +348,29 @@ export function useSessionLibrary() {
       epoch: getSessionEpoch(),
       generation: 0,
       controllers: new Set(),
+      removalAttempt: null,
     };
     scopeRef.current = scope;
-    setStore({ ownerId: userId, data: INITIAL });
+    setStore({ ownerId: userId, epoch: scope.epoch, data: INITIAL });
     void refresh();
     return () => {
       scope.generation += 1;
       abortRequests(scope);
+      scope.removalAttempt?.controller.abort();
+      scope.removalAttempt = null;
       if (scopeRef.current === scope) scopeRef.current = null;
     };
-  }, [userId, refresh, abortRequests]);
+    // `epoch` is a trigger: a new auth session starts a new scope for the same account.
+  }, [userId, epoch, refresh, abortRequests]);
 
-  return { ...data, refresh, loadMore };
+  return {
+    ...data,
+    detachedRemoval: detachedRemoval(data),
+    refresh,
+    loadMore,
+    requestRemoval,
+    cancelRemoval,
+    confirmRemoval,
+    retryRemoval,
+  };
 }

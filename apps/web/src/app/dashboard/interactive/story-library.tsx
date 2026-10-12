@@ -1,8 +1,9 @@
 'use client';
 
+import { useEffect, useId, useRef } from 'react';
 import Link from 'next/link';
 import type { InteractiveSessionSummaryDto } from '@book/types';
-import { useSessionLibrary } from './use-session-library';
+import { useSessionLibrary, type RemovalErrorKind, type RemovalState } from './use-session-library';
 
 const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300';
@@ -23,10 +24,131 @@ function formatDate(iso: string): string {
     : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function StoryItem({ story }: { story: InteractiveSessionSummaryDto }) {
+const DANGER_BUTTON = `rounded-lg bg-red-300 px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-red-200 disabled:cursor-not-allowed disabled:opacity-60 ${FOCUS_RING}`;
+
+/** Ambiguous outcomes say so: a lost response is not proof that nothing was removed. */
+function removalFailureMessage(error: RemovalErrorKind, title: string): string {
+  switch (error) {
+    case 'timeout':
+    case 'network':
+      return `We couldn’t confirm that “${title}” was removed. It may or may not have been. Trying again is safe.`;
+    case 'rate-limited':
+      return "You're removing stories too quickly. Wait a moment, then try again.";
+    case 'unavailable':
+      return `The service is having trouble, so “${title}” may not have been removed. Trying again is safe.`;
+    case 'rejected':
+      return `“${title}” couldn’t be removed.`;
+  }
+}
+
+interface RemovalControls {
+  /** The removal in progress, if any (for any story). */
+  removal: RemovalState | null;
+  /** Its feedback is shown outside the list, because its row is not displayed. */
+  detached: boolean;
+  request: (sessionId: string) => void;
+  cancel: () => void;
+  confirm: () => void;
+  retry: () => void;
+}
+
+/** Confirmation, progress or failure for one story's removal, shown inside its row. */
+function RemovalPanel({
+  title,
+  ended,
+  removal,
+  controls,
+  onClose,
+}: {
+  title: string;
+  ended: boolean;
+  removal: RemovalState;
+  controls: RemovalControls;
+  onClose: () => void;
+}) {
+  const headingId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirming = removal.status === 'confirming';
+
+  // The safe choice takes focus when the question opens.
+  useEffect(() => {
+    if (confirming) cancelRef.current?.focus();
+  }, [confirming]);
+
+  if (removal.status === 'removing') {
+    return (
+      <p role="status" className="basis-full text-sm text-stone-300">
+        Removing “{title}”…
+      </p>
+    );
+  }
+
+  if (removal.status === 'failed' && removal.error) {
+    return (
+      <div
+        role="alert"
+        className="basis-full rounded-lg border border-red-400/40 bg-red-950/60 px-4 py-3 text-sm text-red-200"
+      >
+        <p>{removalFailureMessage(removal.error, title)}</p>
+        <div className="mt-3 flex flex-wrap gap-3">
+          {removal.error !== 'rejected' && (
+            <button type="button" onClick={controls.retry} className={SECONDARY_BUTTON}>
+              Try again
+            </button>
+          )}
+          <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="group"
+      aria-labelledby={headingId}
+      className="basis-full rounded-lg border border-stone-700 bg-stone-950/60 px-4 py-3 text-sm text-stone-200"
+    >
+      <p id={headingId} className="font-semibold text-stone-50">
+        Remove “{title}” from your stories?
+      </p>
+      <p className="mt-1 text-stone-300">
+        You can no longer {ended ? 'read it again' : 'continue it'}. This takes it out of your
+        library but does not erase the data we have stored for it.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-3">
+        <button type="button" onClick={controls.confirm} className={DANGER_BUTTON}>
+          Yes, remove story
+        </button>
+        <button ref={cancelRef} type="button" onClick={onClose} className={SECONDARY_BUTTON}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StoryItem({
+  story,
+  controls,
+}: {
+  story: InteractiveSessionSummaryDto;
+  controls: RemovalControls;
+}) {
   const title = scenarioTitle(story);
   const ended = story.status === 'ended';
+  const removeRef = useRef<HTMLButtonElement>(null);
+  const own = controls.removal?.sessionId === story.sessionId ? controls.removal : null;
+  const panelOpen = own?.status === 'confirming';
+  // Dismissing hands focus back to the control that opened the question.
+  const close = () => {
+    controls.cancel();
+    removeRef.current?.focus();
+  };
   const actionLabel = ended ? 'Read again' : 'Continue';
+  // A finished story is reread chapter by chapter; the reader only shows its ending.
+  const href = `/dashboard/interactive/${encodeURIComponent(story.sessionId)}${ended ? '/transcript' : ''}`;
   return (
     <li className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-stone-800 bg-stone-900/60 p-4">
       <div className="min-w-0">
@@ -49,13 +171,35 @@ function StoryItem({ story }: { story: InteractiveSessionSummaryDto }) {
           {ended ? 'Finished' : 'Started'} {formatDate(ended ? story.updatedAt : story.createdAt)}
         </p>
       </div>
-      <Link
-        href={`/dashboard/interactive/${encodeURIComponent(story.sessionId)}`}
-        aria-label={`${actionLabel} ${title}, ${ended ? 'completed' : 'in progress'}, started ${formatDate(story.createdAt)}`}
-        className={`rounded-lg bg-amber-400 px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-amber-300 ${FOCUS_RING}`}
-      >
-        {actionLabel}
-      </Link>
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          ref={removeRef}
+          type="button"
+          aria-label={`Remove ${title}, ${ended ? 'completed' : 'in progress'}, started ${formatDate(story.createdAt)}`}
+          aria-expanded={panelOpen}
+          onClick={() => controls.request(story.sessionId)}
+          disabled={controls.removal?.status === 'removing' || controls.detached}
+          className={SECONDARY_BUTTON}
+        >
+          Remove
+        </button>
+        <Link
+          href={href}
+          aria-label={`${actionLabel} ${title}, ${ended ? 'completed' : 'in progress'}, started ${formatDate(story.createdAt)}`}
+          className={`rounded-lg bg-amber-400 px-4 py-2 text-sm font-semibold text-stone-950 hover:bg-amber-300 ${FOCUS_RING}`}
+        >
+          {actionLabel}
+        </Link>
+      </div>
+      {own && (
+        <RemovalPanel
+          title={title}
+          ended={ended}
+          removal={own}
+          controls={controls}
+          onClose={close}
+        />
+      )}
     </li>
   );
 }
@@ -63,6 +207,24 @@ function StoryItem({ story }: { story: InteractiveSessionSummaryDto }) {
 /** "Your stories": the signed-in user's earlier sessions, each resumable through its reader URL. */
 export function StoryLibrary() {
   const library = useSessionLibrary();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const controls: RemovalControls = {
+    removal: library.removal,
+    detached: library.detachedRemoval !== null,
+    request: library.requestRemoval,
+    cancel: library.cancelRemoval,
+    confirm: library.confirmRemoval,
+    retry: library.retryRemoval,
+  };
+  const removed = library.removed;
+  const detached = library.detachedRemoval;
+
+  // The removed row held focus's place; move it to the section so keyboard and
+  // screen-reader users are not dropped at the top of the page.
+  useEffect(() => {
+    if (removed) headingRef.current?.focus();
+  }, [removed]);
+
   const { phase, sessions, refreshing, refreshFailed, loadingMore, loadMoreFailed, error } =
     library;
   const loading = phase === 'loading' || (phase === 'error' && refreshing);
@@ -74,7 +236,12 @@ export function StoryLibrary() {
   return (
     <section aria-labelledby="your-stories-title" className="mt-14 border-t border-stone-800 pt-8">
       <div className="flex items-center justify-between gap-4">
-        <h2 id="your-stories-title" className="font-display text-2xl font-bold text-stone-50">
+        <h2
+          id="your-stories-title"
+          ref={headingRef}
+          tabIndex={-1}
+          className="font-display text-2xl font-bold text-stone-50 focus:outline-none"
+        >
           Your stories
         </h2>
         {phase === 'ready' && (
@@ -122,6 +289,29 @@ export function StoryLibrary() {
         </p>
       )}
 
+      {/* The row is not displayed (a refresh reloaded only the first page), so its
+          progress and failure controls are rendered here instead of inside the row. */}
+      {detached && (
+        <div role="group" aria-label="Story removal" className="mt-4 flex">
+          <RemovalPanel
+            title={scenarioTitle(detached.story)}
+            ended={detached.story.status === 'ended'}
+            removal={detached}
+            controls={controls}
+            onClose={() => {
+              library.cancelRemoval();
+              headingRef.current?.focus();
+            }}
+          />
+        </div>
+      )}
+
+      {phase === 'ready' && removed && (
+        <p role="status" className="mt-4 text-sm text-stone-300">
+          “{scenarioTitle(removed)}” was removed from your stories.
+        </p>
+      )}
+
       {phase === 'ready' && sessions.length === 0 && (
         <p className="mt-4 text-sm text-stone-400">
           No stories yet. Start one above and it will be listed here, so you can come back to it any
@@ -132,7 +322,7 @@ export function StoryLibrary() {
       {phase === 'ready' && sessions.length > 0 && (
         <ul className="mt-4 space-y-3">
           {sessions.map((story) => (
-            <StoryItem key={story.sessionId} story={story} />
+            <StoryItem key={story.sessionId} story={story} controls={controls} />
           ))}
         </ul>
       )}

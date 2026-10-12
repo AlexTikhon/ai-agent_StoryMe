@@ -11,6 +11,10 @@ import {
   presentationQuerySchema,
   sessionIdSchema,
   submitChoiceBodySchema,
+  DEFAULT_TRANSCRIPT_LIMIT,
+  MAX_TRANSCRIPT_LIMIT,
+  encodeTranscriptCursor,
+  transcriptQuerySchema,
 } from './requests';
 
 const valid = {
@@ -196,5 +200,62 @@ describe('interactive request validation', () => {
     it('rejects unknown query parameters such as an owner id', () => {
       expect(rejects(listSessionsQuerySchema, { userId: 'someone-else' })).toBe(true);
     });
+  });
+});
+
+describe('transcriptQuerySchema', () => {
+  const SESSION = '9b2e7a9e-0f1c-4d5b-8a53-2f0f6a2e7c11';
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+
+  it('defaults to ten steps from the genesis step', () => {
+    expect(parseRequest(transcriptQuerySchema, {})).toEqual({
+      limit: DEFAULT_TRANSCRIPT_LIMIT,
+      cursor: null,
+    });
+    expect(DEFAULT_TRANSCRIPT_LIMIT).toBe(10);
+    expect(MAX_TRANSCRIPT_LIMIT).toBe(25);
+  });
+
+  it('accepts digits-only limits from 1 to 25', () => {
+    expect(parseRequest(transcriptQuerySchema, { limit: '1' }).limit).toBe(1);
+    expect(parseRequest(transcriptQuerySchema, { limit: '25' }).limit).toBe(25);
+    for (const limit of ['0', '26', '-1', '010', '1.5', '1e1', ' 5', '', 'abc', ['5', '6'], 5]) {
+      expect(rejects(transcriptQuerySchema, { limit })).toBe(true);
+    }
+  });
+
+  it('round-trips a cursor bound to the session and terminal revision', () => {
+    const token = encodeTranscriptCursor({
+      sessionId: SESSION,
+      completedRevision: 5,
+      nextRevision: 3,
+    });
+    expect(parseRequest(transcriptQuerySchema, { cursor: token }).cursor).toEqual({
+      sessionId: SESSION,
+      completedRevision: 5,
+      nextRevision: 3,
+    });
+  });
+
+  it('rejects malformed, forged, oversized and repeated cursors and unknown keys', () => {
+    const good = { s: SESSION, r: 5, n: 3 };
+    const bad: unknown[] = [
+      '',
+      'not base64!',
+      'a'.repeat(201),
+      encode({ ...good, x: 1 }),
+      encode({ s: 'not-a-uuid', r: 5, n: 3 }),
+      encode({ ...good, r: -1 }),
+      encode({ ...good, n: 0 }), // the genesis step is the default, never a cursor
+      encode({ ...good, n: 6 }), // beyond the terminal revision
+      encode({ ...good, r: 1_000_001, n: 3 }),
+      encode({ ...good, n: 1.5 }),
+      encode('plain string'),
+      Buffer.from('{not json').toString('base64url'),
+      [encode(good), encode(good)],
+    ];
+    for (const cursor of bad) expect(rejects(transcriptQuerySchema, { cursor })).toBe(true);
+    expect(rejects(transcriptQuerySchema, { userId: 'someone-else' })).toBe(true);
+    expect(rejects(transcriptQuerySchema, { from: '3' })).toBe(true);
   });
 });

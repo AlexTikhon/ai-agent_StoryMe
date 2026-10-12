@@ -117,6 +117,41 @@ describe('useStartStory', () => {
     );
   });
 
+  it('resolves a removed session definitively, without replacing it automatically', async () => {
+    createSession.mockRejectedValueOnce(new ApiError(409, 'removed', 'SESSION_REMOVED'));
+    createSession.mockResolvedValueOnce(makeView(0));
+    const { result } = renderHook(() => useStartStory());
+    act(() => result.current.start(V1));
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+
+    expect(result.current.error).toMatch(/was removed/i);
+    expect(result.current.error).not.toMatch(/trying again is safe/i);
+    expect(result.current.starting).toBe(false);
+    expect(result.current.active).toBeNull();
+
+    act(() => result.current.retry()); // the held command was released
+    await Promise.resolve();
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(pushMock).not.toHaveBeenCalled();
+
+    act(() => result.current.start(V1)); // only a deliberate start creates a session
+    await waitFor(() => expect(pushMock).toHaveBeenCalled());
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(createSession.mock.calls[1]![0].idempotencyKey).not.toBe(
+      createSession.mock.calls[0]![0].idempotencyKey,
+    );
+  });
+
+  it('tells the user that removing a story frees a place when the limit is reached', async () => {
+    createSession.mockRejectedValueOnce(new ApiError(409, 'full', 'SESSION_LIMIT_REACHED'));
+    const { result } = renderHook(() => useStartStory());
+    act(() => result.current.start(V1));
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+
+    expect(result.current.error).toMatch(/remov/i);
+    expect(result.current.active).toBeNull();
+  });
+
   it('drops the command and navigates nowhere when the account changes mid-flight', async () => {
     const gate = deferred<ReturnType<typeof makeView>>();
     createSession.mockReturnValueOnce(gate.promise);

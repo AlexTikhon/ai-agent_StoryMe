@@ -1,6 +1,8 @@
-import type { InteractivePresentationDto } from '@book/types';
+import type {
+  InteractivePresentationDto,
+  InteractiveTranscriptPresentationDto,
+} from '@book/types';
 import { z } from 'zod';
-import type { PublicSessionView } from '../public-view';
 import { getScenario } from '../scenarios';
 import { WARSAW_NOIR_V1_DATA } from './packs';
 import {
@@ -14,6 +16,25 @@ import {
  * schema: only identifiers of the *current* scene, the pack identity and that
  * scene's panels. Never the manifest, other scenes, state, flags or events.
  */
+const scenePresentationSchema = z
+  .object({
+    packId: z.string(),
+    packVersion: z.number().int(),
+    panels: z.array(
+      z
+        .object({
+          id: z.string(),
+          src: z.string(),
+          width: z.number().int(),
+          height: z.number().int(),
+          alt: z.string(),
+        })
+        .strict(),
+    ),
+  })
+  .strict()
+  .nullable();
+
 export const presentationResponseSchema = z
   .object({
     sessionId: z.string(),
@@ -21,24 +42,30 @@ export const presentationResponseSchema = z
     scenarioId: z.string(),
     scenarioVersion: z.number().int(),
     sceneId: z.string(),
-    presentation: z
-      .object({
-        packId: z.string(),
-        packVersion: z.number().int(),
-        panels: z.array(
-          z
-            .object({
-              id: z.string(),
-              src: z.string(),
-              width: z.number().int(),
-              height: z.number().int(),
-              alt: z.string(),
-            })
-            .strict(),
-        ),
-      })
-      .strict()
-      .nullable(),
+    presentation: scenePresentationSchema,
+  })
+  .strict();
+
+/**
+ * Same allow-list for the artwork transcript: per stored step only the revision,
+ * scene id and that scene's presentation.
+ */
+export const transcriptPresentationResponseSchema = z
+  .object({
+    sessionId: z.string(),
+    scenarioId: z.string(),
+    scenarioVersion: z.number().int(),
+    completedRevision: z.number().int().min(0),
+    steps: z.array(
+      z
+        .object({
+          revision: z.number().int().min(0),
+          sceneId: z.string(),
+          presentation: scenePresentationSchema,
+        })
+        .strict(),
+    ),
+    nextCursor: z.string().nullable(),
   })
   .strict();
 
@@ -46,6 +73,10 @@ type AssertMutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true 
 export const presentationMatchesSharedContract: AssertMutuallyAssignable<
   z.infer<typeof presentationResponseSchema>,
   InteractivePresentationDto
+> = true;
+export const transcriptPresentationMatchesSharedContract: AssertMutuallyAssignable<
+  z.infer<typeof transcriptPresentationResponseSchema>,
+  InteractiveTranscriptPresentationDto
 > = true;
 
 /**
@@ -95,32 +126,80 @@ export function getPresentationPack(
   ).sort((a, b) => b.packVersion - a.packVersion)[0];
 }
 
+/** The identity fields artwork selection actually depends on. */
+export interface PresentationIdentity {
+  sessionId: string;
+  revision: number;
+  scenarioId: string;
+  scenarioVersion: number;
+  scene: { id: string };
+}
+
+/**
+ * The artwork for one scene of a scenario version, or null when the registry has
+ * no pack for that version or the pack does not name the scene.
+ */
+function selectScenePresentation(scenarioId: string, scenarioVersion: number, sceneId: string) {
+  const pack = getPresentationPack(scenarioId, scenarioVersion);
+  const panels = pack?.scenes[sceneId];
+  if (!pack || !panels) return null;
+  return {
+    packId: pack.packId,
+    packVersion: pack.packVersion,
+    panels: panels.map((p) => ({
+      id: p.id,
+      src: p.src,
+      width: p.width,
+      height: p.height,
+      alt: p.alt,
+    })),
+  };
+}
+
 /**
  * Selects the presentation for the scene of an authoritative public view.
- * Pure: reads nothing but the view and the immutable pack registry.
+ * Pure: reads nothing but the identity fields and the immutable pack registry.
  */
-export function projectPresentation(view: PublicSessionView): InteractivePresentationDto {
-  const pack = getPresentationPack(view.scenarioId, view.scenarioVersion);
-  const panels = pack?.scenes[view.scene.id];
+export function projectPresentation(view: PresentationIdentity): InteractivePresentationDto {
   return presentationResponseSchema.parse({
     sessionId: view.sessionId,
     revision: view.revision,
     scenarioId: view.scenarioId,
     scenarioVersion: view.scenarioVersion,
     sceneId: view.scene.id,
-    presentation:
-      pack && panels
-        ? {
-            packId: pack.packId,
-            packVersion: pack.packVersion,
-            panels: panels.map((p) => ({
-              id: p.id,
-              src: p.src,
-              width: p.width,
-              height: p.height,
-              alt: p.alt,
-            })),
-          }
-        : null,
+    presentation: selectScenePresentation(view.scenarioId, view.scenarioVersion, view.scene.id),
+  });
+}
+
+/** The parts of a validated text-transcript page the artwork page is derived from. */
+export interface TranscriptPresentationSource {
+  sessionId: string;
+  scenarioId: string;
+  scenarioVersion: number;
+  completedRevision: number;
+  steps: ReadonlyArray<{ revision: number; scene: { id: string } }>;
+  nextCursor: string | null;
+}
+
+/**
+ * Artwork for the scenes a validated transcript page actually visited, selected
+ * at read time from the pack registry for the session's pinned scenario
+ * version. Pure: revisions, scene ids and the cursor are copied from the text
+ * page, never re-derived, so the two pages cannot disagree.
+ */
+export function projectTranscriptPresentation(
+  page: TranscriptPresentationSource,
+): InteractiveTranscriptPresentationDto {
+  return transcriptPresentationResponseSchema.parse({
+    sessionId: page.sessionId,
+    scenarioId: page.scenarioId,
+    scenarioVersion: page.scenarioVersion,
+    completedRevision: page.completedRevision,
+    steps: page.steps.map((step) => ({
+      revision: step.revision,
+      sceneId: step.scene.id,
+      presentation: selectScenePresentation(page.scenarioId, page.scenarioVersion, step.scene.id),
+    })),
+    nextCursor: page.nextCursor,
   });
 }
