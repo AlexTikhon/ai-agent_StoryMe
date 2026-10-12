@@ -134,7 +134,7 @@ often a real model needs repair.
 | Decision                      | Benefit                                               | Limitation                                                                    |
 | ----------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Static, versioned publication | A pinned session replays against the exact definition | A new story or a fix needs a commit and deploy; no editor                     |
-| Fixed narration templates     | Runtime text cannot diverge from approved templates   | Prose cannot react to anything unanticipated; equality does not prove quality |
+| Fixed narration templates     | Runtime text cannot diverge from authored templates   | Prose cannot react to anything unanticipated; equality does not prove quality |
 | Artwork selected at read time | Packs change without touching session data            | Rereading may show different pictures than the original play; text is stored  |
 | Soft removal, data retained   | Frees the cap slot; idempotent; no destructive path   | No erasure, retention worker or restore; not a privacy feature                |
 | Local offline authoring       | No endpoint, queue or editor surface to secure        | No web preview of drafts; reviewers use the CLI playtest                      |
@@ -172,11 +172,17 @@ assumptions, not measured limits ([limitations](CURRENT_PRODUCT.md#interactive-l
    reload, then open a second tab to see a revision conflict. This uses your local dev database.
 2. [Part 2](interactive-demo.md#part-2-mock-draft-walkthrough): author the mock candidate, play both
    endings, and watch preflight refuse it with `APPROVAL_PENDING`. Needs no database or key.
-3. Run the two eval commands above.
-4. Inspect the experiment tooling: the plan mode of `pnpm --silent experiment:interactive:authoring`
-   prints a plan and writes nothing; see
+3. [Part 3](interactive-demo.md#part-3-offline-authoring-experiment): print the experiment plan, run
+   the three-brief experiment in offline mode, inspect the saved manifest, and read the comparison
+   report's separate brief groups and missing token usage. Scripted fixtures verify the harness; the
+   result is not model performance. Needs no database or key, and writes only to a temporary
+   directory it removes.
+4. Run the two eval commands above.
+5. Read the tooling behind Part 3:
    [experiment runner](../apps/api/docs/interactive-authoring.md#authoring-experiment-runner-phase-141)
    and [inspector](../apps/api/docs/interactive-authoring.md#inspecting-a-saved-experiment-phase-143).
+   An interrupted checkpoint is exercised by a real killed child process in
+   [experiment-interrupt.spec.ts](../apps/api/scripts/experiment-interrupt.spec.ts).
 
 ## 7. Current limits
 
