@@ -12,12 +12,15 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashBrief, parseBrief } from './brief';
 import { AUTHORING_CORPUS, AUTHORING_CORPUS_VERSION, type CorpusEntry } from './corpus';
+import { defaultReplaceOps, replaceFileAtomically } from './atomic-replace';
 import {
   buildExperimentPlan,
   EXPERIMENT_MANIFEST_SCHEMA,
   EXPERIMENT_PLAN_SCHEMA,
   offlineProviderFor,
   runExperiment,
+  summarizeObservation,
+  type ManifestEntry,
   type RunExperimentOptions,
 } from './experiment';
 import { MAX_HTTP_ATTEMPTS, MAX_REQUESTS, PROMPT_VERSION, WIRE_SCHEMA_VERSION } from './limits';
@@ -563,15 +566,447 @@ describe('runExperiment (stops)', () => {
     const s = scripted(allValid());
     const result = await run({
       providerFor: s.providerFor,
-      writeText: (file, text) => {
-        if (path.basename(file) === 'manifest.json') throw new Error('disk full');
-        writeFileSync(file, text, { flag: 'wx' });
+      writeManifest: (file, text) => {
+        if (text.includes('"state": "FINAL"')) throw new Error('disk full');
+        replaceFileAtomically(file, text);
       },
     });
     expect(result).toMatchObject({ ok: false, code: 'MANIFEST_WRITE_FAILED' });
     const names = readdirSync(draftsRoot);
     expect(names).toHaveLength(1);
     expect(names[0]).toMatch(/\.incomplete$/);
+    // The last good checkpoint is still there, parseable and explicitly in progress.
+    const checkpoint = readJson(path.join(draftsRoot, names[0]!), 'manifest.json');
+    expect(checkpoint['checkpoint'].state).toBe('IN_PROGRESS');
+  });
+});
+
+// ── Progress checkpoints ────────────────────────────────────────────────────
+
+type Snapshot = Record<string, any>;
+
+/** Records every manifest write in order (and every dispatch), persisting it for real. */
+function checkpointLog(options: { failAt?: (call: number, snapshot: Snapshot) => boolean } = {}) {
+  const snapshots: Snapshot[] = [];
+  const events: string[] = [];
+  let calls = 0;
+  return {
+    snapshots,
+    events,
+    get calls() {
+      return calls;
+    },
+    writeManifest: (file: string, text: string) => {
+      calls += 1;
+      const snapshot = JSON.parse(text) as Snapshot;
+      if (options.failAt?.(calls, snapshot)) {
+        events.push(`checkpoint-failed:${calls}`);
+        throw new Error('checkpoint refused');
+      }
+      replaceFileAtomically(file, text);
+      snapshots.push(snapshot);
+      events.push(
+        `checkpoint[${snapshot['checkpoint'].state}]:${(snapshot['entries'] as ManifestEntry[])
+          .map((e) => e.status)
+          .join('/')}`,
+      );
+    },
+    /** Wraps a provider factory so each dispatch lands in the same ordered log. */
+    observing:
+      (providerFor: (entry: CorpusEntry) => ScenarioDraftProvider) =>
+      (entry: CorpusEntry): ScenarioDraftProvider => {
+        const inner = providerFor(entry);
+        return {
+          name: inner.name,
+          model: inner.model,
+          draft: (request) => {
+            events.push(`dispatch:${entry.key}`);
+            return inner.draft(request);
+          },
+        };
+      },
+  };
+}
+
+const onDiskCheckpoint = (): Snapshot => {
+  const dir = readdirSync(draftsRoot).find((n) => n.endsWith('.incomplete'));
+  if (!dir) throw new Error('no work directory');
+  return readJson(path.join(draftsRoot, dir), 'manifest.json');
+};
+
+describe('runExperiment (progress checkpoints)', () => {
+  it('persists a checkpoint before, between and after every dispatch, in order', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog();
+    await runOk({ providerFor: log.observing(s.providerFor), writeManifest: log.writeManifest });
+    expect(log.events).toEqual([
+      'checkpoint[IN_PROGRESS]:unattempted/unattempted/unattempted',
+      'checkpoint[IN_PROGRESS]:awaiting_response/unattempted/unattempted',
+      'dispatch:last-tram',
+      'checkpoint[IN_PROGRESS]:recording/unattempted/unattempted',
+      'checkpoint[IN_PROGRESS]:completed/unattempted/unattempted',
+      'checkpoint[IN_PROGRESS]:completed/awaiting_response/unattempted',
+      'dispatch:harbour-ledger',
+      'checkpoint[IN_PROGRESS]:completed/recording/unattempted',
+      'checkpoint[IN_PROGRESS]:completed/completed/unattempted',
+      'checkpoint[IN_PROGRESS]:completed/completed/awaiting_response',
+      'dispatch:clock-blackout',
+      'checkpoint[IN_PROGRESS]:completed/completed/recording',
+      'checkpoint[IN_PROGRESS]:completed/completed/completed',
+      'checkpoint[FINAL]:completed/completed/completed',
+    ]);
+  });
+
+  it('has the entry identity and an in-flight status on disk when the provider is called', async () => {
+    const s = scripted(allValid());
+    const seen: Snapshot[] = [];
+    await runOk({
+      providerFor: (entry) => {
+        const inner = s.providerFor(entry);
+        return {
+          name: inner.name,
+          model: inner.model,
+          draft: (request) => {
+            if (entry.key === 'last-tram') seen.push(onDiskCheckpoint());
+            return inner.draft(request);
+          },
+        };
+      },
+    });
+    expect(seen).toHaveLength(1);
+    const m = seen[0]!;
+    expect(m['schema']).toBe('interactive-authoring-experiment-manifest/v2');
+    expect(m['checkpoint']).toMatchObject({ state: 'IN_PROGRESS' });
+    expect(m['completeness']).toMatchObject({
+      status: 'INCOMPLETE',
+      total: 3,
+      completed: 0,
+      stopped: 0,
+      awaitingResponse: 1,
+      recording: 0,
+      unattempted: 2,
+    });
+    expect(m['completeness'].reasons).toContain('IN_PROGRESS');
+    expect(m['entries'].map((e: ManifestEntry) => e.status)).toEqual([
+      'awaiting_response',
+      'unattempted',
+      'unattempted',
+    ]);
+    expect(m['entries'][0]).toMatchObject({
+      key: 'last-tram',
+      briefHash: TRAM.expect.briefHash,
+      outcome: null,
+      requests: null,
+      httpAttempts: null,
+      artifacts: null,
+      usage: 'UNKNOWN',
+    });
+    expect(m['entries'][1]).toMatchObject({ usage: 'NONE', requests: null });
+    expect(m['comparisonReport']).toBeNull();
+    expect(m['halt']).toBeNull();
+  });
+
+  it('never claims "within budget" while an entry is unresolved', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog();
+    await runOk({ providerFor: log.observing(s.providerFor), writeManifest: log.writeManifest });
+    const intermediate = log.snapshots.filter((x) => x['checkpoint'].state === 'IN_PROGRESS');
+    expect(intermediate.length).toBeGreaterThan(0);
+    for (const snapshot of intermediate) {
+      expect(snapshot['observed'].withinBudget).toBeNull();
+      expect(snapshot['observed'].coverage.status).toBe('PARTIAL');
+    }
+    const awaiting = intermediate.find((x) =>
+      x['entries'].some((e: ManifestEntry) => e.status === 'awaiting_response'),
+    )!;
+    expect(awaiting['observed'].coverage.unknown).toBe(1);
+    expect(log.snapshots.at(-1)!['observed']).toMatchObject({
+      requests: 3,
+      withinBudget: true,
+      coverage: { status: 'COMPLETE', unknown: 0 },
+    });
+  });
+
+  it('records the first entry before the second dispatch', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog();
+    let atSecondDispatch: Snapshot | null = null;
+    await runOk({
+      providerFor: (entry) => {
+        const inner = log.observing(s.providerFor)(entry);
+        return {
+          name: inner.name,
+          model: inner.model,
+          draft: (request) => {
+            if (entry.key === 'harbour-ledger') atSecondDispatch = onDiskCheckpoint();
+            return inner.draft(request);
+          },
+        };
+      },
+      writeManifest: log.writeManifest,
+    });
+    expect(atSecondDispatch).not.toBeNull();
+    const [first, second, third] = (atSecondDispatch as unknown as Snapshot)['entries'] as ManifestEntry[];
+    expect(first).toMatchObject({
+      key: 'last-tram',
+      status: 'completed',
+      outcome: 'REVIEW_REQUIRED',
+      requests: 1,
+      usage: 'REPORTED',
+      approval: 'PENDING',
+    });
+    expect(first!.artifacts!.files).toContain('validation-report.json');
+    expect(first!.routeReview).toMatchObject({ status: 'EXPORTED' });
+    expect(second).toMatchObject({ key: 'harbour-ledger', status: 'awaiting_response' });
+    expect(third).toMatchObject({ key: 'clock-blackout', status: 'unattempted' });
+  });
+
+  it('separates a result still being recorded from a request awaiting its response', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog();
+    await runOk({ providerFor: s.providerFor, writeManifest: log.writeManifest });
+    const recording = log.snapshots.find((x) =>
+      x['entries'].some((e: ManifestEntry) => e.status === 'recording'),
+    )!;
+    const entry = recording['entries'].find((e: ManifestEntry) => e.status === 'recording');
+    expect(entry).toMatchObject({
+      outcome: 'REVIEW_REQUIRED',
+      requests: 1,
+      httpAttempts: 1,
+      usage: 'REPORTED',
+      artifacts: null,
+    });
+    expect(recording['completeness']).toMatchObject({ awaitingResponse: 0, recording: 1 });
+    expect(recording['checkpoint'].state).toBe('IN_PROGRESS');
+  });
+
+  it('keeps result telemetry on disk when the artifact write then fails', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog();
+    let diskWhenWriteFailed: Snapshot | null = null;
+    const { manifest } = await runOk({
+      providerFor: s.providerFor,
+      writeManifest: log.writeManifest,
+      writeRun: () => {
+        diskWhenWriteFailed = onDiskCheckpoint();
+        throw new Error(`disk exploded for ${SECRET}`);
+      },
+    });
+    const persisted = (diskWhenWriteFailed as unknown as Snapshot)['entries'][0] as ManifestEntry;
+    expect(persisted).toMatchObject({
+      status: 'recording',
+      outcome: 'REVIEW_REQUIRED',
+      requests: 1,
+      httpAttempts: 1,
+      usage: 'REPORTED',
+    });
+    expect(manifest.entries[0]).toMatchObject({
+      status: 'stopped',
+      requests: 1,
+      stop: { kind: 'ARTIFACT_WRITE_FAILED' },
+    });
+    expect(manifest.observed.requests).toBe(1);
+    expect(s.dispatched('harbour-ledger')).toBe(0);
+  });
+
+  it('refuses to dispatch anything when the initial checkpoint cannot be written', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog({ failAt: (call) => call === 1 });
+    const result = await run({ providerFor: s.providerFor, writeManifest: log.writeManifest });
+    expect(result).toMatchObject({ ok: false, code: 'CHECKPOINT_WRITE_FAILED' });
+    expect([...s.providers.values()].every((p) => p.requests.length === 0)).toBe(true);
+  });
+
+  it('refuses to dispatch when the in-flight checkpoint for an entry cannot be written', async () => {
+    const s = scripted(allValid());
+    // Calls: 1 initial, 2 first in-flight, 3 result, 4 recorded, 5 second in-flight.
+    const log = checkpointLog({ failAt: (call) => call === 5 });
+    const { manifest } = await runOk({
+      providerFor: s.providerFor,
+      writeManifest: log.writeManifest,
+    });
+    expect(s.dispatched('last-tram')).toBe(1);
+    expect(s.dispatched('harbour-ledger')).toBe(0);
+    expect(s.dispatched('clock-blackout')).toBe(0);
+    expect(manifest.entries[1]).toMatchObject({
+      key: 'harbour-ledger',
+      status: 'stopped',
+      outcome: null,
+      usage: 'NONE',
+      stop: { kind: 'CHECKPOINT_WRITE_FAILED' },
+    });
+    expect(manifest.entries[2]!.status).toBe('unattempted');
+    expect(manifest.halt).toMatchObject({ kind: 'CHECKPOINT_WRITE_FAILED', entry: 'harbour-ledger' });
+    expect(manifest.completeness.reasons).toContain('CHECKPOINT_WRITE_FAILED');
+    expect(manifest.completeness.status).toBe('INCOMPLETE');
+  });
+
+  it('blocks later dispatches when the result checkpoint fails, but still records artifacts', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog({ failAt: (call) => call === 3 });
+    const { manifest, dir } = await runOk({
+      providerFor: s.providerFor,
+      writeManifest: log.writeManifest,
+    });
+    expect(s.dispatched('last-tram')).toBe(1);
+    expect(s.dispatched('harbour-ledger')).toBe(0);
+    expect(manifest.entries[0]).toMatchObject({
+      status: 'stopped',
+      outcome: 'REVIEW_REQUIRED',
+      requests: 1,
+      usage: 'REPORTED',
+      stop: { kind: 'CHECKPOINT_WRITE_FAILED' },
+    });
+    expect(manifest.entries[0]!.artifacts).not.toBeNull();
+    expect(
+      existsSync(path.join(dir, manifest.entries[0]!.artifacts!.dir, 'validation-report.json')),
+    ).toBe(true);
+    expect(manifest.halt).toMatchObject({ kind: 'CHECKPOINT_WRITE_FAILED', entry: 'last-tram' });
+  });
+
+  it('stops at once and reports the manifest as unrecorded when checkpoints keep failing', async () => {
+    const s = scripted(allValid());
+    const log = checkpointLog({ failAt: (call) => call >= 4 });
+    const result = await run({ providerFor: s.providerFor, writeManifest: log.writeManifest });
+    expect(result).toMatchObject({ ok: false, code: 'MANIFEST_WRITE_FAILED' });
+    expect(s.dispatched('last-tram')).toBe(1);
+    expect(s.dispatched('harbour-ledger')).toBe(0);
+    expect(s.dispatched('clock-blackout')).toBe(0);
+  });
+
+  it('keeps the previous parseable checkpoint when a replacement fails', async () => {
+    const s = scripted(allValid());
+    let renames = 0;
+    const result = await run({
+      providerFor: s.providerFor,
+      writeManifest: (file, text) =>
+        replaceFileAtomically(file, text, {
+          ...defaultReplaceOps,
+          rename: (from, to) => {
+            renames += 1;
+            // Checkpoints 1-3 land; every later replacement fails at the final step.
+            if (renames >= 4) throw new Error('rename refused');
+            defaultReplaceOps.rename(from, to);
+          },
+        }),
+    });
+    expect(result).toMatchObject({ ok: false, code: 'MANIFEST_WRITE_FAILED' });
+    const work = path.join(draftsRoot, readdirSync(draftsRoot)[0]!);
+    const survivor = readJson(work, 'manifest.json');
+    expect(survivor['checkpoint'].state).toBe('IN_PROGRESS');
+    expect(survivor['entries'][0]).toMatchObject({
+      status: 'recording',
+      requests: 1,
+      usage: 'REPORTED',
+    });
+    expect(readdirSync(work).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+    expect(s.dispatched('harbour-ledger')).toBe(0);
+  });
+
+  it('writes a final manifest that agrees with the comparison report and replaces the last checkpoint', async () => {
+    const s = scripted({
+      'last-tram': [{ candidate: valid(TRAM) }],
+      'harbour-ledger': [{ fail: 'network' }],
+    });
+    const log = checkpointLog();
+    const { manifest, dir } = await runOk({
+      providerFor: s.providerFor,
+      writeManifest: log.writeManifest,
+      mode: 'openai',
+    });
+    const onDisk = readJson(dir, 'manifest.json');
+    expect(onDisk).toEqual(JSON.parse(JSON.stringify(manifest)));
+    expect(onDisk['checkpoint'].state).toBe('FINAL');
+    expect(onDisk['completeness'].reasons).not.toContain('IN_PROGRESS');
+    expect(onDisk['completeness']).toMatchObject({
+      awaitingResponse: 0,
+      recording: 0,
+      completed: 1,
+      stopped: 1,
+      unattempted: 1,
+    });
+    // A provider stop that reported its counts is fully observed, not unknown.
+    expect(onDisk['observed']).toMatchObject({
+      requests: 2,
+      withinBudget: true,
+      coverage: { status: 'COMPLETE', unknown: 0 },
+    });
+    const report = readJson(dir, 'comparison-report.json');
+    const groups = report['groups'] as Array<Record<string, any>>;
+    expect(groups.reduce((n, g) => n + g['providerRequests'], 0)).toBe(onDisk['observed'].requests);
+    expect(groups.reduce((n, g) => n + g['httpAttempts'], 0)).toBe(onDisk['observed'].httpAttempts);
+    // Sequence numbers only ever increase.
+    const sequences = log.snapshots.map((x) => x['checkpoint'].sequence as number);
+    expect([...sequences].sort((a, b) => a - b)).toEqual(sequences);
+    expect(new Set(sequences).size).toBe(sequences.length);
+  });
+
+  it('treats an unexpected harness failure as unknown usage rather than zero', async () => {
+    const s = scripted({ 'last-tram': [{ candidate: valid(TRAM) }] });
+    const { manifest } = await runOk({
+      providerFor: (entry) => {
+        if (entry.key === 'harbour-ledger') throw new Error(`boom ${SECRET}`);
+        return s.providerFor(entry);
+      },
+    });
+    expect(manifest.entries[1]).toMatchObject({
+      status: 'stopped',
+      requests: null,
+      usage: 'UNKNOWN',
+      stop: { kind: 'PROVIDER_STOP', reason: 'PROVIDER_ERROR' },
+    });
+    expect(manifest.observed.coverage).toMatchObject({ status: 'PARTIAL', unknown: 1 });
+    expect(manifest.observed.withinBudget).toBeNull();
+    expect(JSON.stringify(manifest)).not.toContain(SECRET);
+  });
+});
+
+describe('summarizeObservation', () => {
+  const budget = { maxRequests: 6, maxHttpAttempts: 6 };
+  const entry = (
+    usage: ManifestEntry['usage'],
+    requests: number | null,
+    httpAttempts: number | null,
+  ): Pick<ManifestEntry, 'usage' | 'requests' | 'httpAttempts'> => ({ usage, requests, httpAttempts });
+
+  it('is definitive within budget only when final and every entry is accounted for', () => {
+    const summary = summarizeObservation(
+      [entry('REPORTED', 2, 2), entry('REPORTED', 1, 1), entry('NONE', null, null)],
+      budget,
+      'FINAL',
+    );
+    expect(summary).toMatchObject({
+      requests: 3,
+      httpAttempts: 3,
+      withinBudget: true,
+      coverage: { status: 'COMPLETE', reported: 2, unknown: 0, notDispatched: 1 },
+    });
+  });
+
+  it('is undetermined when an entry has unknown usage, however low the known counts are', () => {
+    const summary = summarizeObservation(
+      [entry('REPORTED', 1, 1), entry('UNKNOWN', null, null)],
+      budget,
+      'FINAL',
+    );
+    expect(summary.withinBudget).toBeNull();
+    expect(summary.coverage).toMatchObject({ status: 'PARTIAL', unknown: 1 });
+    expect(summary.requests).toBe(1);
+  });
+
+  it('is undetermined while the experiment is in progress', () => {
+    const summary = summarizeObservation([entry('REPORTED', 1, 1)], budget, 'IN_PROGRESS');
+    expect(summary.withinBudget).toBeNull();
+    expect(summary.coverage.status).toBe('PARTIAL');
+  });
+
+  it('still reports a definite breach, because known counts are a lower bound', () => {
+    const summary = summarizeObservation(
+      [entry('REPORTED', 7, 7), entry('UNKNOWN', null, null)],
+      budget,
+      'IN_PROGRESS',
+    );
+    expect(summary.withinBudget).toBe(false);
   });
 });
 

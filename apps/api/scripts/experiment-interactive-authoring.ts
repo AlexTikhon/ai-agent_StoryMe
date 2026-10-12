@@ -28,6 +28,12 @@ import type { ScenarioDraftProvider } from '../src/interactive/authoring/provide
  * cancellation or artifact-write failure stops before the next brief and the
  * unfinished work is marked honestly in the manifest.
  *
+ * Progress is checkpointed atomically in manifest.json (before the first
+ * dispatch, around every dispatch, after every recorded entry). A checkpoint
+ * that cannot be written stops the experiment before the next dispatch. A
+ * killed process leaves the last checkpoint in the .incomplete directory; an
+ * entry still marked awaiting_response has unknown usage.
+ *
  * A completed experiment is not approval and not evidence of prose quality;
  * offline runs say nothing about any model. Nothing here approves or publishes.
  *
@@ -56,7 +62,13 @@ export interface CliDeps {
 function describeEntry(entry: ManifestEntry, index: number, total: number): string {
   const head = `[${index}/${total}] ${entry.key}:`;
   if (entry.status === 'unattempted') return `${head} NOT ATTEMPTED`;
-  const counts = `requests ${entry.requests ?? 0}, HTTP attempts ${entry.httpAttempts ?? 0}`;
+  // Unknown usage is never printed as zero.
+  const counts =
+    entry.usage === 'REPORTED'
+      ? `requests ${entry.requests ?? 0}, HTTP attempts ${entry.httpAttempts ?? 0}`
+      : entry.usage === 'UNKNOWN'
+        ? 'usage unknown'
+        : 'no request dispatched';
   const stop = entry.stop ? ` [${entry.stop.kind}${entry.stop.reason ? `:${entry.stop.reason}` : ''}]` : '';
   const repaired = entry.repaired ? ', repaired' : '';
   return `${head} ${entry.outcome ?? 'UNKNOWN'}${stop} (${counts}${repaired})`;
@@ -153,11 +165,20 @@ export async function runCli(
     `Completeness: ${c.status} (${c.completed} completed, ${c.stopped} stopped, ${c.unattempted} unattempted)` +
       (c.reasons.length > 0 ? ` reasons: ${c.reasons.join(', ')}` : ''),
   );
-  io.out(`Observed: ${manifest.observed.requests} requests, ${manifest.observed.httpAttempts} HTTP attempts`);
+  const { coverage } = manifest.observed;
+  io.out(
+    `Observed: ${manifest.observed.requests} requests, ${manifest.observed.httpAttempts} HTTP attempts` +
+      (coverage.status === 'PARTIAL'
+        ? ` (PARTIAL: ${coverage.unknown} entr${coverage.unknown === 1 ? 'y' : 'ies'} with unknown usage; budget not determined)`
+        : ''),
+  );
   io.out(`Experiment: ${result.dir}`);
   if (!result.ok) {
     io.err(
-      `Error: the manifest could not be recorded (${result.code}); the directory above is left .incomplete.`,
+      result.code === 'CHECKPOINT_WRITE_FAILED'
+        ? 'Error: the initial progress checkpoint could not be written; no provider call was made. ' +
+            'The directory above is left .incomplete.'
+        : `Error: the manifest could not be recorded (${result.code}); the directory above is left .incomplete.`,
     );
     return EXIT_CODES.INCOMPLETE;
   }

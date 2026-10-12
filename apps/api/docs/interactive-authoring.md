@@ -309,7 +309,7 @@ The root script runs `pnpm --dir apps/api --silent experiment:interactive:author
 **Outcomes and stops.**
 
 - A content `REJECTED` result is recorded and the next brief still runs, so all three are observed.
-- A provider/transport stop (refusal, truncation, auth, rate limit, timeout, network, invalid response, deadline), a cancellation or an artifact-write failure stops before the next brief. Completed artifacts are preserved and unfinished work is marked `stopped` or `unattempted`.
+- A provider/transport stop (refusal, truncation, auth, rate limit, timeout, network, invalid response, deadline), a cancellation, an artifact-write failure or a progress-checkpoint failure stops before the next brief. Completed artifacts are preserved and unfinished work is marked `stopped` or `unattempted`.
 - `SIGINT` aborts the in-flight request and no later brief starts, even if a provider answers late.
 - Credentials, provider bodies and raw exception messages are never printed or recorded; only stable codes are.
 
@@ -319,7 +319,7 @@ The root script runs `pnpm --dir apps/api --silent experiment:interactive:author
 <stamp>-authoring-experiment-<hex>.incomplete/   while running; renamed when finished
 <stamp>-authoring-experiment-<hex>--complete/    every brief completed, every artifact written
 <stamp>-authoring-experiment-<hex>--partial/     anything stopped, unattempted or missing
-  manifest.json                  interactive-authoring-experiment-manifest/v1
+  manifest.json                  interactive-authoring-experiment-manifest/v2 (replaced atomically as work progresses)
   comparison-report.json         existing aggregation over the written run reports
   runs/<run>--review-required/   validated-candidate.json, validation-report.json,
                                  review-report.md, approval-template.json (PENDING)
@@ -327,7 +327,25 @@ The root script runs `pnpm --dir apps/api --silent experiment:interactive:author
   route-reviews/<key>.json|.md   exhaustive route review, mechanically accepted candidates only
 ```
 
-The manifest records the configuration (corpus/prompt/schema versions, model, limits, derived budget, execution policy), each brief's identity and hash, its status (`completed` / `stopped` / `unattempted`), relative artifact references, observed request and HTTP-attempt counts, an explicit `completeness` status with reason codes, and the halt cause. Approval templates stay `pending`; nothing is approved or published. If the manifest itself cannot be written the directory is left `.incomplete` and the command says so.
+The manifest records the configuration (corpus/prompt/schema versions, model, limits, derived budget, execution policy), each brief's identity and hash, its status (`completed` / `stopped` / `unattempted`, plus `awaiting_response` / `recording` in an intermediate checkpoint), relative artifact references, observed request and HTTP-attempt counts with explicit observation `coverage`, an explicit `completeness` status with reason codes, and the halt cause. Approval templates stay `pending`; nothing is approved or published. If the manifest itself cannot be written the directory is left `.incomplete` and the command says so.
+
+**Progress checkpoints and interruption.** `manifest.json` is written before the first dispatch and then replaced (temporary file in the same directory, then rename; earlier experiments are never touched) at each step:
+
+1. every entry `unattempted`;
+2. the entry about to run is marked `awaiting_response`, with its exact identity and brief hash;
+3. its authoring result and reported counts, status `recording`;
+4. its artifact references, status `completed` or `stopped`;
+5. the final manifest, before the directory is renamed.
+
+Intermediate manifests carry `checkpoint.state: IN_PROGRESS`, `completeness.status: INCOMPLETE` and the reason `IN_PROGRESS`; only `FINAL` is a finished manifest. A checkpoint that cannot be written stops the experiment before the next dispatch (`CHECKPOINT_WRITE_FAILED`); if the first one fails, no provider call is made at all. A failed replacement leaves the previous complete checkpoint in place. The manifest schema is `interactive-authoring-experiment-manifest/v2` (v1 had no checkpoint, per-entry `usage` or observation `coverage`).
+
+If the process is killed, the `.incomplete` directory keeps the last checkpoint: completed entries with their artifacts, the entry that was in flight, and `unattempted` for the rest. What that checkpoint does **not** establish:
+
+- whether the process is still running: an `IN_PROGRESS` manifest is also what a slow live run looks like;
+- whether an `awaiting_response` request completed, reached the provider or was billed, or what usage it incurred. Its counts are `null`, its `usage` is `UNKNOWN` (never zero), and `observed.coverage.status` is `PARTIAL`, so `observed.withinBudget` is `null` (not determined) rather than `true`. It is `false` only when the known counts already exceed a cap;
+- what a `recording` entry managed to write: run directories under `runs/` that no entry references may exist, and a temporary `.manifest.json.*.tmp` file can remain if the kill landed mid-write (the manifest itself is intact).
+
+Nothing resumes, retries or replaces an attempt automatically: an interrupted experiment is never continued, and a new run creates a new directory. `comparison-report.json` is written only when an experiment finishes; for an interrupted one, the run reports under `runs/` can be compared with `report:interactive:authoring`.
 
 **Validation of real output.** A generated candidate is validated against its own brief (identity, characters, endings, structure, analysis, narration). It is deliberately not compared with the corpus fixtures' recorded candidate hash or routes: those pin hand-authored regression fixtures, not the only valid model output.
 
