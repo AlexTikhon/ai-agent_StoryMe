@@ -1397,3 +1397,210 @@ and 16.6.
 - **The combined job is expected to be intermittently red or flaky until 16.3 is
   fixed.** Including the smoke suite is the intended change; the cancel race is
   what it exposes.
+
+## 17. Follow-up: Phase 16.8 cancellation losing to a worker claim (added after Phase 16.7)
+
+Sections 1 to 16 are left as written. Section 16.4 ended with "the fix belongs to
+a separate phase with a deterministic concurrency regression (cancel interleaved
+with claim) written first". This is that phase. The change is local and
+uncommitted; **no remote confirmation exists** (17.8).
+
+### 17.1 Cause, and one correction to 16.3
+
+`GenerationRunCoordinator.cancelGeneration` read the run, then wrote
+`status: cancelled` conditional on exactly the `status` and `fencingVersion` it
+had read. `GenerationRunService.claim` moves `queued` to `running` and bumps
+`fencingVersion`. A claim that commits between the read and the write makes the
+write match zero rows. The fallback re-read returned `already_cancelled` only for
+`cancelled`, so a run that was `running` became `not_in_progress`, which the API
+maps to 409 `BOOK_NOT_IN_PROGRESS` while generation continued.
+
+Correction to 16.3: it described the claim as `queued` to `running`. `claim`
+also matches an already `running` run and bumps the fence again, which is what a
+BullMQ redelivery does. The exact-fence write lost to that too, so the window was
+wider than the one 16.3 named. Both are covered below.
+
+### 17.2 Regression, failing first
+
+Real PostgreSQL, in `generation-cancellation.integration.spec.ts`. The
+cancellation runs through the real coordinator and real `$transaction`; a
+test-side Proxy around `PrismaService` awaits a deferred barrier immediately
+before `generationRun.updateMany`, the cancellation's single write to that table.
+While it is held the test commits the competing operation through the unwrapped
+client, then releases the barrier. No sleeps, no production hook, no change to
+`GenerationRunService`.
+
+| New test (8)                                                       | Before the change | After  |
+| ------------------------------------------------------------------ | ----------------- | ------ |
+| claim commits between read and write: run cancelled, one refund    | **fails**         | passes |
+| the worker whose claim raced can no longer heartbeat or complete   | **fails**         | passes |
+| re-claim of an already running run (redelivery) does not defeat it | **fails**         | passes |
+| two cancellations both read `queued`, a claim commits: one applied | **fails**         | passes |
+| refund failure after the claim raced still rolls everything back   | **fails**         | passes |
+| completion between read and write wins: stays completed, no refund | passes (guard)    | passes |
+| replacement run created in the gap is never cancelled              | passes (guard)    | passes |
+| another user / soft-deleted book is `not_found`, run untouched     | passes (guard)    | passes |
+
+Before the change: `Tests 5 failed | 14 passed (19)`. The failures are
+`expected { kind: 'not_in_progress' } to match object { kind: 'applied', ... }`,
+which is the defect, reproduced deterministically (the refund-rollback test fails
+as "promise resolved { kind: 'not_in_progress' } instead of rejecting", because
+the old code never reached the refund). The three guards pass on the old code by
+design: they pin invariants that must not regress when the status filter is
+widened.
+
+### 17.3 What changed
+
+| File                                                            | Change                                                        |
+| --------------------------------------------------------------- | ------------------------------------------------------------- |
+| `apps/api/src/agent/generation-run-coordinator.service.ts`      | the cancellation `where`, plus the comments that described it |
+| `apps/api/src/agent/generation-run-coordinator.service.spec.ts` | two assertions updated, one `describe` of 7 unit tests added  |
+| `.../generation-cancellation.integration.spec.ts`               | the regression above                                          |
+| `docs/interactive-verification.md`                              | this section                                                  |
+
+The production change is one condition:
+
+```
+-  status: run.status,
+-  fencingVersion: run.fencingVersion,
++  status: { in: [queued, running] },
+```
+
+The write keeps `id`, `bookId` and `userId`, and still sets
+`fencingVersion: { increment: 1 }`.
+
+Why this is safe:
+
+1. **Row-level exclusion.** PostgreSQL takes the row lock for an `UPDATE` and
+   re-evaluates its `WHERE` against the latest committed version. Claim,
+   cancellation and completion therefore serialize on the one run row; each
+   loser re-evaluates against the winner's result.
+2. **Claim first.** The row is `running`, still matches, and `increment` is
+   applied to the current fence, so whichever delivery owns the run is fenced
+   out. This is the case that used to fail.
+3. **Cancellation first.** `claim`'s own `WHERE` is `status in (queued, running)`;
+   it matches zero rows and returns `null`, as before.
+4. **Completion or failure first.** The status is terminal, so nothing matches.
+   The run is not overwritten, nothing is refunded, and the fallback re-read
+   reports `not_in_progress`.
+5. **Replacement run.** The target is the id read from `Book.activeRunId`, and
+   the Book write still requires `activeRunId` to equal it. A retry run has a
+   different id and is never matched.
+6. **One refund.** Only the transition that changed the row proceeds to the
+   Book, outbox and refund writes, and the refund amount still comes from the
+   original charge row. The deterministic idempotency key stays as a second line.
+7. **Atomicity** is unchanged: the same single transaction, so a failure at any
+   later step rolls back the run write too (tested in 17.2).
+
+What was removed is only a precondition that bound the user's intent to one
+delivery's fence. Worker fencing itself is untouched: `claim`, `heartbeat`,
+`completeRun` and the recovery paths are not modified.
+
+### 17.4 Verification (local only)
+
+Environment, as it was: Windows 11, **Node v24.11.1** (CI uses 22), pnpm 9.4.0,
+Docker 29.7.2. Not Linux, not Node 22.
+
+| Check                                                              | Result                                                    |
+| ------------------------------------------------------------------ | --------------------------------------------------------- |
+| cancellation + fencing + credit-charging integration specs         | 3 files, 59 tests passed                                  |
+| cancellation spec repeated 5 times                                 | 19 of 19 each time                                        |
+| complete guarded integration suite (`pnpm test:integration`, once) | 27 files, 324 tests passed                                |
+| coordinator unit spec                                              | 49 passed                                                 |
+| full API unit suite (`pnpm --filter @book/api test`)               | 176 files, 2656 passed, 3 skipped                         |
+| `pnpm --filter @book/api typecheck`                                | exit 0                                                    |
+| `pnpm --filter @book/api typecheck:integration:hardening`          | exit 0 (**does not include the cancellation spec**, 17.7) |
+| `pnpm --filter @book/api lint`                                     | exit 0, `--max-warnings 0`                                |
+| `prettier --check` on the three code files                         | one finding in my new test, fixed; clean after            |
+| `git diff --check`                                                 | exit 0                                                    |
+
+Method: `git ls-files -co --exclude-standard` of the working tree (790 files, no
+`.env`) copied to `C:\sm-p168`; the 273 CRLF/mixed files normalized to LF in the
+snapshot only; `pnpm install --frozen-lockfile --offline`, `prisma generate`,
+`@book/types` build. Mock providers only; `apps/api/.env` was never opened or
+read. The integration runner's own guard enforced the disposable PostgreSQL
+(5440) and Redis (6380) targets and removes provider credentials from the child
+environment. The infrastructure was started with the compose project `p168-ci`
+and the same compose file, not `pnpm test:infra:up`, for the reason given in 16.2.
+
+### 17.5 Browser: combined command
+
+`CI=true pnpm --filter @book/web test:e2e e2e/interactive.spec.ts
+e2e/storyme.smoke.spec.ts --retries=0 --reporter=list,json`, in the snapshot,
+with `stdout: 'pipe'` added to the API `webServer` in the snapshot only (as in
+16.2).
+
+| interactive.spec.ts | storyme.smoke.spec.ts | Skipped | Retries | Flaky | Duration | Exit |
+| ------------------- | --------------------- | ------- | ------- | ----- | -------- | ---- |
+| 40 of 40 passed     | 15 of 15 passed       | 0       | 0       | 0     | 5.6 min  | 0    |
+
+`storyme.smoke.spec.ts:234`, "cancels an active family generation without
+requiring a credit charge", passed (4.0 s). The API log shows its cancellation
+applied (`no matching charge CreditTransaction — cancelling as a legacy/unbilled
+run`, then `No BullMQ job found for cancelled run`). "keeps a publication readable
+after a cancelled regeneration" (`:318`) also passed.
+
+API log, by the log's own `statusCode=` field (1373 requests):
+
+| Check                                                                            | Count                                                            |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `Unhandled exception`, `ERR_STREAM_UNABLE_TO_PIPE`, `ExceptionsHandler`, `ERROR` | 0                                                                |
+| HTTP 5xx                                                                         | 0                                                                |
+| HTTP 409                                                                         | 5 (16.7: 6 in the failing run, 5 in the passing run)             |
+| `WARN`                                                                           | 1, "Retry for book ... found no prior GenerationRun", as in 16.5 |
+
+None of the five 409s falls in the second of the cancellation log lines above.
+They were not attributed to individual tests, as in 16.5.
+
+### 17.6 What the browser result does and does not show
+
+- **The deterministic regression in 17.2 is the proof.** It reproduces the exact
+  interleaving and fails on the old code.
+- The browser pass is **one run**. The failure in 16.3 was intermittent, 1 of 2
+  runs, and it was not established how often the interleaving occurs on this
+  machine. A single pass does not show that the race is gone, and I did not
+  instrument whether the claim race actually occurred inside this run.
+- It does show that the combined command, with no retry, is green with the
+  change, and that the cancellation path the smoke test exercises works end to
+  end against the real API and queue.
+- I did not weaken the assertion, add a retry, delay the worker or change the
+  web app.
+
+### 17.7 Limits and what is still open
+
+- **No remote confirmation.** Nothing was committed, pushed or deployed and no
+  workflow ran, so there is no SHA and no CI result. The `interactive-browser`
+  job on the hosted runner (Linux, Node 22) is unverified.
+- **Typecheck coverage gap, not new.** `tsconfig.integration.json` lists a fixed
+  set of specs and omits the cancellation spec, and `src/**/*.spec.ts` is
+  excluded everywhere, so the two green typechecks above did not cover my test
+  code. I checked both specs with a temporary tsconfig in the snapshot: **no
+  error in any new or changed line**. The cancellation spec has 6 errors in
+  helpers that predate this phase (`createUserAndBook`, `createRun`, lines 94
+  and 116 to 121) and the coordinator unit spec has 53 of the existing
+  `DeepMockOf`/`jest.Mocked` class. None was changed; fixing them is a separate
+  decision.
+- **Behavior change.** Cancel pressed in the claim window used to return 409
+  `BOOK_NOT_IN_PROGRESS` and now cancels. How the web UI had presented that 409
+  was not inspected and nothing in `apps/web` changed.
+- Provider calls already started by a claimed worker are not recalled; cancellation
+  fences the worker's later writes, as before.
+- Only the Prisma `updateMany` write is held in the regression. Interleavings at
+  other points of the transaction (for example between the Book write and the
+  refund) are covered only by the existing rollback test, not by new barriers.
+
+### 17.8 Cleanup
+
+| Resource                                    | Action                                                                                 | End state                                                                                                                                                                         |
+| ------------------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| compose project `p168-ci` (postgres, redis) | created by this task, `down -v`                                                        | containers, network, volumes gone                                                                                                                                                 |
+| snapshot `C:\sm-p168` (results, logs)       | created by this task; removal **blocked** by the tool harness, not retried another way | **still present, needs manual deletion**                                                                                                                                          |
+| scratch logs and temp files                 | created by this task, removed                                                          | gone                                                                                                                                                                              |
+| Playwright servers on 3100 and 4100         | started and stopped by Playwright                                                      | no listener at the end                                                                                                                                                            |
+| E2E fixtures                                | removed by the suite's global teardown                                                 | "E2E fixtures cleaned up."                                                                                                                                                        |
+| all other containers, networks and volumes  | untouched                                                                              | containers (24), networks (9), named volumes (12) and anonymous volumes (7) identical to the list taken before the run, including the two exited `storyme-integration` containers |
+| `apps/api/.env`                             | never opened or read                                                                   | unchanged                                                                                                                                                                         |
+
+The snapshot holds a pnpm install, Prisma client, Playwright results and logs.
+It contains no `.env` and no credentials. It is outside the repository, so it
+does not affect `git status`.

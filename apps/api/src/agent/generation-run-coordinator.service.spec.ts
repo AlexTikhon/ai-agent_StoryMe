@@ -550,12 +550,17 @@ describe('GenerationRunCoordinator', () => {
       );
     });
 
-    it('applies cancellation for a running run, fences on id/bookId/userId/status/fencingVersion, bumps fencingVersion, and sets cancelledAt', async () => {
+    it('applies cancellation for a running run, fences on id/bookId/userId and the run still being queued/running, bumps fencingVersion, and sets cancelledAt', async () => {
       const result = await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
 
       expect(result.kind).toBe('applied');
       expect(prisma.generationRun.updateMany).toHaveBeenCalledWith({
-        where: { id: 'run-1', bookId: 'b-1', userId: 'u-1', status: 'running', fencingVersion: 2 },
+        where: {
+          id: 'run-1',
+          bookId: 'b-1',
+          userId: 'u-1',
+          status: { in: ['queued', 'running'] },
+        },
         data: {
           status: 'cancelled',
           cancelledAt: expect.any(Date),
@@ -564,7 +569,7 @@ describe('GenerationRunCoordinator', () => {
       });
     });
 
-    it('applies cancellation for a queued (never-claimed) run', async () => {
+    it('applies cancellation for a queued (never-claimed) run with the same status-set fence', async () => {
       prisma.generationRun.findFirst.mockResolvedValue(
         makeRun({ status: 'queued', fencingVersion: 0 }),
       );
@@ -574,9 +579,70 @@ describe('GenerationRunCoordinator', () => {
       expect(result.kind).toBe('applied');
       expect(prisma.generationRun.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ status: 'queued', fencingVersion: 0 }),
+          where: expect.objectContaining({ status: { in: ['queued', 'running'] } }),
         }),
       );
+    });
+
+    describe('claim advancement between the read and the write', () => {
+      /** Evaluates the subset of Prisma `where` the cancellation emits (scalar equality and `{ in }`) against a concrete row. */
+      function matchesWhere(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
+        return Object.entries(where).every(([key, condition]) =>
+          condition !== null && typeof condition === 'object' && 'in' in condition
+            ? (condition as { in: unknown[] }).in.includes(row[key])
+            : row[key] === condition,
+        );
+      }
+
+      function emittedWhere(): Record<string, unknown> {
+        const [args] = prisma.generationRun.updateMany.mock.calls[0] as [
+          { where: Record<string, unknown> },
+        ];
+        return args.where;
+      }
+
+      it('observes the run as queued at fencingVersion 0 and still matches the row once a claim made it running at fencingVersion 1', async () => {
+        prisma.generationRun.findFirst.mockResolvedValue(
+          makeRun({ status: 'queued', fencingVersion: 0 }),
+        );
+
+        await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+        const claimed = { ...makeRun(), status: 'running', fencingVersion: 1 };
+        expect(matchesWhere(claimed, emittedWhere())).toBe(true);
+      });
+
+      it('still matches after repeated re-claims advanced the fencingVersion further', async () => {
+        await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' }); // observed running @ 2
+
+        expect(matchesWhere({ ...makeRun(), fencingVersion: 5 }, emittedWhere())).toBe(true);
+      });
+
+      it.each(['completed', 'failed', 'cancelled'])(
+        'never matches a run that has since become %s, so a terminal run is not overwritten',
+        async (status) => {
+          await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+          expect(matchesWhere({ ...makeRun(), status }, emittedWhere())).toBe(false);
+        },
+      );
+
+      it('never matches a different run, book or owner', async () => {
+        await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+        expect(matchesWhere({ ...makeRun(), id: 'run-2' }, emittedWhere())).toBe(false);
+        expect(matchesWhere({ ...makeRun(), bookId: 'b-2' }, emittedWhere())).toBe(false);
+        expect(matchesWhere({ ...makeRun(), userId: 'u-2' }, emittedWhere())).toBe(false);
+      });
+
+      it('increments the current row fence rather than writing the observed one', async () => {
+        await coordinator.cancelGeneration({ bookId: 'b-1', userId: 'u-1' });
+
+        const [args] = prisma.generationRun.updateMany.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ];
+        expect(args.data['fencingVersion']).toEqual({ increment: 1 });
+      });
     });
 
     it('conditionally updates Book to cancelled, clears activeRunId/errorMessage/failedStep, and never touches published pointer fields', async () => {
