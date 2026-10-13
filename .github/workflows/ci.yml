@@ -111,7 +111,7 @@ jobs:
       # Playwright launches the API (migrate, seed, start) and web servers, and
       # its global teardown removes fixtures. The runner permits only
       # localhost:5440/storyme_e2e and localhost:6380/15.
-      - run: pnpm --filter @book/web test:e2e e2e/interactive.spec.ts
+      - run: pnpm --filter @book/web test:e2e e2e/interactive.spec.ts e2e/storyme.smoke.spec.ts
       - if: failure()
         uses: actions/upload-artifact@v4
         timeout-minutes: 5

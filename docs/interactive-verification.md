@@ -1222,3 +1222,178 @@ fix; the HTTP regression is the detector.
 - Aborts during body streaming, and a service that rejects after an abort, are
   open (15.4).
 - CI still does not run `storyme.smoke.spec.ts`; unchanged.
+
+## 16. Follow-up: Phase 16.7 book/PDF browser smoke suite in CI (added after Phase 16.6)
+
+Sections 1 to 15 are left as written. Section 15.7 ended with "CI still does not
+run `storyme.smoke.spec.ts`". **CI is now configured to run it.** Remote success
+is not verified (16.7).
+
+### 16.1 What changed
+
+| File                               | Change                                                          |
+| ---------------------------------- | --------------------------------------------------------------- |
+| `.github/workflows/ci.yml`         | one command in the `interactive-browser` job selects both specs |
+| `docs/interactive-verification.md` | this section                                                    |
+
+```
+- run: pnpm --filter @book/web test:e2e e2e/interactive.spec.ts
++ run: pnpm --filter @book/web test:e2e e2e/interactive.spec.ts e2e/storyme.smoke.spec.ts
+```
+
+Both spec files are named explicitly. The directory is not selected, because
+`e2e/` is shared with production smoke, which has its own configuration and job.
+
+The YAML of `HEAD` and of the working tree were both parsed and compared
+structurally. The only difference is the `run` string of step 8 of
+`interactive-browser`. Job IDs and display names, triggers, permissions, action
+and Node/pnpm versions, timeouts, the retry policy (set in
+`playwright.config.ts`, not in the workflow), the `production-browser` job, the
+failure-artifact upload and the unconditional `test:infra:down` are unchanged.
+The step reuses the existing install, Prisma generation, shared-types build,
+Chromium setup and guarded infrastructure.
+
+### 16.2 Local execution of the combined command
+
+Environment, as it actually was: Windows 11, **Node v24.11.1** (CI uses 22), pnpm
+9.4.0, Docker Desktop with Linux containers, Playwright Chromium. Not Linux, not
+Node 22.
+
+| Item              | What was done                                                                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| snapshot          | `git ls-files -co --exclude-standard` of the working tree (790 files, no `.env`) copied to `C:\sm-p167`; 273 CRLF text files normalized to LF in the snapshot only      |
+| setup             | `pnpm install --frozen-lockfile --offline`, `prisma:generate`, `@book/types` build, `playwright install chromium` (no `--with-deps`, which is Linux apt packages)       |
+| command           | `CI=true pnpm --filter @book/web test:e2e e2e/interactive.spec.ts e2e/storyme.smoke.spec.ts --retries=0 --reporter=list,json`                                           |
+| reporter          | `list,json` replaces the config's `line,html` so per-spec counts could be read; reporters do not affect execution                                                       |
+| snapshot-only     | `stdout: 'pipe'` on the API `webServer`, so the API log could be counted; not in the working tree                                                                       |
+| infra             | `docker compose -p p167-ci -f docker-compose.e2e.yml up -d --wait postgres-e2e redis-e2e`: the exact disposable targets (5440, 6380). **Not** `pnpm test:infra:up/down` |
+| providers/storage | the config's own: mock story, character and image providers, `console` email, local PDF and image storage                                                               |
+
+`pnpm test:infra:up/down` use the compose project `storyme-integration`, which
+already had two **exited** containers from earlier work. `down -v
+--remove-orphans` would have deleted them, so a separate project name was used
+with the same compose file. The consequence is that `test-infra-entry.mjs`'s own
+target assertion was not exercised in this run. The Playwright API launcher
+(`test-launcher.mjs api-e2e`) did run and applies its own disposable-target
+check before migrating.
+
+| Run | interactive.spec.ts | storyme.smoke.spec.ts         | Skipped | Retries | Duration | Exit  |
+| --- | ------------------- | ----------------------------- | ------- | ------- | -------- | ----- |
+| 1   | 40 of 40 passed     | **14 of 15 passed, 1 failed** | 0       | 0       | 6.0 min  | **1** |
+| 2   | 40 of 40 passed     | 15 of 15 passed               | 0       | 0       | 5.6 min  | 0     |
+
+Both specs were collected and executed in both runs (55 tests). The second run
+was started only after the first failed, with no change to any file, to see
+whether the failure repeats. It did not: **the failure is intermittent**, 1 of 2.
+
+### 16.3 The failure (run 1)
+
+Test: `storyme.smoke.spec.ts:234`, "cancels an active family generation without
+requiring a credit charge". `getByRole('status')` never appeared within 15 s; the
+page snapshot shows the book as `complete`.
+
+What the trace and the API log show, in order:
+
+1. `POST /books/:id/generate` returns 200.
+2. `GET /books/:id/generation-progress` returns `{"status":"queued"}`.
+3. `POST /books/:id/cancel` returns **409 `BOOK_NOT_IN_PROGRESS`** in 18 ms.
+4. `worker_job_started` and `Starting generation pipeline` are logged **before**
+   that 409 completes; the pipeline then finishes `complete` about a second
+   later.
+
+So the cancel was refused while the run was still active, and the run was not
+cancelled.
+
+Mechanism, from the code (`GenerationRunCoordinator.cancelGeneration`, lines
+542 to 593 at `HEAD`, and `GenerationRunService.claim`):
+
+1. Cancel reads the run as `queued` at fencing version N.
+2. Its update is conditional on exactly `status: queued` and
+   `fencingVersion: N`.
+3. The worker's `claim` unconditionally sets `status: running` and increments
+   `fencingVersion`. If it commits between 1 and 2, the cancel update matches
+   zero rows.
+4. The fallback re-reads the run and returns `already_cancelled` only for
+   `cancelled`; anything else, including a still-**running** run, is reported as
+   `not_in_progress`, which becomes 409 `BOOK_NOT_IN_PROGRESS`.
+
+The comment on that fallback names two losing races, a concurrent cancellation
+and a concurrent completion. A concurrent **claim** is a third, and it is the
+likely one: it happens whenever Cancel is pressed in the first milliseconds
+after Generate, which is what this test does.
+
+What is established: the 409 body, the `queued` progress read just before it,
+the log ordering, and a code path that produces exactly this outcome. What is
+not: the interleaving itself was not instrumented, and the race was not
+reproduced in isolation or with a deterministic test.
+
+### 16.4 Reading of the result
+
+- This is an API race, not a harness fault, and I could not show that it is an
+  artifact of running the specs together. The failing test does not depend on the
+  other spec's state. Whether running the two together changes how often it
+  occurs is **not known**: the standalone smoke run in 15.5 passed 15 of 15, the
+  combined runs are 1 failure in 2, and neither sample is large enough to say.
+- It is also a user-facing behavior: Cancel pressed immediately after Generate
+  can be refused with "not currently generating" while generation continues.
+  How the web UI presents that 409 was not inspected beyond the page ending in
+  `complete` with no cancellation message.
+- With the workflow's existing retry policy (`retries: 1` under `CI`), a first
+  attempt that loses this race would be retried and reported as **flaky**, not
+  failed. That masks the defect rather than removing it, and a second loss would
+  fail the job.
+- Not done, by scope: the assertion was not weakened, no retry was added, and the
+  coordinator was not changed. The fix belongs to a separate phase with a
+  deterministic concurrency regression (cancel interleaved with claim) written
+  first.
+
+### 16.5 API log (both runs)
+
+| Check                               | Run 1 | Run 2 |
+| ----------------------------------- | ----- | ----- |
+| `Unhandled exception`               | 0     | 0     |
+| `ERR_STREAM_UNABLE_TO_PIPE`         | 0     | 0     |
+| `ExceptionsHandler` / `ERROR` lines | 0     | 0     |
+| HTTP 5xx                            | 0     | 0     |
+| HTTP 409                            | 6     | 5     |
+| `WARN`                              | 1     | 1     |
+
+The sixth 409 in run 1 is the cancel refusal in 16.3. The other five were not
+attributed to individual tests one by one; they are identical in number across
+both runs and none was unhandled. The single `WARN` in both runs is "Retry for
+book ... found no prior GenerationRun to copy input from", which is what the
+retry test produces for its seeded failed fixture. 401 lines are unauthenticated
+session restores before login. Nothing here is the abort defect of Phases 16.5
+and 16.6.
+
+### 16.6 Cleanup
+
+| Resource                                      | Action                                 | End state                                                                                                      |
+| --------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| compose project `p167-ci` (postgres, redis)   | created by this task, `down -v`        | containers, network, volumes gone                                                                              |
+| snapshot `C:\sm-p167` (results, traces, logs) | created by this task, removed          | gone                                                                                                           |
+| Playwright servers on 3100 and 4100           | started and stopped by Playwright      | no listener at the end                                                                                         |
+| E2E fixtures                                  | removed by the suite's global teardown | "E2E fixtures cleaned up." in both runs                                                                        |
+| all other containers, networks and volumes    | untouched                              | container list compared before and after: identical, including the two exited `storyme-integration` containers |
+| `apps/api/.env`                               | never opened or read                   | unchanged                                                                                                      |
+
+### 16.7 Static checks and limits
+
+| Check                                         | Result                                                  |
+| --------------------------------------------- | ------------------------------------------------------- |
+| YAML parse and structural diff against `HEAD` | one changed string, the command above                   |
+| `prettier --check .github/workflows/ci.yml`   | clean (on the LF snapshot copy)                         |
+| `git diff --check`                            | exit 0                                                  |
+| `actionlint`, `yamllint`                      | not installed; not installed for this task; **not run** |
+
+- `ci.yml` keeps its UTF-8 BOM and the working tree's CRLF line endings (the
+  index is LF). A `sed -i` under Git Bash silently stripped the CRs once and they
+  were restored; the final diff is one line.
+- No remote success is claimed. Nothing was committed, pushed or deployed, and
+  no workflow ran. The result for the exact SHA needs an authorized run.
+- Local only, on Node 24 and Windows, not the `ubuntu-latest`/Node 22 runner. Two
+  runs is not a flake rate. Timing on a hosted runner may widen or narrow the
+  race in 16.3.
+- **The combined job is expected to be intermittently red or flaky until 16.3 is
+  fixed.** Including the smoke suite is the intended change; the cancel race is
+  what it exposes.
