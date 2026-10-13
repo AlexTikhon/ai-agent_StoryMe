@@ -1604,3 +1604,185 @@ They were not attributed to individual tests, as in 16.5.
 The snapshot holds a pnpm install, Prisma client, Playwright results and logs.
 It contains no `.env` and no credentials. It is outside the repository, so it
 does not affect `git status`.
+
+## 18. Follow-up: Phase 16.9 four-job verification of one snapshot (added after Phase 16.8)
+
+Sections 1 to 17 are left as written. This phase changes no application code,
+test, workflow, dependency, retry or timeout. It runs the four jobs of
+`.github/workflows/ci.yml` against one source snapshot and records the result.
+**Everything below is local evidence. No hosted CI result exists for this
+candidate (18.7).**
+
+### 18.1 Candidate identity
+
+| Item                      | Value                                                                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Source SHA                | `6594ff869163a7ba639eb4f48df9f684cdda9359`, "fix: stop cancellation losing to a queued-to-running worker claim (phase 16.8)" |
+| Branch                    | `docs/phase-15-1-interactive-case-study`; remote tip is `2f5324a`, so HEAD is 2 commits ahead and unpushed                   |
+| Working tree              | clean (`git status` empty) at start; **no dirty-file manifest, no uncommitted source**                                       |
+| Snapshot                  | `git ls-files -co --exclude-standard`, 790 files, copied to `C:\sm-p169`                                                     |
+| Line endings              | 273 CRLF text files normalized to LF in the snapshot only; 0 CR left                                                         |
+| Equivalence               | 790 of 790 identical to the working tree with CR stripped, 0 missing, 0 mismatched                                           |
+| Snapshot content sha256   | `5a48a959b298e94e46c133830b97cd47d782ebdb8ee3bc8280eb09f1cc80f9c6` (sorted path + LF bytes)                                  |
+| `pnpm-lock.yaml`          | sha256 `38f4ad18184ecc810aa79c5c999293b44f833d9ae5b0d0af357c82b4cb32c877`, identical in tree and snapshot                    |
+| Credentials               | snapshot has no `.env` (two `.env.example` only); `apps/api/.env` was never opened, read or copied                           |
+| OS / Node / pnpm / Docker | Windows 11 Home 10.0.26300 / **v24.11.1** / 9.4.0 / 29.7.2 (Docker Desktop, Linux containers, DB and Redis only)             |
+| CI target                 | ubuntu-latest, Node 22, pnpm 9.4.0 (**not reproduced**)                                                                      |
+
+One snapshot-only edit: before job 4, `stdout: 'pipe'` was added to the API
+`webServer` in the snapshot's `apps/web/playwright.config.ts` so the API log could
+be inspected (sha256 `C3B208EF…` to `2E42D93C…`). It is not in the working tree.
+Jobs 1 to 3 ran before it was made.
+
+Linux and Node 22 were looked for and not available: the only WSL distribution is
+`docker-desktop`, and no Node version manager is installed. A runtime was not
+downloaded and the loopback target guards were not loosened. **Linux and Node 22
+are unverified.**
+
+### 18.2 Method, and every deviation from `ci.yml`
+
+| Item                | What was done                                                                                                                                                                       |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| env                 | the workflow and per-job `env` blocks reproduced; `CI=true`; credential-like variable names scrubbed from the runner (one matched, a harness messaging token); all providers `mock` |
+| turbo cache         | `TURBO_FORCE=true` instead of `--force`; every turbo task logged `cache bypass, force executing` and every summary `0 cached`                                                       |
+| install             | `--frozen-lockfile --offline` (CI installs online); job 3 with `--prod=false` and `NODE_ENV=production`                                                                             |
+| Playwright          | `playwright install chromium` without `--with-deps` (Linux apt packages); exit 0, browser already cached                                                                            |
+| infrastructure      | compose project `p169-ci`, same `docker-compose.e2e.yml`, **not** `pnpm test:infra:up/down`, for the reason in 16.2; recreated empty before job 4                                   |
+| retries / reporters | `--retries=0 --reporter=list,json` on jobs 3 and 4 (the config would retry once under `CI`); reporters do not change execution                                                      |
+| isolation           | jobs ran sequentially in one snapshot; `apps/web/.next` and `apps/api/dist` removed before jobs 3 and 4; no job overlapped another                                                  |
+| guards              | the integration runner and the `api-e2e` launcher applied their own 5440 / 6380 checks. `test-infra-entry.mjs`'s assertion was **not** exercised (compose project name)             |
+
+Harness error, disclosed: the first launch of job 2 died before any step ran,
+because PowerShell wrote a byte-order mark into the steps file and the runner
+could not parse it. No test or command executed. The file was rewritten and job 2
+was started once more. This is not a product result.
+
+### 18.3 Four-job result
+
+| Job                         | Commands run (exit)                                                                                                          | Result                                                                                                 | Time  |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ----- |
+| 1. Checks                   | install, prisma generate, types build, lint, typecheck, typecheck:scripts, test, 3 offline evals, build: **11 of 11 exit 0** | types 2 tests; web 51 files, 820 passed; api 176 files, 2656 passed, 3 skipped; launcher 39; archive 6 | 136 s |
+| 2. Isolated integration     | install, prisma generate, types build, `test:integration`: **4 of 4 exit 0**                                                 | 27 files, 324 tests passed, 0 skipped, 0 failed; 38 migrations applied to `5440/storyme_e2e`           | 59 s  |
+| 3. Production browser smoke | install `--prod=false`, types build, playwright install, web build, `test:e2e:production`: **5 of 5 exit 0**                 | 1 test passed, 0 skipped, 0 retries; production build compiled                                         | 26 s  |
+| 4. Combined browser journey | install, prisma generate, types build, playwright install, both specs: **5 of 5 exit 0**                                     | `interactive.spec.ts` 40 of 40, `storyme.smoke.spec.ts` 15 of 15; 0 skipped, 0 flaky, 0 retries        | 257 s |
+
+Offline evaluations in job 1: story 30 pass, interactive 29 pass, authoring 42
+pass, 0 fail each. Lint ran with `--max-warnings 0`. The 3 skipped API unit tests
+are the same 3 as in 17.4; they were not re-examined. The API unit log contains
+`ERROR` lines from tests that exercise provider-failure and connection-refused
+paths with mocked transports; the suite exited 0 and those lines were not
+individually reviewed.
+
+`storyme.smoke.spec.ts:234`, "cancels an active family generation without
+requiring a credit charge", passed (3.0 s), as did `:318`, "keeps a publication
+readable after a cancelled regeneration". Each of jobs 1 to 4 ran **once** with
+the result above; nothing was rerun.
+
+### 18.4 Browser API log (job 4)
+
+By the log's own `statusCode=` field, 1377 requests:
+
+| Check                                                                            | Count                                                                   |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `Unhandled exception`, `ERR_STREAM_UNABLE_TO_PIPE`, `ExceptionsHandler`, `ERROR` | 0                                                                       |
+| HTTP 5xx                                                                         | 0                                                                       |
+| HTTP 409                                                                         | 5 (as in 17.5; not attributed to individual tests, the log path is `/`) |
+| HTTP 401 / 403 / 404                                                             | 315 / 40 / 15 (not attributed)                                          |
+| HTTP 200 / 201 / 202 / 204 / 304                                                 | 851 / 84 / 1 / 11 / 55                                                  |
+| `WARN`                                                                           | 1, "Retry for book ... found no prior GenerationRun", as in 16.5        |
+
+Fixtures were seeded and the global teardown logged "E2E fixtures cleaned up."
+
+### 18.5 What the typecheck configurations include
+
+Specs changed since the audit follow-up commit `162f2f4`, against the files each
+configuration actually lists (`tsc --listFilesOnly`, snapshot):
+
+| Configuration                                                            | Files | `.spec.ts` files | In `ci.yml`? |
+| ------------------------------------------------------------------------ | ----- | ---------------- | ------------ |
+| `apps/api/tsconfig.json` (`typecheck`)                                   | 248   | 0                | yes          |
+| `apps/api/tsconfig.scripts.json` (`typecheck:scripts`)                   | 272   | 0                | yes          |
+| `apps/api/tsconfig.integration.json` (`typecheck:integration:hardening`) | 119   | 7                | **no**       |
+| `apps/web/tsconfig.json` (`typecheck`)                                   | 146   | 3 e2e files      | yes          |
+
+| Changed file                                                                             | Typechecked by                         |
+| ---------------------------------------------------------------------------------------- | -------------------------------------- |
+| `apps/web/e2e/storyme.smoke.spec.ts`                                                     | web `typecheck` (in CI)                |
+| `apps/api/test/integration/interactive-catalogue.integration.spec.ts`                    | integration hardening only (not in CI) |
+| `apps/api/test/integration/fixtures/interactive-helpers.ts`                              | integration hardening only (not in CI) |
+| `generation-run-coordinator.service.spec.ts`                                             | **none**                               |
+| `books.controller.spec.ts`, `.pdf-preview-http.spec.ts`, `.published-image-http.spec.ts` | **none**                               |
+| `generation-cancellation.integration.spec.ts`                                            | **none**                               |
+| `interactive-harness.integration.spec.ts`, `interactive-library.integration.spec.ts`     | **none**                               |
+
+`typecheck:integration:hardening` was run once as extra evidence: exit 0. Seven
+of the nine changed API specs and fixtures are therefore covered by no typecheck
+that CI runs. That is a documented gap (17.7), separate from the runtime results
+in 18.3: those specs executed and passed under Vitest, which does not typecheck.
+The 6 and 53 pre-existing errors counted in 17.7 were not re-measured here.
+
+### 18.6 Formatting and whitespace
+
+| Check                                                         | Result                                               |
+| ------------------------------------------------------------- | ---------------------------------------------------- |
+| `pnpm format:check` (root, snapshot, LF; not a `ci.yml` step) | exit 0, "All matched files use Prettier code style!" |
+| `git diff --check` and `git diff --cached --check`            | exit 0 and exit 0                                    |
+| `git status` after the four jobs, before this section         | clean                                                |
+
+The working tree itself was not formatted-checked: with `core.autocrlf=true` it
+holds 273 CRLF files, and a check there would measure line endings, not style
+(section 2).
+
+### 18.7 Hosted CI, read-only
+
+| Question                    | Answer                                                                                                                                                          |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow run for `6594ff8`  | **none**                                                                                                                                                        |
+| Pull request for the branch | none                                                                                                                                                            |
+| Why                         | `ci.yml` triggers on `pull_request` and on push to `main`/`develop` only; a push to this branch ran `migrate`, `staging-backup` and `staging-monitor`, not `CI` |
+| Latest hosted `ci.yml` run  | `main` at `dc5b31e` (2026-10-12), an ancestor of HEAD, 10 commits behind                                                                                        |
+| Its job conclusions         | Checks **failure**, Isolated integration **failure**, Production browser smoke **failure**, Interactive browser journey success                                 |
+
+Only job conclusions were read; the hosted logs were not. That run predates
+phases 16.2 to 16.8 and says nothing about HEAD. The three `migrate` and
+`staging-*` failures at `2f5324a` were not examined and are outside this gate.
+
+### 18.8 Cleanup
+
+| Resource                                             | Action                                                        | End state                                                                                                                                        |
+| ---------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| compose project `p169-ci` (postgres, redis, network) | created by this task, `down -v --remove-orphans`              | gone                                                                                                                                             |
+| containers, networks, named volumes                  | untouched                                                     | 24, 9 and 19, identical IDs, names and states to the list taken before the run (only the "up for" age differs)                                   |
+| `storyme-integration-*` exited containers            | pre-existing, untouched (`infra-down` not used)               | still `Exited (0)`, IDs `d3536392…` and `2304e332…`                                                                                              |
+| Playwright servers on 3100, 3200, 4100               | started and stopped by Playwright                             | no listener on 3100, 3200, 4100, 5440, 6380                                                                                                      |
+| snapshot `C:\sm-p169`                                | created by this task; removal **blocked** by the tool harness | **still present, needs manual deletion**; holds a pnpm install, Prisma client, build output and Playwright results, no `.env` and no credentials |
+| `C:\sm-p168`                                         | left by Phase 16.8 (17.8), not created here                   | untouched, still present                                                                                                                         |
+| scratch logs and step runner                         | session scratchpad, outside the repository                    | kept for the session                                                                                                                             |
+| `apps/api/.env`                                      | never opened or read                                          | unchanged                                                                                                                                        |
+
+Both snapshots are outside the repository and do not affect `git status`.
+
+### 18.9 Remaining blockers and verdict
+
+No gate failed. What is still open:
+
+1. **No hosted confirmation.** The candidate is unpushed, has no pull request, and
+   `ci.yml` has no trigger for a branch push. Until a hosted run exists for
+   `6594ff8` or its pushed successor, the four jobs are unconfirmed on ubuntu.
+2. **Linux and Node 22 unverified.** These results are Windows and Node 24.11.1,
+   with `--offline` installs and without `--with-deps`.
+3. **One run per job.** The 16.3 failure was intermittent (1 of 2) and this
+   phase, like 17.5, shows one pass of the combined command, not the absence of
+   the race.
+4. **Test-typing gap** (18.5): seven changed API specs are in no CI typecheck.
+5. **Last hosted `main` run was red** in three jobs (18.7); the cause was not
+   read here and the later 16.x repairs are the likely, unproven, explanation.
+
+**Verdict: all four `ci.yml` jobs pass locally against one snapshot of
+`6594ff8` (Windows, Node 24.11.1). Not hosted-confirmed. This is not a
+production-readiness, deployment or real-model-quality claim.**
+
+One bounded next task: obtain the hosted result for the exact candidate. With the
+owner's approval, push the branch and open a pull request so `ci.yml` runs, then
+record the four job conclusions and, if any is red, diagnose from the hosted
+logs without changing gates, retries or timeouts.
