@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { BookStatus } from '@book/types';
-import type { BookDto, GenerationProgressDto } from '@book/types';
+import type { BookDto, GenerationDiagnosticsDto, GenerationProgressDto } from '@book/types';
 import { booksApi } from '@/lib/api/books';
 import { shouldAcceptBook, useBookDetail } from './use-book-detail';
 
@@ -245,5 +245,159 @@ describe('useBookDetail request ownership', () => {
       pending.resolve(makeBook());
     });
     await waitFor(() => expect(result.current.refreshing).toBe(false));
+  });
+});
+
+// Terminal polling. Every response is deferred and `setTimeout` is controlled, so
+// which request happens when never depends on machine speed. Polling reads are
+// the generation-progress and book reads; a diagnostics read is a legitimate,
+// separate effect of the status change and is counted on its own.
+describe('useBookDetail terminal polling', () => {
+  const POLL_INTERVAL_MS = 2500;
+  const T0 = '2026-01-01T00:00:00.000Z';
+  const T1 = '2026-01-01T00:00:05.000Z';
+  const COMPLETE_PROGRESS: GenerationProgressDto = { status: 'complete', step: null };
+
+  let terminalProgress: Deferred<GenerationProgressDto>;
+  let finalBook: Deferred<BookDto>;
+  let diagnosticsReads: Deferred<GenerationDiagnosticsDto>[];
+
+  const progressReads = () => vi.mocked(booksApi.getGenerationProgress).mock.calls.length;
+  const bookReads = () => vi.mocked(booksApi.get).mock.calls.length;
+
+  /** Runs due zero-delay timers and the microtasks, effects and renders they cause. */
+  async function settle() {
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+  }
+
+  async function fireRecoveryEventsAndIntervals(intervals: number) {
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * intervals);
+    });
+  }
+
+  /** Mounts on a generating book and parks the hook on its in-flight final book read. */
+  async function mountUntilFinalBookRead() {
+    const hook = renderHook(() => useBookDetail('book-1', true));
+    await settle();
+    expect(progressReads()).toBe(1);
+    expect(bookReads()).toBe(1);
+
+    await act(async () => {
+      terminalProgress.resolve(COMPLETE_PROGRESS);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // A terminal projection triggers exactly one full-book read.
+    expect(progressReads()).toBe(1);
+    expect(bookReads()).toBe(2);
+    return hook;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.mocked(booksApi.get).mockReset();
+    vi.mocked(booksApi.getGenerationProgress).mockReset();
+    vi.mocked(booksApi.getGenerationDiagnostics).mockReset();
+
+    terminalProgress = deferred<GenerationProgressDto>();
+    finalBook = deferred<BookDto>();
+    diagnosticsReads = [];
+
+    // Reads after the expected ones answer with data that would visibly keep the
+    // loop going, so an unwanted extra read is counted instead of hanging.
+    vi.mocked(booksApi.get)
+      .mockResolvedValueOnce(makeBook({ status: BookStatus.CharBuild, updatedAt: T0 }))
+      .mockReturnValueOnce(finalBook.promise)
+      .mockResolvedValue(makeBook({ status: BookStatus.CharBuild, updatedAt: T0 }));
+    vi.mocked(booksApi.getGenerationProgress)
+      .mockReturnValueOnce(terminalProgress.promise)
+      .mockResolvedValue(RUNNING);
+    vi.mocked(booksApi.getGenerationDiagnostics).mockImplementation(() => {
+      const read = deferred<GenerationDiagnosticsDto>();
+      diagnosticsReads.push(read);
+      return read.promise;
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('makes no further progress or book read after the terminal book is applied', async () => {
+    const { result, unmount } = await mountUntilFinalBookRead();
+
+    await act(async () => {
+      finalBook.resolve(makeBook({ status: BookStatus.Complete, updatedAt: T1 }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await settle();
+    expect(result.current.book?.status).toBe(BookStatus.Complete);
+
+    // The one legitimate extra request: the status change re-reads diagnostics.
+    // It is left pending so it can land late, below.
+    expect(diagnosticsReads).toHaveLength(2);
+    expect(progressReads()).toBe(1);
+    expect(bookReads()).toBe(2);
+
+    await fireRecoveryEventsAndIntervals(4);
+    expect(progressReads()).toBe(1);
+    expect(bookReads()).toBe(2);
+
+    // A diagnostics response landing late must not restart polling either.
+    await act(async () => {
+      diagnosticsReads[1].resolve({} as GenerationDiagnosticsDto);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await fireRecoveryEventsAndIntervals(4);
+    expect(progressReads()).toBe(1);
+    expect(bookReads()).toBe(2);
+    unmount();
+  });
+
+  it('ignores recovery events between applying the terminal book and the effect cleanup', async () => {
+    const { result, unmount } = await mountUntilFinalBookRead();
+
+    // Inside one act scope React queues the render that follows the book update,
+    // so the old poll effect (and its listeners) is still installed while the
+    // hook already holds the terminal book: the window before effect cleanup.
+    await act(async () => {
+      finalBook.resolve(makeBook({ status: BookStatus.Complete, updatedAt: T1 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(result.current.book?.status).toBe(BookStatus.CharBuild);
+
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    await settle();
+
+    expect(result.current.book?.status).toBe(BookStatus.Complete);
+    expect(progressReads()).toBe(1);
+    expect(bookReads()).toBe(2);
+    unmount();
+  });
+
+  it('keeps recovering a non-terminal run after online and visibility events', async () => {
+    const { result, unmount } = await mountUntilFinalBookRead();
+
+    // Progress said terminal but the book read is still a generating book: it is
+    // applied, no terminal state is reached, and a recovery event resumes polling.
+    await act(async () => {
+      finalBook.resolve(makeBook({ status: BookStatus.CharBuild, updatedAt: T1 }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await settle();
+    expect(result.current.book?.status).toBe(BookStatus.CharBuild);
+    const progressBefore = progressReads();
+
+    await fireRecoveryEventsAndIntervals(1);
+    expect(progressReads()).toBeGreaterThan(progressBefore);
+    unmount();
   });
 });

@@ -1786,3 +1786,351 @@ One bounded next task: obtain the hosted result for the exact candidate. With th
 owner's approval, push the branch and open a pull request so `ci.yml` runs, then
 record the four job conclusions and, if any is red, diagnose from the hosted
 logs without changing gates, retries or timeouts.
+
+## 19. Follow-up: Phase 16.10 publication and hosted CI result (added after Phase 16.9)
+
+Sections 1 to 18 are left as written. This section records what happened when the
+Phase 16.9 candidate was published. It is evidence about one hosted run, not a fix:
+Phase 16.10 changed no application code, test, workflow, dependency, retry or
+timeout.
+
+### 19.1 What was published
+
+| Item                      | Value                                                                                                                 |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Pull request              | #25, draft, `docs/phase-15-1-interactive-case-study` into `main` (`AlexTikhon/ai-agent_StoryMe`)                      |
+| PR head SHA               | `d60155100f9831b91d2e24c455af1f38b3ea51b1`                                                                            |
+| Base (`main`) SHA         | `dc5b31ea30eb9c624888f8fbf524eea1fcfc7294`, unchanged by the push                                                     |
+| Merge SHA checked out     | `5d5c4ee107ef9163975f75959225fed07477b23d` ("Merge d601551 into dc5b31e"); the run fetched `refs/pull/25/merge` at it |
+| Verified candidate        | `6594ff8`. `d601551` differs from it only in `docs/interactive-verification.md` (section 18, 182 added lines)         |
+| Push                      | `2f5324a..d601551`, fast-forward, no force; the remote answered that the repository moved and the push followed it    |
+| PR scope vs `main`        | 11 commits, 60 files; no dependency, lockfile, env or binary file; the only workflow file touched is `ci.yml`         |
+| Workflows enabled by this | none; `migrate.yml`, `staging-backup.yml` and `staging-monitor.yml` are fully commented out and were not edited       |
+
+### 19.2 The `ci.yml` run
+
+Run 38367942805, event `pull_request`, attempt 1, started 08:14:45Z, completed
+08:20:15Z, run head `d601551`, **conclusion failure**. It was triggered by the PR;
+nothing was dispatched or rerun. Runner image `ubuntu-24.04` (release
+`ubuntu24/20261004.327`), Node `v22.23.3`, pnpm 9.4.0, turbo 2.1.3.
+
+| Job                         | Conclusion  | Time   | Hosted evidence                                                                                                                                                                   |
+| --------------------------- | ----------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Checks                      | **failure** | 2m 20s | step `pnpm test` failed; web 50 of 51 files, 819 of 820 tests passed; evals and `pnpm build` skipped because the failing step stopped the job                                     |
+| Isolated integration        | success     | 1m 19s | 27 files, 324 tests passed, 38 migrations applied; no skips                                                                                                                       |
+| Production browser smoke    | success     | 56 s   | 1 test passed (4.0 s); no retry, flaky or skipped line                                                                                                                            |
+| Interactive browser journey | success     | 5m 26s | 55 tests passed (4.5 m) in one worker: `interactive.spec.ts` and `storyme.smoke.spec.ts`; no retry, flaky or skipped line; only the failure-only artifact upload step was skipped |
+
+Browser detail, from the hosted Playwright output: both browser jobs ended with
+"N passed" and no "flaky", "retry" or "skipped" line; the 55 tests ran as
+`[1/55]` to `[55/55]` with no repeated index. The interactive job's API log had 0
+`Unhandled exception`, `ERR_STREAM_UNABLE_TO_PIPE` or `ExceptionsHandler` lines and
+0 `statusCode=5xx` lines, and "E2E fixtures cleaned up." was printed. Passing on
+the first attempt is what the log shows; it is one run, not a rate.
+
+The failing test, from the Checks log (08:17:04Z):
+
+```
+FAIL src/app/dashboard/books/[id]/page.test.tsx > BookDetailPage > Polling > stops polling when status becomes complete
+AssertionError: expected 5 to be 4 // Object.is equality
+  page.test.tsx:2050:50
+```
+
+The Checks job's API unit tests were **not** established. Turbo started
+`@book/api:test` and stopped it when `@book/web#test` failed ("Tasks: 2 successful,
+4 total; Failed: @book/web#test"); the log has no API `Test Files` summary. The
+three evals and the production build did not run, so job 1 says nothing about them
+on Linux.
+
+### 19.3 Push-triggered runs (workflow-file configuration, not CI jobs)
+
+| Run         | Workflow                                | Event | Jobs | Conclusion                     |
+| ----------- | --------------------------------------- | ----- | ---- | ------------------------------ |
+| 38367926155 | `.github/workflows/migrate.yml`         | push  | 0    | failure, "workflow file issue" |
+| 38367924392 | `.github/workflows/staging-backup.yml`  | push  | 0    | failure, "workflow file issue" |
+| 38367922997 | `.github/workflows/staging-monitor.yml` | push  | 0    | failure, "workflow file issue" |
+
+These are workflow-file configuration errors, not executable job failures: each run
+has zero jobs, and every line of each file is commented out, so the file declares no
+trigger or job. They also occurred at `2f5324a` and `a8276d0`. They are unrelated to
+the failing `Checks` job and were not changed.
+
+### 19.4 Pending and still unverified
+
+| Item                                            | State                                                                                 |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `Checks` on `5d5c4ee` or any successor          | **pending**; red because of the one web unit test above (diagnosed in section 20)     |
+| API unit tests, 3 offline evals, build on Linux | **not run** in this hosted run; local results are Windows / Node 24 only (section 18) |
+| Hosted run for a fixed candidate                | **pending**; nothing has been committed or pushed since `d601551`                     |
+| PR #25                                          | still a draft, unmerged                                                               |
+
+The three interactive jobs that passed hosted confirm the integration, production
+browser and combined browser results of section 18 on Ubuntu 24.04 / Node 22.23.3
+for this one run.
+
+## 20. Follow-up: Phase 16.11 hosted terminal-polling test failure (added after Phase 16.10)
+
+Sections 1 to 19 are left as written. This section diagnoses the one failing hosted
+test from 19.2 and records the fix. **The fix is uncommitted and unpushed, and no
+hosted run has seen it.** Everything below is local evidence on Windows / Node
+24.11.1 unless stated.
+
+### 20.1 The failure
+
+`BookDetailPage > Polling > stops polling when status becomes complete` read the
+number of every `fetch` call after the complete book rendered, dispatched `online`
+inside one `act`, and required the count to be unchanged. On the hosted Linux run
+the count rose from 4 to 5 (`expected 5 to be 4`, line 2050). Locally the same
+test passed.
+
+### 20.2 What the fifth request is
+
+The test mounts with `NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS` set, so the routed
+`fetch` mock sees four kinds of request. In the instrumented local run, the
+requests in order were:
+
+| #   | Request                                    | Issued by                                                              |
+| --- | ------------------------------------------ | ---------------------------------------------------------------------- |
+| 1   | `GET /books/book-1`                        | initial load                                                           |
+| 2   | `GET /books/book-1/generation-diagnostics` | diagnostics effect, status `layout`                                    |
+| 3   | `GET /books/book-1/generation-progress`    | poll effect; reports `complete`                                        |
+| 4   | `GET /books/book-1`                        | the one full-book read a terminal projection triggers                  |
+| 5   | `GET /books/book-1/generation-diagnostics` | diagnostics effect re-run, because `book.status` changed to `complete` |
+
+The fifth request is the **second diagnostics read**, a legitimate effect of the
+status change. It is not a progress or book poll. Locally it was already issued
+when the count was read (5 before and 5 after the `online` event). On the hosted
+runner it was issued after the count was read, inside the `act`, so the baseline of
+4 was captured before the diagnostics effect had flushed. The hosted log records
+only the two counts, so the identity there is inferred from the local request
+order, not logged.
+
+Of the three candidates in the task: an extra progress/book poll was **not** what
+failed (progress stayed at 1 and book reads at 2 in every passing run); a
+legitimate diagnostics request after the terminal render **was** the fifth request;
+an effect-cleanup ordering race **does** exist in the hook, was found while writing
+the deterministic test, and is independent of the hosted failure (20.4).
+
+### 20.3 Test change
+
+- `page.test.tsx`: the broad count assertion is replaced in that one test. Requests
+  are classified (`book`, `progress`, `diagnostics`, `image`, `other`). After the
+  terminal render the test asserts progress reads = 1 and book reads = 2, waits
+  explicitly for the second diagnostics read, holds its response back, then fires
+  `online` and `visibilitychange` and advances 10 s of controlled `setTimeout`
+  twice (before and after the late diagnostics response is released) and asserts
+  the same counts and 0 unclassified requests. The global count is not changed from
+  4 to 5, and no sleep, retry, timeout or diagnostics/image switch was added.
+- `use-book-detail.test.ts`: a new `useBookDetail terminal polling` describe with
+  deferred responses and fake `setTimeout`, so request order never depends on
+  machine speed. 3 tests: no further progress/book read after the terminal book
+  (with a late diagnostics response); no progress read from recovery events between
+  applying the terminal book and effect cleanup; a non-terminal run still resumes
+  polling after an online/visibility event.
+
+### 20.4 A real hook defect, and its fix
+
+The second hook test failed on the unmodified hook: 3 progress reads instead of 1.
+Inside one `act` scope React had not yet rendered the update, so the old poll
+effect and its `online`/`visibilitychange` listeners were still installed while the
+hook already held the terminal book (the test asserts that precondition). The event
+scheduled a poll; the poll sent a progress request for a finished run, and the
+chain then rescheduled itself until the effect cleanup ran. In a browser the window
+is the time between the promise continuation and React committing the update, so
+the practical effect is at most a stray, aborted read; the test widens the window
+by holding the render. It violates the invariant the task states, so it is fixed.
+
+`use-book-detail.ts`: when the full-book read is accepted by `applyBook` **and** its
+status is terminal, the poll loop sets `cancelled = true` at that moment. Single-
+flight polling, abort on cleanup, the freshness checks and non-terminal recovery are
+not changed. A stale or non-terminal book still leaves recovery exactly as before
+(test 3).
+
+Observation, not changed: if a terminal progress projection is followed by a book
+read that is still non-terminal, the chain ends and only an online/visibility event
+or a status change resumes it. That behavior predates this phase and is what test 3
+pins.
+
+### 20.5 The new tests detect a regression
+
+Run in the snapshot only; the working tree was never modified for this.
+
+| Variant                                                                             | Result                                                                                                                                                        |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unmodified hook, new hook tests                                                     | race test **failed**, `expected 3 to be 1`; the other two passed                                                                                              |
+| Hook fix applied                                                                    | 13 of 13 hook tests pass; `books/` directory 203 of 203                                                                                                       |
+| Regression: poll effect no longer returns on terminal status (`if (!book) return;`) | hook terminal test **failed** (`expected 2 to be 1`), race test **failed**, page test **failed** (`expected 7 to be 1`), 4 existing polling tests also failed |
+| Regression removed (snapshot re-synced from the working tree)                       | passes again                                                                                                                                                  |
+
+### 20.6 Checks run
+
+Snapshot `C:\sm-p169` (the Phase 16.9 snapshot of `6594ff8`, no `.env`,
+`apps/api/.env` never opened); the three web files were copied from the working tree
+with CR removed. Its web tree matches the working tree except `playwright.config.ts`
+(the documented snapshot-only `stdout: 'pipe'` edit) and one PNG that the
+CR-stripping comparison altered. `NEXT_PUBLIC_API_URL=http://localhost:3001/api` as
+in CI.
+
+| Check                                                                          | Result                                                              |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| focused polling test, page test file, hook test file, whole `books/` directory | 203 of 203 passed; the directory run repeated 5 times, 5 of 5 green |
+| `pnpm --filter @book/web test`                                                 | 51 files, **823 passed** (hosted had 820; +3 hook tests)            |
+| `pnpm --filter @book/web typecheck`                                            | exit 0                                                              |
+| `pnpm --filter @book/web lint` (`--max-warnings 0`)                            | exit 0                                                              |
+| `prettier --check` on the three changed web files                              | exit 0                                                              |
+| `pnpm --filter @book/web build` with `NODE_ENV=production`                     | route table produced, no error                                      |
+| `git diff --check` in the working tree                                         | clean                                                               |
+
+Not run: Linux / Node 22 (only Windows / Node 24.11.1 is available locally, the
+same limit as section 18); the API unit tests, evals and integration and browser
+jobs (no API or browser code changed). Local passes do not prove the hosted flake is
+gone: the original failure also passed locally. What the deterministic tests add is
+that the asserted behavior no longer depends on when passive effects flush.
+
+### 20.7 Same-class risk left unchanged
+
+These page tests also read a global `fetch` count right after a status render and
+compare it after an `online` event or a timer advance, so each can see a diagnostics
+re-read land late: `stops polling when status becomes failed`, `does not start
+polling when status is already terminal on initial load`, and, with a status change
+from a mutation response, `stops polling once the returned status is Cancelled`.
+They passed in the hosted run. They were outside the named scope and are not
+changed here.
+
+### 20.8 State and next step
+
+| Item         | State                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| Working tree | `use-book-detail.ts`, `use-book-detail.test.ts`, `page.test.tsx`, and this report (sections 19 and 20); uncommitted |
+| PR #25       | draft, head `d601551`, unchanged; no commit, push, rerun, merge or deploy                                           |
+| Hosted       | the fix has not run on Linux / Node 22                                                                              |
+
+One bounded next task: commit the three web files and this report, push, and read
+the resulting `pull_request` run. If the three same-class tests (20.7) are to be
+hardened too, do it in that same commit with the same per-kind assertions, so one
+hosted run covers them.
+
+## 21. Follow-up: Phase 16.11.1 timing-sensitive request-count assertions (added after Phase 16.11)
+
+Sections 1 to 20 are left as written, including the hosted evidence in 19. This
+section hardens the three same-class tests named in 20.7 and a fourth in the same
+family. **Test code only: `use-book-detail.ts` was not touched in this phase, and
+nothing is committed, pushed or rerun.** Everything below is local evidence on
+Windows / Node 24.11.1.
+
+### 21.1 Assertions repaired
+
+All four tests are in `page.test.tsx`. Each used to snapshot
+`fetch.mock.calls.length` after a status render, fire one `online` event inside one
+`act` with `await Promise.resolve()`, and require the total to be unchanged. That
+fails when a legitimate diagnostics read lands between the snapshot and the
+comparison (the failure class of 19.2), and for polling it proves little: the hook
+polls through `setTimeout(0)`, which a microtask never reaches.
+
+| Test                                                         | Before                                                      | After                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stops polling when status becomes failed`                   | total `fetch` count; one `online`; microtask                | progress and book counts only: 0 / 1 after load, 1 / 2 after the terminal tick, unchanged after 3 intervals of `online` + `visibilitychange`; the 2nd diagnostics read is held, released late, then 3 more intervals |
+| `does not start polling when status is already terminal ...` | total `fetch` count; one `online`; microtask                | progress 0 and book 1 after load and after 3 intervals of events and timers; diagnostics and image reads are not counted, so they may arrive at any time                                                             |
+| `stops polling once the returned status is Cancelled`        | total count; fake `setInterval` only; nested `act`; 2500 ms | `setTimeout` faked before render so the loop is live: one tick (progress 1), the cancel POST counted as its own kind (1), book reads stay 1, progress stays 1 after 3 intervals of events and timers                 |
+| `stops fetching diagnostics once status becomes terminal`    | total count after one `act(Promise.resolve)`; one `online`  | the status-triggered diagnostics read is settled first (count is exactly 2 and the panel shows its `errorMessage`), then diagnostics stay at 2 and progress / book at 1 / 2 across 3 intervals of events and timers  |
+
+Shared test helpers (same file, next to `requestKind` / `requestCount`, which are
+reused rather than replaced): `requestKind` gained a `cancel` kind so the
+cancellation POST is not an `other` request; `withControlledPollTimers` (fake
+`setTimeout` / `clearTimeout` installed **before** render, `vi.useRealTimers()` in a
+`finally`); `settle` (one `act` around `advanceTimersByTimeAsync(0)`);
+`recoverAndElapse` (one `act` per interval: `online`, `visibilitychange`, then one
+full 2500 ms); `expectPollingRequests`; and `holdDiagnosticsRequest` (the nth
+diagnostics request is neither recorded nor answered until released, released in a
+`finally`).
+
+Design notes:
+
+- The clock is installed before render, not after the terminal state as in the
+  19/20 test, because a poll chain that survives a regression would otherwise hold a
+  real timer scheduled before the fake clock existed and escape the advance.
+- Inside `withControlledPollTimers` the tests do not use `waitFor` / `findBy*`:
+  testing-library drains through the global `setTimeout`, which is faked there, and
+  would hang. They assert synchronously after `settle()`. The cost is that each
+  `settle()` encodes one hop (load, then poll tick); a change in the hook's pacing
+  fails a test with an assertion, not a flake.
+- No `act` is nested, and no sleep, retry, timeout or production-code change was
+  added.
+
+### 21.2 The broad count fails with a late legitimate request
+
+In the snapshot only, two temporary tests ran the failed-status scenario with the
+second diagnostics request deliberately held until after the count was taken:
+
+| Assertion over the same scenario                     | Result                                                                |
+| ---------------------------------------------------- | --------------------------------------------------------------------- |
+| old: total `fetch` count unchanged                   | **failed**, `expected 5 to be 4` (the same message as the hosted run) |
+| new: progress 1 and book 2 (diagnostics not counted) | passed                                                                |
+
+The temporary tests were deleted; the snapshot test file was re-copied from the
+working tree and is byte-identical (`cmp`).
+
+### 21.3 Negative controls (snapshot only, restored)
+
+Regression A: the poll effect guard in `use-book-detail.ts` changed from
+`if (!book || !isGeneratingBookStatus(book.status)) return;` to
+`if (!book) return;`, so terminal books poll. The four tests were run together:
+
+| Test                                                      | Result under regression A                                               |
+| --------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `stops polling when status becomes failed`                | **failed**: `{progress: 7, book: 2}`, expected `{progress: 1, book: 2}` |
+| `does not start polling when ... already terminal ...`    | **failed**: `{progress: 6, book: 1}`, expected `{progress: 0, book: 1}` |
+| `stops polling once the returned status is Cancelled`     | **failed**: `{progress: 7, book: 1}`, expected `{progress: 1, book: 1}` |
+| `stops fetching diagnostics once status becomes terminal` | **failed**: `{progress: 8, book: 2}`, expected `{progress: 1, book: 2}` |
+
+Regression B (A plus `void booksApi.getGenerationDiagnostics(id)` after
+`setProgress(data)` in the poll): the diagnostics test failed on the diagnostics
+count itself, `expected 4 to be 2`. B is synthetic, chosen to reach the diagnostics
+assertion; no such code exists.
+
+Both regressions were applied to `C:\sm-p169` only. The working-tree hook is the
+Phase 16.11 version, and the snapshot hook was restored from it and compared with
+`cmp`.
+
+### 21.4 Checks run
+
+Snapshot `C:\sm-p169` (no `.env`; `apps/api/.env` was never opened), the three web
+files copied from the working tree. `NEXT_PUBLIC_API_URL=http://localhost:3001/api`
+as in CI.
+
+| Check                                                      | Result                                                                    |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------- |
+| page test file + hook test file, run 3 times               | 158 of 158 passed each time; no `act(...)` warning in the filtered output |
+| `pnpm --filter @book/web test` (`pnpm test` in `apps/web`) | 51 files, **823 passed** (same count as 20.6: no test added or removed)   |
+| `pnpm --filter @book/web typecheck`                        | exit 0                                                                    |
+| `pnpm --filter @book/web lint` (`--max-warnings 0`)        | exit 0                                                                    |
+| `prettier --check` on the three changed web files          | exit 0                                                                    |
+| `pnpm --filter @book/web build`, `NODE_ENV=production`     | exit 0, route table produced                                              |
+| `git diff --check` in the working tree                     | exit 0 (only the repository's LF/CRLF notices)                            |
+
+Not run: Linux / Node 22; API unit tests, evals, integration and browser jobs (no
+API or browser code changed). Passing locally did not predict the hosted failure in
+19.2, so these results do not show that the hosted flake class is gone. They show
+that the four assertions no longer depend on when passive effects or fetch
+continuations flush, and that each fails when terminal polling is reintroduced.
+
+### 21.5 Observation, not changed
+
+`does not let a stale in-flight poll response overwrite an already-applied
+cancellation` (same `polling interaction` describe) still installs only fake
+`setInterval` / `clearInterval` in its `beforeEach` and then calls
+`advanceTimersByTimeAsync(2500)`, which cannot reach the hook's `setTimeout` loop.
+From reading the code (not instrumented), the test relies on the hook's first real
+`setTimeout(0)` poll rather than on that advance. It was outside the named scope and
+is left as is; the describe's `beforeEach` was kept for it.
+
+### 21.6 State and next step
+
+| Item         | State                                                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Working tree | `use-book-detail.ts`, `use-book-detail.test.ts`, `page.test.tsx` (this phase: `page.test.tsx`) and this report; uncommitted |
+| PR #25       | draft, head `d601551`, unchanged; no commit, push, rerun, merge or deploy                                                   |
+| Hosted       | neither the 16.11 fix nor these assertions have run on Linux / Node 22                                                      |
+
+One bounded next task: commit the three web files and this report, push, and read
+the resulting `pull_request` run; that single run covers 16.11 and 16.11.1.
