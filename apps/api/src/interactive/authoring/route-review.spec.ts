@@ -307,7 +307,6 @@ describe('rendering', () => {
     const hostile = hostileScenario();
     const review = reviewOf(hostile);
     const text = renderRouteReviewJson(review);
-    // eslint-disable-next-line no-control-regex
     expect(text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e]/);
     const parsed = JSON.parse(text) as RouteReview;
     expect(parsed.routes[0]!.chapters[0]!.narration).toBe(

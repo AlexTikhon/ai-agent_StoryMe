@@ -1,3 +1,4 @@
+import '@/test-support/fixture-api-base';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -289,6 +290,68 @@ function createRoutedFetchMock(): {
   };
 }
 
+// Which kind of request a recorded fetch was. Polling is only the generation
+// progress and book reads; diagnostics and image reads are separate effects of
+// rendering and are allowed to happen after a terminal status is on screen.
+type RequestKind = 'book' | 'progress' | 'diagnostics' | 'image' | 'cancel' | 'other';
+
+function requestKind(input: unknown): RequestKind {
+  const url = String(input);
+  if (url.includes('/generation-progress')) return 'progress';
+  if (url.includes('/generation-diagnostics')) return 'diagnostics';
+  if (url.includes('/images/')) return 'image';
+  if (/\/books\/book-1\/cancel(\?.*)?$/.test(url)) return 'cancel';
+  if (/\/books\/book-1(\?.*)?$/.test(url)) return 'book';
+  return 'other';
+}
+
+function requestCount(kind: RequestKind): number {
+  return vi.mocked(fetch).mock.calls.filter(([input]) => requestKind(input) === kind).length;
+}
+
+const POLL_INTERVAL_MS = 2500;
+
+// Runs `body` with the hook's own setTimeout chain under test control. The
+// fake clock is installed before the page renders, so every poll the hook
+// schedules is a fake timer that fires only when advanced. testing-library's
+// waitFor/findBy drain through the global setTimeout and would hang here, so
+// `body` flushes with settle() and asserts synchronously.
+async function withControlledPollTimers(body: () => Promise<void>): Promise<void> {
+  vi.useRealTimers();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    await body();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+// Fires every timer that is due now and lets the promise chains they start
+// (mocked fetch, json, state updates) settle inside one act.
+async function settle(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
+// Once a terminal state is on screen: fire the recovery events a returning tab
+// or reconnect would, and let `intervals` whole polling intervals elapse.
+async function recoverAndElapse(intervals: number): Promise<void> {
+  for (let i = 0; i < intervals; i += 1) {
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+  }
+}
+
+// What "still polling" means: progress reads, and book reads beyond the ones
+// the scenario legitimately caused. Diagnostics and image reads are not polling.
+function expectPollingRequests(expected: { progress: number; book: number }): void {
+  expect({ progress: requestCount('progress'), book: requestCount('book') }).toEqual(expected);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('BookDetailPage', () => {
@@ -301,6 +364,32 @@ describe('BookDetailPage', () => {
 
   function queueProgress(response: Response) {
     fetchMock.queueProgress(response);
+  }
+
+  // Holds the nth diagnostics request back from the routed fetch mock: it is
+  // neither recorded nor answered until released, i.e. a legitimate request
+  // that is issued late. Callers release it in a `finally`.
+  function holdDiagnosticsRequest(nth: number): { release: () => void } {
+    const routedFetch = fetchMock.fetchFn;
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let seen = 0;
+    vi.stubGlobal(
+      'fetch',
+      Object.assign(
+        (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          if (requestKind(input) === 'diagnostics') {
+            seen += 1;
+            if (seen === nth) return released.then(() => routedFetch(input, init));
+          }
+          return routedFetch(input, init);
+        },
+        { mock: routedFetch.mock },
+      ),
+    );
+    return { release };
   }
 
   beforeEach(() => {
@@ -2034,6 +2123,32 @@ describe('BookDetailPage', () => {
         .mockResolvedValueOnce(mockOk(completeBook));
       queueProgress(mockOk({ status: 'complete', step: AgentStep.Layout }));
 
+      // The status change re-reads diagnostics. That request is legitimate and
+      // unrelated to polling, so its response is held back here and released
+      // explicitly below instead of landing whenever the machine gets to it.
+      const routedFetch = fetchMock.fetchFn;
+      let releaseLateDiagnostics!: () => void;
+      const lateDiagnostics = new Promise<Response>((resolve) => {
+        releaseLateDiagnostics = () => resolve(mockOk(DEFAULT_DIAGNOSTICS));
+      });
+      let diagnosticsReads = 0;
+      vi.stubGlobal(
+        'fetch',
+        Object.assign(
+          (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+            if (requestKind(input) === 'diagnostics') {
+              diagnosticsReads += 1;
+              if (diagnosticsReads === 2) {
+                routedFetch.mock.calls.push([input, init]);
+                return lateDiagnostics;
+              }
+            }
+            return routedFetch(input, init);
+          },
+          { mock: routedFetch.mock },
+        ),
+      );
+
       render(<BookDetailPage />);
       await waitFor(() => expect(screen.getByText('layout')).toBeDefined());
 
@@ -2041,12 +2156,39 @@ describe('BookDetailPage', () => {
         expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
       );
 
-      const callCountAfterComplete = vi.mocked(fetch).mock.calls.length;
-      await act(async () => {
-        window.dispatchEvent(new Event('online'));
-        await Promise.resolve();
-      });
-      expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterComplete);
+      // One progress read reported the terminal run and triggered exactly one
+      // book read besides the initial load.
+      expect(requestCount('progress')).toBe(1);
+      expect(requestCount('book')).toBe(2);
+      // The diagnostics re-read is awaited, not raced against.
+      await waitFor(() => expect(requestCount('diagnostics')).toBe(2));
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const recoverAndElapse = async () => {
+          await act(async () => {
+            window.dispatchEvent(new Event('online'));
+            document.dispatchEvent(new Event('visibilitychange'));
+            await vi.advanceTimersByTimeAsync(10_000);
+          });
+        };
+
+        await recoverAndElapse();
+        expect(requestCount('progress')).toBe(1);
+        expect(requestCount('book')).toBe(2);
+
+        // The late diagnostics response must not restart polling either.
+        await act(async () => {
+          releaseLateDiagnostics();
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        await recoverAndElapse();
+        expect(requestCount('progress')).toBe(1);
+        expect(requestCount('book')).toBe(2);
+        expect(requestCount('other')).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('stops polling when status becomes failed', async () => {
@@ -2058,15 +2200,36 @@ describe('BookDetailPage', () => {
         .mockResolvedValueOnce(mockOk(failedBook));
       queueProgress(mockOk({ status: 'failed', step: AgentStep.StoryDraft }));
 
-      render(<BookDetailPage />);
-      await waitFor(() => expect(screen.getByText(/generation failed/i)).toBeDefined());
+      // The status change re-reads diagnostics (the second diagnostics request).
+      // That request is legitimate and not polling, so it is issued late, after
+      // the terminal assertions, instead of whenever the machine gets to it.
+      const lateDiagnostics = holdDiagnosticsRequest(2);
+      try {
+        await withControlledPollTimers(async () => {
+          render(<BookDetailPage />);
+          await settle();
+          expect(screen.getByRole('button', { name: /cancel generation/i })).toBeDefined();
+          expectPollingRequests({ progress: 0, book: 1 });
 
-      const callCountAfterFailed = vi.mocked(fetch).mock.calls.length;
-      await act(async () => {
-        window.dispatchEvent(new Event('online'));
-        await Promise.resolve();
-      });
-      expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterFailed);
+          // One poll tick: the progress read reports the failed run and
+          // triggers exactly one full-book read.
+          await settle();
+          expect(screen.getByText(/generation failed/i)).toBeDefined();
+          expectPollingRequests({ progress: 1, book: 2 });
+
+          await recoverAndElapse(3);
+          expectPollingRequests({ progress: 1, book: 2 });
+
+          // The late diagnostics read arrives now and must not restart polling.
+          lateDiagnostics.release();
+          await settle();
+          expect(requestCount('diagnostics')).toBe(2);
+          await recoverAndElapse(3);
+          expectPollingRequests({ progress: 1, book: 2 });
+        });
+      } finally {
+        lateDiagnostics.release();
+      }
     });
 
     it('does not start polling when status is already terminal on initial load', async () => {
@@ -2078,17 +2241,19 @@ describe('BookDetailPage', () => {
 
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(completeBook));
 
-      render(<BookDetailPage />);
-      await waitFor(() =>
-        expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined(),
-      );
+      await withControlledPollTimers(async () => {
+        render(<BookDetailPage />);
+        await settle();
+        expect(screen.getByRole('heading', { name: /your pdf is ready/i })).toBeDefined();
+        // The initial book read is the only polling-kind request there ever is.
+        expectPollingRequests({ progress: 0, book: 1 });
 
-      const callCountAfterLoad = vi.mocked(fetch).mock.calls.length;
-      await act(async () => {
-        window.dispatchEvent(new Event('online'));
-        await Promise.resolve();
+        // Diagnostics and image reads that follow the render may arrive at any
+        // point; only progress and book reads would mean polling started.
+        await recoverAndElapse(3);
+        await settle();
+        expectPollingRequests({ progress: 0, book: 1 });
       });
-      expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterLoad);
     });
   });
 
@@ -2809,19 +2974,31 @@ describe('BookDetailPage', () => {
           .mockResolvedValueOnce(mockOk(activeBook))
           .mockResolvedValueOnce(mockOk({ book: cancelled, creditsRefunded: 1 }));
 
-        render(<BookDetailPage />);
-        await waitFor(() => screen.getByRole('button', { name: /cancel generation/i }));
+        // The describe's fake setInterval never touches the hook, which polls
+        // through setTimeout; drive that chain directly instead.
+        await withControlledPollTimers(async () => {
+          render(<BookDetailPage />);
+          await settle();
+          expect(screen.getByRole('button', { name: /cancel generation/i })).toBeDefined();
+          expectPollingRequests({ progress: 0, book: 1 });
 
-        fireEvent.click(screen.getByRole('button', { name: /cancel generation/i }));
-        await waitFor(() => expect(screen.getByText('cancelled')).toBeDefined());
+          // One live poll tick, so the loop is demonstrably running when the
+          // cancellation lands.
+          await settle();
+          expectPollingRequests({ progress: 1, book: 1 });
 
-        const callCountAfterCancel = vi.mocked(fetch).mock.calls.length;
-        await act(async () => {
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(2500);
-          });
+          fireEvent.click(screen.getByRole('button', { name: /cancel generation/i }));
+          await settle();
+          expect(screen.getByText('cancelled')).toBeDefined();
+          // The cancellation is one POST whose response already carries the
+          // book: neither a progress read nor a book read follows it.
+          expect(requestCount('cancel')).toBe(1);
+          expectPollingRequests({ progress: 1, book: 1 });
+
+          await recoverAndElapse(3);
+          expect(requestCount('cancel')).toBe(1);
+          expectPollingRequests({ progress: 1, book: 1 });
         });
-        expect(vi.mocked(fetch).mock.calls.length).toBe(callCountAfterCancel);
       });
 
       it('does not let a stale in-flight poll response overwrite an already-applied cancellation', async () => {
@@ -3251,17 +3428,33 @@ describe('BookDetailPage', () => {
         );
         queueProgress(mockOk({ status: 'failed', step: AgentStep.StoryDraft }));
 
-        render(<BookDetailPage />);
-        await waitFor(() => expect(screen.getByText(/generation failed/i)).toBeDefined());
+        await withControlledPollTimers(async () => {
+          render(<BookDetailPage />);
+          await settle();
+          expect(screen.getByRole('button', { name: /cancel generation/i })).toBeDefined();
+          // The first diagnostics read, for the generating status.
+          expect(requestCount('diagnostics')).toBe(1);
 
-        // let any fetch triggered by the status transition itself settle before snapshotting
-        await act(async () => Promise.resolve());
-        const callCountAfterFailed = fetchMock.fetchFn.mock.calls.length;
-        await act(async () => {
-          window.dispatchEvent(new Event('online'));
-          await Promise.resolve();
+          // One poll tick: the run is reported failed and the book re-read.
+          await settle();
+          expect(screen.getByText(/generation failed/i)).toBeDefined();
+
+          // The status change legitimately re-reads diagnostics once. Settle that
+          // request (issued, answered and rendered) before asserting that nothing
+          // follows it, so it cannot be mistaken for a later read.
+          await settle();
+          expect(requestCount('diagnostics')).toBe(2);
+          expect(
+            within(screen.getByTestId('generation-diagnostics')).getByText(
+              'Story provider timed out.',
+            ),
+          ).toBeDefined();
+
+          await recoverAndElapse(3);
+          expect(requestCount('diagnostics')).toBe(2);
+          // Nor did terminal recovery fall back to progress or book polling.
+          expectPollingRequests({ progress: 1, book: 2 });
         });
-        expect(fetchMock.fetchFn.mock.calls.length).toBe(callCountAfterFailed);
       });
     });
   });

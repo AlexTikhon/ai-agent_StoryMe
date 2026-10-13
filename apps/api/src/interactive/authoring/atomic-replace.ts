@@ -32,7 +32,9 @@ export const defaultReplaceOps: ReplaceOps = {
       while (offset < bytes.length) {
         const written = writeSync(fd, bytes, offset, bytes.length - offset, null);
         if (!(written > 0)) {
-          throw new Error(`temporary file write made no progress at byte ${offset} of ${bytes.length}`);
+          throw new Error(
+            `temporary file write made no progress at byte ${offset} of ${bytes.length}`,
+          );
         }
         offset += written;
       }
@@ -44,7 +46,10 @@ export const defaultReplaceOps: ReplaceOps = {
   rename: renameSync,
   remove: unlinkSync,
   tempPath: (target) =>
-    path.join(path.dirname(target), `.${path.basename(target)}.${randomBytes(6).toString('hex')}.tmp`),
+    path.join(
+      path.dirname(target),
+      `.${path.basename(target)}.${randomBytes(6).toString('hex')}.tmp`,
+    ),
 };
 
 export function replaceFileAtomically(

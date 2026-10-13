@@ -50,8 +50,7 @@ const REPAIR_DISPOSITIONS = Object.keys(REPAIR_DISPOSITION_SET) as RepairDisposi
 // ── Observation (the only shape the aggregation sees) ───────────────────────
 
 export type RequestValidation =
-  | { verdict: 'passed' }
-  | { verdict: 'failed'; stage: ValidationStage };
+  { verdict: 'passed' } | { verdict: 'failed'; stage: ValidationStage };
 
 export interface RequestObservation {
   phase: DraftRequestKind;
@@ -88,14 +87,10 @@ export interface RunObservation {
 }
 
 export type ReportErrorCode =
-  | 'MALFORMED_JSON'
-  | 'SCHEMA_INVALID'
-  | 'KIND_MISMATCH'
-  | 'INCONSISTENT_TELEMETRY';
+  'MALFORMED_JSON' | 'SCHEMA_INVALID' | 'KIND_MISMATCH' | 'INCONSISTENT_TELEMETRY';
 
 export type ParseOutcome =
-  | { ok: true; observation: RunObservation }
-  | { ok: false; code: ReportErrorCode; detail: string };
+  { ok: true; observation: RunObservation } | { ok: false; code: ReportErrorCode; detail: string };
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -111,8 +106,7 @@ const MAX_ATTEMPTS = 1000;
 const count = (max: number) => z.number().int().min(0).max(max);
 const label = z.string().regex(LABEL);
 const sha256 = z.string().regex(SHA256);
-const enumOf = <T extends string>(values: readonly T[]) =>
-  z.enum(values as unknown as [T, ...T[]]);
+const enumOf = <T extends string>(values: readonly T[]) => z.enum(values as unknown as [T, ...T[]]);
 
 const STAGE_RESULTS = ['passed', ...VALIDATION_STAGES.map((s) => `failed:${s}`)];
 

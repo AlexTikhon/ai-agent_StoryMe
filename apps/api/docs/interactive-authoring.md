@@ -109,12 +109,12 @@ OPENAI_API_KEY=… INTERACTIVE_AUTHORING_MODEL=<model-name> \
 
 Everything is written under one git-ignored directory, `apps/api/scenario-drafts/` (an alternative root via `--drafts-root` must itself be named `scenario-drafts`, must not be a symlink, and must not be inside `src`, `assets`, `dist`, `prisma`, `apps/web` or any `public` directory). Each run gets a fresh directory; existing files are never overwritten. A run is written to `<run>.incomplete/` and renamed only when every file is on disk:
 
-| Directory suffix    | Meaning                                  | Files                                                                    |
-| ------------------- | ---------------------------------------- | ------------------------------------------------------------------------ |
+| Directory suffix    | Meaning                                  | Files                                                                                                        |
+| ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `--review-required` | mechanically valid, awaiting a human     | `validated-candidate.json`, `validation-report.json`, `review-report.md`, `approval-template.json` (pending) |
-| `--rejected`        | content failed validation (after repair) | `run-report.json` only — **no candidate file**                           |
-| `--stopped`         | provider/transport stop                  | `run-report.json` only                                                   |
-| `.incomplete`       | crashed or interrupted run — ignore it   | partial                                                                  |
+| `--rejected`        | content failed validation (after repair) | `run-report.json` only — **no candidate file**                                                               |
+| `--stopped`         | provider/transport stop                  | `run-report.json` only                                                                                       |
+| `.incomplete`       | crashed or interrupted run — ignore it   | partial                                                                                                      |
 
 `review-report.md` contains the candidate identity/hash and validation results, reachability summary, witness routes to both endings, character knowledge, fact disclosures, item consumption, branch prerequisites, every authored narration template with its declared speaker/fact annotations, a list of what the validation does **not** prove, and an editorial checklist (unannotated secrets, contradictions, pacing, meaningful choices, audience suitability, originality, endings).
 
@@ -135,13 +135,13 @@ pnpm playtest:interactive --candidate <validated-candidate.json> \
 
 Each screen shows only the current scene title, the validated canonical narration, the choices available right now, the clues the player knows and the inventory. Locked choices, future scenes, NPC knowledge, internal flags, choice/scene ids and state hashes are never printed. A refused choice reveals only that it is unavailable, never which requirement blocks it. After every accepted choice the event log is replayed against the resulting state. A rejected line changes neither state nor events, and play stops at an ending, which shows its earned title and summary.
 
-| Exit | Result line              | Meaning                                                                                                                                                                            |
-| ---- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `0`  | `PLAYTEST_COMPLETED`     | An ending was reached.                                                                                                                                                             |
+| Exit | Result line              | Meaning                                                                                                                                                                              |
+| ---- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0`  | `PLAYTEST_COMPLETED`     | An ending was reached.                                                                                                                                                               |
 | `1`  | `PLAYTEST_FAILED [CODE]` | Candidate unreadable/too large/not JSON/mechanically invalid; scripted choice unknown or locked; choice after an ending; route too long or malformed; input or transcript limit hit. |
-| `2`  | (usage text on stderr)   | Missing, duplicated or unknown arguments.                                                                                                                                          |
-| `3`  | `PLAYTEST_INCOMPLETE`    | The scripted route stopped, or input reached EOF, before an ending. Never reported as completed.                                                                                   |
-| `4`  | `PLAYTEST_CANCELLED`     | `q`/`quit` or Ctrl-C (SIGINT).                                                                                                                                                     |
+| `2`  | (usage text on stderr)   | Missing, duplicated or unknown arguments.                                                                                                                                            |
+| `3`  | `PLAYTEST_INCOMPLETE`    | The scripted route stopped, or input reached EOF, before an ending. Never reported as completed.                                                                                     |
+| `4`  | `PLAYTEST_CANCELLED`     | `q`/`quit` or Ctrl-C (SIGINT).                                                                                                                                                       |
 
 Bounds: candidate file 200 000 bytes, interactive line 256 bytes, 100 input lines, 32 choices per route (2 048 characters of `--choices`), 200 000 characters of transcript. There is no polling, retry or unbounded loop, and authored text is stripped of terminal control characters before printing.
 
@@ -195,7 +195,10 @@ Successful authoring writes an extra `approval-template.json` beside the review 
   "decision": "pending | approved | rejected",
   "reviewer": "<identifier>",
   "reviewedAt": "2026-01-31T09:30:00Z",
-  "checklist": { "version": "editorial-checklist/v1", "items": { "unannotated-secrets": true, "...": true } }
+  "checklist": {
+    "version": "editorial-checklist/v1",
+    "items": { "unannotated-secrets": true, "...": true }
+  }
 }
 ```
 
@@ -217,11 +220,11 @@ The real registry (`scenarios/index.ts`) is composed through `createGuardedScena
 
 The evaluation fixtures are a versioned corpus (`interactive-authoring-corpus/v1`, `src/interactive/authoring/corpus/`) of three entries. Each records its brief and candidate identity, canonical brief and candidate hashes, every terminal choice sequence with its ending, representative narration selected on different paths, the choices that must stay locked (with the engine's refusal code), and the gameplay it exercises.
 
-| Entry | Identity | Emphasis | Terminal routes |
-| ----- | -------- | -------- | --------------- |
-| `last-tram` | `warsaw-last-tram@1` | the original fixture, reused by reference: item-gated and knowledge-gated choices, flag-conditional narration | 5 (2 endings) |
-| `harbour-ledger` | `harbour-night-ledger@1` | knowledge-dependent dialogue: three `playerKnows` gates, `npcLearns` plus speaker knowledge, the same character speaking differently by what the player knows; no items | 6 (2 endings) |
-| `clock-blackout` | `clock-museum-blackout@1` | single-use inventory: a key spendable on only one of two jobs, a one-time fuse, choices locked by a consumed or never-held item, four routes reconverging on one scene and two on one ending with narration recording what was spent | 6 (2 endings) |
+| Entry            | Identity                  | Emphasis                                                                                                                                                                                                                             | Terminal routes |
+| ---------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
+| `last-tram`      | `warsaw-last-tram@1`      | the original fixture, reused by reference: item-gated and knowledge-gated choices, flag-conditional narration                                                                                                                        | 5 (2 endings)   |
+| `harbour-ledger` | `harbour-night-ledger@1`  | knowledge-dependent dialogue: three `playerKnows` gates, `npcLearns` plus speaker knowledge, the same character speaking differently by what the player knows; no items                                                              | 6 (2 endings)   |
+| `clock-blackout` | `clock-museum-blackout@1` | single-use inventory: a key spendable on only one of two jobs, a one-time fuse, choices locked by a consumed or never-held item, four routes reconverging on one scene and two on one ending with narration recording what was spent | 6 (2 endings)   |
 
 Each new entry has distinct characters, scenes, choices, facts, narration and endings, and stays inside the authoring format (6-8 scenes, 3 decision points, 3 characters, 2 endings). The offline evaluation runs each of them through the real pipeline with the scripted provider: a first-pass success, a deliberate broken reference followed by exactly one repair (two requests, same brief), and its candidate paired with the other new entry's brief, which must be refused at the identity stage after the bounded repair. Accepted runs are also checked against the recorded hashes and, through the exhaustive route review, the recorded terminal sequences. The corpus spec additionally cross-checks the run reports (`parseRunReport`), the comparison aggregation (different brief hashes stay in separate groups, a wrong-brief refusal is filed under the brief it was run with), production replay and canonical narration validation, and that no corpus identity appears in the scenario registry, catalogue or presentation packs.
 
@@ -253,16 +256,16 @@ Paths are resolved from the directory the script runs in (`apps/api` under `pnpm
 
 **Metrics** (every rate is `null` when its denominator is 0, otherwise rounded to 4 decimals):
 
-| Metric | Definition |
-| ------ | ---------- |
-| `samples`, `outcomes` | valid supplied reports; counts of REVIEW_REQUIRED / REJECTED / STOPPED |
-| `firstPass` | `evaluated` = runs whose first candidate was validated; `passed` = of those, mechanically valid; `notEvaluated` = stopped before a first candidate was validated; `rate = passed / evaluated` |
-| `repair` | `attempted` = repair requests dispatched; `evaluated` = repair candidates validated; `succeeded` = runs accepted from the repair candidate; `stoppedDuringRepair`; `skippedBudgetExhausted`; `successRate = succeeded / evaluated` |
-| `finalValidity` | `evaluated` = REVIEW_REQUIRED + REJECTED; `valid` = REVIEW_REQUIRED; `rate = valid / evaluated`. STOPPED runs stay visible in `outcomes` |
-| `rejectionStages`, `stopReasons` | counts for every stage and stop reason, zero-filled in pipeline order |
-| `providerRequests`, `httpAttempts` | recorded request records and summed HTTP attempts (a mock request records no HTTP attempt) |
-| `totalRunDurationMs` | min / median / max / mean of the recorded total run duration |
-| `tokenUsage.input` / `.output` | `reportedTotal` sums only requests that reported the value (`null` if none did, `0` only when a provider really reported 0); `requestsReporting`, `requestsObserved`, `coverage`, `complete` |
+| Metric                             | Definition                                                                                                                                                                                                                         |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `samples`, `outcomes`              | valid supplied reports; counts of REVIEW_REQUIRED / REJECTED / STOPPED                                                                                                                                                             |
+| `firstPass`                        | `evaluated` = runs whose first candidate was validated; `passed` = of those, mechanically valid; `notEvaluated` = stopped before a first candidate was validated; `rate = passed / evaluated`                                      |
+| `repair`                           | `attempted` = repair requests dispatched; `evaluated` = repair candidates validated; `succeeded` = runs accepted from the repair candidate; `stoppedDuringRepair`; `skippedBudgetExhausted`; `successRate = succeeded / evaluated` |
+| `finalValidity`                    | `evaluated` = REVIEW_REQUIRED + REJECTED; `valid` = REVIEW_REQUIRED; `rate = valid / evaluated`. STOPPED runs stay visible in `outcomes`                                                                                           |
+| `rejectionStages`, `stopReasons`   | counts for every stage and stop reason, zero-filled in pipeline order                                                                                                                                                              |
+| `providerRequests`, `httpAttempts` | recorded request records and summed HTTP attempts (a mock request records no HTTP attempt)                                                                                                                                         |
+| `totalRunDurationMs`               | min / median / max / mean of the recorded total run duration                                                                                                                                                                       |
+| `tokenUsage.input` / `.output`     | `reportedTotal` sums only requests that reported the value (`null` if none did, `0` only when a provider really reported 0); `requestsReporting`, `requestsObserved`, `coverage`, `complete`                                       |
 
 **What this does not show.**
 
@@ -294,11 +297,11 @@ The root script runs `pnpm --dir apps/api --silent experiment:interactive:author
 
 **Modes.**
 
-| Mode | What it does | Side effects |
-| ---- | ------------ | ------------ |
-| `plan` (default) | prints `interactive-authoring-experiment-plan/v1` | none: no provider is constructed, the API key is not read, nothing is written |
-| `offline` | runs the three corpus briefs with each entry's scripted fixture candidate | writes a fresh experiment directory; reports 0 HTTP attempts |
-| `openai` | runs the same briefs through the existing OpenAI adapter | paid requests, plus the directory |
+| Mode             | What it does                                                              | Side effects                                                                  |
+| ---------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `plan` (default) | prints `interactive-authoring-experiment-plan/v1`                         | none: no provider is constructed, the API key is not read, nothing is written |
+| `offline`        | runs the three corpus briefs with each entry's scripted fixture candidate | writes a fresh experiment directory; reports 0 HTTP attempts                  |
+| `openai`         | runs the same briefs through the existing OpenAI adapter                  | paid requests, plus the directory                                             |
 
 `openai` needs all of `--mode openai`, `--allow-paid-calls`, an explicit model (`--model` or `INTERACTIVE_AUTHORING_MODEL`) and `OPENAI_API_KEY`. An API key in the environment never enables execution: without the explicit mode the key is not even read. `--allow-paid-calls` is rejected in `plan` and `offline`, and `--model` is rejected in `offline`. There is no way to choose a different brief: the corpus is fixed (`interactive-authoring-corpus/v1`).
 
@@ -378,11 +381,11 @@ pnpm --silent inspect:interactive:experiment --manifest scenario-drafts/<experim
 
 **Output and exit codes.** One JSON document on stdout (`interactive-authoring-experiment-inspection/v1`): checkpoint and completeness state, per-entry status with reported or `UNKNOWN` usage (counts are `null`, never `0`), known totals with `coverage` and `totalsAreLowerBound`, artifact-check counts, and fixed `evidenceLimits` sentences. Only identifiers, enums, counts and fixed vocabulary are echoed: no absolute path, credential, prose, diagnostic message or raw exception.
 
-| Exit | Meaning |
-| ---- | ------- |
-| `0` | valid inspection, including a valid incomplete checkpoint |
-| `1` | unreadable, unsupported or inconsistent manifest or artifacts: stdout carries only `{ "status": "INVALID", "issues": [{ "code", "entry"? }] }`, never a partial summary |
-| `2` | usage error (nothing on stdout) |
+| Exit | Meaning                                                                                                                                                                 |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | valid inspection, including a valid incomplete checkpoint                                                                                                               |
+| `1`  | unreadable, unsupported or inconsistent manifest or artifacts: stdout carries only `{ "status": "INVALID", "issues": [{ "code", "entry"? }] }`, never a partial summary |
+| `2`  | usage error (nothing on stdout)                                                                                                                                         |
 
 `pnpm` 9.4 reports any failed script as exit `1`, including through `pnpm --dir apps/api`; the exact `1`/`2` distinction is visible on the script process itself (`pnpm exec ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/inspect-interactive-experiment.ts ...`). The `status` field in stdout always tells the cases apart.
 

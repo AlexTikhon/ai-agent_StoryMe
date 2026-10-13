@@ -20,6 +20,7 @@ interface E2eBook {
   childName?: string | null;
   childAge?: number | null;
   previewPdfUrl?: string | null;
+  publishedEdition?: string | null;
   bookPreview?: {
     title: string;
     pages: Array<{ pageNumber: number; text: string }>;
@@ -74,6 +75,59 @@ async function apiArtifact(
 
 function digest(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function pngDimensions(bytes: Buffer): { width: number; height: number } {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  expect(bytes.subarray(0, 8).equals(signature)).toBe(true);
+  expect(bytes.subarray(12, 16).toString('ascii')).toBe('IHDR');
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
+/** The published cover route must serve a real, decodable image — not just any 2xx. */
+async function expectCoverServed(
+  page: Page,
+  token: string,
+  bookId: string,
+  edition?: string | null,
+): Promise<Buffer> {
+  const query = edition ? `?edition=${encodeURIComponent(edition)}` : '';
+  const response = await page.request.get(`${apiBaseUrl}/books/${bookId}/images/cover${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.status()).toBe(200);
+  expect(response.headers()['content-type']).toBe('image/png');
+  const body = await response.body();
+  expect(body.length).toBeGreaterThan(0);
+  const { width, height } = pngDimensions(body);
+  expect(width).toBeGreaterThan(0);
+  expect(height).toBeGreaterThan(0);
+  return body;
+}
+
+/** The browser must actually decode the cover illustration, not just show the reader frame. */
+async function expectReaderCoverLoaded(page: Page): Promise<void> {
+  const reader = page.getByRole('region', { name: 'Published book reader' });
+  // The illustration is `loading="lazy"` and has no height until it loads, so a
+  // reader far below the fold on a long page never starts loading by itself.
+  await reader.scrollIntoViewIfNeeded();
+  const cover = reader.getByRole('img', { name: 'Illustration for cover' });
+  await expect(cover).toBeVisible();
+  await expect
+    .poll(() => cover.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0))
+    .toBe(true);
+}
+
+async function coverStatus(
+  page: Page,
+  bookId: string,
+  token?: string,
+  query = '',
+): Promise<number> {
+  const response = await page.request.get(`${apiBaseUrl}/books/${bookId}/images/cover${query}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  return response.status();
 }
 
 test('registers a disposable user through the real JWT API', async ({ page }) => {
@@ -158,8 +212,8 @@ test('manages a saved child profile and snapshots it into a one-off draft withou
 });
 
 test('logs in, generates a mock book, and downloads its PDF', async ({ page }) => {
-  await login(page);
-  await createBook(page, 'Mia');
+  const token = await login(page);
+  const bookId = await createBook(page, 'Mia');
   await page.getByRole('button', { name: /view provider-work estimate/i }).click();
   await expect(page.getByText(/estimated provider work: 9 calls/i)).toBeVisible();
   await expect(page.getByText(/estimated external cost: \$0\.00/i)).toBeVisible();
@@ -167,6 +221,8 @@ test('logs in, generates a mock book, and downloads its PDF', async ({ page }) =
   await expect(page.getByRole('heading', { name: 'Your PDF is ready' })).toBeVisible({
     timeout: 75_000,
   });
+  await expectReaderCoverLoaded(page);
+  await expectCoverServed(page, token, bookId);
 
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download PDF' }).click();
@@ -233,31 +289,71 @@ test('corrects page text and explicitly confirms one page-image regeneration', a
 
 test.describe('published version availability', () => {
   test('renders a complete publication', async ({ page }) => {
-    await login(page);
+    const token = await login(page);
     await page.goto(`/dashboard/books/${publicationCompleteBookId}`);
     await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Your PDF is ready' })).toBeVisible();
+    await expectReaderCoverLoaded(page);
+    await expectCoverServed(page, token, publicationCompleteBookId);
   });
 
   test('keeps a publication readable during a running regeneration', async ({ page }) => {
-    await login(page);
+    const token = await login(page);
     await page.goto(`/dashboard/books/${publicationRunningBookId}`);
     await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
     await expect(page.getByText(/new version is being generated/i)).toBeVisible();
+    await expectReaderCoverLoaded(page);
+    await expectCoverServed(page, token, publicationRunningBookId);
   });
 
   test('keeps a publication readable after a failed regeneration', async ({ page }) => {
-    await login(page);
+    const token = await login(page);
     await page.goto(`/dashboard/books/${publicationFailedBookId}`);
     await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
     await expect(page.getByText(/new version could not be generated/i)).toBeVisible();
+    await expectReaderCoverLoaded(page);
+    await expectCoverServed(page, token, publicationFailedBookId);
   });
 
   test('keeps a publication readable after a cancelled regeneration', async ({ page }) => {
-    await login(page);
+    const token = await login(page);
     await page.goto(`/dashboard/books/${publicationCancelledBookId}`);
     await expect(page.getByRole('region', { name: 'Published book reader' })).toBeVisible();
     await expect(page.getByText(/new version was cancelled/i)).toBeVisible();
+    await expectReaderCoverLoaded(page);
+    await expectCoverServed(page, token, publicationCancelledBookId);
+  });
+
+  test('refuses cover reads for anonymous, other-user and stale-edition requests', async ({
+    page,
+  }) => {
+    const token = await login(page);
+    const book = await apiBook(page, token, publicationCompleteBookId);
+    expect(book.publishedEdition).toBeTruthy();
+
+    // Current edition succeeds; a stale one is refused with the existing 409.
+    await expectCoverServed(page, token, publicationCompleteBookId, book.publishedEdition);
+    const stale = await page.request.get(
+      `${apiBaseUrl}/books/${publicationCompleteBookId}/images/cover?edition=stale-edition`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(stale.status()).toBe(409);
+    expect(await stale.json()).toMatchObject({ message: 'PUBLISHED_EDITION_CHANGED' });
+
+    // No credentials: unauthenticated.
+    expect(await coverStatus(page, publicationCompleteBookId)).toBe(401);
+
+    // A different verified-or-not user sees the same 404 as a missing book.
+    const registered = await page.request.post(`${apiBaseUrl}/auth/register`, {
+      data: {
+        email: `cover-other-${Date.now()}@e2e.storyme.test`,
+        password,
+        name: 'Other Cover User',
+      },
+    });
+    expect(registered.status()).toBe(201);
+    const { accessToken: otherToken } = (await registered.json()) as { accessToken: string };
+    expect(await coverStatus(page, publicationCompleteBookId, otherToken)).toBe(404);
   });
 
   test('does not invent a publication after a failed initial generation', async ({ page }) => {
@@ -317,6 +413,8 @@ test('atomically replaces a successful publication after complete-book regenerat
   );
   expect(duringRegeneration.bookPreview?.title).toBe(oldTitle);
   expect(duringRegeneration.bookPreview?.pages.map(({ text }) => text)).toEqual(oldPages);
+  // The previous publication's cover stays served while a new run is active.
+  await expectCoverServed(page, token, bookId, oldPublication.publishedEdition);
 
   await expect
     .poll(async () => (await apiBook(page, token, bookId)).status, { timeout: 75_000 })
@@ -331,6 +429,14 @@ test('atomically replaces a successful publication after complete-book regenerat
   const newPdf = await apiArtifact(page, token, `/books/${bookId}/pdf/preview`);
   expect(newPdf.status).toBe(200);
   expect(digest(newPdf.body)).not.toBe(digest(oldPdf.body));
+
+  // The new edition serves its own cover; the replaced edition is refused, not served.
+  expect(newPublication.publishedEdition).toBeTruthy();
+  expect(newPublication.publishedEdition).not.toBe(oldPublication.publishedEdition);
+  await expectCoverServed(page, token, bookId, newPublication.publishedEdition);
+  expect(
+    await coverStatus(page, bookId, token, `?edition=${oldPublication.publishedEdition}`),
+  ).toBe(409);
 
   await expect(
     page
@@ -360,8 +466,10 @@ test('permanently deletes a synthetic published book and denies every captured a
 
   const pdfPath = `/books/${bookId}/pdf/preview`;
   const imagePath = `/books/${bookId}/images/page-1`;
+  const coverPath = `/books/${bookId}/images/cover`;
   expect((await apiArtifact(page, token, pdfPath)).status).toBe(200);
   expect((await apiArtifact(page, token, imagePath)).status).toBe(200);
+  expect((await apiArtifact(page, token, coverPath)).status).toBe(200);
 
   page.once('dialog', (dialog) => {
     expect(dialog.message()).toMatch(/permanently delete.*cannot be undone/i);
@@ -384,6 +492,7 @@ test('permanently deletes a synthetic published book and denies every captured a
     .toBe(404);
   expect((await apiArtifact(page, token, pdfPath)).status).toBe(404);
   expect((await apiArtifact(page, token, imagePath)).status).toBe(404);
+  expect((await apiArtifact(page, token, coverPath)).status).toBe(404);
 
   await page.goto(`/dashboard/books/${bookId}`);
   await expect(page.getByText('Book not found')).toBeVisible();

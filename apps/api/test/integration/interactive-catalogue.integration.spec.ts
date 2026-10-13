@@ -7,6 +7,7 @@ import {
   Barrier,
   InteractiveTestKit,
   configWithCap,
+  settleAll,
   startCommand,
 } from './fixtures/interactive-helpers';
 import {
@@ -210,7 +211,7 @@ describe('Version-aware session creation and catalogue titles (real Postgres)', 
       parties,
       registry,
     );
-    const views = await Promise.all(
+    const views = await settleAll(
       Array.from({ length: parties }, () =>
         racing.createSession(userId, {
           scenarioId: REAL_ID,

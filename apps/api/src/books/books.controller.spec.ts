@@ -368,6 +368,19 @@ describe('BooksController.getPreviewPdf', () => {
     expect(result.getStream().read()).toEqual(PDF_RESULT.buffer);
   });
 
+  it('returns nothing and sets no headers when the client has already disconnected', async () => {
+    const booksService = createMockBooksService();
+    booksService.getPreviewPdfBuffer.mockResolvedValue(PDF_RESULT);
+    const controller = new BooksController(booksService);
+    const res = { set: vi.fn(), destroyed: true } as unknown as jest.Mocked<Response>;
+
+    const result = await controller.getPreviewPdf(FAKE_USER, 'b-1', res);
+
+    expect(booksService.getPreviewPdfBuffer).toHaveBeenCalledWith('b-1', 'u-1', undefined);
+    expect(result).toBeUndefined();
+    expect(res.set).not.toHaveBeenCalled();
+  });
+
   it('propagates NotFoundException from the service without swallowing it', async () => {
     const booksService = createMockBooksService();
     booksService.getPreviewPdfBuffer.mockRejectedValue(new NotFoundException('Book not found'));

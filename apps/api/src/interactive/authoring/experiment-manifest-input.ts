@@ -140,12 +140,12 @@ const reference = z.string().max(MAX_REFERENCE_LENGTH);
 // Prose fields are length-checked and never copied anywhere.
 const prose = z.string().max(2000);
 
-const stopSchema = z
-  .object({ kind: enumOf(HALT_KINDS), reason: code.nullable() })
-  .strict();
+const stopSchema = z.object({ kind: enumOf(HALT_KINDS), reason: code.nullable() }).strict();
 
 const routeReviewSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('EXPORTED'), files: z.array(reference).max(MAX_FILES_PER_ENTRY) }).strict(),
+  z
+    .object({ status: z.literal('EXPORTED'), files: z.array(reference).max(MAX_FILES_PER_ENTRY) })
+    .strict(),
   z.object({ status: z.literal('FAILED'), code }).strict(),
   z.object({ status: z.literal('WRITE_FAILED') }).strict(),
 ]);
@@ -344,7 +344,9 @@ function artifactsLegal(e: ParsedEntry): boolean {
   }
   if (e.usage !== 'REPORTED' || e.outcome === null) return false;
   const { reportFile, files } = e.artifacts;
-  if (reportFile !== (e.outcome === 'REVIEW_REQUIRED' ? 'validation-report.json' : 'run-report.json')) {
+  if (
+    reportFile !== (e.outcome === 'REVIEW_REQUIRED' ? 'validation-report.json' : 'run-report.json')
+  ) {
     return false;
   }
   if (!files.includes(reportFile) || new Set(files).size !== files.length) return false;
@@ -430,7 +432,8 @@ function checkConsistency(m: ParsedManifest, issues: IssueSet): void {
   if (
     configuration.provider !== (openai ? 'openai' : 'scripted') ||
     (configuration.model !== null) !== openai ||
-    m.evidence.class !== (openai ? 'OPENAI_OBSERVATIONS_UNVERIFIED' : 'HARNESS_VERIFICATION_ONLY') ||
+    m.evidence.class !==
+      (openai ? 'OPENAI_OBSERVATIONS_UNVERIFIED' : 'HARNESS_VERIFICATION_ONLY') ||
     !isDeepStrictEqual(configuration.budget, deriveBudget(entries.length, configuration.limits)) ||
     !isDeepStrictEqual(configuration.executionPolicy, EXECUTION_POLICY)
   ) {
@@ -489,7 +492,8 @@ function checkConsistency(m: ParsedManifest, issues: IssueSet): void {
     }
   }
   for (const e of entries) {
-    if (e.stop !== null && !reasons.includes(e.stop.kind)) issues.add('CHECKPOINT_INCONSISTENT', e.key);
+    if (e.stop !== null && !reasons.includes(e.stop.kind))
+      issues.add('CHECKPOINT_INCONSISTENT', e.key);
     if (e.routeReview?.status === 'FAILED' && !reasons.includes('ROUTE_REVIEW_FAILED')) {
       issues.add('CHECKPOINT_INCONSISTENT', e.key);
     }
@@ -512,7 +516,9 @@ function checkConsistency(m: ParsedManifest, issues: IssueSet): void {
       const haltable =
         halted !== undefined &&
         (halted.status === 'stopped' ||
-          (state === 'IN_PROGRESS' && halted.status === 'recording' && halted.outcome === 'STOPPED'));
+          (state === 'IN_PROGRESS' &&
+            halted.status === 'recording' &&
+            halted.outcome === 'STOPPED'));
       if (
         !haltable ||
         halted.stop === null ||
@@ -571,7 +577,10 @@ function planReferences(m: ParsedManifest, issues: IssueSet): ReferencePlan {
 
   let comparisonReport: string[] | null = null;
   if (m.comparisonReport !== null) {
-    if (m.comparisonReport !== COMPARISON_REPORT_FILE || parseReference(m.comparisonReport) === null) {
+    if (
+      m.comparisonReport !== COMPARISON_REPORT_FILE ||
+      parseReference(m.comparisonReport) === null
+    ) {
       issues.add('REFERENCE_INVALID');
     } else comparisonReport = [COMPARISON_REPORT_FILE];
   }
@@ -609,7 +618,8 @@ export function parseExperimentManifest(text: string): ManifestParseOutcome {
     manifest.entries.some(
       (e) =>
         (e.artifacts?.files.length ?? 0) > MAX_FILES_PER_ENTRY ||
-        (e.routeReview?.status === 'EXPORTED' ? e.routeReview.files.length : 0) > MAX_FILES_PER_ENTRY,
+        (e.routeReview?.status === 'EXPORTED' ? e.routeReview.files.length : 0) >
+          MAX_FILES_PER_ENTRY,
     )
   ) {
     return failure({ code: 'BOUND_EXCEEDED' });

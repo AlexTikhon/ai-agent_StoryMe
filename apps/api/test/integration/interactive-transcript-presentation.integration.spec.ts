@@ -329,8 +329,7 @@ describe('Interactive transcript artwork (real Postgres)', () => {
       const sessionId = await complete(userId, WARSAW_ROUTES.quietAtDoor); // seq 0..3
       return { userId, sessionId };
     }
-    const code = (userId: string, sessionId: string) =>
-      failureCode(artwork(userId, sessionId));
+    const code = (userId: string, sessionId: string) => failureCode(artwork(userId, sessionId));
 
     it('fails on a missing event instead of skipping it', async () => {
       const { userId, sessionId } = await ended();
@@ -505,7 +504,8 @@ describe('Interactive transcript artwork (real Postgres)', () => {
     const userId = await kit.createUser();
     const created = await kit.start(userId, 'art-create-key');
     let view = created;
-    for (const choiceId of WARSAW_ROUTES.quietAtDoor) view = await kit.choose(userId, view, choiceId);
+    for (const choiceId of WARSAW_ROUTES.quietAtDoor)
+      view = await kit.choose(userId, view, choiceId);
     const sessionId = created.sessionId;
 
     const textBefore = await kit.service.getTranscript(userId, sessionId, query());

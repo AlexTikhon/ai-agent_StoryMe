@@ -1,4 +1,12 @@
-import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from 'node:fs';
+import {
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  type Stats,
+} from 'node:fs';
 import path from 'node:path';
 import {
   EXPERIMENT_MANIFEST_SCHEMA,
@@ -62,10 +70,7 @@ export interface EntryInspection {
     reportFile: ReportFileName | null;
     filesChecked: number;
     routeReview:
-      | 'NOT_RECORDED'
-      | 'FILES_PRESENT'
-      | 'EXPORT_FAILURE_RECORDED'
-      | 'WRITE_FAILURE_RECORDED';
+      'NOT_RECORDED' | 'FILES_PRESENT' | 'EXPORT_FAILURE_RECORDED' | 'WRITE_FAILURE_RECORDED';
   };
 }
 
@@ -106,8 +111,7 @@ export interface Inspection {
 }
 
 export type InspectionOutcome =
-  | { ok: true; inspection: Inspection }
-  | { ok: false; issues: InspectIssue[] };
+  { ok: true; inspection: Inspection } | { ok: false; issues: InspectIssue[] };
 
 // ── Bounded reads ───────────────────────────────────────────────────────────
 
@@ -234,7 +238,9 @@ export function inspectExperiment(manifestPath: string): InspectionOutcome {
   }
   const read = readBounded(manifestFile, MAX_MANIFEST_BYTES);
   if (!read.ok) {
-    return fail({ code: read.reason === 'too-large' ? 'MANIFEST_TOO_LARGE' : 'MANIFEST_UNREADABLE' });
+    return fail({
+      code: read.reason === 'too-large' ? 'MANIFEST_TOO_LARGE' : 'MANIFEST_UNREADABLE',
+    });
   }
 
   const parsed = parseExperimentManifest(read.text);

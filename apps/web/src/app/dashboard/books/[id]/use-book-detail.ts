@@ -166,7 +166,14 @@ export function useBookDetail(id: string, enableDeveloperDiagnostics: boolean) {
         if (['complete', 'failed', 'cancelled'].includes(data.status)) {
           const full = await booksApi.get(id, requestController.signal);
           if (cancelled || full.id !== id) return;
-          applyBook(full);
+          if (applyBook(full) && !isGeneratingBookStatus(full.status)) {
+            // This effect's cleanup only runs once React has committed the new
+            // status. Until then its online/visibility listeners are still
+            // installed and would schedule one more progress read for a run that
+            // is already finished, so stop this loop at the moment the terminal
+            // book is accepted. A non-terminal or stale book leaves recovery as is.
+            cancelled = true;
+          }
           return;
         }
         schedule(POLL_INTERVAL_MS);

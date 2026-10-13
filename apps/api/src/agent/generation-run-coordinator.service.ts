@@ -499,17 +499,22 @@ export class GenerationRunCoordinator {
    *      re-verifies in the actual fenced write) and read its current
    *      `status`/`fencingVersion`.
    *   4. Conditionally transition it to `cancelled` — fenced on run id, book
-   *      id, user id, its exact observed status (`queued` or `running` only),
-   *      and its exact observed `fencingVersion` — while also incrementing
-   *      `fencingVersion`, so any already-running worker's next heartbeat (or
-   *      its own next `applyFencedBookWrite`/`completeRun` call) loses
-   *      ownership immediately, the same fencing guarantee every other
-   *      terminal transition in this class already provides.
-   *   5. If that fenced write matched zero rows, something else won the race
-   *      (a concurrent cancellation, or a concurrent completion) — re-read
-   *      the run once more to report the accurate outcome (`'already_cancelled'`
-   *      if it's now `cancelled`, `'not_in_progress'` otherwise, e.g. a
-   *      completion won).
+   *      id, user id, and the run *still being* `queued` or `running` (not on
+   *      the status/`fencingVersion` observed in step 3, which a worker claim
+   *      or redelivery may have advanced since) — while also incrementing the
+   *      current row's `fencingVersion`, so any already-running worker's next
+   *      heartbeat (or its own next `applyFencedBookWrite`/`completeRun`
+   *      call) loses ownership immediately, the same fencing guarantee every
+   *      other terminal transition in this class already provides. Because
+   *      the target is the run id read from `Book.activeRunId`, a replacement
+   *      run is never matched, and a completed/failed/cancelled run never
+   *      matches the status filter, so it is neither overwritten nor refunded.
+   *   5. If that fenced write matched zero rows, the run left queued/running
+   *      first (a concurrent cancellation, or a concurrent completion or
+   *      failure; a claim cannot cause this, it keeps the run active) —
+   *      re-read the run once more to report the accurate outcome
+   *      (`'already_cancelled'` if it's now `cancelled`, `'not_in_progress'`
+   *      otherwise, e.g. a completion won).
    *   6. Only if the run transition held: conditionally update `Book`
    *      (`activeRunId` still pointing at this run) to `status: cancelled`,
    *      clear `activeRunId`/`errorMessage`/`failedStep` — deliberately never
@@ -568,13 +573,23 @@ export class GenerationRunCoordinator {
             : { kind: 'not_in_progress' };
         }
 
+        // Fenced on this exact run's identity and ownership and on it still
+        // being active — deliberately NOT on the status/fencingVersion read
+        // above. A worker claim legitimately moves a queued run to running and
+        // bumps the fence (and a redelivery bumps it again) at any moment, and
+        // that must not make a user's cancellation lose: cancellation is
+        // intent over the run, not over one particular delivery. Postgres
+        // evaluates this WHERE against the latest committed row after taking
+        // the row lock, so exactly one of {claim, cancellation, completion}
+        // wins each row and the rest re-evaluate against the winner's result;
+        // `increment` is applied to that current fence, which is what fences
+        // out whichever delivery now owns the run.
         const runUpdate = await tx.generationRun.updateMany({
           where: {
             id: run.id,
             bookId: book.id,
             userId: params.userId,
-            status: run.status,
-            fencingVersion: run.fencingVersion,
+            status: { in: [GenerationRunStatus.queued, GenerationRunStatus.running] },
           },
           data: {
             status: GenerationRunStatus.cancelled,
@@ -583,9 +598,11 @@ export class GenerationRunCoordinator {
           },
         });
         if (runUpdate.count === 0) {
-          // Lost a race against a concurrent cancellation or a concurrent
-          // completion — re-read to report which one actually won, rather
-          // than guessing from the pre-write snapshot above.
+          // The run left queued/running between the read above and this write
+          // (a claim cannot cause this: it keeps the run active). Re-read to
+          // report which terminal transition actually won — a concurrent
+          // cancellation or a concurrent completion/failure — rather than
+          // guessing from the pre-write snapshot above.
           const latest = await tx.generationRun.findUnique({ where: { id: run.id } });
           return latest?.status === GenerationRunStatus.cancelled
             ? { kind: 'already_cancelled' }

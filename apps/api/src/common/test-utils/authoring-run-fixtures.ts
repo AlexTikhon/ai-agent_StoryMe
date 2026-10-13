@@ -8,10 +8,7 @@ import {
   ScriptedDraftProvider,
   type ScriptStep,
 } from '../../interactive/authoring/scripted-provider';
-import {
-  LAST_TRAM_BRIEF,
-  LAST_TRAM_SCENARIO,
-} from '../../interactive/authoring/the-last-tram';
+import { LAST_TRAM_BRIEF, LAST_TRAM_SCENARIO } from '../../interactive/authoring/the-last-tram';
 import { scenarioToWire } from '../../interactive/authoring/wire';
 
 /**
@@ -74,9 +71,58 @@ export function reportText(result: AuthoringResult): string {
 export const reportFileNameFor = (result: AuthoringResult): string =>
   result.status === 'REVIEW_REQUIRED' ? 'validation-report.json' : 'run-report.json';
 
+/** Any value `JSON.parse` can produce. */
+export type JsonValue =
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+
+/**
+ * Walks `path` below `root` and returns the object or array found there.
+ * Throws when a step is missing, so a mistyped fixture path fails loudly
+ * instead of silently mutating nothing.
+ */
+function containerAt(
+  root: JsonObject,
+  path: ReadonlyArray<string | number>,
+): JsonObject | JsonValue[] {
+  let current: JsonValue | undefined = root;
+  for (const step of path) {
+    const next: JsonValue | undefined = Array.isArray(current)
+      ? current[Number(step)]
+      : typeof current === 'object' && current !== null
+        ? current[String(step)]
+        : undefined;
+    if (next === undefined) throw new Error(`fixture path not found: ${path.join('.')}`);
+    current = next;
+  }
+  if (typeof current !== 'object' || current === null) {
+    throw new Error(`fixture path is not a container: ${path.join('.')}`);
+  }
+  return current;
+}
+
+/** Overwrites the value at `path` (e.g. `['provenance', 'requests', 0, 'inputTokens']`). */
+export function setAt(
+  root: JsonObject,
+  path: readonly [string | number, ...Array<string | number>],
+  value: JsonValue,
+): void {
+  const parent = containerAt(root, path.slice(0, -1));
+  const key = path[path.length - 1] as string | number;
+  if (Array.isArray(parent)) parent[Number(key)] = value;
+  else parent[String(key)] = value;
+}
+
+/** The array at `path`; mutate it in place (e.g. `.pop()`). */
+export function arrayAt(root: JsonObject, path: readonly string[]): JsonValue[] {
+  const found = containerAt(root, path);
+  if (!Array.isArray(found)) throw new Error(`fixture path is not an array: ${path.join('.')}`);
+  return found;
+}
+
 /** Parse, mutate and re-serialize a report text (for malformed/inconsistent fixtures). */
-export function mutateReport(text: string, mutate: (report: Record<string, any>) => void): string {
-  const report = JSON.parse(text) as Record<string, any>;
+export function mutateReport(text: string, mutate: (report: JsonObject) => void): string {
+  const report = JSON.parse(text) as JsonObject;
   mutate(report);
   return `${JSON.stringify(report, null, 2)}\n`;
 }

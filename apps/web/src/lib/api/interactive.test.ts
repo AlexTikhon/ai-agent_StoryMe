@@ -1,3 +1,4 @@
+import '@/test-support/fixture-api-base';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { interactiveApi } from './interactive';
 import { ApiError } from './client';

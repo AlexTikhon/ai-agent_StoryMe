@@ -45,7 +45,8 @@ vi.mock('node:fs', async (importOriginal) => {
   const openSync = actual.openSync as (...a: unknown[]) => number;
   wrapped['openSync'] = (...args: unknown[]) => {
     const flags = args[1];
-    if (hooks.counting && flags !== undefined && flags !== 'r') hooks.mutations.push(`openSync:${String(flags)}`);
+    if (hooks.counting && flags !== undefined && flags !== 'r')
+      hooks.mutations.push(`openSync:${String(flags)}`);
     return openSync(...args);
   };
   return { ...actual, ...wrapped };
@@ -69,6 +70,7 @@ import {
   type Bundle,
 } from './experiment-bundles.fixture';
 import { EXIT_CODES, runCli } from './inspect-interactive-experiment';
+import { spawnPnpm } from './pnpm-spawn.fixture';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
@@ -115,7 +117,8 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-const copyOf = (bundle: Bundle): Bundle => cloneBundle(bundle, path.join(tmp, `bundle-${counter++}`));
+const copyOf = (bundle: Bundle): Bundle =>
+  cloneBundle(bundle, path.join(tmp, `bundle-${counter++}`));
 
 function digest(root: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -154,7 +157,11 @@ describe('inspect-interactive-experiment: results', () => {
     expect(runCli(['--manifest', bundles.awaiting.manifestPath], io())).toBe(EXIT_CODES.OK);
     const result = JSON.parse(out[0]!);
     expect(result.checkpoint.state).toBe('IN_PROGRESS');
-    expect(result.entries[1]).toMatchObject({ usage: 'UNKNOWN', requests: null, httpAttempts: null });
+    expect(result.entries[1]).toMatchObject({
+      usage: 'UNKNOWN',
+      requests: null,
+      httpAttempts: null,
+    });
     expect(result.observed).toMatchObject({ withinBudget: null, totalsAreLowerBound: true });
   });
 
@@ -324,17 +331,15 @@ describe('inspect-interactive-experiment: side effects', () => {
 
 describe('inspect-interactive-experiment: the pnpm entry point', () => {
   const pnpm = (args: string[], cwd: string) =>
-    spawnSync('pnpm', args, {
+    spawnPnpm(args, {
       cwd,
-      encoding: 'utf8',
-      shell: process.platform === 'win32',
       env: { ...process.env, OPENAI_API_KEY: '' },
       timeout: 180_000,
     });
 
   it('inspects a complete experiment from the repository root', () => {
     const result = pnpm(
-      ['--silent', 'inspect:interactive:experiment', '--manifest', `"${bundles.complete.manifestPath}"`],
+      ['--silent', 'inspect:interactive:experiment', '--manifest', bundles.complete.manifestPath],
       REPO_ROOT,
     );
     expect(result.status).toBe(0);
@@ -345,7 +350,7 @@ describe('inspect-interactive-experiment: the pnpm entry point', () => {
 
   it('inspects an interrupted checkpoint from the API package and exits 0', () => {
     const result = pnpm(
-      ['--silent', 'inspect:interactive:experiment', '--manifest', `"${bundles.awaiting.manifestPath}"`],
+      ['--silent', 'inspect:interactive:experiment', '--manifest', bundles.awaiting.manifestPath],
       path.join(REPO_ROOT, 'apps', 'api'),
     );
     expect(result.status).toBe(0);
@@ -354,20 +359,46 @@ describe('inspect-interactive-experiment: the pnpm entry point', () => {
     expect(inspection.entries[1]).toMatchObject({ status: 'awaiting_response', usage: 'UNKNOWN' });
   }, 200_000);
 
-  it('fails through pnpm for an inconsistent bundle and a usage error, with no summary on stdout', () => {
-    const bundle = copyOf(bundles.complete);
+  it('reports the completeness mismatch of an inconsistent bundle at a path with spaces and leaves it unchanged', () => {
+    const bundle = cloneBundle(
+      bundles.complete,
+      path.join(tmp, 'a directory with spaces', `bundle-${counter++}`),
+    );
+    expect(bundle.manifestPath).toContain(' ');
+    const inspect = () =>
+      pnpm(
+        ['--silent', 'inspect:interactive:experiment', '--manifest', bundle.manifestPath],
+        REPO_ROOT,
+      );
+
+    // Positive control: the same readable path, before any tampering, inspects cleanly.
+    // A quoting mistake would show up here as MANIFEST_UNREADABLE, not as a validation result.
+    const control = inspect();
+    expect(control.status).toBe(0);
+    expect(JSON.parse(control.stdout)).toMatchObject({
+      status: 'VALID',
+      completeness: { status: 'COMPLETE' },
+      issues: [],
+    });
+
     const manifest = JSON.parse(readFileSync(bundle.manifestPath, 'utf8'));
     manifest.completeness.completed = 1;
     writeFileSync(bundle.manifestPath, JSON.stringify(manifest));
-    const invalid = pnpm(
-      ['--silent', 'inspect:interactive:experiment', '--manifest', `"${bundle.manifestPath}"`],
-      REPO_ROOT,
-    );
+    const before = digest(bundle.dir);
+
+    const invalid = inspect();
     // pnpm 9 reports every failed script as exit 1; the precise codes are checked on the
     // script process itself below.
     expect(invalid.status).not.toBe(0);
-    expect(JSON.parse(invalid.stdout).status).toBe('INVALID');
+    const result = JSON.parse(invalid.stdout);
+    expect(result.status).toBe('INVALID');
+    expect(result.issues).toContainEqual({ code: 'COMPLETENESS_MISMATCH' });
+    // An unreadable manifest is also INVALID; it must never be what satisfies this test.
+    expect(result.issues).not.toContainEqual({ code: 'MANIFEST_UNREADABLE' });
+    expect(digest(bundle.dir)).toEqual(before);
+  }, 200_000);
 
+  it('fails through pnpm for a usage error with nothing on stdout', () => {
     const usage = pnpm(['--silent', 'inspect:interactive:experiment'], REPO_ROOT);
     expect(usage.status).not.toBe(0);
     expect(usage.stdout).toBe('');
