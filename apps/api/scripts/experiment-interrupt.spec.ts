@@ -1,4 +1,4 @@
-import { fork, spawnSync, type ChildProcess } from 'node:child_process';
+import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AUTHORING_CORPUS } from '../src/interactive/authoring/corpus';
 import { inspectExperiment } from '../src/interactive/authoring/experiment-inspection';
 import { runCli as inspectCli } from './inspect-interactive-experiment';
+import { spawnPnpm } from './pnpm-spawn.fixture';
 
 /**
  * A real process, terminated for real. The only synchronisation is IPC: the
@@ -191,18 +192,15 @@ describe('experiment interruption (real child process)', () => {
     expect(JSON.parse(printed[0]!).entries[1].usage).toBe('UNKNOWN');
 
     // The same checkpoint through the real pnpm entry point.
-    const viaPnpm = spawnSync(
-      'pnpm',
+    const viaPnpm = spawnPnpm(
       [
         '--silent',
         'inspect:interactive:experiment',
         '--manifest',
-        `"${path.join(work, 'manifest.json')}"`,
+        path.join(work, 'manifest.json'),
       ],
       {
         cwd: API_ROOT,
-        encoding: 'utf8',
-        shell: process.platform === 'win32',
         env: { ...process.env, OPENAI_API_KEY: '' },
         timeout: 120_000,
       },

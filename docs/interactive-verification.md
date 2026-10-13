@@ -2134,3 +2134,239 @@ is left as is; the describe's `beforeEach` was kept for it.
 
 One bounded next task: commit the three web files and this report, push, and read
 the resulting `pull_request` run; that single run covers 16.11 and 16.11.1.
+
+## 22. Follow-up: Phase 16.12 hosted CI result for the polling fix (added after Phase 16.11.1)
+
+Sections 1 to 21 are left as written. This section records what happened when the
+Phase 16.11 and 16.11.1 changes were published and run on hosted CI. It is evidence
+about one hosted run, not a fix: Phase 16.12 changed no application code, test,
+workflow, dependency, retry or timeout. Statements in sections 20 and 21 that the
+fix is "uncommitted and unpushed" are superseded by 22.1.
+
+### 22.1 What was published
+
+| Item                  | Value                                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commit                | `6fcf4cb8c1fa034ee0035789baf7d694cb36adda`, "fix: stop terminal book polling and stabilize endpoint request-count tests (phases 16.11-16.11.1)"               |
+| Push                  | `d601551..6fcf4cb`, fast-forward, no force; the remote answered that the repository moved and the push followed it                                            |
+| Contents              | exactly 4 files, 750 insertions, 49 deletions: `use-book-detail.ts` (+9/-1), `use-book-detail.test.ts`, `page.test.tsx`, this document (+348, additions only) |
+| PR head SHA           | `6fcf4cb8c1fa034ee0035789baf7d694cb36adda`; PR #25 is still a draft, open, unmerged                                                                           |
+| Base (`main`) SHA     | `dc5b31ea30eb9c624888f8fbf524eea1fcfc7294`, unchanged                                                                                                         |
+| Merge SHA checked out | `b6bee27fa4fbf627dfc74e1cd3334a77d7221120`; the Checks job fetched it as `refs/remotes/pull/25/merge`                                                         |
+| Pre-publish checks    | staged manifest was only the 4 files; `git diff --cached --check` clean; no untracked or generated files                                                      |
+
+### 22.2 The `ci.yml` run
+
+Run 38392021199, event `pull_request`, attempt 1, started 11:42:02Z, completed
+11:46:25Z, run head `6fcf4cb`, **conclusion failure**. It was triggered by the PR;
+nothing was dispatched or rerun. Runner image `ubuntu-24.04` (version
+`20261004.327.1`), Node `v22.23.3`. URL:
+`https://github.com/AlexTikhon/ai-agent_StoryMe/actions/runs/38392021199`.
+
+| Job                         | Conclusion  | Time   | Hosted evidence                                                                                                                                |
+| --------------------------- | ----------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Checks                      | **failure** | 2m 49s | step `pnpm test` failed: web all green, API 3 failed of 2659; the three evals and `pnpm build` were skipped by the failing step                |
+| Isolated integration        | success     | 1m 06s | 27 files, 324 tests passed, 38 migrations applied; no skip line                                                                                |
+| Production browser smoke    | success     | 1m 03s | 1 test passed (3.8 s) on 1 worker; no retry or flaky line                                                                                      |
+| Interactive browser journey | success     | 4m 23s | 55 tests passed (3.4 m) on 1 worker: `interactive.spec.ts` and `storyme.smoke.spec.ts`; only the failure-only artifact upload step was skipped |
+
+Browser detail, from the hosted Playwright output: both browser jobs ended with
+"N passed" and no "flaky", "retry #" or "skipped" line; the 55 tests ran as
+`[1/55]` to `[55/55]` with no repeated index. Lines containing the word "retry" are
+test titles. The interactive job's API log had 0 `Unhandled exception`,
+`ERR_STREAM_UNABLE_TO_PIPE` or `ExceptionsHandler` lines and 0 `statusCode=5xx`
+lines, and "E2E fixtures cleaned up." was printed. Passing on the first attempt is
+what the log shows; it is one run, not a rate.
+
+Checks steps: install, `prisma:generate`, `types build`, `lint`, `typecheck` and
+`typecheck:scripts` succeeded; `pnpm test` failed; `eval:story:offline`,
+`eval:interactive:offline`, `eval:interactive:authoring:offline` and `pnpm build`
+were **skipped, not run**. Their hosted result is therefore still unknown.
+
+| `pnpm test` package | Files                | Tests                            | Skipped |
+| ------------------- | -------------------- | -------------------------------- | ------- |
+| `@book/types`       | 1 passed             | 2 passed                         | none    |
+| `@book/web`         | 51 passed            | 823 passed                       | none    |
+| `@book/api`         | 174 passed, 2 failed | 2656 passed, **3 failed** (2659) | none    |
+
+### 22.3 The formerly failing terminal-polling test
+
+Passed on hosted Linux / Node 22.23.3. `page.test.tsx` reported 145 tests passed
+(9.97 s) and `use-book-detail.test.ts` 13 tests passed (0.6 s); web as a whole
+passed 51 of 51 files and 823 of 823 tests, against 819 of 820 in section 19.2. The
+hosted reporter prints passing tests per file, not per name, so the evidence for
+`Polling > stops polling when status becomes complete` is the passing file, not a
+named line. No test in either file failed, retried or was skipped.
+
+### 22.4 The failing Checks step: three API script tests
+
+All three failures are in `@book/api` and none touches polling:
+
+| Spec                                             | Test                                                                               | Assertion                      |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------ |
+| `scripts/experiment-interrupt.spec.ts`           | `leaves a checkpoint that keeps the first result, marks the second unresolved ...` | line 210, `expected 1 to be 0` |
+| `scripts/inspect-interactive-experiment.spec.ts` | `inspects a complete experiment from the repository root`                          | line 351, `expected 1 to be 0` |
+| `scripts/inspect-interactive-experiment.spec.ts` | `inspects an interrupted checkpoint from the API package and exits 0`              | line 367, `expected 1 to be 0` |
+
+Each spawns the real `pnpm` entry point `inspect:interactive:experiment` with
+`spawnSync` and passes the manifest path wrapped in literal double quotes
+(`"${path}"` in a template string), with `shell: process.platform === 'win32'`. On
+Windows the shell strips those quotes. On Linux `shell` is `false`, so the quote
+characters are delivered to the CLI as part of the path.
+
+Local reproduction of the mechanism (Windows, `pnpm --silent
+inspect:interactive:experiment --manifest ...` against a file that exists): the plain
+path is read and judged on its content, while the same path wrapped in literal
+quotes is reported as `MANIFEST_UNREADABLE`, exit 1. That is the call the Linux
+runner makes. The hosted log shows only the status mismatch; the child's stdout and
+stderr were not printed, so the Linux cause is **inferred from the reproduction, not
+observed in the hosted log**.
+
+Consequences:
+
+- This is the first hosted Linux run in which the API unit tests reached completion.
+  Section 19.2 could not establish them because the web failure stopped the job.
+  The defect is a Linux-only test-harness defect that was always present; it is not
+  caused by the polling change.
+- A fourth test, "fails through pnpm for an inconsistent bundle" in
+  `inspect-interactive-experiment.spec.ts` (line 373, quoted path at line 379), uses
+  the same quoting and **passed** on Linux for the wrong reason: `MANIFEST_UNREADABLE` is also
+  `INVALID` and non-zero, so it does not prove the inconsistent-bundle path there. A
+  fix should not leave it relying on that.
+- `experiment-interactive-authoring.spec.ts` was not affected: it joins its
+  arguments through its own `quote` helper and runs with `shell: true` on every
+  platform, so quoting and shell agree on Linux as well.
+
+### 22.5 Push-triggered runs (workflow-file configuration, not CI jobs)
+
+| Run         | Workflow                                | Event | Jobs | Conclusion                   |
+| ----------- | --------------------------------------- | ----- | ---- | ---------------------------- |
+| 38392016664 | `.github/workflows/migrate.yml`         | push  | 0    | failure, workflow file issue |
+| 38392015085 | `.github/workflows/staging-backup.yml`  | push  | 0    | failure, workflow file issue |
+| 38392018129 | `.github/workflows/staging-monitor.yml` | push  | 0    | failure, workflow file issue |
+
+Same classification as 19.3: each run has zero jobs because the files are fully
+commented out. They are configuration errors, not executable CI failures, and are
+unrelated to the failing `Checks` job. They were not changed.
+
+### 22.6 State and next step
+
+| Item                                       | State                                                |
+| ------------------------------------------ | ---------------------------------------------------- |
+| Terminal-polling fix on hosted Linux       | **verified** for this one run (web 823 of 823)       |
+| Isolated integration, both browser jobs    | **verified green** on `6fcf4cb` / merge `b6bee27`    |
+| `Checks` job                               | **red**: 3 API script tests (22.4)                   |
+| Three offline evals, `pnpm build` on Linux | **not run**; skipped by the failing `pnpm test` step |
+| PR #25                                     | still a draft, unmerged                              |
+
+One bounded next task: make the manifest argument in the four spawning tests
+(`experiment-interrupt.spec.ts` line 200; `inspect-interactive-experiment.spec.ts`
+lines 347, 363 and 379) consistent with the `shell` option, so literal quotes are
+added only when a shell will strip them (for example by quoting only when
+`process.platform === 'win32'`), and make the test at line 373 prove a readable but
+inconsistent manifest. Do not change assertions about exit codes, timeouts, retries
+or workflow settings. Verify with a hosted run, since the failure does not
+reproduce on Windows.
+
+## 23. Follow-up: Phase 16.13 API script tests passed quoted paths to a shell-less pnpm (added after Phase 16.12)
+
+Sections 1 to 22 are left as written. This section records the repair of the three
+hosted failures classified in 22.4. It changes test code only: two specs, one new
+shared test helper and its type declaration. No application code, workflow,
+dependency, timeout, retry or assertion about exit codes changed.
+
+### 23.1 Diagnosis
+
+Hosted run 38392021199 failed `@book/api` at `experiment-interrupt.spec.ts:210` and
+`inspect-interactive-experiment.spec.ts:351` and `:367`, each `expected 1 to be 0`.
+All three spawn the real pnpm entry point with `spawnSync`, `shell:
+process.platform === 'win32'`, and a manifest path wrapped in literal double quotes.
+
+- With a shell (Windows) the shell removes the quotes before the CLI sees the path.
+- Without one (Linux) the quote characters are delivered to the CLI as part of the
+  filename, so the file "does not exist" and the CLI reports `MANIFEST_UNREADABLE`,
+  exit 1.
+
+The repository already owns the right primitive: `scripts/pnpm-invocation.mjs`
+`resolvePnpmInvocation` returns `{ command, args, shell: false }` on every platform
+and passes argument-array values through untouched. The repair reuses it instead of
+adding a second platform-resolution path.
+
+### 23.2 What changed
+
+| File                                                      | Change                                                                                                                                               |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api/scripts/pnpm-spawn.fixture.ts` (new)            | `spawnPnpm(args, { cwd, env, timeout })`: `resolvePnpmInvocation`, then `spawnSync` with the returned `shell: false`; no resolution logic of its own |
+| `apps/api/scripts/pnpm-invocation.d.ts` (new)             | ambient types for the plain-JavaScript `.mjs` (`tsconfig.scripts.json` has no `allowJs`; without it `typecheck:scripts` fails with TS7016)           |
+| `apps/api/scripts/experiment-interrupt.spec.ts`           | uses `spawnPnpm`; the manifest argument is the raw path                                                                                              |
+| `apps/api/scripts/inspect-interactive-experiment.spec.ts` | uses `spawnPnpm`; the two plain tests pass the raw path; the old combined test is split in two (below)                                               |
+
+`cwd`, the `OPENAI_API_KEY: ''` environment override, the 120 s / 180 s spawn
+timeouts and the 150 s / 200 s test timeouts are unchanged. The resolver receives
+the same `env` that is given to the child, so `npm_execpath` set by a pnpm parent is
+honoured.
+
+The old test "fails through pnpm for an inconsistent bundle and a usage error" is
+now two tests, so usage-error coverage stands alone:
+
+1. **Inconsistent bundle at a path with spaces.** The bundle is cloned into
+   `a directory with spaces/`. A positive control inspects that exact readable path
+   first and must be `VALID`, `COMPLETE`, no issues, exit 0. Then
+   `completeness.completed` is set to 1 and the same path must give a non-zero exit,
+   `status: 'INVALID'`, an issue `{ code: 'COMPLETENESS_MISMATCH' }`, and **no**
+   `{ code: 'MANIFEST_UNREADABLE' }`. The bundle's file hashes and mtimes must be
+   unchanged by the inspection.
+2. **Usage error through pnpm.** Non-zero exit and an empty stdout, as before.
+
+### 23.3 Red evidence (old invocation, before the fix)
+
+Windows cannot show the Linux failure directly, because there the old shell strips
+the quotes. The reproduction therefore keeps the old quoted argument and removes only
+the shell, by routing it through the resolver. That is exactly the Linux call.
+
+| Step                                                                               | Result                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Quoted argument, no shell, both specs                                              | 3 failed, 25 passed: `experiment-interrupt` and the two inspect pnpm tests, each `expected 1 to be 0`; the hosted failures reproduced                                                                                               |
+| Same run, old "inconsistent bundle" test                                           | **passed**, which is the hosted false positive                                                                                                                                                                                      |
+| Throwaway probe in the snapshot (mutated bundle, quoted vs raw path, then removed) | quoted: `exit=1 status=INVALID issues=[{"code":"MANIFEST_UNREADABLE"}]`; raw: `exit=1 status=INVALID issues=[{"code":"COMPLETENESS_MISMATCH"}]`; the original assertions (`status !== 0`, `status === 'INVALID'`) accepted **both** |
+| New strengthened test, still quoted                                                | failed at its positive control (`expected 1 to be 0`); with the original assertions only, it would have passed                                                                                                                      |
+
+So the original test could not tell "the inconsistency was detected" from "the file
+could not be found".
+
+### 23.4 Local validation
+
+Credential-free snapshot `C:\sm-p169` (no `.env`, no `.git`). Before the overlay its
+`apps/api`, root `scripts/`, `pnpm-lock.yaml` and both `package.json` files were
+diffed against the working tree ignoring CRs: the only differences were the four
+files above. `apps/api/.env` was not read or loaded. Windows 11, Node 24.
+
+| Check                                                                     | Result                                                                                                              |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `experiment-interrupt.spec.ts` + `inspect-interactive-experiment.spec.ts` | 2 files, 29 tests passed (1 + 28)                                                                                   |
+| `node --test scripts/pnpm-invocation.test.mjs`                            | 15 passed                                                                                                           |
+| `pnpm test:launcher`                                                      | 39 passed                                                                                                           |
+| `pnpm --filter @book/api test`                                            | 176 files passed; 2657 passed, 3 skipped (2660), exit 0                                                             |
+| `@book/api typecheck`, `typecheck:scripts`                                | clean                                                                                                               |
+| Prettier `--check` on the 4 files                                         | clean (one wrapping fixed after the first run)                                                                      |
+| ESLint on the 4 files                                                     | 1 error and 3 warnings, identical on the `HEAD` versions of the two specs: not introduced here; CI lints `src` only |
+| `git diff --check`                                                        | clean on the staged manifest (`git diff --cached --check`)                                                          |
+
+The 3 skips are Windows file-symlink privilege skips in
+`claim-artifact-local-walk.spec.ts`; the hosted run reported none skipped. The hosted
+API total should be 2660 (2659 plus the one new test). No database or browser suite
+was run: the change is test-only and those suites do not touch it.
+
+### 23.5 What this does not show
+
+- **Not run on Linux.** The Linux behaviour is reproduced by removing the shell on
+  Windows, not observed on a Linux runner. Section 24 holds the hosted result.
+- The resolver is the only change to how pnpm is found. On Linux with `npm_execpath`
+  set (as under `pnpm test`) it runs the real pnpm CLI through `process.execPath`; if
+  `npm_execpath` is absent it falls back to `pnpm` on `PATH`.
+- `exits 1 for inconsistent input and 2 for a usage error` (script process, same
+  file) has the same weak `INVALID`-only assertion. It already passes the raw path to
+  `node` and so is not affected by quoting; it was left unchanged to keep this phase
+  to the reported failures.
+- `experiment-interactive-authoring.spec.ts` still quotes through its own `quote`
+  helper with `shell: true`; section 22.4 found it consistent and it was not touched.
