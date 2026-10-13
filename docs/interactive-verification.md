@@ -2370,3 +2370,100 @@ was run: the change is test-only and those suites do not touch it.
   to the reported failures.
 - `experiment-interactive-authoring.spec.ts` still quotes through its own `quote`
   helper with `shell: true`; section 22.4 found it consistent and it was not touched.
+
+## 24. Follow-up: Phase 16.13 hosted CI result for the script-test repair (added after Phase 16.13)
+
+Sections 1 to 23 are left as written. This section records what hosted CI did with
+commit `f50c9c3`. It is evidence about one naturally triggered run; no workflow was
+dispatched or rerun, and nothing in the repository was changed for it.
+
+### 24.1 What ran
+
+| Item             | Value                                                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Commit           | `f50c9c333f90143325c54e06c118a9e61030fe6b`, "fix: pass raw manifest paths to a shell-less pnpm in API script tests (phase 16.13)" |
+| Push             | `6fcf4cb..f50c9c3`, fast-forward, no force                                                                                        |
+| Run              | `38396021924`, workflow `CI`, event `pull_request`, conclusion **success**                                                        |
+| Merge SHA tested | `2c9f9890d97bc135896d95aa492f92e81d549a3a` (`f50c9c3` merged into `main` at `dc5b31ea30eb9c624888f8fbf524eea1fcfc7294`)           |
+| Runner           | hosted Linux, Node v22.23.3                                                                                                       |
+| PR #25           | still a draft, open, unmerged, `MERGEABLE`                                                                                        |
+
+### 24.2 The four jobs
+
+| Job                         | Job id         | Conclusion  | Duration |
+| --------------------------- | -------------- | ----------- | -------- |
+| Checks                      | `115291316798` | **success** | 2 m 11 s |
+| Interactive browser journey | `115291316467` | **success** | 5 m 21 s |
+| Production browser smoke    | `115291316881` | **success** | 58 s     |
+| Isolated integration        | `115291317055` | **success** | 1 m 26 s |
+
+### 24.3 Checks reached the offline evaluations and the build
+
+Every step succeeded: install, `prisma:generate`, `types build`, `lint`,
+`typecheck`, `typecheck:scripts`, `pnpm test`, `eval:story:offline`,
+`eval:interactive:offline`, `eval:interactive:authoring:offline` and `pnpm build`.
+This is the first hosted run in which the three evals and the build executed; in
+section 22.2 they were skipped.
+
+| `pnpm test` package | Files      | Tests                 | Skipped |
+| ------------------- | ---------- | --------------------- | ------- |
+| `@book/types`       | 1 passed   | 2 passed              | none    |
+| `@book/web`         | 51 passed  | 823 passed            | none    |
+| `@book/api`         | 176 passed | 2660 passed (of 2660) | none    |
+
+The API total is the 2659 of section 22.2 plus the one test added in 23.2. The
+turbo build reported `3 successful, 3 total` (1 cached). The eval steps printed
+`PASS` lines for their valid and adversarial cases and exited 0.
+
+### 24.4 The formerly failing tests
+
+All three passed on Linux, with the raw path:
+
+| Spec                                             | Test                                                                  | Hosted time |
+| ------------------------------------------------ | --------------------------------------------------------------------- | ----------- |
+| `scripts/experiment-interrupt.spec.ts`           | whole file (1 test)                                                   | 5.6 s       |
+| `scripts/inspect-interactive-experiment.spec.ts` | `inspects a complete experiment from the repository root`             | 7.4 s       |
+| `scripts/inspect-interactive-experiment.spec.ts` | `inspects an interrupted checkpoint from the API package and exits 0` | 7.8 s       |
+
+The strengthened `reports the completeness mismatch of an inconsistent bundle at a
+path with spaces and leaves it unchanged` and the separate `fails through pnpm for a
+usage error with nothing on stdout` also passed; the file reported 28 of 28 tests.
+This confirms on Linux the mechanism inferred in 22.4 and 23.1: the literal quotes
+were the cause (the Linux call already ran without a shell).
+
+### 24.5 Browser and integration jobs
+
+| Job                         | Result                                                         | Skips, retries, flaky                                                                                              |
+| --------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Interactive browser journey | Playwright `55 passed (4.5m)`, 1 worker, `[1/55]` to `[55/55]` | none: no skipped, flaky or retry marker in the log; the failure-only artifact upload step was skipped, as designed |
+| Production browser smoke    | Playwright `1 passed (3.0s)`                                   | none                                                                                                               |
+| Isolated integration        | 27 files, 324 tests passed                                     | none                                                                                                               |
+
+The interactive job's API log had 0 `Unhandled exception`,
+`ERR_STREAM_UNABLE_TO_PIPE`, `ExceptionsHandler` or `statusCode=5xx` lines and
+printed "E2E fixtures cleaned up." once. All three passed on the first attempt,
+which is what one run shows, not a rate.
+
+### 24.6 Push-triggered runs (workflow-file configuration, not CI jobs)
+
+| Run           | Workflow                                | Event | Conclusion                   |
+| ------------- | --------------------------------------- | ----- | ---------------------------- |
+| `38396014832` | `.github/workflows/migrate.yml`         | push  | failure, workflow file issue |
+| `38396016392` | `.github/workflows/staging-backup.yml`  | push  | failure, workflow file issue |
+| `38396018099` | `.github/workflows/staging-monitor.yml` | push  | failure, workflow file issue |
+
+Same classification as 19.3 and 22.5: zero jobs each, because the files are fully
+commented out. They were not changed.
+
+### 24.7 State
+
+| Item                                                     | State                                                                      |
+| -------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `Checks`, evals, build, both browser jobs, integration   | **green** on `f50c9c3` / merge `2c9f9890`, one run                         |
+| API script-test quoting defect (22.4)                    | **resolved** on hosted Linux                                               |
+| Weak `INVALID`-only assertion in the script-process test | unchanged, see 23.5; not a failure                                         |
+| Three commented-out push workflows                       | still report zero-job failures; unrelated to the CI jobs                   |
+| PR #25                                                   | draft, unmerged; nothing deployed, no paid model call, no production write |
+
+There are no remaining CI blockers on this commit. Merging, any deployment and the
+workflow-file clean-up are separate decisions that were not made here.
