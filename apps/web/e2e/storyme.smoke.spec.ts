@@ -500,3 +500,131 @@ test('permanently deletes a synthetic published book and denies every captured a
   await page.reload();
   await expect(page.locator(`a[href="/dashboard/books/${bookId}"]`)).toHaveCount(0);
 });
+
+test.describe('dashboard navigation', () => {
+  const nav = (page: Page) => page.getByRole('navigation', { name: 'Dashboard' });
+  const content = (page: Page) => page.locator('#dashboard-content');
+  const SHOTS = 'test-results/dashboard-navigation';
+
+  async function expectCurrentSection(page: Page, name: string): Promise<void> {
+    await expect(nav(page).locator('[aria-current="page"]')).toHaveText([name]);
+  }
+
+  test('moves between books, child profiles and interactive stories with the current section marked', async ({
+    page,
+  }) => {
+    await login(page);
+    await expectCurrentSection(page, 'Family library');
+
+    await nav(page).getByRole('link', { name: 'Child profiles' }).click();
+    await expect(page).toHaveURL(/\/dashboard\/child-profiles$/);
+    await expect(page.getByRole('heading', { name: 'Child profiles', level: 1 })).toBeVisible();
+    await expectCurrentSection(page, 'Child profiles');
+
+    await nav(page).getByRole('link', { name: 'Interactive story' }).click();
+    await expect(page).toHaveURL(/\/dashboard\/interactive$/);
+    await expect(page.getByRole('heading', { name: 'Choose a story' })).toBeVisible();
+    await expectCurrentSection(page, 'Interactive story');
+
+    await nav(page).getByRole('link', { name: 'Family library' }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByRole('heading', { name: 'My Book Drafts' })).toBeVisible();
+    await page.getByRole('link', { name: 'New Book' }).click();
+    await expect(page).toHaveURL(/\/dashboard\/books\/new$/);
+    await expectCurrentSection(page, 'Family library');
+
+    await page.goto('/dashboard/credits');
+    await expect(nav(page)).toBeVisible();
+    await expect(nav(page).locator('[aria-current]')).toHaveCount(0);
+  });
+
+  test('reaches page content through a visible skip link and activates navigation by keyboard', async ({
+    page,
+  }) => {
+    await login(page);
+    // A full load gives keyboard navigation a fresh starting point at the top.
+    await page.goto('/dashboard');
+    await expect(page.getByRole('heading', { name: 'My Book Drafts' })).toBeVisible();
+
+    const skip = page.getByRole('link', { name: 'Skip to content' });
+    await page.keyboard.press('Tab');
+    await expect(skip).toBeFocused();
+    await expect(skip).toBeInViewport({ ratio: 1 });
+    const skipBox = (await skip.boundingBox())!;
+    expect(skipBox.width).toBeGreaterThan(40); // revealed, not the 1px sr-only clip
+    await page.screenshot({ path: `${SHOTS}/skip-link-focused.png` });
+
+    await page.keyboard.press('Enter');
+    await expect(content(page)).toBeFocused();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await page.keyboard.press('Tab');
+    expect(
+      await page.evaluate(() => {
+        const target = document.getElementById('dashboard-content')!;
+        return target !== document.activeElement && target.contains(document.activeElement);
+      }),
+    ).toBe(true);
+
+    await page.goto('/dashboard');
+    await expect(page.getByRole('heading', { name: 'My Book Drafts' })).toBeVisible();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(nav(page).getByRole('link', { name: 'Family library' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    const profilesLink = nav(page).getByRole('link', { name: 'Child profiles' });
+    await expect(profilesLink).toBeFocused();
+    expect(await profilesLink.evaluate((link) => getComputedStyle(link).boxShadow !== 'none')).toBe(
+      true,
+    ); // a visible focus ring
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/dashboard\/child-profiles$/);
+    await expectCurrentSection(page, 'Child profiles');
+  });
+
+  test('keeps every header control visible at 320px, 390px and desktop width with a long email', async ({
+    page,
+  }) => {
+    // One unbreakable token (no hyphens or spaces) well past a phone's width.
+    const email = `longsyntheticaddressforheaderwrap${Date.now()}@e2e.storyme.test`;
+    await page.goto('/register');
+    await page.getByLabel(/^Name/).fill('Long Address Reader');
+    await page.getByLabel('Email').fill(email);
+    await page.getByLabel('Password').fill(password);
+    await page.getByRole('button', { name: 'Create account' }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
+
+    for (const width of [320, 390, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const path of ['/dashboard', '/dashboard/interactive']) {
+        await page.goto(path);
+        const header = page.getByRole('banner');
+        await expect(header.getByText(email)).toBeVisible();
+
+        const metrics = await page.evaluate(() => ({
+          scrollWidth: document.documentElement.scrollWidth,
+          clientWidth: document.documentElement.clientWidth,
+        }));
+        expect(metrics.scrollWidth, `${path} at ${width}px`).toBeLessThanOrEqual(
+          metrics.clientWidth,
+        );
+        const headerBox = (await header.boundingBox())!;
+        expect(headerBox.x + headerBox.width).toBeLessThanOrEqual(width + 0.5);
+
+        const controls = [
+          ...(await header.getByRole('link').all()),
+          ...(await header.getByRole('button').all()),
+          header.getByText(email),
+          page.getByRole('button', { name: 'Resend verification email' }),
+        ];
+        expect(controls.length).toBe(6); // three sections, log out, email, resend
+        for (const control of controls) {
+          await expect(control).toBeInViewport({ ratio: 1 });
+        }
+        if (path === '/dashboard') {
+          await expect(page.getByRole('link', { name: 'New Book' })).toBeInViewport({ ratio: 1 });
+          await page.screenshot({ path: `${SHOTS}/header-${width}.png` });
+        }
+      }
+    }
+  });
+});
