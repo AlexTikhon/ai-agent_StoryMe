@@ -7,6 +7,124 @@ mode — no OpenAI key required, no network calls, fully deterministic.
 Looking for the interactive illustrated stories? They run on the same setup (steps 1–7; no
 generation worker is needed). Their walkthrough is [interactive-demo.md](interactive-demo.md).
 
+## One-command demo (`pnpm demo:local`)
+
+The quickest way to try everything (book generation, PDF, and the published interactive
+story) is one command that starts an isolated, throwaway environment and keeps it running
+until you press Ctrl+C. It does not change your `.env` files, your main Compose database, or
+anything under `apps/api/tmp` that does not belong to its synthetic account.
+
+### Before you start
+
+- Node.js ≥ 20, pnpm ≥ 9, and `pnpm install` already run.
+- Docker Desktop/Engine running (`docker ps` works).
+- Ports `5440` (PostgreSQL), `6380` (Redis), `4100` (API), and `3100` (web) free.
+
+### Start
+
+```bash
+pnpm demo:local
+```
+
+The command:
+
+1. refuses to run unless the database/Redis targets are the exact disposable ones
+   (`127.0.0.1:5440/storyme_e2e`, `127.0.0.1:6380/15`);
+2. refuses to run, without touching anything, if any of the four ports is in use or the
+   disposable Compose project `storyme-integration` already has containers (another demo or
+   E2E session). It never stops, resets, or attaches to someone else's environment;
+3. starts tmpfs-backed PostgreSQL and Redis, applies migrations, and seeds the synthetic
+   verified account;
+4. starts the API (with the embedded generation worker) on `4100` and Next.js on `3100`,
+   waits up to 4 minutes for both to answer, and only then prints the ready banner.
+
+Every child gets an explicit configuration: JWT auth with synthetic secrets, Home Edition on
+both API and web, mock story/character/image providers, local PDF/image storage, console
+email, Stripe billing disabled. Inherited provider settings and external-service credentials
+are removed, and the API's credential settings are pinned to inert values so that
+`apps/api/.env` cannot fill them back in. No paid or network provider can be reached.
+
+The first run takes a minute or two (API compile plus the first Next.js page compile).
+
+### Sign in
+
+When the banner appears, open **<http://127.0.0.1:3100>**. Use `127.0.0.1`, not `localhost`:
+the API allows only that origin, and the refresh cookie is tied to that host.
+
+| Field    | Value                             |
+| -------- | --------------------------------- |
+| Email    | `verified-login@e2e.storyme.test` |
+| Password | `StoryMeE2E1!`                    |
+
+The account is already email-verified. Its library also contains a few seeded fixture books
+(complete, failed, and not-yet-generated examples) besides the ones you create.
+
+### Walk through
+
+1. **Book.** Click **+ New Book**, complete the wizard, then click **Generate Story**. Mock
+   generation reaches `complete` in a few seconds. Home Edition charges no credits.
+2. **PDF.** On the completed book, click **Open PDF**, then **Download PDF** (both use
+   `GET /api/books/:id/pdf/preview`).
+3. **Interactive story.** Click **Interactive story** in the dashboard header, then
+   **Start story** on "The Last Delivery". Make a choice or two, then **reload the page**:
+   you are on the same scene, with the same items. The full route is in
+   [interactive-demo.md](interactive-demo.md#walk-through).
+
+Reloads and new tabs keep your progress for as long as the command runs.
+
+### Stop and data lifecycle
+
+Press **Ctrl+C** once and wait for `Demo stopped; disposable containers and synthetic data
+removed.` Teardown stops only the API/web processes this command started, removes the
+synthetic accounts and only their books' folders under `apps/api/tmp`, and deletes the
+`storyme-integration` containers and volumes. The data is **session-scoped**: PostgreSQL and
+Redis live in tmpfs, so nothing persists after teardown. The next run starts fresh.
+
+A failed start (bad target, a busy port, Docker failure, a readiness timeout, or the API/web
+exiting) tears down whatever that invocation already started, and the command exits with the
+original failure status. If a teardown step fails, every remaining step still runs, the
+failures are listed, and the command exits non-zero. A second Ctrl+C does not interrupt
+teardown.
+
+### If the demo does not start or stop cleanly
+
+- **`Refusing to start: port(s) … already in use`**: something else owns that port. On Windows run
+  `netstat -ano | findstr :4100` (or `:3100`, `:5440`, `:6380`); on macOS/Linux run
+  `lsof -i :4100`. It is usually a running `pnpm test:e2e:home`, an earlier demo still running
+  in another terminal, or a local service. Stop that yourself; the demo never will.
+- **`Compose project "storyme-integration" already has … container(s)`** means another demo or
+  E2E session is running. If you are sure it is stale (for example, a terminal was closed
+  mid-run), run `pnpm test:infra:down`.
+- **`Docker is not available`**: start Docker Desktop (or the Docker daemon) and wait until
+  `docker ps` works.
+- **`… did not become ready … within 240s`**: the logs above the message show which process
+  stalled. A stuck image pull or a slow first compile are the usual causes. Retry once the
+  images are pulled (`docker compose -f docker-compose.e2e.yml pull`).
+- **Web app exits immediately**: another `next dev` for `apps/web` (for example
+  `pnpm --filter @book/web dev`) can block a second one. Stop it and retry.
+- **Signed out after reload, or CORS errors**: you opened `localhost:3100`; use
+  `http://127.0.0.1:3100`.
+- **Terminal closed or process killed without Ctrl+C**: teardown could not run. Run
+  `pnpm test:infra:down` to remove the containers. Synthetic files may remain under
+  `apps/api/tmp/books/<id>` and `apps/api/tmp/images/…` (the IDs are the book IDs from the
+  browser URLs). Nothing removes them automatically, because the database that listed them is
+  gone.
+
+### Limitations
+
+- The API and the Docker ports listen on all interfaces (as in the E2E stack), so other
+  machines on your network can reach them while the demo runs. Next.js is bound to
+  `127.0.0.1`.
+- Non-credential tuning values in `apps/api/.env` (for example image-count limits) still
+  apply to the demo API. Providers, auth, storage, email, billing, and credentials are pinned.
+- `pnpm demo:local` and `pnpm test:e2e:home` share the same ports and Compose project, so they
+  cannot run at the same time.
+
+## Manual setup
+
+The rest of this guide sets up a longer-lived development environment by hand: the main
+Compose database, your own `.env`, and the default ports `4000`/`3000`.
+
 ## Prerequisites
 
 - Node.js ≥ 20
