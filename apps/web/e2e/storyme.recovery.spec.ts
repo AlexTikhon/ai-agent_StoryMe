@@ -1,4 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import type {
+  GenerationDiagnosticsDto,
+  GenerationJobSummary,
+  GenerationProviderCallMetadata,
+} from '@book/types';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
@@ -27,11 +32,17 @@ interface E2eBook {
   } | null;
 }
 
-interface E2eDiagnostics {
-  status: string;
-  errorMessage?: string | null;
-  imageFailures: Array<{ assetLabel: string; provider: string }>;
-  latestJob?: { type: string; status: string } | null;
+/**
+ * One generation run as diagnostics reports it. `latestJob` and
+ * `providerUsage` are both projected from the newest GenerationRun, so they
+ * describe the run in progress or just finished. `imageFailures` and `resume`
+ * are read from Book.imageGenerationResult, which only a successful
+ * publication replaces: after a failed run they still describe the published
+ * edition, not the failure.
+ */
+interface RunEvidence {
+  job: GenerationJobSummary;
+  calls: GenerationProviderCallMetadata[];
 }
 
 /** Everything a reader can observe about one published edition. */
@@ -69,10 +80,45 @@ async function readBook(page: Page, token: string, bookId: string): Promise<E2eB
   return (await response.json()) as E2eBook;
 }
 
-async function readDiagnostics(page: Page, token: string, bookId: string): Promise<E2eDiagnostics> {
+async function readDiagnostics(
+  page: Page,
+  token: string,
+  bookId: string,
+): Promise<GenerationDiagnosticsDto> {
   const response = await apiGet(page, token, `/books/${bookId}/generation-diagnostics`);
   expect(response.status()).toBe(200);
-  return (await response.json()) as E2eDiagnostics;
+  return (await response.json()) as GenerationDiagnosticsDto;
+}
+
+function latestJob(diagnostics: GenerationDiagnosticsDto): GenerationJobSummary {
+  expect(diagnostics.latestJob?.id).toBeTruthy();
+  return diagnostics.latestJob!;
+}
+
+/**
+ * The latest run's identity and provider ledger. Only the durable per-run
+ * ledger reports `actualDispatches`; its absence would mean providerUsage
+ * fell back to the published edition's embedded snapshot.
+ */
+function latestRunEvidence(diagnostics: GenerationDiagnosticsDto): RunEvidence {
+  const job = latestJob(diagnostics);
+  expect(diagnostics.providerUsage).toBeTruthy();
+  expect(typeof diagnostics.providerUsage!.actualDispatches).toBe('number');
+  // Mock providers only: nothing in any run may reach a paid provider.
+  expect(diagnostics.providerUsage!.actualPaidCalls).toBe(0);
+  expect(diagnostics.providerUsage!.calls.every(({ provider }) => provider === 'mock')).toBe(true);
+  return { job, calls: diagnostics.providerUsage!.calls };
+}
+
+function illustrationCalls(
+  calls: GenerationProviderCallMetadata[],
+  assetLabel?: string,
+): GenerationProviderCallMetadata[] {
+  return calls.filter(
+    (call) =>
+      call.operation === 'illustration' &&
+      (assetLabel === undefined || call.assetLabel === assetLabel),
+  );
 }
 
 /** Bounded poll of the persisted book status through the API. */
@@ -172,6 +218,9 @@ test('recovers a published book through a real failure, retry, and cancellation'
   let bookId = '';
   let original: Publication;
   let replacement: Publication;
+  // Each user action creates a new GenerationRun; distinct ids prove that the
+  // evidence read after it belongs to that run and not to an earlier one.
+  const runIds: string[] = [];
 
   await test.step('sign in with the synthetic account', async () => {
     token = await login(page);
@@ -193,6 +242,12 @@ test('recovers a published book through a real failure, retry, and cancellation'
       timeout: GENERATION_TIMEOUT_MS,
     });
     await waitForStatus(page, token, bookId, 'complete');
+
+    const { job, calls } = latestRunEvidence(await readDiagnostics(page, token, bookId));
+    expect(job).toMatchObject({ type: 'generate', status: 'completed' });
+    // Match 1 of the page-2 illustration: counted by the injector, not failed.
+    expect(illustrationCalls(calls, 'page_2').map(({ status }) => status)).toEqual(['success']);
+    runIds.push(job.id);
   });
 
   await test.step('capture the published edition, text, PDF, and cover', async () => {
@@ -212,14 +267,31 @@ test('recovers a published book through a real failure, retry, and cancellation'
     await waitForStatus(page, token, bookId, 'failed');
     const diagnostics = await readDiagnostics(page, token, bookId);
     expect(diagnostics.status).toBe('failed');
-    expect(diagnostics.latestJob).toMatchObject({ type: 'generate', status: 'failed' });
-    // Only the injected page-2 illustration failed; PDF assembly then refused
-    // to publish an incomplete book.
-    expect(diagnostics.imageFailures.map(({ assetLabel }) => assetLabel)).toEqual(['page_2']);
-    expect(diagnostics.imageFailures[0]).toMatchObject({ provider: 'mock' });
-    expect(diagnostics.errorMessage ?? '').toMatch(
-      /missing generated illustration\(s\) for page 2\./,
-    );
+    const { job, calls } = latestRunEvidence(diagnostics);
+    // Regeneration keeps reporting the legacy `generate` job type.
+    expect(job).toMatchObject({ type: 'generate', status: 'failed', failedStep: 'pdf_render' });
+    expect(runIds).not.toContain(job.id);
+    runIds.push(job.id);
+
+    // Only the injected page-2 illustration failed, once, at the mock provider;
+    // every other illustration in this run succeeded.
+    const illustrations = illustrationCalls(calls);
+    expect(illustrations.filter(({ status }) => status !== 'success')).toEqual([
+      expect.objectContaining({
+        assetLabel: 'page_2',
+        provider: 'mock',
+        status: 'error',
+        failureKind: 'provider_error',
+      }),
+    ]);
+    expect(illustrationCalls(calls, 'page_2')).toHaveLength(1);
+    expect(illustrations.some(({ status }) => status === 'success')).toBe(true);
+    expect(calls.filter(({ status }) => status !== 'success')).toHaveLength(1);
+
+    // PDF assembly then refused to publish an incomplete book.
+    for (const message of [diagnostics.errorMessage, job.errorMessage]) {
+      expect(message ?? '').toMatch(/missing generated illustration\(s\) for page 2\./);
+    }
     await expect(page.getByText(/new version could not be generated/i)).toBeVisible({
       timeout: 15_000,
     });
@@ -249,7 +321,17 @@ test('recovers a published book through a real failure, retry, and cancellation'
   await test.step('publish a new edition with valid bytes and updated content', async () => {
     await waitForStatus(page, token, bookId, 'complete');
     const diagnostics = await readDiagnostics(page, token, bookId);
-    expect(diagnostics.latestJob).toMatchObject({ type: 'retry', status: 'completed' });
+    const { job, calls } = latestRunEvidence(diagnostics);
+    expect(job).toMatchObject({ type: 'retry', status: 'completed' });
+    expect(runIds).not.toContain(job.id);
+    runIds.push(job.id);
+    // The retry may reuse checkpointed story and illustrations, but the missing
+    // page 2 must be produced again (match 3), and nothing in this run failed.
+    expect(illustrationCalls(calls, 'page_2')).toEqual([
+      expect.objectContaining({ provider: 'mock', status: 'success' }),
+    ]);
+    expect(calls.filter(({ status }) => status !== 'success')).toEqual([]);
+    // The retry's publication replaced the Book-level image diagnostics.
     expect(diagnostics.imageFailures).toEqual([]);
 
     replacement = await capturePublication(page, token, bookId);
@@ -292,9 +374,12 @@ test('recovers a published book through a real failure, retry, and cancellation'
 
   await test.step('keep the last successful publication after cancellation and reload', async () => {
     await waitForStatus(page, token, bookId, 'cancelled');
-    expect((await readDiagnostics(page, token, bookId)).latestJob).toMatchObject({
-      status: 'cancelled',
-    });
+    // Only the run identity is read: a run cancelled before a worker claims it
+    // has no provider ledger, and providerUsage then falls back to the
+    // published edition's snapshot, which is not this run's telemetry.
+    const job = latestJob(await readDiagnostics(page, token, bookId));
+    expect(job).toMatchObject({ type: 'generate', status: 'cancelled' });
+    expect(runIds).not.toContain(job.id);
     expect(await capturePublication(page, token, bookId)).toEqual(replacement);
 
     await page.reload();
