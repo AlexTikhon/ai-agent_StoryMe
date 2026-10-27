@@ -116,6 +116,12 @@ export const PROFILES = Object.freeze({
         ]),
         startsServers: true,
       },
+      // Runs only after the journeys pass, on the same infrastructure, with its
+      // own API whose mock image provider fails once (playwright.recovery.config.ts).
+      {
+        ...pnpmStep('Recovery journey', ['--filter', '@book/web', 'test:e2e:recovery']),
+        startsServers: true,
+      },
     ],
     cleanup: [
       // Idempotent and scoped to the synthetic accounts; covers a cancelled or
@@ -130,7 +136,7 @@ export const PROFILES = Object.freeze({
       },
     ],
     outOfScope: [
-      'Playwright specs other than storyme.smoke and interactive, and browsers other than Chromium',
+      'Playwright specs other than storyme.smoke, interactive and storyme.recovery, and browsers other than Chromium',
       'lint, typecheck, unit tests, offline evals: run --profile offline',
       'API integration suite: run --profile integration',
       NOT_IN_THIS_STEP,

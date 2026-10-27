@@ -22,6 +22,8 @@ const sharedEnv = {
 
 export default defineConfig({
   testDir: './e2e',
+  // Needs the failure injection only playwright.recovery.config.ts configures.
+  testIgnore: '**/*.recovery.spec.ts',
   fullyParallel: false,
   workers: 1,
   timeout: 90_000,

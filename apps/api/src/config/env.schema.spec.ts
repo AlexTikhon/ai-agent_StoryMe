@@ -503,4 +503,25 @@ describe('envSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('MOCK_FAILURE_ON_MATCH', () => {
+    const REQUIRED = {
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+    };
+
+    it('is unset by default and accepts a positive integer', () => {
+      const unset = envSchema.safeParse(REQUIRED);
+      expect(unset.success && unset.data.MOCK_FAILURE_ON_MATCH).toBeUndefined();
+      const set = envSchema.safeParse({ ...REQUIRED, MOCK_FAILURE_ON_MATCH: '2' });
+      expect(set.success && set.data.MOCK_FAILURE_ON_MATCH).toBe(2);
+    });
+
+    it.each(['0', '-1', '1.5', 'two'])('rejects %j', (value) => {
+      const result = envSchema.safeParse({ ...REQUIRED, MOCK_FAILURE_ON_MATCH: value });
+      expect(result.success).toBe(false);
+    });
+  });
 });

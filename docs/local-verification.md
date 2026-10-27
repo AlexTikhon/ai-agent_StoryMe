@@ -16,11 +16,11 @@ profile is rejected with exit status `2` before anything runs.
 
 ## Profiles
 
-| Profile       | Runs                                                                                                                                                                                                                                                                                      | Needs                                                                         |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `offline`     | Prisma client generation, `@book/types` build, `pnpm lint`, `pnpm typecheck`, `pnpm --filter @book/api typecheck:scripts`, `pnpm test`, `pnpm eval:story:offline`, `pnpm eval:interactive:offline`, `pnpm eval:interactive:authoring:offline`                                             | `pnpm install` only. No Docker, no network                                    |
-| `integration` | Ownership preflight, Prisma client, `@book/types` build, disposable PostgreSQL/Redis, the complete API integration suite (`apps/api/scripts/run-integration-tests.mjs`), teardown                                                                                                         | Docker running; ports `5440`, `6380` free                                     |
-| `browser`     | Ownership preflight, Chromium launch probe, Prisma client, `@book/types` build, disposable PostgreSQL/Redis, `e2e/storyme.smoke.spec.ts` and `e2e/interactive.spec.ts` through `apps/web/playwright.config.ts`, fixture cleanup, teardown, a check that ports `4100`/`3100` were released | Docker running; Chromium installed; ports `5440`, `6380`, `4100`, `3100` free |
+| Profile       | Runs                                                                                                                                                                                                                                                                                                                                                                                      | Needs                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `offline`     | Prisma client generation, `@book/types` build, `pnpm lint`, `pnpm typecheck`, `pnpm --filter @book/api typecheck:scripts`, `pnpm test`, `pnpm eval:story:offline`, `pnpm eval:interactive:offline`, `pnpm eval:interactive:authoring:offline`                                                                                                                                             | `pnpm install` only. No Docker, no network                                    |
+| `integration` | Ownership preflight, Prisma client, `@book/types` build, disposable PostgreSQL/Redis, the complete API integration suite (`apps/api/scripts/run-integration-tests.mjs`), teardown                                                                                                                                                                                                         | Docker running; ports `5440`, `6380` free                                     |
+| `browser`     | Ownership preflight, Chromium launch probe, Prisma client, `@book/types` build, disposable PostgreSQL/Redis, `e2e/storyme.smoke.spec.ts` and `e2e/interactive.spec.ts` through `apps/web/playwright.config.ts`, then the [recovery journey](recovery-demo.md) through `apps/web/playwright.recovery.config.ts`, fixture cleanup, teardown, a check that ports `4100`/`3100` were released | Docker running; Chromium installed; ports `5440`, `6380`, `4100`, `3100` free |
 
 The `offline` profile is the CI `Checks` job without `pnpm build`. Production builds are not
 part of `verify:local`. The Docker profiles do not rerun the offline checks.
@@ -30,6 +30,11 @@ synthetic fixtures, starts the API and the web app, and removes the fixtures in 
 teardown. `verify:local` runs the same scoped fixture cleanup again afterwards, so a cancelled
 or crashed run does not leave synthetic book folders under `apps/api/tmp`. It does not start the
 interactive demo launcher.
+
+The recovery journey runs only after the other journeys pass, on the same disposable
+PostgreSQL/Redis. It starts its own API and web servers, whose mock image provider fails once
+on purpose, so the ordinary journeys never see that failure. See
+[recovery-demo.md](recovery-demo.md).
 
 ## Environment
 

@@ -18,6 +18,7 @@ const OFFLINE_COMMANDS = [
 ];
 const BROWSER_SUITE =
   'pnpm --filter @book/web test:e2e e2e/storyme.smoke.spec.ts e2e/interactive.spec.ts';
+const RECOVERY_SUITE = 'pnpm --filter @book/web test:e2e:recovery';
 const LEAKED_SECRET = 'sk-live-should-not-leak';
 
 function fakeChild(key) {
@@ -206,8 +207,9 @@ test('integration acquires infra after the read-only probes and always releases 
   assert.match(h.summary(), /Result: PASS/);
 });
 
-test('browser runs the two journeys through Playwright and cleans up what it owns', async () => {
-  const h = harness();
+test('browser runs the journeys, then the recovery journey, and cleans up what it owns', async () => {
+  // A developer shell's failure settings must not reach either Playwright run.
+  const h = harness({ env: { MOCK_FAILURE_STAGE: 'story', MOCK_FAILURE_ON_MATCH: '1' } });
   assert.equal(await h.run(['--profile=browser']), 0);
   assert.deepEqual(h.calls, [
     'port:5440',
@@ -219,6 +221,7 @@ test('browser runs the two journeys through Playwright and cleans up what it own
     ...PREPARE.map((command) => `run:${command}`),
     `run:${launcher('infra-up')}`,
     `run:${BROWSER_SUITE}`,
+    `run:${RECOVERY_SUITE}`,
     `run:${launcher('cleanup')}`,
     `run:${launcher('infra-down')}`,
   ]);
@@ -230,6 +233,15 @@ test('browser runs the two journeys through Playwright and cleans up what it own
   assert.equal(suiteEnv.OPENAI_API_KEY, 'storyme-demo-openai-disabled');
   assert.equal(suiteEnv.STRIPE_SECRET_KEY, '');
   assert.equal(suiteEnv.STORY_GENERATION_PROVIDER, 'mock');
+  // The recovery config, not the shared environment, owns its failure injection.
+  const recoveryEnv = h.envs[RECOVERY_SUITE];
+  assert.equal(recoveryEnv.DATABASE_URL, TEST_TARGET.databaseUrl);
+  assert.equal(recoveryEnv.OPENAI_API_KEY, 'storyme-demo-openai-disabled');
+  assert.equal(recoveryEnv.IMAGE_GENERATION_PROVIDER, 'mock');
+  for (const env of [suiteEnv, recoveryEnv]) {
+    assert.ok(!Object.keys(env).some((key) => key.startsWith('MOCK_FAILURE')));
+  }
+  assert.equal(row(h.summary(), 'Recovery journey').status, 'PASS');
   assert.equal(row(h.summary(), 'Owned server ports released').status, 'PASS');
   assert.ok(!h.output().includes(LEAKED_SECRET));
 });
@@ -388,6 +400,32 @@ test('browser: a failed suite still runs the scoped fixture cleanup and teardown
   ]);
 });
 
+test('browser: failing journeys skip the recovery journey', async () => {
+  const h = harness({ exits: { [BROWSER_SUITE]: 1 } });
+  assert.equal(await h.run(['--profile', 'browser']), 1);
+  assert.ok(!h.commands().includes(RECOVERY_SUITE));
+  assert.deepEqual(row(h.summary(), 'Recovery journey'), {
+    status: 'NOT RUN',
+    reason: 'not scheduled: Browser journeys did not pass',
+  });
+  assert.match(h.summary(), /- Recovery journey \(NOT RUN\)/);
+});
+
+test('browser: a failed recovery journey keeps its status and still cleans up', async () => {
+  const h = harness({ exits: { [RECOVERY_SUITE]: 7 } });
+  assert.equal(await h.run(['--profile', 'browser']), 7);
+  assert.deepEqual(h.commands().slice(-4), [
+    BROWSER_SUITE,
+    RECOVERY_SUITE,
+    launcher('cleanup'),
+    launcher('infra-down'),
+  ]);
+  const summary = h.summary();
+  assert.equal(row(summary, 'Browser journeys').status, 'PASS');
+  assert.deepEqual(row(summary, 'Recovery journey'), { status: 'FAIL', reason: 'exit 7' });
+  assert.match(summary, /Result: FAIL \(exit 7\)/);
+});
+
 // ─── Cancellation ───────────────────────────────────────────────────────────
 
 test('cancelling the integration suite stops it, tears down, and exits 130', async () => {
@@ -416,6 +454,20 @@ test('cancelling the browser run stops Playwright, then cleans fixtures and infr
     `run:${launcher('cleanup')}`,
     `run:${launcher('infra-down')}`,
   ]);
+});
+
+test('cancelling the recovery journey stops it, then cleans fixtures and infra', async () => {
+  const h = harness({
+    exits: { [RECOVERY_SUITE]: 'hang' },
+    onHang: (_key, _child, verifier) => setImmediate(() => verifier.cancel('SIGINT')),
+  });
+  assert.equal(await h.run(['--profile', 'browser']), 130);
+  assert.deepEqual(h.calls.slice(-3), [
+    `stop:${RECOVERY_SUITE}`,
+    `run:${launcher('cleanup')}`,
+    `run:${launcher('infra-down')}`,
+  ]);
+  assert.match(row(h.summary(), 'Recovery journey').reason, /^interrupted by SIGINT/);
 });
 
 test('cancelling before infrastructure is acquired starts and tears down nothing', async () => {
