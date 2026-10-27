@@ -39,7 +39,7 @@ const INHERITED_SERVICE =
 // child does not already define, so stripping is not enough: each credential the
 // schema accepts is pinned to an inert value. OPENAI_API_KEY must be non-empty to
 // pass validation; it is only read when a provider is "openai", never here.
-const API_CREDENTIAL_BLOCKS = Object.freeze({
+export const API_CREDENTIAL_BLOCKS = Object.freeze({
   OPENAI_API_KEY: 'storyme-demo-openai-disabled',
   ANTHROPIC_API_KEY: '',
   FAL_API_KEY: '',
@@ -60,7 +60,7 @@ const API_CREDENTIAL_BLOCKS = Object.freeze({
   PDF_STORAGE_SECRET_ACCESS_KEY: '',
 });
 
-function inheritedEnvironment(base) {
+export function inheritedEnvironment(base) {
   return Object.fromEntries(
     Object.entries(base).filter(
       ([key, value]) =>
@@ -439,7 +439,7 @@ export async function defaultIsPortInUse(port) {
   return acceptsConnections(port);
 }
 
-function defaultListProjectContainers() {
+export function defaultListProjectContainers() {
   const result = spawnSync(
     'docker',
     ['ps', '-a', '-q', '--filter', `label=com.docker.compose.project=${DEMO.composeProject}`],

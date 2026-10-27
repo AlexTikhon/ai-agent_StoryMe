@@ -7,6 +7,9 @@ mode — no OpenAI key required, no network calls, fully deterministic.
 Looking for the interactive illustrated stories? They run on the same setup (steps 1–7; no
 generation worker is needed). Their walkthrough is [interactive-demo.md](interactive-demo.md).
 
+To check the repository rather than try the app, use `pnpm verify:local`; see
+[local-verification.md](local-verification.md).
+
 ## One-command demo (`pnpm demo:local`)
 
 The quickest way to try everything (book generation, PDF, and the published interactive
@@ -118,7 +121,8 @@ teardown.
 - Non-credential tuning values in `apps/api/.env` (for example image-count limits) still
   apply to the demo API. Providers, auth, storage, email, billing, and credentials are pinned.
 - `pnpm demo:local` and `pnpm test:e2e:home` share the same ports and Compose project, so they
-  cannot run at the same time.
+  cannot run at the same time. `pnpm verify:local --profile integration` and `--profile browser`
+  use them too and refuse to start while a demo is running.
 
 ## Manual setup
 
