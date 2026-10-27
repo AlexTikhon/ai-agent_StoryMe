@@ -123,6 +123,8 @@ export const envSchema = z
     MOCK_FAILURES_ENABLED: z.enum(['true', 'false']).default('false'),
     MOCK_FAILURE_STAGE: z.enum(['story', 'character', 'image']).optional(),
     MOCK_FAILURE_PAGE: z.coerce.number().int().positive().optional(),
+    // Fail only this 1-based matching invocation, once; unset fails every match.
+    MOCK_FAILURE_ON_MATCH: z.coerce.number().int().positive().optional(),
     MOCK_STAGE_DELAY_MS: z.coerce.number().int().nonnegative().max(60_000).default(0),
     // Phase 5B bounded repair. Disabled by default; when enabled the story
     // provider may make at most one additional typed call after deterministic

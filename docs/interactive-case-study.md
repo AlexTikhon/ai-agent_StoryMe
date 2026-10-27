@@ -164,7 +164,12 @@ assumptions, not measured limits ([limitations](CURRENT_PRODUCT.md#interactive-l
    network faults.
 3. **Configured CI**: [ci.yml](../.github/workflows/ci.yml) defines jobs that run the unit tests
    and both evals, the isolated integration suite, and the `Interactive browser journey` spec.
-4. **Remotely verified CI: none.** No remote run has been inspected.
+4. **Remotely verified CI:** after this case study was written, hosted run `38396021924` on
+   `f50c9c3` (PR #25, merged as `fd870ef`) passed all four jobs, including the interactive
+   browser journey
+   ([interactive-verification.md §24](interactive-verification.md#24-follow-up-phase-1613-hosted-ci-result-for-the-script-test-repair-added-after-phase-1613)).
+   No hosted run exists for the later closeout commits; their local results are in
+   [PROJECT_CLOSEOUT.md](PROJECT_CLOSEOUT.md).
 
 **Reviewer path**
 

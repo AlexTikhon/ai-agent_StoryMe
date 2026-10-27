@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:production": "playwright test --config playwright.production.config.ts",
+    "test:e2e:recovery": "playwright test --config playwright.recovery.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },

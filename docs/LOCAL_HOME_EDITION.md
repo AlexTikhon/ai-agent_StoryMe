@@ -34,4 +34,4 @@ Use Ctrl+C for the three processes and `docker compose stop postgres redis` for 
 
 ## Failure injection
 
-With mock providers only, set `MOCK_FAILURES_ENABLED=true` in a development/test process, then optionally `MOCK_FAILURE_STAGE=story|character|image`, `MOCK_FAILURE_PAGE=N`, and `MOCK_STAGE_DELAY_MS=0..60000`. It is disabled by default and production startup rejects activation. Never combine failure testing with real providers.
+With mock providers only, set `MOCK_FAILURES_ENABLED=true` in a development/test process, then optionally `MOCK_FAILURE_STAGE=story|character|image`, `MOCK_FAILURE_PAGE=N`, `MOCK_FAILURE_ON_MATCH=N` (fail only the Nth matching call, once; unset fails every match), and `MOCK_STAGE_DELAY_MS=0..60000`. It is disabled by default and production startup rejects activation. Never combine failure testing with real providers.

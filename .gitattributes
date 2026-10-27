@@ -1,0 +1,20 @@
+# Prettier enforces endOfLine=lf, and the repository stores LF. Check text out
+# as LF on every platform, regardless of a local core.autocrlf setting.
+* text=auto eol=lf
+
+# Binary assets are never converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+
+# Windows command scripts, if any are added, keep CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf

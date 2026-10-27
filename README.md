@@ -9,273 +9,129 @@ StoryMe is a pnpm/Turborepo monorepo with two supported products:
   scenario, "The Last Delivery", is published. A separate offline authoring
   workflow can draft further scenarios with a model, validates them
   mechanically, and stops at review artifacts: nothing is published without a
-  human decision recorded in source control.
-- **Personalized children's books.** Fill in a child's name, age, and a theme;
-  a queued pipeline produces a short illustrated story and a downloadable PDF.
-  This workflow is unchanged and documented below.
+  human decision recorded in source control. No language model runs during play.
+- **Personalized children's books.** Fill in a child's name, age, language and
+  a theme; a durable queued pipeline (PostgreSQL, outbox, BullMQ/Redis worker)
+  produces a short illustrated story and a downloadable PDF, with retry,
+  cancellation and a published edition that survives a failed regeneration.
 
-**Start here:**
+Development is paused. **[docs/PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md)**
+records the verified candidate, what was and was not verified, and how to return
+to the project.
 
-- **[Engineering case study](docs/interactive-case-study.md)** — the interactive
-  product's design decisions, failure behavior, evidence and limits, with links
-  to the code and tests behind each claim.
-- **[Interactive demo](docs/interactive-demo.md)** — a reproducible walkthrough
-  of the reader and of the offline authoring workflow (Windows PowerShell).
-- [Interactive section of CURRENT_PRODUCT](docs/CURRENT_PRODUCT.md#interactive-illustrated-stories)
-  — implemented behavior, routes, limits and trade-offs.
-- Implementation docs: [engine](apps/api/docs/interactive-engine.md) and
-  [authoring](apps/api/docs/interactive-authoring.md).
+## Run the demo
 
-```mermaid
-flowchart LR
-  subgraph Runtime
-    A[Authenticated command] --> B[Transaction and revision checks]
-    B --> C[Deterministic engine]
-    C --> D[Persisted events and public views]
-  end
-  subgraph Authoring
-    E[Brief] --> F[Bounded provider generation and repair]
-    F --> G[Mechanical validation]
-    G --> H[Pending review artifacts]
-    H --> I[Explicit human publication process]
-  end
-  I -.->|versioned scenario in source| C
-```
-
-No language model runs during play. Real-model authoring quality is
-unverified: the authoring workflow has been exercised only with a deterministic
-mock provider, scripted fixtures over a three-entry offline corpus, and
-intercepted HTTP for the OpenAI adapter. No paid experiment has been run.
-
-## Durable integration tests
-
-The API integration suite owns a disposable PostgreSQL/Redis target and
-refuses the main development database. Docker Desktop/Engine must be running.
+Needs Node.js ≥ 20, pnpm 9, Docker running, and ports `5440`, `6380`, `4100`,
+`3100` free.
 
 ```bash
-pnpm test:infra:up
-pnpm --filter @book/api test:integration
-pnpm test:infra:down
+pnpm install
+pnpm demo:local      # disposable stack, mock providers; open http://127.0.0.1:3100
+pnpm demo:capture    # in a second terminal: EN/RU/PL books, PDFs, screenshots, manifest
 ```
 
-`test:infra:up` waits for Compose health checks. The API runner then verifies
-ports `5440`/`6380`, deploys Prisma migrations, removes paid-provider
-credentials, and runs the serial real-infrastructure suite. Always run
-`test:infra:down` when finished; it removes only the named disposable Compose
-project and volumes.
+`demo:local` prints the synthetic sign-in when it is ready and removes its
+containers and synthetic data on Ctrl+C. `demo:capture` writes to the ignored
+`artifacts/demo-showcase/` directory, which teardown does not touch.
 
-## Children's-book generator
+- [Local demo](docs/local-demo.md): the one-command demo and the manual setup.
+- [Showcase capture](docs/demo-showcase.md): output, checks and a recording script.
+- [Interactive demo](docs/interactive-demo.md): the reader and the offline
+  authoring workflow (Windows PowerShell).
+- [Recovery demo](docs/recovery-demo.md): a browser journey through a provider
+  failure, a retry and a cancellation.
 
-The book workflow: fill in a child's name, age, and a theme, and the pipeline
-produces a short illustrated story and a downloadable PDF.
+All demos use deterministic mock providers. They show the product and pipeline
+working, not real-model quality.
 
-**Start with [docs/CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md).** It is the
-source of truth for implemented behavior, real routes, providers, storage,
-workflow, limitations, local setup, and tests.
+## Verify
 
-The root [PRD](PRD.md), [API specification](API_SPEC.md),
-[architecture](ARCHITECTURE.md), [backend design](BACKEND_DESIGN.md),
-[frontend design](FRONTEND_DESIGN.md), [UX specification](UX_SPEC.md),
-[design system](DESIGN_SYSTEM.md), and [roadmap](ROADMAP.md) are historical
-or future design references. They preserve useful intent and superseded
-decisions but are not implementation contracts.
+```bash
+pnpm verify:local --profile offline       # lint, typecheck, unit tests, offline evals
+pnpm verify:local --profile integration   # API integration suite on disposable PostgreSQL/Redis
+pnpm verify:local --profile browser       # browser journeys + recovery journey
+```
 
-This is a pnpm/Turborepo monorepo:
+The Docker profiles report `UNAVAILABLE`, and change nothing, if their ports or
+the `storyme-integration` Compose project are already in use. Production builds
+are not part of `verify:local`; the production browser smoke is
+`pnpm --filter @book/web build` followed by
+`pnpm --filter @book/web test:e2e:production`. See
+[local-verification.md](docs/local-verification.md) and the exact commands in
+[PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md#reproduce).
 
-- `apps/api` (`@book/api`) — NestJS API, Prisma/Postgres
-- `apps/web` (`@book/web`) — Next.js frontend
-- `packages/types` (`@book/types`) — types shared between API and web
+## Engineering case studies
 
-## Quick start
+Each claim links to the code and tests behind it:
 
-See **[docs/local-demo.md](docs/local-demo.md)** for the full local setup and
-demo walkthrough (install → Docker infra → migrate → run API/web → create and
-generate a book → download the PDF). The interactive story reader runs on the
-same setup; its walkthrough is **[docs/interactive-demo.md](docs/interactive-demo.md)**.
+- [Book generation pipeline](docs/generation-case-study.md): scheduling and the
+  outbox, fencing, checkpoints and reuse, publication, provider budgets.
+- [Interactive stories](docs/interactive-case-study.md): the engine, lost-response
+  recovery, bounded authoring and the human approval boundary.
 
-## What the book generator does
+## Documentation
 
-- Create a book from a short form (child's name/age, theme, language,
-  page count, optional educational message/dedication).
-- Generate the story (character, story plan, page plan, draft text,
-  illustration plan, images) in a durable queued pipeline. The detail page
-  polls a minimal `GenerationRun` projection and shows only major stages the
-  worker has durably entered (`char_build`, `story_plan`, `image_gen`,
-  `layout`, `pdf_render`), without invented percentages.
-- Render and preview/download the finished book as a PDF.
-- Correct the text of one completed story page with optimistic version checking; StoryMe reuses
-  all illustrations and republishes the PDF without an AI call or credit charge.
-- Request a server-owned quote, explicitly confirm a one-credit charge, and regenerate exactly one
-  page illustration while reusing the rest of the completed book.
-- Retry generation after a failure.
-- Keep the last published reader/PDF available during a running, failed, or cancelled regeneration.
-- Preview a server-owned provider-work estimate; hard call/image/cost limits are enforced before
-  charging or scheduling. Mock generation reports zero external cost.
-
-For the complete implemented/unimplemented boundary, use
-[CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md#implemented-and-unimplemented).
-Privacy and local artifacts are covered by
-[LOCAL_DATA_AND_PRIVACY.md](docs/LOCAL_DATA_AND_PRIVACY.md). The code-derived
-audit and recommended future phases are
-[CODEBASE_AUDIT.md](docs/CODEBASE_AUDIT.md) and
-[SMALL_PROD_PLAN.md](docs/SMALL_PROD_PLAN.md).
-
-## Authentication
-
-Real email/password auth (JWT access token + rotating `HttpOnly` refresh
-cookie) is implemented end-to-end — backend (`docs/auth-architecture.md`)
-and frontend (login/register pages, `AuthProvider`, protected `/dashboard`
-routes). Controlled by `AUTH_MODE` (API) / `NEXT_PUBLIC_AUTH_MODE` (web),
-both `dev | jwt`, defaulting to `jwt`. `dev` mode is kept as a documented
-local-only fallback: every request carries a hardcoded `x-user-email`
-header (`DevAuthGuard`) instead of a bearer token, no login screen, no
-credential check. See `apps/api/src/auth/dev-auth.guard.ts` and
-`apps/api/src/auth/auth-mode.guard.ts`. **The two `AUTH_MODE` values must
-match between API and web** or every request 401s.
-
-The default `PRODUCT_MODE=home` is private-family mode: generation and page-image confirmation
-remain guarded but cost zero credits, and purchase UI is hidden. Set both API `PRODUCT_MODE` and
-web `NEXT_PUBLIC_PRODUCT_MODE` to `demo` to retain the commercial credit/purchase behavior.
-
-## Historical completion notes
-
-The notes below preserve the sequence in which features landed. They are not
-the current product boundary; use `docs/CURRENT_PRODUCT.md` for that.
-
-- **Generation credit enforcement is implemented in opt-in demo mode:** every
-  `POST /books/:id/generate`, `retry-generation`, or `regenerate` call
-  charges 1 credit the moment the run is durably scheduled (not when
-  generation completes), returns the stable `402 { code:
-'INSUFFICIENT_CREDITS' }` if the balance is too low, and a run that later
-  fails is automatically refunded exactly once — see
-  [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E2".
-- **One-time credit purchasing via Stripe Checkout, including a frontend
-  purchase flow, is implemented** (`POST /api/billing/checkout` + the
-  `POST /api/billing/webhook` credit grant, plus `/dashboard/credits` and the
-  `/billing/success` / `/billing/cancel` return pages) — see
-  [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E3" and
-  "Phase E4". Billing remains disabled by default
-  (`STRIPE_BILLING_ENABLED=false`) until a deployment supplies real Stripe
-  configuration — the credits dashboard shows a clear unavailable state in
-  that case rather than a broken checkout button. **Subscriptions, the
-  Stripe customer portal, cancellation, promotional codes, and pay-per-book
-  PaymentIntents remain unimplemented** — the schema-default starter balance
-  (`User.credits` defaults to `3`) and a one-time Checkout purchase are
-  currently the only two ways an account gets credits.
-- ~~No queue-backed generation.~~ Generation now runs on a durable
-  BullMQ/Redis-backed queue (`GenerationQueueService`/`GenerationQueueProcessor`),
-  not in-process — Redis is on the critical path for scheduling generation.
-  See "Durable generation queue (Phase 3K)" in
-  `apps/api/docs/local-generation-pipeline.md`.
-- ~~No cancellation flow.~~ **User-initiated generation cancellation is fully
-  implemented, backend (Phase G1) and frontend (Phase G2):**
-  `POST /api/books/:id/cancel` fences out an in-progress (`queued`/`running`)
-  run, refunds its original charge exactly once (`0` for a legacy/unbilled
-  run), and lets a cancelled book start a fresh regeneration. The book detail
-  page shows a "Cancel generation" control (with a confirmation dialog and a
-  race-safe pending/cancelling state) whenever a book is actively generating,
-  and reports the refund outcome once the request completes — see
-  [apps/api/docs/local-generation-pipeline.md](apps/api/docs/local-generation-pipeline.md),
-  "Phase G1 — user-initiated cancellation" and "Phase G2 — frontend
-  cancellation UX." An in-flight external provider request is never aborted —
-  only its result is suppressed from publishing. `BookStatus.Partial` remains
-  an entirely unreached reserved state — no code path produces it.
-- ~~Russian/Polish PDF output is not production-ready.~~ The PDF renderer
-  now embeds Noto Sans (OFL-licensed, Latin/Cyrillic/Greek coverage), so
-  `ru` and `pl` books render correctly. See "Font / Unicode support" in
-  `apps/api/docs/pdf-rendering.md`.
-
-## Mock vs. real (OpenAI) generation
-
-Story and image generation each have a provider switch, both defaulting to a
-deterministic **mock** provider (no network calls, safe for tests/CI):
-
-- `STORY_GENERATION_PROVIDER` — `mock` (default) | `openai`
-- `IMAGE_GENERATION_PROVIDER` — `mock` (default) | `openai`
-
-Setting either to `openai` requires `OPENAI_API_KEY` and calls the real
-OpenAI API (real image generation costs money per call — see the
-`REAL_GENERATION_MAX_PAGES` guardrail in `.env.example`). Full details in
-`apps/api/docs/local-generation-pipeline.md`.
-
-## PDF storage
-
-`PDF_STORAGE_DRIVER` selects the backing store for generated PDFs:
-
-- `local` (default) — written to `apps/api/tmp/`, no external service needed.
-- `s3` / `r2` — requires the `PDF_STORAGE_*` credentials in `.env.example`
-  and is exercised with image storage by the manual `smoke:cloud-storage`
-  script, never by the normal test suite. See
-  `apps/api/docs/cloud-storage-smoke-test.md`.
-
-The PDF preview endpoint is always `GET /api/books/:id/pdf/preview`, regardless
-of driver.
-
-## Image asset storage
-
-`IMAGE_STORAGE_DRIVER` selects the backing store for generated cover/page
-images, independently of `PDF_STORAGE_DRIVER`:
-
-- `local` (default) — written to `apps/api/tmp/`, no external service needed.
-- `s3` / `r2` — reuses the **same** `PDF_STORAGE_*` credentials as PDF storage
-  above (bucket, region, endpoint, access key, secret); images are stored
-  under an `images/` prefix in that same bucket, so no separate credentials
-  are needed. Not exercised by the normal test suite (mocked there, same as
-  PDF storage).
+- [CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md) is the source of truth for
+  implemented behavior, routes, providers, storage and the
+  [implemented/unimplemented boundary](docs/CURRENT_PRODUCT.md#implemented-and-unimplemented).
+- Implementation notes: [generation pipeline](apps/api/docs/local-generation-pipeline.md),
+  [credits and billing](apps/api/docs/credits.md), [PDF rendering](apps/api/docs/pdf-rendering.md),
+  [interactive engine](apps/api/docs/interactive-engine.md),
+  [interactive authoring](apps/api/docs/interactive-authoring.md),
+  [auth](docs/auth-architecture.md), [privacy and local data](docs/LOCAL_DATA_AND_PRIVACY.md).
+- Deployment notes, not verified by the closeout:
+  [deployment-readiness.md](docs/deployment-readiness.md),
+  [staging-operations.md](docs/staging-operations.md),
+  [private-demo-deploy.md](docs/private-demo-deploy.md).
+- The root [PRD](PRD.md), [API specification](API_SPEC.md),
+  [architecture](ARCHITECTURE.md), [backend](BACKEND_DESIGN.md) and
+  [frontend](FRONTEND_DESIGN.md) designs, [UX specification](UX_SPEC.md),
+  [design system](DESIGN_SYSTEM.md) and [roadmap](ROADMAP.md) are historical
+  references, not implementation contracts.
 
 ## Environment
 
-Copy `.env.example` to `apps/api/.env` and adjust as needed — see
-[docs/local-demo.md](docs/local-demo.md#3-configure-environment) for the
-minimal setup. The web app needs no `.env` for local use; set
-`NEXT_PUBLIC_API_URL` in `apps/web/.env.local` only if the API runs elsewhere.
+Copy `.env.example` to `apps/api/.env` for manual runs
+([setup](docs/local-demo.md#3-configure-environment)); `demo:local` and
+`verify:local` need no `.env` and never edit one.
 
-`pnpm --filter @book/web dev` needs none of this — it falls back to
-`http://localhost:4000/api`. `pnpm --filter @book/web build` always runs in
-production mode, though, and this app refuses to fall back to localhost
-there (`apps/web/src/lib/api/config.ts`) — a `check-build-env.js` prebuild
-step fails fast with one clear message if `NEXT_PUBLIC_API_URL` is unset,
-rather than letting `next build` error once per static page. To build
-locally: `NEXT_PUBLIC_API_URL="http://localhost:4000/api" pnpm --filter
-@book/web build`. Vercel/Railway/CI must set it as a real build-time env var
-(see [docs/private-demo-deploy.md §10](docs/private-demo-deploy.md#10-vercel--railway-concrete-deployment-configuration)).
+- **Auth.** `AUTH_MODE` (API) and `NEXT_PUBLIC_AUTH_MODE` (web) are `jwt`
+  (default; email/password, JWT access token, rotating `HttpOnly` refresh cookie)
+  or `dev` (local-only header identity). They must match, or every request 401s.
+- **Product mode.** `PRODUCT_MODE` and `NEXT_PUBLIC_PRODUCT_MODE` are `home`
+  (default; generation costs no credits, purchase UI hidden) or `demo` (credit
+  charges and Stripe Checkout, disabled unless `STRIPE_BILLING_ENABLED=true`).
+- **Providers.** `STORY_GENERATION_PROVIDER`, `CHARACTER_PROFILE_PROVIDER` and
+  `IMAGE_GENERATION_PROVIDER` default to `mock`. `openai` needs `OPENAI_API_KEY`
+  and costs money per call.
+- **Storage.** `PDF_STORAGE_DRIVER` and `IMAGE_STORAGE_DRIVER` default to `local`
+  (`apps/api/tmp/`); `s3`/`r2` are exercised only by the manual
+  `smoke:cloud-storage` script ([guide](apps/api/docs/cloud-storage-smoke-test.md)).
+  The PDF preview endpoint is always `GET /api/books/:id/pdf/preview`.
+- **Web build.** `pnpm --filter @book/web build` runs in production mode and
+  requires `NEXT_PUBLIC_API_URL` ending in `/api`; it never falls back to
+  localhost. `NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true` is for trusted
+  developer builds only.
 
-Developer generation diagnostics, intermediate plans, provider/layout
-metadata, and internal artifact keys are hidden by default. Set
-`NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS=true` only in a trusted developer
-build to show them. This public build flag controls UI visibility, not API
-authorization; the diagnostics endpoint still enforces book ownership.
+## Current limitations
 
-## Deployment readiness
+- Every demonstration and verification used mock providers. Real-model story,
+  image and authoring quality, error rates and cost are unmeasured; no paid
+  experiment has been run.
+- No deployment is verified. A local production build and smoke test is not
+  deployment evidence.
+- Recovery from a real worker crash, Redis loss or database outage is not
+  demonstrated end to end; those paths are covered by in-process integration
+  tests only.
+- Generation diagnostics mix the published edition and the newest run
+  ([details](docs/recovery-demo.md#published-diagnostics-vs-current-run-telemetry)).
+- One interactive scenario is published; the others are unapproved fixtures.
 
-See **[docs/deployment-readiness.md](docs/deployment-readiness.md)** for a
-deployment-blockers audit, storage/auth limitation notes, and architecture
-background.
+The full list is in [PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md#known-limitations).
 
-For an actual step-by-step deploy procedure (provider choices, exact env
-vars, migration/release order, smoke test), see
-**[docs/staging-operations.md](docs/staging-operations.md)**. The older
-provider-neutral detail remains in
-**[docs/private-demo-deploy.md](docs/private-demo-deploy.md)**.
+## Repository layout
 
-## Known post-MVP TODOs
-
-- ~~Build Stripe billing (checkout, webhooks, purchasing more credits) on top
-  of the Phase E1/E2 credit accounting foundation~~ **One-time purchases,
-  with a frontend billing page, done (Phases E3/E4)** — see
-  [apps/api/docs/credits.md](apps/api/docs/credits.md), "Phase E3" and
-  "Phase E4". Subscriptions, the Stripe customer portal, cancellation, and
-  promotional codes are still missing.
-- ~~Decide whether `BookStatus.Partial`/`Cancelled` become reachable (partial
-  generation recovery, user-initiated cancellation) or should be dropped.~~
-  **`Cancelled` is now reachable — user-initiated cancellation is implemented
-  end to end (Phase G1 backend, Phase G2 frontend)**, see
-  [apps/api/docs/local-generation-pipeline.md](apps/api/docs/local-generation-pipeline.md),
-  "Phase G1" and "Phase G2." `BookStatus.Partial` (partial-completion
-  recovery) remains undecided/unreachable.
-- `prisma:seed` was removed as a package script (previously pointed at a
-  nonexistent `apps/api/prisma/seed.ts`, and the seed data ROADMAP.md
-  originally described assumed password-based login, which doesn't match the
-  current dev-auth model). Local demo data is created through the app itself
-  — see [docs/local-demo.md](docs/local-demo.md). Revisit if fixture data
-  becomes useful once real auth lands.
+- `apps/api` (`@book/api`): NestJS API and generation worker, Prisma/PostgreSQL.
+- `apps/web` (`@book/web`): Next.js frontend and Playwright journeys.
+- `packages/types` (`@book/types`): types shared between API and web.
+- `scripts/`: the demo, verification and test-infrastructure launchers.

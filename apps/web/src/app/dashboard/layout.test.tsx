@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter, usePathname } from 'next/navigation';
 import DashboardLayout from './layout';
@@ -9,6 +9,7 @@ import { creditsApi } from '@/lib/api/credits';
 import { CREDITS_UPDATED_EVENT } from '@/lib/credits-events';
 import { UserRole } from '@book/types';
 import type { UserDto } from '@book/types';
+import type { ReactNode } from 'react';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(),
@@ -17,8 +18,8 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('next/link', () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  default: ({ href, children, className }: any) => (
-    <a href={href} className={className}>
+  default: ({ href, children, ...rest }: any) => (
+    <a href={href} {...rest}>
       {children}
     </a>
   ),
@@ -93,6 +94,8 @@ describe('DashboardLayout', () => {
       expect(replaceMock).toHaveBeenCalledWith('/login?next=%2Fdashboard');
     });
     expect(screen.queryByText('Protected content')).toBeNull();
+    expect(screen.queryByRole('navigation')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Skip to content' })).toBeNull();
   });
 
   it('renders children when authenticated in jwt mode', async () => {
@@ -140,6 +143,8 @@ describe('DashboardLayout', () => {
     expect(screen.queryByText('Protected content')).toBeNull();
     expect(replaceMock).not.toHaveBeenCalled();
     expect(creditsApi.getBalance).not.toHaveBeenCalled();
+    expect(screen.queryByRole('navigation')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Skip to content' })).toBeNull();
 
     screen.getByRole('button', { name: 'Try again' }).click();
     expect(retrySession).toHaveBeenCalledTimes(1);
@@ -164,6 +169,8 @@ describe('DashboardLayout', () => {
 
     expect(screen.queryByText('Protected content')).toBeNull();
     expect(replaceMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole('navigation')).toBeNull();
+    expect(creditsApi.getBalance).not.toHaveBeenCalled();
   });
 
   it('never redirects and always renders children in dev mode', () => {
@@ -327,7 +334,11 @@ describe('DashboardLayout', () => {
       </DashboardLayout>,
     );
 
-    expect(screen.getByText('Family library')).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Family library' }).getAttribute('href')).toBe(
+      '/dashboard',
+    );
+    expect(screen.queryByRole('link', { name: 'Books' })).toBeNull();
+    expect(screen.queryByRole('link', { name: /credit/i })).toBeNull();
     expect(screen.queryByRole('link', { name: /buy credits/i })).toBeNull();
     expect(creditsApi.getBalance).not.toHaveBeenCalled();
   });
@@ -407,6 +418,126 @@ describe('DashboardLayout', () => {
 
     await waitFor(() => {
       expect(screen.getByText('15 credits')).toBeDefined();
+    });
+  });
+
+  describe('navigation', () => {
+    /** Renders an authed jwt dashboard and lets any demo-mode balance fetch settle. */
+    async function renderAuthed(children: ReactNode = <p>Protected content</p>) {
+      vi.mocked(useAuth).mockReturnValue({
+        user: MOCK_USER,
+        status: 'authed',
+        authMode: 'jwt',
+        login: vi.fn(),
+        register: vi.fn(),
+        logout: logoutMock,
+        retrySession: vi.fn(),
+      });
+      const result = render(<DashboardLayout>{children}</DashboardLayout>);
+      await waitFor(() => expect(screen.queryByText('Credits…')).toBeNull());
+      return result;
+    }
+
+    const BOOKS_LABEL = { home: 'Family library', demo: 'Books' } as const;
+
+    it.each(['home', 'demo'] as const)(
+      'exposes a named navigation landmark with books, profiles and interactive links in %s mode',
+      async (mode) => {
+        vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', mode);
+        await renderAuthed();
+
+        const nav = screen.getByRole('navigation', { name: 'Dashboard' });
+        const links = within(nav).getAllByRole('link');
+        expect(links.map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
+          [BOOKS_LABEL[mode], '/dashboard'],
+          ['Child profiles', '/dashboard/child-profiles'],
+          ['Interactive story', '/dashboard/interactive'],
+        ]);
+      },
+    );
+
+    it('keeps demo credits and purchase links outside the primary navigation', async () => {
+      await renderAuthed();
+
+      await waitFor(() => expect(screen.getByText('5 credits')).toBeDefined());
+      const nav = screen.getByRole('navigation', { name: 'Dashboard' });
+      expect(within(nav).queryByRole('link', { name: /credit/i })).toBeNull();
+      expect(screen.getByRole('link', { name: 'Buy credits' }).getAttribute('href')).toBe(
+        '/dashboard/credits',
+      );
+      expect(creditsApi.getBalance).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['/dashboard', 'Books'],
+      ['/dashboard/', 'Books'],
+      ['/dashboard/books/new', 'Books'],
+      ['/dashboard/books/00000000-0000-4000-8000-000000000006', 'Books'],
+      ['/dashboard/child-profiles', 'Child profiles'],
+      ['/dashboard/child-profiles/edit', 'Child profiles'],
+      ['/dashboard/interactive', 'Interactive story'],
+      ['/dashboard/interactive/session-1', 'Interactive story'],
+      ['/dashboard/interactive/session-1/transcript', 'Interactive story'],
+      ['/dashboard/credits', null],
+      ['/dashboard/bookshelf', null],
+      ['/dashboard/child-profiles-archive', null],
+      ['/dashboard/interactive-legacy', null],
+      ['/dashboardx', null],
+    ])('marks the current section for %s', async (pathname, expected) => {
+      vi.mocked(usePathname).mockReturnValue(pathname);
+      await renderAuthed();
+
+      const nav = screen.getByRole('navigation', { name: 'Dashboard' });
+      const current = within(nav)
+        .getAllByRole('link')
+        .filter((link) => link.getAttribute('aria-current') === 'page')
+        .map((link) => link.textContent);
+      expect(current).toEqual(expected === null ? [] : [expected]);
+    });
+
+    it('offers a skip link as the first focusable control that moves focus to the page content', async () => {
+      const user = userEvent.setup();
+      const { container } = await renderAuthed(
+        <main>
+          <h1>Page heading</h1>
+          <button>First page control</button>
+        </main>,
+      );
+
+      const skip = screen.getByRole('link', { name: 'Skip to content' });
+      const targetId = skip.getAttribute('href')?.replace(/^#/, '') ?? '';
+      const target = document.getElementById(targetId);
+      expect(target).not.toBeNull();
+      expect(target?.contains(screen.getByRole('main'))).toBe(true);
+      expect(container.querySelectorAll('main')).toHaveLength(1);
+
+      await user.tab();
+      expect(document.activeElement).toBe(skip);
+      await user.keyboard('{Enter}');
+      expect(document.activeElement).toBe(target);
+
+      await user.tab();
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'First page control' }),
+      );
+    });
+
+    it('orders the skip link, navigation and account controls before the page content', async () => {
+      await renderAuthed(<button>First page control</button>);
+
+      const order = [
+        screen.getByRole('link', { name: 'Skip to content' }),
+        screen.getByRole('link', { name: 'Books' }),
+        screen.getByRole('link', { name: 'Interactive story' }),
+        screen.getByRole('link', { name: 'Buy credits' }),
+        screen.getByRole('button', { name: /log out/i }),
+        screen.getByRole('button', { name: 'First page control' }),
+      ];
+      for (let i = 1; i < order.length; i++) {
+        expect(
+          order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
     });
   });
 });
