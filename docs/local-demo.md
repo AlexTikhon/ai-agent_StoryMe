@@ -75,6 +75,10 @@ The account is already email-verified. Its library also contains a few seeded fi
 
 Reloads and new tabs keep your progress for as long as the command runs.
 
+To save shareable EN/RU/PL books, PDFs, and screenshots from this running demo, run
+`pnpm demo:capture` in a second terminal; see [demo-showcase.md](demo-showcase.md). It also
+has a 3–5 minute recording walkthrough.
+
 ### Stop and data lifecycle
 
 Press **Ctrl+C** once and wait for `Demo stopped; disposable containers and synthetic data

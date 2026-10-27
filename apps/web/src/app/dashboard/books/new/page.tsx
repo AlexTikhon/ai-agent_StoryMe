@@ -160,7 +160,7 @@ function StepIndicator({ current }: { current: WizardStep }) {
           {i > 0 && (
             <div
               aria-hidden="true"
-              className={`h-px w-8 ${current > i ? 'bg-violet-600' : 'bg-border-default'}`}
+              className={`h-px w-3 sm:w-8 ${current > i ? 'bg-violet-600' : 'bg-border-default'}`}
             />
           )}
           <div className="flex items-center gap-2">
