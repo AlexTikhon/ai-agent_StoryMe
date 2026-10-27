@@ -46,8 +46,9 @@ flowchart LR
 
 - **Authoritative state:** `Book`, `GenerationRun`, `OutboxEvent`. Ownership, budget and
   publication are decided here.
-- **Delivery:** dispatcher and BullMQ. A lost job delays work; it cannot change what is
-  published.
+- **Delivery:** dispatcher and BullMQ. The outbox row retains the committed scheduling intent
+  until it is published. A Redis job lost after that is not re-sent: recovery fails the run, and
+  the user retries. Either way, delivery cannot change what is published.
 - **Candidates:** bytes under `runs/{runId}/claims/{fencingVersion}/` and the
   `Book.generationCheckpoint` JSON. Readers never see them.
 - **Published pointers:** `Book.publishedRunId` and `publishedRunFencingVersion` name the one
@@ -69,7 +70,10 @@ a violation becomes `409`.
 **Delivery.** [outbox-dispatcher.service.ts](../apps/api/src/outbox/outbox-dispatcher.service.ts)
 sweeps about every 2 s in every process, publishes pending events to BullMQ, then marks them
 dispatched. A crash in between causes a resend, which the `runId` job id makes a no-op while
-the job exists. Delivery is at least once, with no dead-letter state or backoff.
+the job exists. Delivery is at least once, with no dead-letter state or backoff. The outbox
+protects the gap between commit and publication, not Redis itself: if Redis later loses a
+dispatched job, nothing re-sends it, and the queued run is failed by recovery (below) once it
+is older than `GENERATION_RUN_QUEUED_STALE_MS`, 5 minutes by default.
 
 **Claim, fence, heartbeat.** One `claim` transaction in
 [generation-run.service.ts](../apps/api/src/agent/generation-run.service.ts) refuses terminal
@@ -108,7 +112,10 @@ The fingerprint hashes prompt versions, providers and models
 Reuse requires both hashes to match, and an image must decode and match its manifest hash. It
 is then copied into the new claim's namespace, not referenced in place
 ([generation-resume.service.ts](../apps/api/src/agent/generation-resume.service.ts)). The
-estimate and the worker share this inspection, so a retry is authorized only for remaining work.
+estimate and the worker share this inspection: compatible, validated artifacts can be reused,
+and the remaining work is what gets estimated and authorized. This is not a billing guarantee.
+A call from an earlier run whose remote outcome is unknown may still have incurred a provider
+charge, and nothing is reused when either identity differs.
 
 **Retry** copies the failed run's input snapshot, so its checkpoint can match. **Regenerate**
 snapshots the current fields; after an edit the hash differs and nothing is reused. Reuse
@@ -194,14 +201,14 @@ cost are unmeasured.**
 
 ## 7. Trade-offs
 
-| Decision                                   | Benefit                                                                     | Cost or limit                                                                                        |
-| ------------------------------------------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| PostgreSQL run and outbox, Redis delivery  | A commit followed by a crash cannot lose the job; the database is the truth | Two stores to operate; up to one sweep of latency; at-least-once delivery; no dead-letter or backoff |
-| Fence on every database write              | A superseded worker cannot overwrite run or Book state                      | Does not stop that worker's in-flight storage writes or remote calls; orphans need separate cleanup  |
-| Persisted checkpoints with identity checks | A retry pays only for missing work, and the estimate reflects that          | Any prompt, model or provider change invalidates all reuse; checkpoint JSON lives on the Book row    |
-| Fenced publication pointer                 | A failed or cancelled regeneration never damages the readable book          | Candidate and published bytes coexist; clients must handle `409` on an edition change                |
-| Polling every 2.5 s                        | No socket infrastructure; shows only stages the worker durably entered      | Up to 2.5 s of status lag; request load grows with open detail pages                                 |
-| Local storage by default, S3/R2 optional   | No setup, and normal tests never touch the network                          | Local drivers write under `apps/api/tmp`, so a separate worker host needs shared storage             |
+| Decision                                   | Benefit                                                                                                     | Cost or limit                                                                                                                                                                  |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PostgreSQL run and outbox, Redis delivery  | The outbox retains committed scheduling intent across a crash before publication; the database is the truth | Two stores to operate; up to one sweep of latency; at-least-once delivery; no dead-letter or backoff; a job Redis loses after dispatch is not re-sent (recovery fails the run) |
+| Fence on every database write              | A superseded worker cannot overwrite run or Book state                                                      | Does not stop that worker's in-flight storage writes or remote calls; orphans need separate cleanup                                                                            |
+| Persisted checkpoints with identity checks | Compatible, validated artifacts can be reused; only remaining work is estimated                             | Any prompt, model or provider change invalidates all reuse; checkpoint JSON lives on the Book row; unknown remote outcomes may still have been charged                         |
+| Fenced publication pointer                 | A failed or cancelled regeneration never damages the readable book                                          | Candidate and published bytes coexist; clients must handle `409` on an edition change                                                                                          |
+| Polling every 2.5 s                        | No socket infrastructure; shows only stages the worker durably entered                                      | Up to 2.5 s of status lag; request load grows with open detail pages                                                                                                           |
+| Local storage by default, S3/R2 optional   | No setup, and normal tests never touch the network                                                          | Local drivers write under `apps/api/tmp`, so a separate worker host needs shared storage                                                                                       |
 
 ## 8. Evidence and limitations
 
@@ -225,15 +232,19 @@ killed.
 1. **Hosted CI** on `f50c9c3` (PR #25, merged as `fd870ef`): the Checks and Isolated
    integration jobs passed, the latter with 27 files and 324 tests
    ([interactive-verification.md §24](interactive-verification.md#24-follow-up-phase-1613-hosted-ci-result-for-the-script-test-repair-added-after-phase-1613)).
-   No hosted result is recorded for closeout commits `1626e7a`..`7778431`.
+   No hosted result exists for closeout commits `1626e7a`..`8aac9f8`; their local results are in
+   [PROJECT_CLOSEOUT.md](PROJECT_CLOSEOUT.md#verification).
 2. **Recovery journey**, 2026-10-27, change committed as `8c027a7`: one pass on a disposable
-   local stack, per the closeout work notes; no run record is committed. Reproduce:
+   local stack, per the closeout work notes. It passed again on `8aac9f8` in the closeout
+   verification ([PROJECT_CLOSEOUT.md](PROJECT_CLOSEOUT.md#verification)). Reproduce:
    [recovery-demo.md](recovery-demo.md).
 3. **Showcase capture**, 2026-10-27, `afd5d6e` plus the changes committed as `7778431`: two
    complete mock-provider runs, 35 of 35 validations each. Reproduce:
    [demo-showcase.md](demo-showcase.md); outputs are not committed.
-4. **Dashboard navigation** (closeout step 4): its browser journey was not run when added; the
-   only evidence was a throwaway harness with mocked API responses.
+4. **Dashboard navigation** (closeout step 4): not run when added. During review, its three
+   tests passed against the real API, PostgreSQL and Redis in an isolated temporary Compose
+   project; that was a focused run, not the complete browser profile. They passed again within
+   the complete ordinary browser journeys in the closeout verification.
 
 **Diagnostics ambiguity.** In `GET /books/:id/generation-diagnostics`, `imageFailures` and
 `resume` come from `Book.imageGenerationResult`, the published edition, so after a failed
@@ -253,14 +264,17 @@ crash, Redis loss or database outage; what a regeneration with unchanged inputs 
 
 "StoryMe turns a child's details into an illustrated PDF through a queued
 pipeline that calls paid providers. PostgreSQL is the source of truth: one transaction creates
-the run with its frozen input and budget, moves the book, and writes an outbox event, which a
-dispatcher delivers to BullMQ at least once. A worker claims the run by bumping a fencing
-version that every database write checks, so a superseded worker cannot corrupt state.
-Checkpoints carry input and pipeline hashes, so a retry pays only for missing work. Publication
-moves an edition pointer in one fenced transaction, so a failed or cancelled regeneration
-leaves the old book readable. Provider calls are reserved durably before dispatch, and an
-interrupted call counts as unknown, not free. All of this was demonstrated with mock providers;
-real-model quality and production scale are unmeasured."
+the run with its frozen input and budget, moves the book, and writes an outbox event that
+retains the scheduling intent until a dispatcher delivers it to BullMQ, at least once. A worker
+claims the run by bumping a fencing version that every database write checks, so a superseded
+worker cannot corrupt state. Checkpoints carry input and pipeline hashes, so a retry can reuse
+compatible, validated artifacts and only the remaining work is estimated. Publication moves an
+edition pointer in one fenced transaction, so a failed or cancelled regeneration leaves the
+old book readable. Provider calls are reserved durably before dispatch, and an interrupted call
+counts as unknown, not free: it may still have been charged. A browser journey shows the
+publication guarantee end to end with a mock provider failure, a retry and a cancellation.
+Fencing, redelivery and dispatch caps are covered by integration tests, not by that journey.
+Real-model quality and production scale are unmeasured."
 
 ### 3-minute outline
 
@@ -269,6 +283,6 @@ real-model quality and production scale are unmeasured."
 3. Scheduling transaction and outbox; atomic versus cross-system steps (35 s).
 4. Claims, fencing, heartbeat, recovery; why not exactly once (35 s).
 5. Checkpoints, publication, retry versus regenerate (30 s).
-6. The recovery journey as the worked example (25 s).
+6. The recovery journey as the worked example, and what it does not show (25 s).
 7. AI limits: validation, bounded repair, durable budgets, three cost quantities (25 s).
 8. Evidence tiers and what is unverified (15 s).
