@@ -11,7 +11,9 @@ shareable set of product materials:
 
 Everything is produced by the **mock** story, character, and image providers. The materials
 show the product and the pipeline working end to end. They say nothing about the quality of
-real-model generation, and must not be presented as if they did.
+real-model generation, and must not be presented as if they did. For how the pipeline behind
+them works, and what it does and does not guarantee, see the
+[generation case study](generation-case-study.md).
 
 ## 1. Start the local demo
 

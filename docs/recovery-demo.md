@@ -10,6 +10,9 @@ The journey uses the real local API, BullMQ queue and worker, PostgreSQL, Redis,
 artifact storage. The failure comes from the mock image provider inside the worker. No HTTP
 response is intercepted, and no status is written to the database by the test.
 
+The mechanisms behind each step (fenced publication, checkpoint reuse, cancellation) are
+explained in the [generation case study](generation-case-study.md#5-failure-sequence-the-recovery-journey).
+
 ## Command
 
 ```bash

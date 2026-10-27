@@ -16,9 +16,11 @@ StoryMe is a pnpm/Turborepo monorepo with two supported products:
 
 **Start here:**
 
-- **[Engineering case study](docs/interactive-case-study.md)** — the interactive
-  product's design decisions, failure behavior, evidence and limits, with links
-  to the code and tests behind each claim.
+- **Engineering case studies**, with links to the code and tests behind each
+  claim: [interactive stories](docs/interactive-case-study.md) (design
+  decisions, failure behavior, evidence and limits) and the
+  [book generation pipeline](docs/generation-case-study.md) (scheduling,
+  fencing, checkpoints, publication, provider budgets).
 - **[Interactive demo](docs/interactive-demo.md)** — a reproducible walkthrough
   of the reader and of the offline authoring workflow (Windows PowerShell).
 - [Interactive section of CURRENT_PRODUCT](docs/CURRENT_PRODUCT.md#interactive-illustrated-stories)
@@ -71,7 +73,9 @@ produces a short illustrated story and a downloadable PDF.
 
 **Start with [docs/CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md).** It is the
 source of truth for implemented behavior, real routes, providers, storage,
-workflow, limitations, local setup, and tests.
+workflow, limitations, local setup, and tests. The
+[generation case study](docs/generation-case-study.md) explains the pipeline's
+guarantees and their limits.
 
 The root [PRD](PRD.md), [API specification](API_SPEC.md),
 [architecture](ARCHITECTURE.md), [backend design](BACKEND_DESIGN.md),
