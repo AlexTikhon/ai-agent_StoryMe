@@ -49,17 +49,27 @@ Every child process gets an inherited environment with credentials and service t
 - `browser`: the API's credential settings pinned to inert values, so `apps/api/.env` cannot
   fill them back in.
 
-`verify:local` never prints environment values and never edits `.env` files. Non-credential
+`verify:local` prints its disposable Compose project name, never credentials, and never edits `.env` files. Non-credential
 values in `apps/api/.env` can still reach the integration suite through the API's config loader,
 as they do when you run `pnpm --filter @book/api test:integration` directly.
 
 ## Infrastructure ownership
 
+Each verifier invocation chooses a fresh `storyme-verify-<16 hexadecimal digits>` Compose
+project. It prints that name and forwards it through `STORYME_TEST_COMPOSE_PROJECT` to startup
+and teardown. Inherited project names are discarded. The infrastructure entrypoint accepts only
+this name format or the legacy `storyme-integration` default; arbitrary project names are rejected
+before any process starts.
+
 Before the `integration` or `browser` profile changes anything, it checks that its ports are free
-and that the Compose project `storyme-integration` has no containers. If either is taken (for
-example by a running `pnpm demo:local`, `pnpm test:e2e:home`, or another verification), the
-profile reports `UNAVAILABLE` and exits non-zero. It never stops, resets, or attaches to the
-other session.
+and that its own Compose project has no containers. If either is taken, the profile reports
+`UNAVAILABLE` and exits non-zero. It never stops, resets, or attaches to the other session.
+Stopped containers in `storyme-integration` no longer block verification. A running demo or test
+still blocks it through the fixed ports: run profiles sequentially, not concurrently.
+
+The Docker ownership query is asynchronous, has a 15-second timeout and a 64 KiB output limit.
+A hung Docker CLI is terminated and reported as unavailable before any preparation or mutation.
+This deadline covers the ownership query, not Compose startup/teardown or the test suites.
 
 Teardown runs only for what this invocation started:
 
@@ -70,7 +80,16 @@ Teardown runs only for what this invocation started:
 
 A teardown failure makes an otherwise passing run fail. It never replaces the exit status of an
 earlier failure. Every teardown step is attempted even if an earlier one fails. If containers
-remain, run `pnpm test:infra:down`.
+remain, use the exact project printed by the failed run, as described below. The default
+`pnpm test:infra:down` targets the legacy stack and cannot clean a verifier's stack.
+
+For example, in PowerShell, replace the example name with the failed run's project:
+
+```powershell
+$env:STORYME_TEST_COMPOSE_PROJECT = 'storyme-verify-0123456789abcdef'
+pnpm test:infra:down
+Remove-Item Env:STORYME_TEST_COMPOSE_PROJECT
+```
 
 ## Summary and exit status
 
@@ -107,9 +126,9 @@ what the profile never covers (other profiles, production builds, real/paid prov
   `docker ps` works.
 - **`Chromium cannot launch`**: install it yourself with
   `pnpm --filter @book/web exec playwright install chromium` (add `--with-deps` on Linux).
-- **`port(s) … already in use`** or **`"storyme-integration" already has … container(s)`**:
-  another session owns the disposable resources. Stop it yourself. If you are sure the
-  containers are stale, run `pnpm test:infra:down`.
+- **`port(s) … already in use`** or **`"storyme-verify-…" already has … container(s)`**:
+  another session owns the disposable resources. Stop your active session first. For a crashed
+  verifier, inspect the printed project and use the scoped cleanup command above.
 
 ## Cancellation
 
@@ -117,7 +136,8 @@ Press Ctrl+C once. `verify:local` stops the step that is running (the whole proc
 owns), skips the remaining steps, runs the teardown for what it started, prints the summary
 with `CANCELLED`, and exits non-zero. A second Ctrl+C does not interrupt teardown. If the
 terminal is closed or the process is killed without Ctrl+C, teardown cannot run. Use
-`pnpm test:infra:down` and see the demo guide's notes on leftover files under `apps/api/tmp`.
+the printed project name with the scoped cleanup command above, and see the demo guide's notes
+on leftover files under `apps/api/tmp`.
 
 ## Windows working trees
 

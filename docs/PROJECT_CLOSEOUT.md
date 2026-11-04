@@ -1,5 +1,10 @@
 # Project closeout
 
+> Historical verification record from 2026-10-27. The current pause and restart
+> record is [PAUSE_HANDOFF.md](PAUSE_HANDOFF.md), dated 2026-11-04. The timeout
+> finding and shared Compose-project restriction below were addressed there;
+> results in this document describe the earlier candidate only.
+
 Development of StoryMe is paused as of 2026-10-27. This is a local handoff record, not a
 release: nothing was deployed, tagged or published.
 
@@ -29,7 +34,7 @@ outside their `verify:local` wrappers, which were unavailable on this machine.
 | 4    | `afd5d6e`            | Dashboard navigation landmark, current-page marking, skip link                                |
 | 5    | `7778431`            | `pnpm demo:capture` showcase and the 320px wizard fix ([demo-showcase.md](demo-showcase.md))  |
 | 6    | `8aac9f8`            | [Generation case study](generation-case-study.md)                                             |
-| 7    | uncommitted          | This record, the README entry point, and case-study corrections                               |
+| 7    | `f8ccef6`            | This record, the README entry point, and case-study corrections                               |
 
 ## Verification
 

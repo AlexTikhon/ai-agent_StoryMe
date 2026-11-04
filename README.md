@@ -15,9 +15,9 @@ StoryMe is a pnpm/Turborepo monorepo with two supported products:
   produces a short illustrated story and a downloadable PDF, with retry,
   cancellation and a published edition that survives a failed regeneration.
 
-Development is paused. **[docs/PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md)**
-records the verified candidate, what was and was not verified, and how to return
-to the project.
+Development is paused. **[docs/PAUSE_HANDOFF.md](docs/PAUSE_HANDOFF.md)** records
+the 2026-11-04 architecture review, verification results and restart steps.
+[PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md) preserves the earlier closeout evidence.
 
 ## Run the demo
 
@@ -52,8 +52,9 @@ pnpm verify:local --profile integration   # API integration suite on disposable 
 pnpm verify:local --profile browser       # browser journeys + recovery journey
 ```
 
-The Docker profiles report `UNAVAILABLE`, and change nothing, if their ports or
-the `storyme-integration` Compose project are already in use. Production builds
+The Docker profiles use a fresh `storyme-verify-<random>` Compose project per run.
+They report `UNAVAILABLE`, and change nothing, if their ports or that project
+are already in use. Stopped `storyme-integration` containers do not block them. Production builds
 are not part of `verify:local`; the production browser smoke is
 `pnpm --filter @book/web build` followed by
 `pnpm --filter @book/web test:e2e:production`. See
