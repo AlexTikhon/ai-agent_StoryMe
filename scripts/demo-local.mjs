@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createConnection, createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -443,19 +443,29 @@ export async function defaultIsPortInUse(port) {
   return acceptsConnections(port);
 }
 
-export function defaultListProjectContainers(project = DEMO.composeProject) {
-  const result = spawnSync(
-    'docker',
-    ['ps', '-a', '-q', '--filter', `label=com.docker.compose.project=${project}`],
-    { encoding: 'utf8', shell: false, windowsHide: true },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      (result.stderr || `docker ps ${describeExit(result.status, result.signal)}`).trim(),
-    );
+export async function defaultListProjectContainers(project = DEMO.composeProject, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  try {
+    const stdout = await new Promise((done, fail) => {
+      (options.execFile ?? execFile)(
+        'docker',
+        ['ps', '-a', '-q', '--filter', `label=com.docker.compose.project=${project}`],
+        {
+          encoding: 'utf8',
+          shell: false,
+          windowsHide: true,
+          timeout: timeoutMs,
+          killSignal: 'SIGKILL',
+          maxBuffer: 64 * 1024,
+        },
+        (error, stdout) => (error ? fail(error) : done(stdout)),
+      );
+    });
+    return stdout.split(/\s+/).filter(Boolean);
+  } catch (error) {
+    if (error.killed) throw new Error(`Docker ownership probe timed out after ${timeoutMs}ms.`);
+    throw error;
   }
-  return result.stdout.split(/\s+/).filter(Boolean);
 }
 
 async function defaultProbeHttp(url) {

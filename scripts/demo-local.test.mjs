@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -7,6 +8,7 @@ import {
   acceptsConnections,
   createDemo,
   defaultIsPortInUse,
+  defaultListProjectContainers,
   defaultStopProcessTree,
   DEMO,
   DEMO_PORTS,
@@ -14,6 +16,56 @@ import {
   spawnOwned,
 } from './demo-local.mjs';
 import { TEST_TARGET } from './test-target-policy.mjs';
+
+test('Docker ownership probe scopes its query, bounds output and propagates failures', async () => {
+  const project = 'storyme-verify-0123456789abcdef';
+  const containers = await defaultListProjectContainers(project, {
+    execFile: (command, args, options, callback) => {
+      assert.equal(command, 'docker');
+      assert.deepEqual(args, [
+        'ps',
+        '-a',
+        '-q',
+        '--filter',
+        `label=com.docker.compose.project=${project}`,
+      ]);
+      assert.equal(options.shell, false);
+      assert.equal(options.timeout, 15_000);
+      assert.equal(options.maxBuffer, 64 * 1024);
+      callback(null, 'abc\r\ndef\n', '');
+    },
+  });
+  assert.deepEqual(containers, ['abc', 'def']);
+  await assert.rejects(
+    defaultListProjectContainers(undefined, {
+      execFile: (_command, args, _options, callback) => {
+        assert.ok(args.includes(`label=com.docker.compose.project=${DEMO.composeProject}`));
+        callback(new Error('daemon unavailable'));
+      },
+    }),
+    /daemon unavailable/,
+  );
+});
+
+test('Docker ownership probe terminates a real hung child while the event loop stays responsive', async () => {
+  let responsive = false;
+  const timer = setTimeout(() => {
+    responsive = true;
+  }, 20);
+  try {
+    await assert.rejects(
+      defaultListProjectContainers(undefined, {
+        timeoutMs: 250,
+        execFile: (_command, _args, options, callback) =>
+          execFile(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options, callback),
+      }),
+      /Docker ownership probe timed out after 250ms/,
+    );
+    assert.equal(responsive, true);
+  } finally {
+    clearTimeout(timer);
+  }
+});
 
 // ─── Real (no Docker) checks of the process/port primitives ─────────────────
 
