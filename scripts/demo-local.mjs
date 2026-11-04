@@ -4,7 +4,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePnpmInvocation } from './pnpm-invocation.mjs';
 import { launchTestCommand, runTestCommandSync } from './test-launcher.mjs';
-import { assertDisposableTestTargets, TEST_TARGET } from './test-target-policy.mjs';
+import {
+  assertDisposableTestTargets,
+  DEFAULT_TEST_COMPOSE_PROJECT,
+  TEST_TARGET,
+} from './test-target-policy.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -15,7 +19,7 @@ export const DEMO = Object.freeze({
   apiUrl: 'http://127.0.0.1:4100/api',
   apiHealthUrl: 'http://127.0.0.1:4100/api/health',
   // Same project name test-infra-entry.mjs uses for the disposable stack.
-  composeProject: 'storyme-integration',
+  composeProject: DEFAULT_TEST_COMPOSE_PROJECT,
   // Must match apps/api/scripts/e2e-fixtures.ts (asserted by demo-local.test.mjs).
   loginEmail: 'verified-login@e2e.storyme.test',
   loginPassword: 'StoryMeE2E1!',
@@ -33,7 +37,7 @@ export const DEMO_PORTS = Object.freeze([
 // credential. They are dropped before the explicit demo settings are applied.
 const INHERITED_SECRET = /(_API_KEY|SECRET|_TOKEN|PASSWORD|_ACCESS_KEY)/i;
 const INHERITED_SERVICE =
-  /^(OPENAI|ANTHROPIC|FAL|STRIPE|RESEND|EMAIL|GOOGLE|R2|AWS|PDF_STORAGE|IMAGE_STORAGE|MOCK|DATABASE|REDIS|NEXT_PUBLIC)_|^PG[A-Z]*$/i;
+  /^(OPENAI|ANTHROPIC|FAL|STRIPE|RESEND|EMAIL|GOOGLE|R2|AWS|PDF_STORAGE|IMAGE_STORAGE|MOCK|DATABASE|REDIS|NEXT_PUBLIC)_|^PG[A-Z]*$|^STORYME_TEST_COMPOSE_PROJECT$/i;
 
 // @nestjs/config copies apps/api/.env values into process.env for every key the
 // child does not already define, so stripping is not enough: each credential the
@@ -439,10 +443,10 @@ export async function defaultIsPortInUse(port) {
   return acceptsConnections(port);
 }
 
-export function defaultListProjectContainers() {
+export function defaultListProjectContainers(project = DEMO.composeProject) {
   const result = spawnSync(
     'docker',
-    ['ps', '-a', '-q', '--filter', `label=com.docker.compose.project=${DEMO.composeProject}`],
+    ['ps', '-a', '-q', '--filter', `label=com.docker.compose.project=${project}`],
     { encoding: 'utf8', shell: false, windowsHide: true },
   );
   if (result.error) throw result.error;

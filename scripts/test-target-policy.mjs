@@ -9,6 +9,17 @@ export const TEST_TARGET = Object.freeze({
   redisDatabase: '15',
 });
 
+export const DEFAULT_TEST_COMPOSE_PROJECT = 'storyme-integration';
+
+/** Only the legacy test stack or an invocation-owned verifier stack may be removed. */
+export function testComposeProject(env = {}) {
+  const project = env.STORYME_TEST_COMPOSE_PROJECT ?? DEFAULT_TEST_COMPOSE_PROJECT;
+  if (project !== DEFAULT_TEST_COMPOSE_PROJECT && !/^storyme-verify-[a-f0-9]{16}$/.test(project)) {
+    throw new Error('Refusing an unrecognized disposable StoryMe Compose project.');
+  }
+  return project;
+}
+
 function parseUrl(name, value) {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`${name} must be set explicitly to the disposable StoryMe test target.`);
@@ -27,6 +38,7 @@ function parseUrl(name, value) {
  * from crossing the destructive test boundary.
  */
 export function assertDisposableTestTargets(env) {
+  testComposeProject(env);
   const database = parseUrl('DATABASE_URL', env.DATABASE_URL);
   const redis = parseUrl('REDIS_URL', env.REDIS_URL);
   const databaseName = decodeURIComponent(database.pathname.replace(/^\//, ''));

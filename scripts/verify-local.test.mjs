@@ -336,7 +336,7 @@ test('a running demo:local (all ports and the Compose project in use) is left un
     );
     const reason = row(h.summary(), 'Disposable resource ownership').reason;
     assert.match(reason, /already in use by another session/);
-    assert.match(reason, /"storyme-integration" already has 2 container\(s\)/);
+    assert.match(reason, /"storyme-verify-[a-f0-9]{16}" already has 2 container\(s\)/);
     assert.match(reason, /Nothing was started or stopped/);
   }
 });
@@ -373,6 +373,32 @@ test('a cleanup failure turns an otherwise passing run into a failure', async ()
   assert.equal(await h.run(['--profile', 'integration']), 6);
   assert.match(h.summary(), /Result: FAIL \(exit 6\)/);
   assert.match(h.summary(), /run: pnpm test:infra:down/);
+  const project = h.envs[launcher('infra-up')].STORYME_TEST_COMPOSE_PROJECT;
+  assert.ok(h.summary().includes(`STORYME_TEST_COMPOSE_PROJECT=${project}`));
+});
+
+test('each verifier owns a fresh project, ignoring inherited project names and stopped legacy containers', async () => {
+  const projects = [];
+  for (const profile of ['integration', 'browser']) {
+    let probed;
+    const h = harness({
+      env: { STORYME_TEST_COMPOSE_PROJECT: 'unrelated-production' },
+      options: {
+        listProjectContainers: async (project) => {
+          probed = project;
+          return project === 'storyme-integration' ? ['stopped-legacy-container'] : [];
+        },
+      },
+    });
+    assert.equal(await h.run(['--profile', profile]), 0);
+    assert.match(probed, /^storyme-verify-[a-f0-9]{16}$/);
+    for (const env of Object.values(h.envs)) {
+      assert.equal(env.STORYME_TEST_COMPOSE_PROJECT, probed);
+    }
+    assert.ok(h.output().includes(`Compose project: ${probed}`));
+    projects.push(probed);
+  }
+  assert.notEqual(projects[0], projects[1]);
 });
 
 test('a cleanup failure does not mask the original failure status', async () => {

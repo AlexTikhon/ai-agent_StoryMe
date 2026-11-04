@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { constants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -234,6 +235,7 @@ function formatDuration(ms) {
  * lets cleanup of acquired resources proceed; it never interrupts cleanup.
  */
 export function createVerifier(options = {}) {
+  const composeProject = `storyme-verify-${randomBytes(8).toString('hex')}`;
   const env = options.env ?? process.env;
   const buildEnvironments = options.buildEnvironments ?? verifyEnvironments;
   const launch = options.launch ?? defaultLaunch;
@@ -310,10 +312,10 @@ export function createVerifier(options = {}) {
       problems.push(`port(s) ${busy.join(', ')} already in use by another session or service`);
     }
     try {
-      const containers = await listProjectContainers();
+      const containers = await listProjectContainers(composeProject);
       if (containers.length > 0) {
         problems.push(
-          `Compose project "${DEMO.composeProject}" already has ${containers.length} container(s) ` +
+          `Compose project "${composeProject}" already has ${containers.length} container(s) ` +
             'from another session',
         );
       }
@@ -399,13 +401,17 @@ export function createVerifier(options = {}) {
       return 2;
     }
     const profile = PROFILES[profileName];
-    const stepEnv = buildEnvironments(env)[profile.environment];
+    const stepEnv = {
+      ...buildEnvironments(env)[profile.environment],
+      STORYME_TEST_COMPOSE_PROJECT: composeProject,
+    };
     const owned = { infra: false, servers: false };
     const results = [];
     let failure = null;
     let cleanupFailure = null;
 
     log(`[verify:local] profile: ${profileName}`);
+    if (profileName !== 'offline') log(`[verify:local] Compose project: ${composeProject}`);
     for (const [index, step] of profile.steps.entries()) {
       if (cancelled || (failure && !step.probe)) {
         results.push({
@@ -453,14 +459,24 @@ export function createVerifier(options = {}) {
     else if (failure) exitCode = failure.exitCode;
     else if (cleanupFailure) exitCode = cleanupFailure;
 
-    log(formatSummary({ profileName, profile, results, exitCode, cancelled, owned }));
+    log(
+      formatSummary({ profileName, profile, results, exitCode, cancelled, owned, composeProject }),
+    );
     return exitCode;
   }
 
   return { run, cancel };
 }
 
-export function formatSummary({ profileName, profile, results, exitCode, cancelled, owned }) {
+export function formatSummary({
+  profileName,
+  profile,
+  results,
+  exitCode,
+  cancelled,
+  owned,
+  composeProject,
+}) {
   const indent = ' '.repeat(23);
   const lines = ['', '=================== verify:local summary ===================', ''];
   lines.push(`Profile: ${profileName}`, '');
@@ -490,7 +506,7 @@ export function formatSummary({ profileName, profile, results, exitCode, cancell
   if (cleanupIncomplete && owned.infra) {
     lines.push(
       '',
-      `Cleanup incomplete. If "${DEMO.composeProject}" containers remain, run: pnpm test:infra:down`,
+      `Cleanup incomplete. For "${composeProject}" only, set STORYME_TEST_COMPOSE_PROJECT=${composeProject} and run: pnpm test:infra:down`,
     );
   }
   lines.push('============================================================');

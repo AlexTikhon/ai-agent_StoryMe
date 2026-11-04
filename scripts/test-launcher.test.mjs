@@ -4,11 +4,58 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { launchTestCommand, runTestCommandSync } from './test-launcher.mjs';
 import { TEST_TARGET } from './test-target-policy.mjs';
+import { runTestInfra } from './test-infra-entry.mjs';
 
 const allowed = {
   DATABASE_URL: TEST_TARGET.databaseUrl,
   REDIS_URL: TEST_TARGET.redisUrl,
 };
+
+for (const project of [undefined, 'storyme-verify-0123456789abcdef']) {
+  test(`infrastructure startup and teardown use the same scoped project: ${project ?? 'legacy'}`, () => {
+    const calls = [];
+    const env = { ...allowed, ...(project && { STORYME_TEST_COMPOSE_PROJECT: project }) };
+    for (const action of ['up', 'down']) {
+      assert.equal(
+        runTestInfra(action, {
+          env,
+          spawnProcess: (command, args, options) => {
+            calls.push({ command, args, options });
+            return { status: 0 };
+          },
+        }),
+        0,
+      );
+    }
+    for (const call of calls) {
+      assert.equal(call.command, 'docker');
+      assert.deepEqual(call.args.slice(0, 5), [
+        'compose',
+        '-p',
+        project ?? 'storyme-integration',
+        '-f',
+        'docker-compose.e2e.yml',
+      ]);
+      assert.equal(call.options.shell, false);
+    }
+    assert.deepEqual(calls[1].args.slice(5), ['down', '-v', '--remove-orphans']);
+  });
+}
+
+for (const project of [
+  '',
+  'tradeflow',
+  'storyme-verify-',
+  'storyme-verify-../../prod',
+  'storyme-integration --all',
+]) {
+  test(`refuses unrecognized Compose project before launcher or Docker spawn: ${JSON.stringify(project)}`, () => {
+    const env = { ...allowed, STORYME_TEST_COMPOSE_PROJECT: project };
+    const spawnProcess = () => assert.fail('must not spawn');
+    assert.throws(() => launchTestCommand('infra-down', { env, spawnProcess }), /unrecognized/);
+    assert.throws(() => runTestInfra('down', { env, spawnProcess }), /unrecognized/);
+  });
+}
 
 for (const [name, value] of [
   ['database host', 'postgresql://storyme:storyme_e2e@localhost:5440/storyme_e2e'],
