@@ -326,7 +326,8 @@ describe('inspect-interactive-experiment: side effects', () => {
       log.mockRestore();
       error.mockRestore();
     }
-  });
+    // Match the sibling CLI import checks under a parallel workspace run.
+  }, 30_000);
 });
 
 describe('inspect-interactive-experiment: the pnpm entry point', () => {

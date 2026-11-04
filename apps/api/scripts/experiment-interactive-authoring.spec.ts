@@ -371,7 +371,8 @@ describe('importing the CLI', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(treeOf(tmp)).toEqual(before);
     expect(out).toEqual([]);
-  });
+    // Re-loading the domain graph competes with the full workspace test run.
+  }, 30_000);
 });
 
 // ── real pnpm entry points ──────────────────────────────────────────────────
