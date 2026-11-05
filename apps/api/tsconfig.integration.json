@@ -6,6 +6,8 @@
     "types": ["node", "vitest/globals"]
   },
   "include": [
+    "test/integration/outbox-isolation.integration.spec.ts",
+    "test/integration/outbox-redelivery.integration.spec.ts",
     "test/integration/generation-execution-acceptance.integration.spec.ts",
     "test/integration/page-image-revisions.integration.spec.ts",
     "test/integration/generation-queue-stalled-redelivery.integration.spec.ts",

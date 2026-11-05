@@ -54,7 +54,8 @@ describe('outbox retry and duplicate BullMQ publication (real PostgreSQL + Redis
     let failMarkOnce = true;
     const interruptedOutbox = {
       findPending: (limit: number) => realOutbox.findPending(limit),
-      recordAttemptFailure: (id: string) => realOutbox.recordAttemptFailure(id),
+      recordAttemptFailure: (id: string, attempts: number) =>
+        realOutbox.recordAttemptFailure(id, attempts),
       markDispatched: (id: string) => {
         if (failMarkOnce) {
           failMarkOnce = false;
