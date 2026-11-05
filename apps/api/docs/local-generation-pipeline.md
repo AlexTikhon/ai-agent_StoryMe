@@ -41,10 +41,10 @@ calls, no external AI providers, no cloud dependency.
    the rendered PDF back as `application/pdf`.
 
 Generation is scheduled onto a real BullMQ/Redis-backed queue (Phase 3K —
-`GenerationQueueService`/`GenerationQueueProcessor`) and runs on a worker in
-the same process, after the HTTP response for `generate`/`retry-generation`
-has already been sent. See "Durable generation queue (Phase 3K)" below for
-the full design and its remaining limitations.
+`GenerationQueueService`/`GenerationQueueProcessor`) and runs in the separate worker
+process after the HTTP response for `generate`/`retry-generation` has been sent.
+`ENABLE_GENERATION_WORKER=true` enables same-process execution for local convenience.
+See "Worker process separation" and "Durable generation queue (Phase 3K)" below.
 
 ## What `AgentService.startBookGeneration` does, in order
 
@@ -1561,11 +1561,17 @@ The legacy `GenerationJob` table is no longer read or written at runtime.
 transaction: creates the `GenerationRun` row, transitions `Book.status`/
 `Book.activeRunId`, and writes an `OutboxEvent`. The actual BullMQ publish is
 **not** done inside that transaction — `OutboxDispatcherService` sweeps
-still-`pending` outbox rows on an interval (every process, API and worker
+due `pending` outbox rows on an interval (every process, API and worker
 both) and publishes them, using the run's own id as the BullMQ `jobId`. This
 is what makes "commit the run, then crash before publishing" impossible to
 lose: the event is already durable in Postgres, and any live process's next
 sweep re-publishes it (idempotently, since the jobId is stable).
+
+Malformed dispatch envelopes and unknown aggregates are quarantined durably;
+transport failures retain pending work with exponential backoff capped at five
+minutes. An individual failed event does not abort the batch. See the
+[outbox operations guide](../../../docs/outbox-operations.md) for policy,
+inspection, migration ordering and reviewed recovery.
 
 A hand-added partial unique index
 (`generation_runs_one_active_per_book`, `WHERE status IN ('queued','running')`)

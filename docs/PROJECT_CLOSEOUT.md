@@ -1,7 +1,7 @@
 # Project closeout
 
 > Historical verification record from 2026-10-27. The current pause and restart
-> record is [PAUSE_HANDOFF.md](PAUSE_HANDOFF.md), dated 2026-11-04. The timeout
+> record is [PAUSE_HANDOFF.md](PAUSE_HANDOFF.md), dated 2026-11-05. The timeout
 > finding and shared Compose-project restriction below were addressed there;
 > results in this document describe the earlier candidate only.
 

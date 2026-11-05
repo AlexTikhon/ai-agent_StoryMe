@@ -16,7 +16,7 @@ StoryMe is a pnpm/Turborepo monorepo with two supported products:
   cancellation and a published edition that survives a failed regeneration.
 
 Development is paused. **[docs/PAUSE_HANDOFF.md](docs/PAUSE_HANDOFF.md)** records
-the 2026-11-04 architecture review, verification results and restart steps.
+the 2026-11-05 outbox hardening, architecture review, verification and restart steps.
 [PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md) preserves the earlier closeout evidence.
 
 ## Run the demo

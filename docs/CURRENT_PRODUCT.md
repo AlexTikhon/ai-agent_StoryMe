@@ -385,6 +385,12 @@ drivers use equivalent bucket keys. PDFs are not exposed through a public static
 dispatcher -> BullMQ/Redis -> worker claim/heartbeat/fencing -> deterministic pipeline ->
 transactional terminal publication`.
 
+The dispatcher selects due pending events. Unknown aggregates and invalid dispatch
+envelopes are quarantined; transport failures retain pending work with exponential
+backoff capped at five minutes. Conditional status/attempt writes protect against
+stale sweeps. Quarantine requires reviewed recovery, not automatic requeue; see
+[outbox operations](outbox-operations.md).
+
 The content stages are character profile/sheet, one story-provider result containing story plan,
 page plan, story text, illustration plan and preview, deterministic quality review, an optional
 single bounded repair attempt for repairable findings, image generation/reuse, deterministic
