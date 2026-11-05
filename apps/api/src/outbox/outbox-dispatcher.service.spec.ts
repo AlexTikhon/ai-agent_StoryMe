@@ -15,6 +15,9 @@ function makeEvent(overrides: Partial<OutboxEvent> = {}): OutboxEvent {
     attempts: 0,
     createdAt: new Date('2026-01-01'),
     dispatchedAt: null,
+    nextAttemptAt: new Date('2026-01-01'),
+    quarantinedAt: null,
+    lastFailureCode: null,
     ...overrides,
   };
 }

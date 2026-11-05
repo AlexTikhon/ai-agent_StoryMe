@@ -850,17 +850,20 @@ model GenerationRun {
 // event, using aggregateId as the BullMQ jobId so a re-swept event is an
 // idempotent no-op rather than a duplicate job.
 model OutboxEvent {
-  id            String    @id @default(uuid()) @db.Uuid
-  aggregateType String    @map("aggregate_type")
-  aggregateId   String    @map("aggregate_id") @db.Uuid
-  eventType     String    @map("event_type")
-  payload       Json
-  status        String    @default("pending")
-  attempts      Int       @default(0)
-  createdAt     DateTime  @default(now()) @map("created_at")
-  dispatchedAt  DateTime? @map("dispatched_at")
+  id              String    @id @default(uuid()) @db.Uuid
+  aggregateType   String    @map("aggregate_type")
+  aggregateId     String    @map("aggregate_id") @db.Uuid
+  eventType       String    @map("event_type")
+  payload         Json
+  status          String    @default("pending")
+  attempts        Int       @default(0)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  dispatchedAt    DateTime? @map("dispatched_at")
+  nextAttemptAt   DateTime  @default(now()) @map("next_attempt_at")
+  quarantinedAt   DateTime? @map("quarantined_at")
+  lastFailureCode String?   @map("last_failure_code")
 
-  @@index([status, createdAt])
+  @@index([status, nextAttemptAt, createdAt])
   @@map("outbox_events")
 }
 

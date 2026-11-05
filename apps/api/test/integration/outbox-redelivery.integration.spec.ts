@@ -75,6 +75,11 @@ describe('outbox retry and duplicate BullMQ publication (real PostgreSQL + Redis
     expect(afterInterruptedPublish).toMatchObject({ status: 'pending', attempts: 1 });
     expect(await queue.getJob(runId)).not.toBeNull();
 
+    // A transport/ack failure now backs off durably; make the retry due without sleeping.
+    await prisma.outboxEvent.update({
+      where: { id: event.id },
+      data: { nextAttemptAt: new Date(0) },
+    });
     await dispatcher.sweep();
     await dispatcher.sweep();
 
