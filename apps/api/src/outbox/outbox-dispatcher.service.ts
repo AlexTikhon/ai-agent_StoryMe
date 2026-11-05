@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import type { OutboxEvent } from '@prisma/client';
 import { GenerationQueueService } from '../agent/generation-queue.service';
 import { correlationFields, isRequestId } from '../common/correlation/correlation-context';
-import { OutboxService } from './outbox.service';
+import { OutboxService, type OutboxQuarantineReason } from './outbox.service';
 import { operationalMetrics } from '../observability/operational-metrics';
 
 export const DEFAULT_OUTBOX_DISPATCH_INTERVAL_MS = 2_000;
@@ -61,14 +61,19 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
     if (this.timer) clearInterval(this.timer);
   }
 
-  /** One sweep pass — exposed directly for tests, rather than only reachable via the interval timer. Never throws. */
+  /** One pass; a query failure rejects, but an individual event cannot abort the batch. */
   async sweep(): Promise<void> {
     if (this.sweeping) return; // a previous sweep is still running (slow Redis) — don't overlap
     this.sweeping = true;
     try {
       const pending = await this.outboxService.findPending(readOutboxDispatchBatchSize());
       for (const event of pending) {
-        await this.dispatchOne(event);
+        try {
+          await this.dispatchOne(event);
+        } catch {
+          // A failed quarantine/ack write remains eligible for a later sweep.
+          this.logger.error(`outbox_event_failed eventId=${event.id}`);
+        }
       }
     } finally {
       this.sweeping = false;
@@ -76,42 +81,41 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async dispatchOne(event: OutboxEvent): Promise<void> {
-    operationalMetrics.observe(
-      'storyme_outbox_lag_ms',
-      Math.max(0, Date.now() - event.createdAt.getTime()),
-      { aggregate: event.aggregateType },
-    );
     if (
       event.aggregateType !== 'generation_run' &&
       event.aggregateType !== 'page_image_revision' &&
       event.aggregateType !== 'book_deletion'
     ) {
-      this.logger.warn(
-        `Skipping outbox event ${event.id} with unknown aggregateType "${event.aggregateType}".`,
-      );
-      operationalMetrics.increment('storyme_unknown_dispatches_total', { reason: 'aggregate' });
+      await this.quarantine(event, 'unknown_aggregate');
       return;
     }
-    const payload = event.payload as {
-      bookId?: unknown;
-      runId?: unknown;
-      revisionId?: unknown;
-      deletionRequestId?: unknown;
-      requestId?: unknown;
-    };
+    // Validate before dereferencing: JSON null, primitives and arrays are valid
+    // database JSON values, but never valid dispatch commands.
+    const payload = event.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      await this.quarantine(event, 'invalid_payload');
+      return;
+    }
     const aggregateId =
       event.aggregateType === 'generation_run'
         ? payload.runId
         : event.aggregateType === 'page_image_revision'
           ? payload.revisionId
           : payload.deletionRequestId;
-    if (typeof payload.bookId !== 'string' || typeof aggregateId !== 'string') {
-      this.logger.error(
-        `Outbox event ${event.id} has a malformed payload — skipping without dispatching.`,
-      );
-      operationalMetrics.increment('storyme_unknown_dispatches_total', { reason: 'payload' });
+    if (
+      typeof payload.bookId !== 'string' ||
+      !payload.bookId.trim() ||
+      typeof aggregateId !== 'string' ||
+      aggregateId !== event.aggregateId
+    ) {
+      await this.quarantine(event, 'invalid_payload');
       return;
     }
+    operationalMetrics.observe(
+      'storyme_outbox_lag_ms',
+      Math.max(0, Date.now() - event.createdAt.getTime()),
+      { aggregate: event.aggregateType },
+    );
     const requestId = isRequestId(payload.requestId) ? payload.requestId : undefined;
     try {
       if (event.aggregateType === 'generation_run') {
@@ -135,7 +139,8 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
           ...(requestId && { requestId }),
         });
       }
-      await this.outboxService.markDispatched(event.id);
+      const acknowledged = await this.outboxService.markDispatched(event.id);
+      if (!acknowledged.count) return; // cancellation/deletion won while publishing
       this.logger.log(
         `outbox_dispatched eventId=${event.id} aggregateType=${event.aggregateType} ${correlationFields(
           {
@@ -164,7 +169,17 @@ export class OutboxDispatcherService implements OnModuleInit, OnModuleDestroy {
           },
         )}`,
       );
-      await this.outboxService.recordAttemptFailure(event.id).catch(() => undefined);
+      await this.outboxService.recordAttemptFailure(event.id, event.attempts);
     }
+  }
+
+  private async quarantine(event: OutboxEvent, reason: OutboxQuarantineReason): Promise<void> {
+    const result = await this.outboxService.quarantine(event.id, reason);
+    if (!result.count) return;
+    // Never log arbitrary aggregate names or payload contents from corrupt rows.
+    this.logger.error(`outbox_quarantined eventId=${event.id} reason=${reason}`);
+    operationalMetrics.increment('storyme_unknown_dispatches_total', {
+      reason: reason === 'unknown_aggregate' ? 'aggregate' : 'payload',
+    });
   }
 }
