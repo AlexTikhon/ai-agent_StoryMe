@@ -1,5 +1,8 @@
 # StoryMe pause handoff — 2026-11-05
 
+> **Superseded.** The current handoff is [PORTFOLIO_RELEASE.md](PORTFOLIO_RELEASE.md). This
+> record and its results are kept as written.
+>
 > **Product scope changed afterwards (November 2026):** StoryMe now creates only personalized
 > children's illustrated books. The interactive-story product mentioned below was retired; see
 > [CURRENT_PRODUCT.md](CURRENT_PRODUCT.md#retired-interactive-stories). This record is kept as

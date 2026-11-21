@@ -399,7 +399,8 @@ Historical records written before the retirement — [PAUSE_HANDOFF.md](PAUSE_HA
 [PROJECT_CLOSEOUT.md](PROJECT_CLOSEOUT.md) and earlier phase notes — still describe the
 interactive product and its test runs as they were at the time. Those results are evidence about
 that earlier repository state, not about the current product; the retired source and documents
-remain available in Git history (for example at commit `7b7d661`).
+remain available in Git history (for example at commit `7b7d661`). The current handoff and
+verification record is [PORTFOLIO_RELEASE.md](PORTFOLIO_RELEASE.md).
 
 ## Local run and validation
 
@@ -431,6 +432,10 @@ pnpm test
 pnpm build
 pnpm --filter @book/api test:integration
 ```
+
+The wrapped equivalents, `pnpm verify:local --profile offline|integration|browser`, and the
+production-container `pnpm smoke:release` are described in
+[local-verification.md](local-verification.md) and [release-smoke.md](release-smoke.md).
 
 The production web build requires a valid `NEXT_PUBLIC_API_URL` ending in `/api`. Leave
 `NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS` unset/false for the ordinary product UI; enable it only

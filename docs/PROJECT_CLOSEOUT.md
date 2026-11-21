@@ -1,5 +1,8 @@
 # Project closeout
 
+> **Superseded.** The current handoff is [PORTFOLIO_RELEASE.md](PORTFOLIO_RELEASE.md). This
+> record and its results are kept as written.
+>
 > Historical verification record from 2026-10-27. The current pause and restart
 > record is [PAUSE_HANDOFF.md](PAUSE_HANDOFF.md), dated 2026-11-05. The timeout
 > finding and shared Compose-project restriction below were addressed there;

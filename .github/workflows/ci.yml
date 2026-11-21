@@ -88,6 +88,15 @@ jobs:
       - run: pnpm --filter @book/web exec playwright install --with-deps chromium
       - run: pnpm --filter @book/web build
       - run: pnpm --filter @book/web test:e2e:production
+      # Traces, screenshots and error-context.md land in test-results/.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 5
+        with:
+          name: production-browser-playwright
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 3
   book-browser:
     name: Book browser journeys
     runs-on: ubuntu-latest

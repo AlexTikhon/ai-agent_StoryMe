@@ -95,11 +95,38 @@ async function expectCompleteStory(page: Page) {
   );
 }
 
+// Under the global `scroll-behavior: smooth`, Chromium on Linux animates native
+// fragment navigation for several hundred milliseconds (Windows headless jumps
+// at once), and web fonts that finish loading after the first paint reflow the
+// page. An action aimed at a moving target misses, and Playwright's retry
+// scrolls (`scrollIntoView` without `behavior`) inherit the smooth behavior and
+// never catch up. So before each in-page action, wait until fonts have loaded
+// and the scroll position is unchanged between two samples.
+async function expectPageAtRest(page: Page) {
+  let previousScrollY: number | undefined;
+  await expect
+    .poll(
+      async () => {
+        const { fontsLoaded, scrollY } = await page.evaluate(() => ({
+          fontsLoaded: document.fonts.status === 'loaded',
+          scrollY: window.scrollY,
+        }));
+        const atRest = fontsLoaded && scrollY === previousScrollY;
+        previousScrollY = scrollY;
+        return atRest;
+      },
+      { intervals: [100] },
+    )
+    .toBe(true);
+}
+
 async function expectAnchorNavigation(page: Page) {
   const contents = page.getByRole('navigation', { name: 'Sample book pages' });
 
+  await expectPageAtRest(page);
   await contents.getByRole('link', { name: 'Page 3', exact: true }).click();
   await expect(page).toHaveURL(/#page-3$/);
+  await expectPageAtRest(page);
   await expect(page.getByRole('heading', { name: /^Page 3:/ })).toBeInViewport();
 
   await page
@@ -107,6 +134,7 @@ async function expectAnchorNavigation(page: Page) {
     .getByRole('link', { name: /Next: Page 4/ })
     .click();
   await expect(page).toHaveURL(/#page-4$/);
+  await expectPageAtRest(page);
   await expect(page.getByRole('heading', { name: /^Page 4:/ })).toBeInViewport();
 
   // Keyboard: focus a pager link and activate it with Enter.
@@ -116,9 +144,12 @@ async function expectAnchorNavigation(page: Page) {
     .focus();
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/#page-3$/);
+  await expectPageAtRest(page);
+  await expect(page.getByRole('heading', { name: /^Page 3:/ })).toBeInViewport();
 
   await contents.getByRole('link', { name: 'Back cover', exact: true }).click();
   await expect(page).toHaveURL(/#back-cover$/);
+  await expectPageAtRest(page);
   await expect(
     page.getByRole('heading', { level: 2, name: 'Back cover', exact: true }),
   ).toBeInViewport();
@@ -128,6 +159,7 @@ async function expectAnchorNavigation(page: Page) {
     .getByRole('link', { name: /Back to contents/ })
     .click();
   await expect(page).toHaveURL(/#contents$/);
+  await expectPageAtRest(page);
   await expect(contents).toBeInViewport();
 }
 
