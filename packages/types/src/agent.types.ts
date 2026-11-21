@@ -178,7 +178,7 @@ export interface GenerationProviderCallMetadata extends ProviderCallMetrics {
   estimatedCostUsd?: number;
 }
 
-/** Per-run paid-provider budget and the calls actually made by the latest run. */
+/** One GenerationRun's paid-provider budget and the calls recorded for that run. */
 export interface GenerationProviderUsage {
   maxPaidCalls: number;
   plannedPaidCalls: number;
@@ -194,45 +194,93 @@ export interface GenerationProviderUsage {
   calls: GenerationProviderCallMetadata[];
 }
 
-/**
- * Safe, non-secret summary of one book generation run. Deliberately excludes
- * prompts, generated image bytes/base64, and raw provider responses — see
- * apps/api/docs/local-generation-pipeline.md ("Generation diagnostics").
- */
-export interface GenerationMetadata {
-  storyProvider: GenerationProviderName;
-  imageProvider: GenerationProviderName;
-  storyModel?: string;
-  imageModel?: string;
-  requestedPages?: number;
-  generatedPages?: number;
-  generatedImageCount?: number;
-  failedImageCount?: number;
-  quality?: {
-    passed: boolean;
-    dimensions?: {
-      structuralValidity: boolean;
-      personalization: boolean;
-      protagonistConsistency: boolean;
-      ageAppropriateness: boolean;
-      continuity: boolean;
-      repetitionAcceptable: boolean;
-      pageProgression: boolean;
-      endingQuality: boolean;
-    };
-    issueCodes: string[];
-    repairAttempted: boolean;
-    repairSuccessful: boolean;
+/** Deterministic quality-review summary recorded with a published edition. */
+export interface GenerationQualitySummary {
+  passed: boolean;
+  dimensions?: {
+    structuralValidity: boolean;
+    personalization: boolean;
+    protagonistConsistency: boolean;
+    ageAppropriateness: boolean;
+    continuity: boolean;
+    repetitionAcceptable: boolean;
+    pageProgression: boolean;
+    endingQuality: boolean;
   };
-  /** Distinct source-controlled prompt versions observed in provider telemetry. */
-  promptVersions?: string[];
-  providerUsage?: GenerationProviderUsage;
-  startedAt?: string;
-  completedAt?: string;
-  failedAt?: string;
-  durationMs?: number;
-  failedStep?: AgentStep;
-  errorMessage?: string;
+  issueCodes: string[];
+  repairAttempted: boolean;
+  repairSuccessful: boolean;
+}
+
+/** Full-book GenerationRun kinds. Page revisions are never GenerationRuns. */
+export type GenerationRunKindName = 'initial' | 'regenerate' | 'retry';
+
+/**
+ * Why a GenerationRun's provider usage cannot be reported:
+ * - `never_claimed`: persisted lifecycle invariants prove no worker claimed
+ *   the run (still queued, or cancelled/expired while queued, with every
+ *   claim-written column unset), so it made no provider calls. A missing
+ *   startedAt alone is not proof.
+ * - `ledger_absent`: the run has no durable ledger and was, or may have been,
+ *   claimed (including completed or running runs with missing timestamps).
+ *   This is unknown, not zero: the run may predate the ledger.
+ * - `source_run_unavailable`: the published edition has no readable source
+ *   GenerationRun (legacy publication or missing run record).
+ */
+export type RunProviderUsageUnavailableReason =
+  'never_claimed' | 'ledger_absent' | 'source_run_unavailable';
+
+/**
+ * Provider usage attributed to exactly one GenerationRun, read only from that
+ * run's durable ledger (GenerationRun.providerOperations). It is never
+ * substituted from Book.imageGenerationResult or another run. `recorded`
+ * with an empty `calls` list is a confirmed empty ledger.
+ */
+export type RunProviderUsageProjection =
+  | { availability: 'recorded'; usage: GenerationProviderUsage }
+  | { availability: 'unavailable'; reason: RunProviderUsageUnavailableReason };
+
+/**
+ * Persisted GenerationRun timestamps, copied verbatim. Null means the column
+ * is unset; nothing is reconstructed from Book.updatedAt or durations.
+ */
+export interface GenerationRunTimestamps {
+  createdAt: string;
+  /** First worker claim. Preserved across redeliveries. */
+  startedAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  cancelledAt: string | null;
+}
+
+/**
+ * The newest full-book GenerationRun for an owned book, projected only from
+ * that run row. It can be queued, running, failed or cancelled while an older
+ * edition stays published. Excludes input snapshots, input hashes, lease and
+ * delivery identities, prompts and raw provider responses.
+ */
+export interface LatestGenerationAttemptDiagnostics {
+  runId: string;
+  kind: GenerationRunKindName;
+  status: GenerationJobStatus;
+  /** Set only for a retry: the run whose input it reuses. */
+  retryOfRunId: string | null;
+  /** GenerationRun.attempt (delivery attempts for this run). */
+  deliveryAttempt: number;
+  /** GenerationRun.currentStep: the last step the run recorded. */
+  currentStep: AgentStep | null;
+  timestamps: GenerationRunTimestamps;
+  /**
+   * Run wall-clock duration: the terminal timestamp (completedAt, failedAt or
+   * cancelledAt) minus startedAt. Includes queue gaps between redeliveries.
+   * Null when the run is not terminal or either timestamp is missing.
+   */
+  runWallClockDurationMs: number | null;
+  /** GenerationRun.errorCode/errorMessage; null when neither is recorded. */
+  error: { code: string | null; message: string | null; failedStep: AgentStep | null } | null;
+  /** True when Book.publishedRunId points at this run in the same snapshot. */
+  isPublishedSource: boolean;
+  providerUsage: RunProviderUsageProjection;
 }
 
 /** One AgentLog row as surfaced to the generation-diagnostics endpoint. */
@@ -263,6 +311,8 @@ export type GenerationJobStatus = 'queued' | 'running' | 'completed' | 'failed' 
 /**
  * Safe, non-secret compatibility summary of the latest authoritative
  * GenerationRun for a book, surfaced via GenerationDiagnosticsDto.latestJob.
+ * Its only source is the same GenerationRun row as
+ * GenerationDiagnosticsDto.latestAttempt; prefer that projection.
  * The legacy field/type names remain stable while GenerationJob is retired.
  */
 export interface GenerationJobSummary {
@@ -297,7 +347,7 @@ export interface QueueDiagnostics {
     failed: number;
     delayed: number;
   };
-  /** True when this book's latest authoritative run is queued/running but workerCount is 0. */
+  /** True when latestAttempt is queued/running (same snapshot) but workerCount is 0 at read time. */
   stalledNoWorker: boolean;
 }
 

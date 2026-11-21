@@ -1,5 +1,11 @@
 import { extname } from 'node:path';
-import { MIN_BOOK_PAGE_COUNT, SupportedLanguage, type GenerationDiagnosticsDto } from '@book/types';
+import {
+  MIN_BOOK_PAGE_COUNT,
+  SupportedLanguage,
+  type GenerationDiagnosticsDto,
+  type LatestGenerationAttemptDiagnostics,
+  type PublishedSourceGenerationRun,
+} from '@book/types';
 import type { SmokePhoto, SmokePhotoContentType } from './smoke-real-generation-run';
 
 /**
@@ -31,42 +37,63 @@ export interface SmokeValidationExtras {
  * into the smoke script's console summary. Pure function so it's
  * unit-testable without booting Nest or hitting the network. Only ever
  * prints fields already proven safe by GenerationDiagnosticsDto/
- * GenerationMetadata/SmokeValidationExtras — never an API key, a raw prompt,
+ * SmokeValidationExtras — never an API key, a raw prompt,
  * or image bytes/base64.
  */
 export function formatDiagnosticsSummary(
   diagnostics: GenerationDiagnosticsDto,
   extras?: SmokeValidationExtras,
 ): string {
-  const meta = diagnostics.generationMetadata;
+  const edition = diagnostics.publishedEdition;
+  const attempt = diagnostics.latestAttempt;
+  const record = edition?.generationRecord;
+  const personalization = edition?.characterPersonalization;
   const lines = [
     `  Book id:            ${diagnostics.bookId}`,
     `  Status:             ${diagnostics.status}`,
-    `  Story provider:     ${meta.storyProvider}${meta.storyModel ? ` (${meta.storyModel})` : ''}`,
-    `  Image provider:     ${meta.imageProvider}${meta.imageModel ? ` (${meta.imageModel})` : ''}`,
+    '  Latest generation attempt:',
+    `    Run:              ${attempt ? `${attempt.runId} (${attempt.kind}, ${attempt.status})` : 'none'}`,
+    `    Wall clock:       ${attempt?.runWallClockDurationMs != null ? `${attempt.runWallClockDurationMs}ms` : 'n/a'}`,
+    `    Provider usage:   ${formatUsage(attempt?.providerUsage)}`,
+    '  Published edition:',
+    `    Edition:          ${edition?.edition ?? 'none'}`,
+    `    Source run:       ${edition ? formatSourceRun(edition.sourceGenerationRun) : 'n/a'}`,
+    `    Story model:      ${record?.storyModel ?? 'n/a'}`,
+    `    Image model:      ${record?.imageModel ?? 'n/a'}`,
     `  Char. profile prov.:${extras ? ` ${extras.characterProfileProvider}` : ' n/a'}`,
-    `  Generated pages:    ${meta.generatedPages ?? 'n/a'}`,
+    `  Published pages:    ${edition?.pageCount ?? 'n/a'}`,
     `  Expected images:    ${extras?.expectedImageCount ?? 'n/a'}`,
-    `  Generated images:   ${meta.generatedImageCount ?? 'n/a'}`,
-    `  Fallback images:    ${extras?.fallbackImageCount ?? meta.failedImageCount ?? 'n/a'}`,
-    `  Duration:           ${meta.durationMs !== undefined ? `${meta.durationMs}ms` : 'n/a'}`,
-    `  PDF preview url:    ${diagnostics.previewPdfUrl ?? 'n/a'}`,
+    `  Generated images:   ${record?.generatedImageCount ?? 'n/a'}`,
+    `  Fallback images:    ${extras?.fallbackImageCount ?? record?.failedImageCount ?? 'n/a'}`,
+    `  PDF preview:        ${edition ? `/api/books/${diagnostics.bookId}/pdf/preview?edition=${encodeURIComponent(edition.edition)}` : 'n/a'}`,
     `  PDF exists:         ${extras ? (extras.pdfExists ? 'yes' : 'no') : 'n/a'}`,
     `  PDF size > 0:       ${extras?.pdfSizeBytes !== undefined ? `${extras.pdfSizeBytes > 0 ? 'yes' : 'no'} (${extras.pdfSizeBytes} bytes)` : 'n/a'}`,
-    `  Character sheet:    ${diagnostics.characterPersonalization.characterSheetGenerated ? 'generated' : 'not generated'}`,
+    `  Character sheet:    ${personalization ? (personalization.characterSheetGenerated ? 'generated' : 'not generated') : 'n/a'}`,
     `  Char. sheet asset:  ${extras?.characterSheetAssetId ?? 'n/a'}`,
-    `  Reference available:${diagnostics.characterPersonalization.characterReferenceAvailable ? ' yes' : ' no'}`,
-    `  Reference used:     ${diagnostics.characterPersonalization.characterReferenceUsedForImages ? 'yes' : 'no'}`,
-    `  Image gen mode:     ${diagnostics.characterPersonalization.imageGenerationMode}`,
+    `  Reference available:${personalization ? (personalization.characterReferenceAvailable ? ' yes' : ' no') : ' n/a'}`,
+    `  Reference used:     ${personalization ? (personalization.characterReferenceUsedForImages ? 'yes' : 'no') : 'n/a'}`,
+    `  Image gen mode:     ${personalization?.imageGenerationMode ?? 'n/a'}`,
     `  Diagnostics URL:    /api/books/${diagnostics.bookId}/generation-diagnostics`,
   ];
-  if (diagnostics.failedStep) {
-    lines.push(`  Failed step:        ${diagnostics.failedStep}`);
+  if (attempt?.error?.failedStep) {
+    lines.push(`  Failed step:        ${attempt.error.failedStep}`);
   }
-  if (diagnostics.errorMessage) {
-    lines.push(`  Error:              ${diagnostics.errorMessage}`);
+  if (attempt?.error?.message) {
+    lines.push(`  Error:              ${attempt.error.message}`);
   }
   return lines.join('\n');
+}
+
+function formatUsage(usage: LatestGenerationAttemptDiagnostics['providerUsage'] | undefined) {
+  if (!usage) return 'n/a';
+  if (usage.availability === 'unavailable') return `unavailable (${usage.reason})`;
+  return `${usage.usage.calls.length} call(s), ${usage.usage.actualPaidCalls} paid`;
+}
+
+function formatSourceRun(source: PublishedSourceGenerationRun): string {
+  return source.availability === 'recorded'
+    ? `${source.runId} (${source.kind}, ${source.status})`
+    : `unavailable (${source.reason})`;
 }
 
 /** Resolved, ready-to-use local QA book configuration — every field has a safe default. */

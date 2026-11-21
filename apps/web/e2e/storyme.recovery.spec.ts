@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 import type {
   GenerationDiagnosticsDto,
-  GenerationJobSummary,
   GenerationProviderCallMetadata,
+  LatestGenerationAttemptDiagnostics,
+  PublishedEditionDiagnostics,
+  RunProviderUsageProjection,
 } from '@book/types';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -33,15 +35,16 @@ interface E2eBook {
 }
 
 /**
- * One generation run as diagnostics reports it. `latestJob` and
- * `providerUsage` are both projected from the newest GenerationRun, so they
- * describe the run in progress or just finished. `imageFailures` and `resume`
- * are read from Book.imageGenerationResult, which only a successful
- * publication replaces: after a failed run they still describe the published
- * edition, not the failure.
+ * One generation attempt as diagnostics reports it. `latestAttempt` (and its
+ * `latestJob` alias) is projected only from the newest GenerationRun and its
+ * own ledger. `publishedEdition` is projected only from the published Book
+ * columns and the run its pointer names, so after a failed or cancelled
+ * attempt it still describes the earlier publication, with that run's
+ * identity and usage.
  */
 interface RunEvidence {
-  job: GenerationJobSummary;
+  attempt: LatestGenerationAttemptDiagnostics;
+  usage: RunProviderUsageProjection;
   calls: GenerationProviderCallMetadata[];
 }
 
@@ -90,24 +93,47 @@ async function readDiagnostics(
   return (await response.json()) as GenerationDiagnosticsDto;
 }
 
-function latestJob(diagnostics: GenerationDiagnosticsDto): GenerationJobSummary {
-  expect(diagnostics.latestJob?.id).toBeTruthy();
-  return diagnostics.latestJob!;
+/** The latest attempt; the legacy `latestJob` alias must name the same run. */
+function latestAttempt(diagnostics: GenerationDiagnosticsDto): LatestGenerationAttemptDiagnostics {
+  expect(diagnostics.latestAttempt?.runId).toBeTruthy();
+  expect(diagnostics.latestJob?.id).toBe(diagnostics.latestAttempt!.runId);
+  return diagnostics.latestAttempt!;
 }
 
-/**
- * The latest run's identity and provider ledger. Only the durable per-run
- * ledger reports `actualDispatches`; its absence would mean providerUsage
- * fell back to the published edition's embedded snapshot.
- */
-function latestRunEvidence(diagnostics: GenerationDiagnosticsDto): RunEvidence {
-  const job = latestJob(diagnostics);
-  expect(diagnostics.providerUsage).toBeTruthy();
-  expect(typeof diagnostics.providerUsage!.actualDispatches).toBe('number');
+function publishedEdition(diagnostics: GenerationDiagnosticsDto): PublishedEditionDiagnostics {
+  expect(diagnostics.publishedEdition).toBeTruthy();
+  return diagnostics.publishedEdition!;
+}
+
+/** A recorded per-run ledger that reached only mock providers. */
+function recordedMockCalls(usage: RunProviderUsageProjection): GenerationProviderCallMetadata[] {
+  expect(usage.availability).toBe('recorded');
+  if (usage.availability !== 'recorded') return [];
+  expect(typeof usage.usage.actualDispatches).toBe('number');
   // Mock providers only: nothing in any run may reach a paid provider.
-  expect(diagnostics.providerUsage!.actualPaidCalls).toBe(0);
-  expect(diagnostics.providerUsage!.calls.every(({ provider }) => provider === 'mock')).toBe(true);
-  return { job, calls: diagnostics.providerUsage!.calls };
+  expect(usage.usage.actualPaidCalls).toBe(0);
+  expect(usage.usage.calls.every(({ provider }) => provider === 'mock')).toBe(true);
+  return usage.usage.calls;
+}
+
+/** Persisted run timestamps, and a wall clock derived only from them. */
+function expectTerminalTimestamps(
+  attempt: LatestGenerationAttemptDiagnostics,
+  terminal: 'completedAt' | 'failedAt' | 'cancelledAt',
+): void {
+  const { startedAt, [terminal]: endedAt } = attempt.timestamps;
+  expect(endedAt).toBeTruthy();
+  if (startedAt) {
+    expect(attempt.runWallClockDurationMs).toBe(Date.parse(endedAt!) - Date.parse(startedAt));
+  } else {
+    expect(attempt.runWallClockDurationMs).toBeNull();
+  }
+}
+
+/** The latest attempt's identity and its own provider ledger. */
+function latestRunEvidence(diagnostics: GenerationDiagnosticsDto): RunEvidence {
+  const attempt = latestAttempt(diagnostics);
+  return { attempt, usage: attempt.providerUsage, calls: recordedMockCalls(attempt.providerUsage) };
 }
 
 function illustrationCalls(
@@ -218,9 +244,20 @@ test('recovers a published book through a real failure, retry, and cancellation'
   let bookId = '';
   let original: Publication;
   let replacement: Publication;
+  // Provider usage of each published edition's source run, as first observed.
+  let originalUsage: RunProviderUsageProjection;
+  let replacementUsage: RunProviderUsageProjection;
   // Each user action creates a new GenerationRun; distinct ids prove that the
   // evidence read after it belongs to that run and not to an earlier one.
   const runIds: string[] = [];
+  // Developer diagnostics are disabled in this build: the page itself must
+  // never request them (the test's own API reads are not page requests).
+  const pageDiagnosticsRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/generation-diagnostics')) {
+      pageDiagnosticsRequests.push(request.url());
+    }
+  });
 
   await test.step('sign in with the synthetic account', async () => {
     token = await login(page);
@@ -243,15 +280,33 @@ test('recovers a published book through a real failure, retry, and cancellation'
     });
     await waitForStatus(page, token, bookId, 'complete');
 
-    const { job, calls } = latestRunEvidence(await readDiagnostics(page, token, bookId));
-    expect(job).toMatchObject({ type: 'generate', status: 'completed' });
+    const diagnostics = await readDiagnostics(page, token, bookId);
+    const { attempt, usage, calls } = latestRunEvidence(diagnostics);
+    expect(attempt).toMatchObject({
+      kind: 'initial',
+      status: 'completed',
+      isPublishedSource: true,
+    });
+    expectTerminalTimestamps(attempt, 'completedAt');
     // Match 1 of the page-2 illustration: counted by the injector, not failed.
     expect(illustrationCalls(calls, 'page_2').map(({ status }) => status)).toEqual(['success']);
-    runIds.push(job.id);
+    const edition = publishedEdition(diagnostics);
+    expect(edition.sourceGenerationRun).toMatchObject({
+      availability: 'recorded',
+      runId: attempt.runId,
+      status: 'completed',
+    });
+    expect(edition.revisedAfterGeneration).toBe(false);
+    expect(edition.baseGenerationUsage).toEqual(usage);
+    originalUsage = usage;
+    runIds.push(attempt.runId);
   });
 
   await test.step('capture the published edition, text, PDF, and cover', async () => {
     original = await capturePublication(page, token, bookId);
+    expect(publishedEdition(await readDiagnostics(page, token, bookId)).edition).toBe(
+      original.edition,
+    );
     await expectReaderShows(page, original.title);
   });
 
@@ -267,11 +322,18 @@ test('recovers a published book through a real failure, retry, and cancellation'
     await waitForStatus(page, token, bookId, 'failed');
     const diagnostics = await readDiagnostics(page, token, bookId);
     expect(diagnostics.status).toBe('failed');
-    const { job, calls } = latestRunEvidence(diagnostics);
-    // Regeneration keeps reporting the legacy `generate` job type.
-    expect(job).toMatchObject({ type: 'generate', status: 'failed', failedStep: 'pdf_render' });
-    expect(runIds).not.toContain(job.id);
-    runIds.push(job.id);
+    const { attempt, calls } = latestRunEvidence(diagnostics);
+    expect(attempt).toMatchObject({
+      kind: 'regenerate',
+      status: 'failed',
+      isPublishedSource: false,
+      error: { failedStep: 'pdf_render' },
+    });
+    expectTerminalTimestamps(attempt, 'failedAt');
+    // The legacy alias still reports a regeneration as `generate`.
+    expect(diagnostics.latestJob).toMatchObject({ type: 'generate', status: 'failed' });
+    expect(runIds).not.toContain(attempt.runId);
+    runIds.push(attempt.runId);
 
     // Only the injected page-2 illustration failed, once, at the mock provider;
     // every other illustration in this run succeeded.
@@ -289,9 +351,23 @@ test('recovers a published book through a real failure, retry, and cancellation'
     expect(calls.filter(({ status }) => status !== 'success')).toHaveLength(1);
 
     // PDF assembly then refused to publish an incomplete book.
-    for (const message of [diagnostics.errorMessage, job.errorMessage]) {
+    for (const message of [attempt.error?.message, diagnostics.latestJob?.errorMessage]) {
       expect(message ?? '').toMatch(/missing generated illustration\(s\) for page 2\./);
     }
+
+    // Edition A is still published, with A's own identity and usage — none
+    // of the failed attempt's identity, failure or ledger.
+    const edition = publishedEdition(diagnostics);
+    expect(edition.edition).toBe(original.edition);
+    expect(edition.sourceGenerationRun).toMatchObject({
+      availability: 'recorded',
+      runId: runIds[0],
+      status: 'completed',
+    });
+    expect(edition.baseGenerationUsage).toEqual(originalUsage);
+    expect(edition.baseGenerationUsage).not.toEqual(attempt.providerUsage);
+    expect(edition.generationRecord.imageFailures).toEqual([]);
+    expect(edition.generationRecord.resume?.finalBookStatus).toBe('complete');
     await expect(page.getByText(/new version could not be generated/i)).toBeVisible({
       timeout: 15_000,
     });
@@ -321,20 +397,35 @@ test('recovers a published book through a real failure, retry, and cancellation'
   await test.step('publish a new edition with valid bytes and updated content', async () => {
     await waitForStatus(page, token, bookId, 'complete');
     const diagnostics = await readDiagnostics(page, token, bookId);
-    const { job, calls } = latestRunEvidence(diagnostics);
-    expect(job).toMatchObject({ type: 'retry', status: 'completed' });
-    expect(runIds).not.toContain(job.id);
-    runIds.push(job.id);
+    const { attempt, usage, calls } = latestRunEvidence(diagnostics);
+    expect(attempt).toMatchObject({
+      kind: 'retry',
+      status: 'completed',
+      retryOfRunId: runIds[1],
+      isPublishedSource: true,
+    });
+    expectTerminalTimestamps(attempt, 'completedAt');
+    expect(runIds).not.toContain(attempt.runId);
+    runIds.push(attempt.runId);
     // The retry may reuse checkpointed story and illustrations, but the missing
     // page 2 must be produced again (match 3), and nothing in this run failed.
     expect(illustrationCalls(calls, 'page_2')).toEqual([
       expect.objectContaining({ provider: 'mock', status: 'success' }),
     ]);
     expect(calls.filter(({ status }) => status !== 'success')).toEqual([]);
-    // The retry's publication replaced the Book-level image diagnostics.
-    expect(diagnostics.imageFailures).toEqual([]);
+    // Publication provenance advanced to the retry.
+    const edition = publishedEdition(diagnostics);
+    expect(edition.sourceGenerationRun).toMatchObject({
+      availability: 'recorded',
+      runId: attempt.runId,
+      kind: 'retry',
+    });
+    expect(edition.baseGenerationUsage).toEqual(usage);
+    expect(edition.generationRecord.imageFailures).toEqual([]);
+    replacementUsage = usage;
 
     replacement = await capturePublication(page, token, bookId);
+    expect(edition.edition).toBe(replacement.edition);
     expect(replacement.edition).not.toBe(original.edition);
     // Content evidence comes from the changed input, not from PDF metadata.
     expect(replacement.title).not.toBe(original.title);
@@ -374,12 +465,28 @@ test('recovers a published book through a real failure, retry, and cancellation'
 
   await test.step('keep the last successful publication after cancellation and reload', async () => {
     await waitForStatus(page, token, bookId, 'cancelled');
-    // Only the run identity is read: a run cancelled before a worker claims it
-    // has no provider ledger, and providerUsage then falls back to the
-    // published edition's snapshot, which is not this run's telemetry.
-    const job = latestJob(await readDiagnostics(page, token, bookId));
-    expect(job).toMatchObject({ type: 'generate', status: 'cancelled' });
-    expect(runIds).not.toContain(job.id);
+    const diagnostics = await readDiagnostics(page, token, bookId);
+    const attempt = latestAttempt(diagnostics);
+    expect(attempt).toMatchObject({
+      kind: 'regenerate',
+      status: 'cancelled',
+      isPublishedSource: false,
+      error: null,
+    });
+    expectTerminalTimestamps(attempt, 'cancelledAt');
+    expect(runIds).not.toContain(attempt.runId);
+    // The cancelled run reports only its own ledger, or an explicit
+    // unavailable state — never the published edition's usage.
+    if (attempt.providerUsage.availability === 'unavailable') {
+      expect(['never_claimed', 'ledger_absent']).toContain(attempt.providerUsage.reason);
+    } else {
+      recordedMockCalls(attempt.providerUsage);
+    }
+    expect(attempt.providerUsage).not.toEqual(replacementUsage);
+    const edition = publishedEdition(diagnostics);
+    expect(edition.edition).toBe(replacement.edition);
+    expect(edition.sourceGenerationRun).toMatchObject({ runId: runIds[2] });
+    expect(edition.baseGenerationUsage).toEqual(replacementUsage);
     expect(await capturePublication(page, token, bookId)).toEqual(replacement);
 
     await page.reload();
@@ -389,5 +496,19 @@ test('recovers a published book through a real failure, retry, and cancellation'
     expect(sha256(await downloadPdfThroughUi(page))).toBe(replacement.pdfSha256);
     expect((await readBook(page, token, bookId)).status).toBe('cancelled');
     expect(await capturePublication(page, token, bookId)).toEqual(replacement);
+  });
+
+  await test.step('make no diagnostics requests from the page while diagnostics are disabled', async () => {
+    // The web server inherits this process's environment. Only a disabled
+    // build can prove the absence of requests; an enabled one is recorded,
+    // not skipped, so the journey's other evidence still counts.
+    if (process.env['NEXT_PUBLIC_ENABLE_DEVELOPER_DIAGNOSTICS'] === 'true') {
+      test.info().annotations.push({
+        type: 'not verified',
+        description: 'developer diagnostics were enabled for this web server',
+      });
+      return;
+    }
+    expect(pageDiagnosticsRequests).toEqual([]);
   });
 });

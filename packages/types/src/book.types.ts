@@ -4,8 +4,12 @@ import type {
   BookGenre,
   BookLength,
   GenerationJobSummary,
-  GenerationMetadata,
   GenerationFailureReason,
+  GenerationQualitySummary,
+  GenerationRunKindName,
+  GenerationRunTimestamps,
+  LatestGenerationAttemptDiagnostics,
+  RunProviderUsageProjection,
   GenerationProviderCallMetadata,
   GenerationProviderUsage,
   IllustrationStyle,
@@ -763,13 +767,15 @@ export interface PdfStorageDiagnostics {
 }
 
 /**
- * Safe, non-secret view of the personalized-character pipeline for a book —
- * surfaced via GenerationDiagnosticsDto.characterPersonalization. Each flag
- * answers one debugging question without exposing the photo, profile prose,
- * or prompt text itself.
+ * Safe, non-secret view of the personalized-character pipeline for the
+ * published edition — surfaced via
+ * GenerationDiagnosticsDto.publishedEdition.characterPersonalization. Every
+ * flag reads the published Book columns, never the current draft input. Each
+ * flag answers one debugging question without exposing the photo, profile
+ * prose, or prompt text itself.
  */
 export interface CharacterPersonalizationDiagnostics {
-  /** Whether a child reference photo was uploaded for this book. */
+  /** Whether the published CharacterProfile was built from a reference photo. */
   hasReferencePhoto: boolean;
   /** Whether a CharacterProfile was built (from the photo and/or text inputs). */
   characterProfileCreated: boolean;
@@ -783,35 +789,104 @@ export interface CharacterPersonalizationDiagnostics {
   characterReferenceUsedForImages: boolean;
   /** Which image-generation request shape this run used. */
   imageGenerationMode: 'text-to-image' | 'character-reference-edit' | 'mixed';
-  /** Explicit, safe error when a character-sheet asset was recorded as existing but its bytes could not be read back this run. Undefined when no such failure occurred. */
+  /** Static, safe message when a character-sheet asset was recorded as existing but its bytes could not be read back this run; never the stored error text, which names a storage key. Undefined when no such failure occurred. */
   characterReferenceLoadError?: string;
 }
 
 /**
+ * The full-book GenerationRun that produced the published edition's base
+ * content (Book.publishedRunId + publishedRunFencingVersion). `unavailable`
+ * means the provenance is not recorded: `legacy_publication` for an edition
+ * published before run pointers existed, `run_record_missing` when the pointer
+ * names no run owned by this book and user.
+ */
+export type PublishedSourceGenerationRun =
+  | {
+      availability: 'recorded';
+      runId: string;
+      /** The publishing delivery's claim fence (Book.publishedRunFencingVersion). */
+      fencingVersion: number | null;
+      kind: GenerationRunKindName;
+      status: GenerationJobSummary['status'];
+      timestamps: GenerationRunTimestamps;
+      /** Same definition as LatestGenerationAttemptDiagnostics.runWallClockDurationMs. */
+      runWallClockDurationMs: number | null;
+    }
+  | {
+      availability: 'unavailable';
+      reason: 'legacy_publication' | 'run_record_missing';
+      runId: string | null;
+    };
+
+/**
+ * The edition readers are served right now, projected only from the published
+ * Book columns and its source GenerationRun. A failed, running or cancelled
+ * later attempt never changes it; only a successful full-book run or a page
+ * revision does.
+ */
+export interface PublishedEditionDiagnostics {
+  /** Same identity as BookDto.publishedEdition and the `?edition=` asset pin. */
+  edition: string;
+  sourceGenerationRun: PublishedSourceGenerationRun;
+  /**
+   * True when a page text or image revision republished the book after the
+   * source run (Book.publishedPdfRunId is set). Revisions are not
+   * GenerationRuns and never change the source run's history.
+   */
+  revisedAfterGeneration: boolean;
+  /** Pages in the published edition (Book.bookPreview), including revisions. */
+  pageCount?: number;
+  /**
+   * Values the source run recorded when it published (Book.aiModelVersions,
+   * Book.qualityReport and Book.imageGenerationResult). Page revisions do not
+   * update these.
+   */
+  generationRecord: {
+    storyModel?: string;
+    imageModel?: string;
+    generatedImageCount?: number;
+    failedImageCount?: number;
+    quality?: GenerationQualitySummary;
+    resume: ResumeDiagnostics | null;
+    imageFailures: ImageGenerationFailureDetail[];
+  };
+  characterPersonalization: CharacterPersonalizationDiagnostics;
+  /**
+   * Provider usage of the source GenerationRun only (its durable ledger).
+   * Not cumulative spending for the edition: page revisions are excluded.
+   */
+  baseGenerationUsage: RunProviderUsageProjection;
+}
+
+/**
  * Response from GET /books/:id/generation-diagnostics — safe, non-secret
- * inspection data for debugging a book's generation run. Never includes
- * OPENAI_API_KEY, prompts, generated image bytes/base64, or raw provider
- * responses.
+ * inspection data. Each field has exactly one source:
+ *
+ * - `publishedEdition`: the published Book columns plus its source run.
+ * - `latestAttempt` (and its legacy alias `latestJob`): the newest owned
+ *   GenerationRun row and its ledger.
+ * - `recentLogs`: book-level AgentLog history, not scoped to any run.
+ * - `pdfStorage`, `queue`: read-time observations, taken after the database
+ *   snapshot and not atomic with it.
+ *
+ * All database fields come from one consistent snapshot. Never includes
+ * credentials, prompts, input snapshots, child details, storage keys,
+ * generated image bytes, or raw provider responses.
  */
 export interface GenerationDiagnosticsDto {
   bookId: string;
+  /** Alias of Book.status only: the book lifecycle status. */
   status: BookStatus;
-  failedStep?: AgentStep | null;
-  errorMessage?: string | null;
-  generationMetadata: GenerationMetadata;
+  /** The edition readers are served, or null when nothing is published. */
+  publishedEdition: PublishedEditionDiagnostics | null;
+  /** The newest full-book GenerationRun, or null when none exists. */
+  latestAttempt: LatestGenerationAttemptDiagnostics | null;
+  /** @deprecated Alias of the latestAttempt GenerationRun in the legacy job-summary shape. */
+  latestJob: GenerationJobSummary | null;
+  /** The newest AgentLog rows for the book across all runs (bounded, newest first). */
   recentLogs: AgentLogSummary[];
-  previewPdfUrl?: string | null;
-  /** Latest authoritative GenerationRun projected into the legacy job-summary shape, or null. */
-  latestJob?: GenerationJobSummary | null;
+  /** Read-time storage observation for the published edition's PDF. */
   pdfStorage: PdfStorageDiagnostics;
   /** BullMQ generation-queue health — see QueueDiagnostics. */
   queue: QueueDiagnostics;
-  /** Personalized-character pipeline status — see CharacterPersonalizationDiagnostics. */
-  characterPersonalization: CharacterPersonalizationDiagnostics;
-  /** Idempotent-resume diagnostics for the most recent generation run, or null if none was ever computed for this book. */
-  resume: ResumeDiagnostics | null;
-  /** Per-asset failure diagnostics for the most recent generation run's failed image-generation calls (see ImageGenerationFailureDetail). Empty when nothing failed or none was ever computed. */
-  imageFailures: ImageGenerationFailureDetail[];
-  /** Safe paid-call budget and per-call metadata for the latest run, or null for legacy/incomplete runs. */
-  providerUsage: GenerationProviderUsage | null;
 }

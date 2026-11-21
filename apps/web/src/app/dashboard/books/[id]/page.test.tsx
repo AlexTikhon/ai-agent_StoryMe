@@ -15,7 +15,10 @@ import type {
   GenerationProgressDto,
   IllustrationPlan,
   ImageGenerationResult,
+  LatestGenerationAttemptDiagnostics,
   PagePlan,
+  PublishedEditionDiagnostics,
+  RunProviderUsageProjection,
 } from '@book/types';
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
@@ -192,14 +195,10 @@ function makeDiagnostics(
   return {
     bookId: 'book-1',
     status: BookStatus.StoryDraft,
-    failedStep: null,
-    errorMessage: null,
-    generationMetadata: {
-      storyProvider: 'mock',
-      imageProvider: 'mock',
-    },
+    publishedEdition: null,
+    latestAttempt: null,
+    latestJob: null,
     recentLogs: [],
-    previewPdfUrl: null,
     pdfStorage: { driver: 'local', keyPresent: false, previewAvailable: false },
     queue: {
       queueName: 'book-generation',
@@ -207,6 +206,79 @@ function makeDiagnostics(
       counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
       stalledNoWorker: false,
     },
+    ...overrides,
+  };
+}
+
+const RUN_TIMESTAMPS = {
+  createdAt: '2026-01-01T00:00:00.000Z',
+  startedAt: null,
+  completedAt: null,
+  failedAt: null,
+  cancelledAt: null,
+};
+
+function makeAttempt(
+  overrides: Partial<LatestGenerationAttemptDiagnostics> = {},
+): LatestGenerationAttemptDiagnostics {
+  return {
+    runId: 'run-b',
+    kind: 'regenerate',
+    status: 'running',
+    retryOfRunId: null,
+    deliveryAttempt: 1,
+    currentStep: null,
+    timestamps: RUN_TIMESTAMPS,
+    runWallClockDurationMs: null,
+    error: null,
+    isPublishedSource: false,
+    providerUsage: { availability: 'unavailable', reason: 'never_claimed' },
+    ...overrides,
+  };
+}
+
+function mockLedger(provider: 'mock' | 'openai', calls: number): RunProviderUsageProjection {
+  return {
+    availability: 'recorded',
+    usage: {
+      maxPaidCalls: 0,
+      plannedPaidCalls: 0,
+      actualPaidCalls: 0,
+      calls: Array.from({ length: calls }, (_, index) => ({
+        callIndex: index + 1,
+        operation: 'illustration' as const,
+        provider,
+        promptVersion: 'page-v1',
+        promptHash: 'a'.repeat(64),
+        attempt: 1,
+        durationMs: 5,
+        status: 'success' as const,
+      })),
+    },
+  };
+}
+
+function makeEdition(
+  overrides: Partial<PublishedEditionDiagnostics> = {},
+): PublishedEditionDiagnostics {
+  return {
+    edition: 'run-a:1',
+    sourceGenerationRun: {
+      availability: 'recorded',
+      runId: 'run-a',
+      fencingVersion: 1,
+      kind: 'initial',
+      status: 'completed',
+      timestamps: {
+        ...RUN_TIMESTAMPS,
+        startedAt: '2026-01-01T00:00:01.000Z',
+        completedAt: '2026-01-01T00:01:06.000Z',
+      },
+      runWallClockDurationMs: 65_000,
+    },
+    revisedAfterGeneration: false,
+    pageCount: 4,
+    generationRecord: { resume: null, imageFailures: [] },
     characterPersonalization: {
       hasReferencePhoto: false,
       characterProfileCreated: false,
@@ -216,9 +288,7 @@ function makeDiagnostics(
       characterReferenceUsedForImages: false,
       imageGenerationMode: 'text-to-image',
     },
-    resume: null,
-    imageFailures: [],
-    providerUsage: null,
+    baseGenerationUsage: mockLedger('mock', 6),
     ...overrides,
   };
 }
@@ -3232,46 +3302,37 @@ describe('BookDetailPage', () => {
       ).toBe(false);
     });
 
-    it('renders provider, model, generated pages, and duration info', async () => {
-      const generatingBook: BookDto = { ...MOCK_BOOK, status: BookStatus.ImageGen };
-      vi.mocked(fetch).mockResolvedValueOnce(mockOk(generatingBook));
-      queueDiagnostics(
-        mockOk(
-          makeDiagnostics({
-            status: BookStatus.ImageGen,
-            generationMetadata: {
-              storyProvider: 'openai',
-              storyModel: 'gpt-4o-mini',
-              imageProvider: 'openai',
-              imageModel: 'dall-e-3',
-              generatedPages: 2,
-              requestedPages: 4,
-              durationMs: 65_000,
-            },
-          }),
-        ),
-      );
-
-      render(<BookDetailPage />);
-
-      await waitFor(() => {
-        const panel = within(screen.getByTestId('generation-diagnostics'));
-        expect(panel.getByText(/openai \(gpt-4o-mini\)/)).toBeDefined();
-        expect(panel.getByText(/openai \(dall-e-3\)/)).toBeDefined();
-        expect(panel.getByText('2 / 4')).toBeDefined();
-        expect(panel.getByText('1m 5s')).toBeDefined();
-      });
-    });
-
-    it('shows failedStep and a safe errorMessage when generation fails', async () => {
+    it('renders published edition A and failed attempt B in separate sections with their own provenance', async () => {
       const failedBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Failed };
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(failedBook));
       queueDiagnostics(
         mockOk(
           makeDiagnostics({
             status: BookStatus.Failed,
-            failedStep: AgentStep.ImageGen,
-            errorMessage: 'Image provider returned an error after 3 attempts.',
+            pdfStorage: { driver: 'local', keyPresent: true, previewAvailable: true },
+            publishedEdition: makeEdition({
+              generationRecord: {
+                storyModel: 'gpt-4o-mini',
+                imageModel: 'gpt-image-1',
+                resume: null,
+                imageFailures: [],
+              },
+            }),
+            latestAttempt: makeAttempt({
+              status: 'failed',
+              timestamps: {
+                ...RUN_TIMESTAMPS,
+                startedAt: '2026-02-01T00:00:01.000Z',
+                failedAt: '2026-02-01T00:00:11.500Z',
+              },
+              runWallClockDurationMs: 10_500,
+              error: {
+                code: 'PROVIDER_PROVIDER_ERROR',
+                message: 'Image provider returned an error after 3 attempts.',
+                failedStep: AgentStep.ImageGen,
+              },
+              providerUsage: mockLedger('openai', 2),
+            }),
           }),
         ),
       );
@@ -3279,35 +3340,102 @@ describe('BookDetailPage', () => {
       render(<BookDetailPage />);
 
       await waitFor(() => {
-        const panel = within(screen.getByTestId('generation-diagnostics'));
-        expect(
-          panel.getByText(
-            (_, element) =>
-              element?.tagName.toLowerCase() === 'p' &&
-              element.textContent === 'Failed step: image_gen',
-          ),
-        ).toBeDefined();
-        expect(panel.getByText('Image provider returned an error after 3 attempts.')).toBeDefined();
-        expect(panel.getByText(/try again later, or check diagnostics/i)).toBeDefined();
+        expect(screen.getByTestId('generation-diagnostics')).toBeDefined();
       });
+      const edition = within(screen.getByRole('region', { name: 'Published edition' }));
+      expect(edition.getByText('run-a:1')).toBeDefined();
+      expect(edition.getByText('run-a')).toBeDefined();
+      expect(edition.getByText('2026-01-01T00:01:06.000Z')).toBeDefined();
+      expect(edition.getByText('1m 5s')).toBeDefined();
+      expect(edition.getByText('gpt-4o-mini')).toBeDefined();
+      expect(edition.getByText('6 provider calls, 0 paid')).toBeDefined();
+      expect(edition.getByText('ready')).toBeDefined();
+      expect(edition.queryByText(/run-b/)).toBeNull();
+      expect(edition.queryByText(/Image provider returned an error/)).toBeNull();
+
+      const attempt = within(screen.getByRole('region', { name: 'Latest generation attempt' }));
+      expect(attempt.getByText('run-b')).toBeDefined();
+      expect(attempt.getByText('failed (regenerate)')).toBeDefined();
+      expect(attempt.getByText('not published')).toBeDefined();
+      expect(attempt.getByText('2026-02-01T00:00:11.500Z')).toBeDefined();
+      expect(attempt.getByText('10.5s')).toBeDefined();
+      expect(attempt.getByText('2 provider calls, 0 paid')).toBeDefined();
+      expect(attempt.getByText('openai')).toBeDefined();
+      expect(
+        attempt.getByText(
+          (_, element) =>
+            element?.tagName.toLowerCase() === 'p' &&
+            element.textContent === 'Failed step: image_gen',
+        ),
+      ).toBeDefined();
+      expect(attempt.getByText('Image provider returned an error after 3 attempts.')).toBeDefined();
+      expect(attempt.getByText(/try again later, or check diagnostics/i)).toBeDefined();
+      expect(attempt.queryByText('run-a')).toBeNull();
+      expect(attempt.queryByText(/6 provider calls/)).toBeNull();
     });
 
-    it('shows character personalization diagnostics from the API', async () => {
+    it('shows explicit unavailable states instead of falling back to the published usage', async () => {
+      const cancelledBook: BookDto = { ...MOCK_BOOK, status: BookStatus.Cancelled };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(cancelledBook));
+      queueDiagnostics(
+        mockOk(
+          makeDiagnostics({
+            status: BookStatus.Cancelled,
+            publishedEdition: makeEdition({
+              edition: 'legacy',
+              sourceGenerationRun: {
+                availability: 'unavailable',
+                reason: 'legacy_publication',
+                runId: null,
+              },
+              baseGenerationUsage: {
+                availability: 'unavailable',
+                reason: 'source_run_unavailable',
+              },
+            }),
+            latestAttempt: makeAttempt({
+              status: 'cancelled',
+              timestamps: { ...RUN_TIMESTAMPS, cancelledAt: '2026-02-01T00:00:03.000Z' },
+            }),
+          }),
+        ),
+      );
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('generation-diagnostics')).toBeDefined();
+      });
+      const edition = within(screen.getByRole('region', { name: 'Published edition' }));
+      expect(edition.getByText('Unavailable (published before run tracking)')).toBeDefined();
+      expect(edition.getByText('Unavailable (source run not recorded)')).toBeDefined();
+      expect(edition.queryByText('Source run wall clock:')).toBeNull();
+
+      const attempt = within(screen.getByRole('region', { name: 'Latest generation attempt' }));
+      expect(attempt.getByText('Unavailable (never started by a worker)')).toBeDefined();
+      expect(attempt.getByText('Started:').nextSibling?.textContent).toBe('not recorded');
+      expect(attempt.getByText('Run wall clock:').nextSibling?.textContent).toBe('not recorded');
+      expect(attempt.queryByText('Providers:')).toBeNull();
+    });
+
+    it('labels a revised edition and its base-generation usage, and recent logs as book-level history', async () => {
       const book: BookDto = { ...MOCK_BOOK, status: BookStatus.Complete };
       vi.mocked(fetch).mockResolvedValueOnce(mockOk(book));
       queueDiagnostics(
         mockOk(
           makeDiagnostics({
             status: BookStatus.Complete,
-            characterPersonalization: {
-              hasReferencePhoto: true,
-              characterProfileCreated: true,
-              characterSheetGenerated: false,
-              pagePromptsIncludeConsistencyData: true,
-              characterReferenceAvailable: false,
-              characterReferenceUsedForImages: false,
-              imageGenerationMode: 'text-to-image',
-            },
+            publishedEdition: makeEdition({ edition: 'rev-1:1', revisedAfterGeneration: true }),
+            latestAttempt: makeAttempt({
+              runId: 'run-a',
+              kind: 'initial',
+              status: 'completed',
+              isPublishedSource: true,
+            }),
+            recentLogs: [
+              { step: AgentStep.ImageGen, status: 'success', attempt: 1, createdAt: 'x' },
+              { step: AgentStep.StoryPlan, status: 'success', attempt: 1, createdAt: 'y' },
+            ],
           }),
         ),
       );
@@ -3315,7 +3443,61 @@ describe('BookDetailPage', () => {
       render(<BookDetailPage />);
 
       await waitFor(() => {
+        expect(screen.getByTestId('generation-diagnostics')).toBeDefined();
+      });
+      const edition = within(screen.getByRole('region', { name: 'Published edition' }));
+      expect(edition.getByText('rev-1:1')).toBeDefined();
+      expect(edition.getByText(/Includes page revisions made after the source run/)).toBeDefined();
+      expect(edition.getByText(/Base generation usage covers the source run only/)).toBeDefined();
+      const attempt = within(screen.getByRole('region', { name: 'Latest generation attempt' }));
+      expect(attempt.getByText('source of the published edition')).toBeDefined();
+      const logs = within(screen.getByRole('region', { name: 'Book-level recent logs' }));
+      expect(
+        logs.getByText(/2 most recent log entries for this book across all runs/),
+      ).toBeDefined();
+      expect(logs.getByText(/not scoped to the latest attempt/)).toBeDefined();
+    });
+
+    it('renders explicit empty states when nothing is published or attempted', async () => {
+      const book: BookDto = { ...MOCK_BOOK, status: BookStatus.CharBuild };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(book));
+      queueDiagnostics(mockOk(makeDiagnostics({ status: BookStatus.CharBuild })));
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
         const panel = within(screen.getByTestId('generation-diagnostics'));
+        expect(panel.getByText('No published edition yet.')).toBeDefined();
+        expect(panel.getByText('No generation attempt recorded.')).toBeDefined();
+      });
+    });
+
+    it('shows the published edition character personalization diagnostics from the API', async () => {
+      const book: BookDto = { ...MOCK_BOOK, status: BookStatus.Complete };
+      vi.mocked(fetch).mockResolvedValueOnce(mockOk(book));
+      queueDiagnostics(
+        mockOk(
+          makeDiagnostics({
+            status: BookStatus.Complete,
+            publishedEdition: makeEdition({
+              characterPersonalization: {
+                hasReferencePhoto: true,
+                characterProfileCreated: true,
+                characterSheetGenerated: false,
+                pagePromptsIncludeConsistencyData: true,
+                characterReferenceAvailable: false,
+                characterReferenceUsedForImages: false,
+                imageGenerationMode: 'text-to-image',
+              },
+            }),
+          }),
+        ),
+      );
+
+      render(<BookDetailPage />);
+
+      await waitFor(() => {
+        const panel = within(screen.getByRole('region', { name: 'Published edition' }));
         expect(panel.getByText(/character personalization/i)).toBeDefined();
         expect(panel.getByText('Reference photo:')).toBeDefined();
         expect(panel.getByText('Character profile:')).toBeDefined();
@@ -3327,7 +3509,7 @@ describe('BookDetailPage', () => {
       });
     });
 
-    it('shows a PDF-ready indicator when previewPdfUrl is present in diagnostics', async () => {
+    it('shows the read-time PDF storage observation for the published edition', async () => {
       const completeBook: BookDto = {
         ...MOCK_BOOK,
         status: BookStatus.Complete,
@@ -3338,7 +3520,8 @@ describe('BookDetailPage', () => {
         mockOk(
           makeDiagnostics({
             status: BookStatus.Complete,
-            previewPdfUrl: '/files/books/book-1/storybook.pdf',
+            publishedEdition: makeEdition(),
+            pdfStorage: { driver: 'local', keyPresent: true, previewAvailable: false },
           }),
         ),
       );
@@ -3346,9 +3529,9 @@ describe('BookDetailPage', () => {
       render(<BookDetailPage />);
 
       await waitFor(() => {
-        const panel = within(screen.getByTestId('generation-diagnostics'));
+        const panel = within(screen.getByRole('region', { name: 'Published edition' }));
         expect(panel.getByText('PDF:')).toBeDefined();
-        expect(panel.getByText('ready')).toBeDefined();
+        expect(panel.getByText('not found in storage (checked now)')).toBeDefined();
       });
     });
 
@@ -3376,11 +3559,7 @@ describe('BookDetailPage', () => {
           mockOk(
             makeDiagnostics({
               status: BookStatus.ImageGen,
-              generationMetadata: {
-                storyProvider: 'mock',
-                imageProvider: 'mock',
-                generatedPages: 1,
-              },
+              latestAttempt: makeAttempt({ runId: 'run-live' }),
             }),
           ),
         );
@@ -3391,7 +3570,7 @@ describe('BookDetailPage', () => {
 
         await waitFor(() => {
           const panel = within(screen.getByTestId('generation-diagnostics'));
-          expect(panel.getByText('1')).toBeDefined();
+          expect(panel.getByText('run-live')).toBeDefined();
         });
 
         await act(async () => {
@@ -3421,8 +3600,14 @@ describe('BookDetailPage', () => {
           mockOk(
             makeDiagnostics({
               status: BookStatus.Failed,
-              failedStep: AgentStep.StoryDraft,
-              errorMessage: 'Story provider timed out.',
+              latestAttempt: makeAttempt({
+                status: 'failed',
+                error: {
+                  code: 'PROVIDER_TIMEOUT',
+                  message: 'Story provider timed out.',
+                  failedStep: AgentStep.StoryDraft,
+                },
+              }),
             }),
           ),
         );

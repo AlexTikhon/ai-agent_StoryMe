@@ -279,7 +279,12 @@ describe('runSmoke — no false success from intermediate or non-complete state'
   });
 
   it('fails on a failed run, prints its safe diagnostics, and verifies no artifacts', async () => {
-    const failedRun = makeRun({ status: 'failed', errorMessage: 'image generation failed' });
+    // The printed failure comes from the run itself, not from Book fields.
+    const failedRun = makeRun({
+      status: 'failed',
+      currentStep: 'image_gen',
+      errorMessage: 'image generation failed',
+    });
     const h = makeHarness({
       runs: [failedRun],
       persisted: {

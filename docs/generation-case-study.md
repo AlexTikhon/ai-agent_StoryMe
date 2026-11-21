@@ -246,13 +246,15 @@ killed.
    project; that was a focused run, not the complete browser profile. They passed again within
    the complete ordinary browser journeys in the closeout verification.
 
-**Diagnostics ambiguity.** In `GET /books/:id/generation-diagnostics`, `imageFailures` and
-`resume` come from `Book.imageGenerationResult`, the published edition, so after a failed
-regeneration they still describe the previous success. `providerUsage` reads the newest run's
-ledger but falls back to that Book snapshot when the run has none, such as a run cancelled while
-queued ([generation-diagnostics.ts](../apps/api/src/books/generation-diagnostics.ts#L420)).
-Fallback data is not evidence of the newest run's work; only ledger data carries
-`actualDispatches` ([details](recovery-demo.md#published-diagnostics-vs-current-run-telemetry)).
+**Diagnostics provenance.** `GET /books/:id/generation-diagnostics` reports the published
+edition and the latest generation attempt as separate projections. Each has one source: the
+published Book columns plus the run `publishedRunId` names, or the newest `GenerationRun` plus
+its own ledger. A run without a ledger reports its usage as unavailable instead of borrowing
+the published edition's. All database fields are read in one snapshot
+([generation-diagnostics.ts](../apps/api/src/books/generation-diagnostics.ts),
+[details](recovery-demo.md#published-edition-vs-latest-generation-attempt)). An earlier version
+mixed the two sources; unit, real-store integration and recovery-journey regressions now cover
+the corrected contract.
 
 **Unverified.** Any deployment; separate API and worker processes on live infrastructure;
 S3/R2 in this flow; scale; real-provider quality, errors and cost; recovery from a real worker

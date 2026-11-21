@@ -2056,11 +2056,11 @@ describe('BooksService', () => {
       expect(prisma.agentLog.findMany).not.toHaveBeenCalled();
     });
 
-    it('includes the latest authoritative GenerationRun in the compatible latestJob field', async () => {
+    it('includes the latest owner-scoped GenerationRun as latestAttempt and the latestJob alias', async () => {
       const book = makeBook({ status: 'complete' as Book['status'] });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationRunService.findLatestForBook.mockResolvedValue(
+      prisma.generationRun.findFirst.mockResolvedValue(
         makeGenerationRun({
           id: 'run-9',
           status: 'completed' as GenerationRun['status'],
@@ -2070,7 +2070,12 @@ describe('BooksService', () => {
 
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');
 
-      expect(generationRunService.findLatestForBook).toHaveBeenCalledWith('b-1');
+      expect(prisma.generationRun.findFirst).toHaveBeenCalledWith({
+        where: { bookId: 'b-1', userId: 'u-1' },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(generationRunService.findLatestForBook).not.toHaveBeenCalled();
+      expect(result.latestAttempt).toMatchObject({ runId: 'run-9', status: 'completed' });
       expect(result.latestJob).toMatchObject({ id: 'run-9', status: 'completed', attempt: 2 });
     });
 
@@ -2078,10 +2083,11 @@ describe('BooksService', () => {
       const book = makeBook({ status: STATUS_CREATED });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationRunService.findLatestForBook.mockResolvedValue(null);
+      prisma.generationRun.findFirst.mockResolvedValue(null);
 
       const result = await service.getGenerationDiagnostics('b-1', 'u-1');
 
+      expect(result.latestAttempt).toBeNull();
       expect(result.latestJob).toBeNull();
     });
 
@@ -2198,7 +2204,7 @@ describe('BooksService', () => {
       const book = makeBook({ status: STATUS_CHAR_BUILD });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationRunService.findLatestForBook.mockResolvedValue(
+      prisma.generationRun.findFirst.mockResolvedValue(
         makeGenerationRun({ status: 'queued' as GenerationRun['status'] }),
       );
       generationQueueService.getQueueDiagnostics.mockResolvedValue({
@@ -2216,7 +2222,7 @@ describe('BooksService', () => {
       const book = makeBook({ status: STATUS_CHAR_BUILD });
       prisma.book.findFirst.mockResolvedValue(book);
       prisma.agentLog.findMany.mockResolvedValue([]);
-      generationRunService.findLatestForBook.mockResolvedValue(
+      prisma.generationRun.findFirst.mockResolvedValue(
         makeGenerationRun({ status: 'queued' as GenerationRun['status'] }),
       );
       generationQueueService.getQueueDiagnostics.mockResolvedValue({

@@ -143,10 +143,12 @@ pnpm --filter @book/web test:e2e:production
 - **Failure coverage.** The recovery journey shows a mock provider failure, a retry and a
   cancellation. Worker crash, lost Redis job and database outage are covered only by
   in-process integration tests that simulate takeover and redelivery.
-- **Diagnostics provenance.** `GET /books/:id/generation-diagnostics` reports `imageFailures`
-  and `resume` from the published edition, and `providerUsage` falls back to that snapshot when
-  the newest run has no ledger
-  ([details](recovery-demo.md#published-diagnostics-vs-current-run-telemetry)).
+- **Diagnostics provenance (resolved after closeout).** At closeout,
+  `GET /books/:id/generation-diagnostics` mixed published-edition fields with the newest run's,
+  and `providerUsage` fell back to the published snapshot when that run had no ledger. The
+  response now reports `publishedEdition` and `latestAttempt` separately, each from one source,
+  with no fallback
+  ([details](recovery-demo.md#published-edition-vs-latest-generation-attempt)).
 - **Showcase.** Mock text and placeholder illustrations; a visible Next.js dev badge; the
   completed-book page shows raw illustration prompts; ASCII download names (the Russian book
   downloads as `storyme-book.pdf`, `Łódka` becomes `dka`); structural PDF checks only;

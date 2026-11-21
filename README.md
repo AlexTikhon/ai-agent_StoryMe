@@ -121,8 +121,6 @@ Copy `.env.example` to `apps/api/.env` for manual runs
 - Recovery from a real worker crash, Redis loss or database outage is not
   demonstrated end to end; those paths are covered by in-process integration
   tests only.
-- Generation diagnostics mix the published edition and the newest run
-  ([details](docs/recovery-demo.md#published-diagnostics-vs-current-run-telemetry)).
 - The Prisma schema still defines the retired `InteractiveSession`/`SessionEvent`
   storage so existing rows and migration history are preserved; nothing uses it
   ([details](docs/CURRENT_PRODUCT.md#retired-interactive-stories)).

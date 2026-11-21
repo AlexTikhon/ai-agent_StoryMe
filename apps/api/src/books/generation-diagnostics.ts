@@ -5,24 +5,38 @@ import type {
   CharacterPersonalizationDiagnostics,
   GenerationDiagnosticsDto,
   GenerationJobSummary,
-  GenerationMetadata,
   GenerationProviderName,
   GenerationProviderCallMetadata,
   GenerationProviderUsage,
+  GenerationQualitySummary,
+  GenerationRunKindName,
+  GenerationRunTimestamps,
   ImageGenerationFailureDetail,
+  LatestGenerationAttemptDiagnostics,
   PdfStorageDiagnostics,
+  PublishedEditionDiagnostics,
+  PublishedSourceGenerationRun,
+  QualityReport,
   QueueDiagnostics,
   ResumeDiagnostics,
+  RunProviderUsageProjection,
 } from '@book/types';
 import { countAuthorizedDispatches } from '../agent/generation-execution-policy';
 import { PRESERVE_APPEARANCE_INSTRUCTION } from '../agent/story-generation-provider';
-import type { QualityReport } from '@book/types';
+import { publishedEdition } from './books.mapper';
 
-function toProviderName(raw: string | null | undefined): GenerationProviderName {
-  return raw === 'mock' || raw === 'openai' ? raw : 'unknown';
-}
+/*
+ * Source rules for GET /books/:id/generation-diagnostics (see
+ * GenerationDiagnosticsDto):
+ * - publishedEdition reads only the published Book columns and the run that
+ *   Book.publishedRunId names. Those columns change only when a full-book run
+ *   completes or a page revision publishes.
+ * - latestAttempt reads only the newest GenerationRun row and its ledger.
+ * - Neither falls back to the other, and no timestamp is derived from
+ *   Book.updatedAt.
+ */
 
-function generatedPageCount(bookPreview: Book['bookPreview']): number | undefined {
+function publishedPageCount(bookPreview: Book['bookPreview']): number | undefined {
   const pages = (bookPreview as { pages?: unknown[] } | null)?.pages;
   return Array.isArray(pages) ? pages.length : undefined;
 }
@@ -48,11 +62,18 @@ function imageCounts(imageGenerationResult: Book['imageGenerationResult']): {
 type ImageGenerationModeValue = 'text-to-image' | 'character-reference-edit' | 'mixed';
 
 /**
- * Reads the visual-reference-usage fields AgentService.startBookGeneration
- * writes onto Book.imageGenerationResult (see agent.service.ts). Defaults to
- * the safe "nothing happened yet" shape for books generated before this
- * phase existed, matching how pagePromptsIncludeConsistencyData already
- * defaults to false below.
+ * Static projection of a recorded character-reference load failure. The
+ * stored message (CharacterReferenceStage.loadReference) names the
+ * character-sheet storage key and stays in logs and the stored record; only
+ * the fact that loading failed reaches the response.
+ */
+export const CHARACTER_REFERENCE_LOAD_ERROR =
+  'The character reference could not be loaded; images were generated without it.';
+
+/**
+ * Reads the visual-reference-usage fields the publishing run wrote onto
+ * Book.imageGenerationResult. Defaults to the safe "nothing happened" shape
+ * for editions published before this phase existed.
  */
 function characterReferenceUsage(imageGenerationResult: Book['imageGenerationResult']): {
   characterReferenceAvailable: boolean;
@@ -73,17 +94,15 @@ function characterReferenceUsage(imageGenerationResult: Book['imageGenerationRes
     imageGenerationMode:
       mode === 'character-reference-edit' || mode === 'mixed' ? mode : 'text-to-image',
     ...(typeof result?.characterReferenceLoadError === 'string' && {
-      characterReferenceLoadError: result.characterReferenceLoadError,
+      characterReferenceLoadError: CHARACTER_REFERENCE_LOAD_ERROR,
     }),
   };
 }
 
 /**
- * Reads the per-asset image-generation failure diagnostics AgentService
- * folds onto Book.imageGenerationResult.imageFailures (see
- * ImageGenerationFailureDetail, agent.service.ts) — empty for books
- * generated before this feature existed, or whose most recent run had no
- * failures.
+ * Per-asset image failures the publishing run folded onto
+ * Book.imageGenerationResult.imageFailures — empty for older editions or when
+ * nothing failed.
  */
 function buildImageFailureDiagnostics(
   imageGenerationResult: Book['imageGenerationResult'],
@@ -92,11 +111,15 @@ function buildImageFailureDiagnostics(
   return Array.isArray(failures) ? (failures as ImageGenerationFailureDetail[]) : [];
 }
 
-function buildProviderUsage(
+/**
+ * Resume diagnostics the publishing run folded onto
+ * Book.imageGenerationResult.resume — null when it was never computed.
+ */
+function buildResumeDiagnostics(
   imageGenerationResult: Book['imageGenerationResult'],
-): GenerationProviderUsage | null {
-  const usage = (imageGenerationResult as { providerUsage?: unknown } | null)?.providerUsage;
-  return usage ? (usage as GenerationProviderUsage) : null;
+): ResumeDiagnostics | null {
+  const resume = (imageGenerationResult as { resume?: unknown } | null)?.resume;
+  return resume ? (resume as ResumeDiagnostics) : null;
 }
 
 const PROVIDER_OPERATIONS = new Set([
@@ -258,74 +281,176 @@ function buildDurableProviderUsage(run?: GenerationRun | null): GenerationProvid
 }
 
 /**
- * Builds the safe, non-secret GenerationMetadata view for a book from
- * already-persisted columns (Book.generationTimeMs/aiModelVersions/
- * failedStep/errorMessage/bookPreview) plus its AgentLog rows — no new
- * storage, no schema change. `startedAt` is derived (updatedAt - durationMs)
- * since generation has no dedicated start-timestamp column.
+ * Highest fencingVersion a run can hold in `status` without ever having been
+ * claimed. Runs are created queued at 0; GenerationRunService.claim is the
+ * only way out of queued into running, and nothing returns a run to queued.
+ * Unclaimed runs leave queued only by cancellation (cancelGeneration or hard
+ * deletion, one bump) or by recovery's failAbandoned (no bump). Running and
+ * completed runs were necessarily claimed.
  */
-export function buildGenerationMetadata(
-  book: Book,
-  logs: AgentLog[],
-  providerUsageOverride?: GenerationProviderUsage | null,
-): GenerationMetadata {
-  const storyLog = logs.find((log) => log.step === 'story_plan');
-  const imageLog = logs.find((log) => log.step === 'image_gen');
-  const aiModelVersions = book.aiModelVersions as { story?: string; image?: string } | null;
-  const durationMs = book.generationTimeMs ?? undefined;
-  const isTerminal = book.status === 'complete' || book.status === 'failed';
-  const terminalAt = isTerminal ? book.updatedAt.toISOString() : undefined;
-  const startedAt =
-    durationMs !== undefined && terminalAt
-      ? new Date(book.updatedAt.getTime() - durationMs).toISOString()
-      : undefined;
-  const storyModel = aiModelVersions?.story ?? storyLog?.model ?? undefined;
-  const imageModel = aiModelVersions?.image ?? imageLog?.model ?? undefined;
-  const generatedPages = generatedPageCount(book.bookPreview);
-  const { generatedImageCount, failedImageCount } = imageCounts(book.imageGenerationResult);
-  const providerUsage = providerUsageOverride ?? buildProviderUsage(book.imageGenerationResult);
-  const quality = book.qualityReport as unknown as QualityReport | null;
-  const promptVersions = providerUsage
-    ? [...new Set(providerUsage.calls.map((call) => call.promptVersion))]
-    : [];
+const PRE_CLAIM_MAX_FENCING_VERSION: Partial<Record<GenerationRun['status'], number>> = {
+  queued: 0,
+  cancelled: 1,
+  failed: 0,
+};
 
+/**
+ * True only when persisted lifecycle invariants prove no worker claimed the
+ * run. A missing startedAt alone proves nothing (legacy rows can lack it), so
+ * every column claim writes — startedAt, leaseOwner, deliveryToken,
+ * processingDeadlineAt, its fence bump — and the worker's currentStep must
+ * all still be at their creation values.
+ */
+function provablyNeverClaimed(run: GenerationRun): boolean {
+  const maxFence = PRE_CLAIM_MAX_FENCING_VERSION[run.status];
+  return (
+    maxFence !== undefined &&
+    run.fencingVersion <= maxFence &&
+    run.startedAt === null &&
+    run.completedAt === null &&
+    run.leaseOwner === null &&
+    run.deliveryToken === null &&
+    run.processingDeadlineAt === null &&
+    run.currentStep === null
+  );
+}
+
+/**
+ * Provider usage of exactly one run, from its durable ledger only. A missing
+ * ledger stays unavailable; it is never filled from Book.imageGenerationResult
+ * or another run. An empty ledger array is a confirmed empty ledger. Without
+ * a ledger, `never_claimed` requires proof from lifecycle invariants;
+ * anything else, including a claimed run with missing timestamps, is
+ * `ledger_absent` (unknown).
+ */
+export function buildRunProviderUsage(run: GenerationRun): RunProviderUsageProjection {
+  const usage = buildDurableProviderUsage(run);
+  if (usage) return { availability: 'recorded', usage };
   return {
-    storyProvider: toProviderName(storyLog?.provider),
-    imageProvider: toProviderName(imageLog?.provider),
-    ...(storyModel && { storyModel }),
-    ...(imageModel && { imageModel }),
-    ...(book.pageCount != null && { requestedPages: book.pageCount }),
-    ...(generatedPages !== undefined && { generatedPages }),
-    ...(generatedImageCount !== undefined && { generatedImageCount }),
-    ...(failedImageCount !== undefined && { failedImageCount }),
-    ...(providerUsage && { providerUsage }),
-    ...(quality && {
-      quality: {
-        passed: quality.overallPassed,
-        ...(quality.dimensions && { dimensions: quality.dimensions }),
-        issueCodes: quality.issues.map((issue) => issue.code),
-        repairAttempted: quality.repair?.attempted === true,
-        repairSuccessful: quality.repair?.outcome === 'passed',
-      },
-    }),
-    ...(promptVersions.length > 0 && { promptVersions }),
-    ...(startedAt && { startedAt }),
-    ...(book.status === 'complete' && terminalAt && { completedAt: terminalAt }),
-    ...(book.status === 'failed' && terminalAt && { failedAt: terminalAt }),
-    ...(durationMs !== undefined && { durationMs }),
-    ...(book.failedStep && { failedStep: book.failedStep as unknown as AgentStep }),
-    ...(book.errorMessage && { errorMessage: book.errorMessage }),
+    availability: 'unavailable',
+    reason: provablyNeverClaimed(run) ? 'never_claimed' : 'ledger_absent',
+  };
+}
+
+function iso(value: Date | null): string | null {
+  return value ? value.toISOString() : null;
+}
+
+function runTimestamps(run: GenerationRun): GenerationRunTimestamps {
+  return {
+    createdAt: run.createdAt.toISOString(),
+    startedAt: iso(run.startedAt),
+    completedAt: iso(run.completedAt),
+    failedAt: iso(run.failedAt),
+    cancelledAt: iso(run.cancelledAt),
   };
 }
 
 /**
- * Builds the safe, non-secret personalized-character diagnostics view (item
- * 9 of the personalization feature): whether a reference photo exists,
- * whether a CharacterProfile was created, whether a character-sheet
- * reference image was generated, and — verified by construction rather than
- * just inferred from characterProfile's presence — whether every planned
- * page's illustration prompt actually includes the character-consistency
- * instructions built in story-generation-provider.ts.
+ * Run wall-clock duration from persisted timestamps only: the terminal
+ * timestamp matching the run's status minus its first claim (startedAt).
+ */
+export function runWallClockDurationMs(run: GenerationRun): number | null {
+  const terminal =
+    run.status === 'completed'
+      ? run.completedAt
+      : run.status === 'failed'
+        ? run.failedAt
+        : run.status === 'cancelled'
+          ? run.cancelledAt
+          : null;
+  if (!terminal || !run.startedAt) return null;
+  const duration = terminal.getTime() - run.startedAt.getTime();
+  return duration >= 0 ? duration : null;
+}
+
+export function buildLatestGenerationAttempt(
+  run: GenerationRun,
+  book: Pick<Book, 'publishedRunId'>,
+): LatestGenerationAttemptDiagnostics {
+  const hasError = run.errorCode !== null || run.errorMessage !== null;
+  return {
+    runId: run.id,
+    kind: run.kind as GenerationRunKindName,
+    status: run.status as LatestGenerationAttemptDiagnostics['status'],
+    retryOfRunId: run.retryOfRunId,
+    deliveryAttempt: run.attempt,
+    currentStep: run.currentStep as AgentStep | null,
+    timestamps: runTimestamps(run),
+    runWallClockDurationMs: runWallClockDurationMs(run),
+    error: hasError
+      ? {
+          code: run.errorCode,
+          message: run.errorMessage,
+          failedStep:
+            run.status === 'failed' && run.currentStep ? (run.currentStep as AgentStep) : null,
+        }
+      : null,
+    isPublishedSource: book.publishedRunId === run.id,
+    providerUsage: buildRunProviderUsage(run),
+  };
+}
+
+/**
+ * Explicit pointer validation: a candidate source run counts only if it is
+ * the exact run Book.publishedRunId names and belongs to the same book and
+ * owner. Anything else is reported as a missing record, never attributed.
+ */
+function isPublishedSourceRun(
+  book: Pick<Book, 'id' | 'userId' | 'publishedRunId'>,
+  run: GenerationRun | null | undefined,
+): run is GenerationRun {
+  return (
+    !!run &&
+    !!book.publishedRunId &&
+    run.id === book.publishedRunId &&
+    run.bookId === book.id &&
+    run.userId === book.userId
+  );
+}
+
+function buildPublishedSourceRun(
+  book: Book,
+  sourceRun: GenerationRun | null | undefined,
+): PublishedSourceGenerationRun {
+  if (!book.publishedRunId) {
+    return { availability: 'unavailable', reason: 'legacy_publication', runId: null };
+  }
+  if (!isPublishedSourceRun(book, sourceRun)) {
+    return {
+      availability: 'unavailable',
+      reason: 'run_record_missing',
+      runId: book.publishedRunId,
+    };
+  }
+  return {
+    availability: 'recorded',
+    runId: sourceRun.id,
+    fencingVersion: book.publishedRunFencingVersion,
+    kind: sourceRun.kind as GenerationRunKindName,
+    status: sourceRun.status as GenerationJobSummary['status'],
+    timestamps: runTimestamps(sourceRun),
+    runWallClockDurationMs: runWallClockDurationMs(sourceRun),
+  };
+}
+
+function buildQualitySummary(book: Book): GenerationQualitySummary | undefined {
+  const quality = book.qualityReport as unknown as QualityReport | null;
+  if (!quality) return undefined;
+  return {
+    passed: quality.overallPassed,
+    ...(quality.dimensions && { dimensions: quality.dimensions }),
+    issueCodes: quality.issues.map((issue) => issue.code),
+    repairAttempted: quality.repair?.attempted === true,
+    repairSuccessful: quality.repair?.outcome === 'passed',
+  };
+}
+
+/**
+ * Safe personalized-character view of the published edition. Every flag reads
+ * a published column (CharacterProfile, character-sheet key, bookPreview,
+ * imageGenerationResult) — never the current draft photo input — and the
+ * page-prompt check is verified by construction against the marker phrase.
  */
 export function buildCharacterPersonalizationDiagnostics(
   book: Book,
@@ -338,9 +463,10 @@ export function buildCharacterPersonalizationDiagnostics(
       const prompt = (page as { illustrationPrompt?: unknown } | null)?.illustrationPrompt;
       return typeof prompt === 'string' && prompt.includes(PRESERVE_APPEARANCE_INSTRUCTION);
     });
+  const profile = book.characterProfile as { hasReferencePhoto?: unknown } | null;
 
   return {
-    hasReferencePhoto: book.childPhotoAssetKey != null,
+    hasReferencePhoto: profile?.hasReferencePhoto === true,
     characterProfileCreated: book.characterProfile != null,
     characterSheetGenerated: book.characterSheetAssetKey != null,
     pagePromptsIncludeConsistencyData,
@@ -349,16 +475,39 @@ export function buildCharacterPersonalizationDiagnostics(
 }
 
 /**
- * Reads the idempotent-resume diagnostics AgentService.startBookGeneration
- * folds onto Book.imageGenerationResult.resume (see ResumeDiagnostics,
- * agent.service.ts) — null for books generated before this feature existed,
- * or whose most recent run never reached the point of computing it.
+ * The published edition, or null when nothing is published. `sourceRun` is
+ * the run Book.publishedRunId names, read in the same snapshot as `book`.
  */
-function buildResumeDiagnostics(
-  imageGenerationResult: Book['imageGenerationResult'],
-): ResumeDiagnostics | null {
-  const resume = (imageGenerationResult as { resume?: unknown } | null)?.resume;
-  return resume ? (resume as ResumeDiagnostics) : null;
+export function buildPublishedEdition(
+  book: Book,
+  sourceRun: GenerationRun | null | undefined,
+): PublishedEditionDiagnostics | null {
+  const edition = publishedEdition(book);
+  if (!edition || !book.previewPdfUrl) return null;
+  const source = buildPublishedSourceRun(book, sourceRun);
+  const models = book.aiModelVersions as { story?: unknown; image?: unknown } | null;
+  const pageCount = publishedPageCount(book.bookPreview);
+  const quality = buildQualitySummary(book);
+
+  return {
+    edition,
+    sourceGenerationRun: source,
+    revisedAfterGeneration: book.publishedPdfRunId !== null,
+    ...(pageCount !== undefined && { pageCount }),
+    generationRecord: {
+      ...(typeof models?.story === 'string' && { storyModel: models.story }),
+      ...(typeof models?.image === 'string' && { imageModel: models.image }),
+      ...imageCounts(book.imageGenerationResult),
+      ...(quality && { quality }),
+      resume: buildResumeDiagnostics(book.imageGenerationResult),
+      imageFailures: buildImageFailureDiagnostics(book.imageGenerationResult),
+    },
+    characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
+    baseGenerationUsage:
+      source.availability === 'recorded' && isPublishedSourceRun(book, sourceRun)
+        ? buildRunProviderUsage(sourceRun)
+        : { availability: 'unavailable', reason: 'source_run_unavailable' },
+  };
 }
 
 function toAgentLogSummary(log: AgentLog): AgentLogSummary {
@@ -379,9 +528,8 @@ function toAgentLogSummary(log: AgentLog): AgentLogSummary {
 }
 
 /**
- * Projects the authoritative GenerationRun into the legacy `latestJob` API
- * shape. The field name and summary type stay stable for clients while the
- * runtime dependency on the best-effort GenerationJob mirror is removed.
+ * Legacy `latestJob` shape. Its only source is the same GenerationRun row as
+ * `latestAttempt`; it carries no Book fields.
  */
 function toGenerationJobSummary(run: GenerationRun): GenerationJobSummary {
   return {
@@ -400,26 +548,35 @@ function toGenerationJobSummary(run: GenerationRun): GenerationJobSummary {
   };
 }
 
-/**
- * Composes the full GET /books/:id/generation-diagnostics response from a
- * Book row, its AgentLog rows, and its latest authoritative GenerationRun.
- * `latestJob` remains an API-compatibility projection and is nullable since a
- * book may predate run tracking or never have started generation.
- * `pdfStorage` is optional purely so this pure function stays easy to unit
- * test without a real PdfStorage.
- */
+/** Database rows read in one consistent snapshot (see BookDiagnosticsService). */
+export interface GenerationDiagnosticsSnapshot {
+  book: Book;
+  /** Newest GenerationRun for this book and owner, or null. */
+  latestRun: GenerationRun | null;
+  /** The run Book.publishedRunId names, scoped to this book and owner, or null. */
+  publishedSourceRun: GenerationRun | null;
+  /** Bounded, newest-first, book-level AgentLog window. */
+  logs: AgentLog[];
+}
+
+/** Read-time observations taken outside the database snapshot. */
+export interface GenerationDiagnosticsObservations {
+  pdfStorage?: PdfStorageDiagnostics;
+  queue?: Omit<QueueDiagnostics, 'stalledNoWorker'>;
+}
+
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'running']);
 
+/**
+ * Composes GET /books/:id/generation-diagnostics. Observations are optional
+ * so this pure function stays easy to unit test without storage or a queue.
+ */
 export function buildGenerationDiagnostics(
-  book: Book,
-  logs: AgentLog[],
-  latestRun?: GenerationRun | null,
-  pdfStorage?: PdfStorageDiagnostics,
-  queue?: Omit<QueueDiagnostics, 'stalledNoWorker'>,
+  snapshot: GenerationDiagnosticsSnapshot,
+  observations: GenerationDiagnosticsObservations = {},
 ): GenerationDiagnosticsDto {
-  const providerUsage =
-    buildDurableProviderUsage(latestRun) ?? buildProviderUsage(book.imageGenerationResult);
-  const resolvedQueue = queue ?? {
+  const { book, latestRun, publishedSourceRun, logs } = snapshot;
+  const queue = observations.queue ?? {
     queueName: 'book-generation',
     workerCount: 0,
     counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 },
@@ -427,25 +584,19 @@ export function buildGenerationDiagnostics(
   return {
     bookId: book.id,
     status: book.status as unknown as GenerationDiagnosticsDto['status'],
-    failedStep: book.failedStep as unknown as AgentStep | null,
-    errorMessage: book.errorMessage,
-    generationMetadata: buildGenerationMetadata(book, logs, providerUsage),
-    recentLogs: logs.map(toAgentLogSummary),
-    previewPdfUrl: book.previewPdfUrl,
+    publishedEdition: buildPublishedEdition(book, publishedSourceRun),
+    latestAttempt: latestRun ? buildLatestGenerationAttempt(latestRun, book) : null,
     latestJob: latestRun ? toGenerationJobSummary(latestRun) : null,
-    pdfStorage: pdfStorage ?? {
+    recentLogs: logs.map(toAgentLogSummary),
+    pdfStorage: observations.pdfStorage ?? {
       driver: 'local',
       keyPresent: book.previewPdfUrl != null,
       previewAvailable: false,
     },
     queue: {
-      ...resolvedQueue,
+      ...queue,
       stalledNoWorker:
-        !!latestRun && ACTIVE_RUN_STATUSES.has(latestRun.status) && resolvedQueue.workerCount === 0,
+        !!latestRun && ACTIVE_RUN_STATUSES.has(latestRun.status) && queue.workerCount === 0,
     },
-    characterPersonalization: buildCharacterPersonalizationDiagnostics(book),
-    resume: buildResumeDiagnostics(book.imageGenerationResult),
-    imageFailures: buildImageFailureDiagnostics(book.imageGenerationResult),
-    providerUsage,
   };
 }

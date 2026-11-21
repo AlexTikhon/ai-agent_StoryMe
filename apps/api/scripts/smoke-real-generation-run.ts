@@ -34,6 +34,8 @@ export interface SmokePersistedState {
   book: Book;
   logs: AgentLog[];
   run: GenerationRun | null;
+  /** The run Book.publishedRunId names, scoped to this book and owner (when it is not `run`). */
+  publishedSourceRun?: GenerationRun | null;
 }
 
 /**
@@ -256,7 +258,13 @@ export async function runSmoke(ports: SmokePorts, options: SmokeRunOptions): Pro
     const finalBook = persisted.book;
     const run = persisted.run ?? waited.run;
     log(`[5/5] Building diagnostics (run: ${run.status}, book: ${finalBook.status})...`);
-    const diagnostics = buildGenerationDiagnostics(finalBook, persisted.logs, run);
+    const diagnostics = buildGenerationDiagnostics({
+      book: finalBook,
+      logs: persisted.logs,
+      latestRun: run,
+      publishedSourceRun:
+        finalBook.publishedRunId === run.id ? run : (persisted.publishedSourceRun ?? null),
+    });
     const imageResult = parseImageGenerationResult(finalBook.imageGenerationResult);
 
     const published = run.status === 'completed' && finalBook.status === 'complete';
@@ -302,7 +310,7 @@ export async function runSmoke(ports: SmokePorts, options: SmokeRunOptions): Pro
     if (options.photo) {
       check(
         stage,
-        diagnostics.characterPersonalization.hasReferencePhoto,
+        finalBook.childPhotoAssetKey !== null,
         'expected the uploaded child photo to be recorded on the book',
       );
     }

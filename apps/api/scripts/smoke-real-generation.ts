@@ -162,15 +162,23 @@ async function main(): Promise<void> {
     cancelGeneration: async (userId, bookId) => {
       await booksService.cancelGeneration(userId, bookId);
     },
-    loadPersisted: async (_userId, bookId) => ({
-      book: await prisma.book.findUniqueOrThrow({ where: { id: bookId } }),
-      logs: await prisma.agentLog.findMany({
-        where: { bookId },
-        orderBy: { createdAt: 'desc' },
-        take: 20,
-      }),
-      run: await generationRunService.findLatestForBook(bookId),
-    }),
+    loadPersisted: async (userId, bookId) => {
+      const book = await prisma.book.findUniqueOrThrow({ where: { id: bookId } });
+      return {
+        book,
+        logs: await prisma.agentLog.findMany({
+          where: { bookId },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        }),
+        run: await generationRunService.findLatestForBook(bookId),
+        publishedSourceRun: book.publishedRunId
+          ? await prisma.generationRun.findFirst({
+              where: { id: book.publishedRunId, bookId, userId },
+            })
+          : null,
+      };
+    },
     readPublishedPdf: async (userId, bookId) =>
       (await booksService.getPreviewPdfBuffer(bookId, userId)).buffer,
     readPublishedImage: async (userId, bookId, imageId) =>

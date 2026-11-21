@@ -183,10 +183,9 @@ surface.
 Every run — resumed or not — folds a `ResumeDiagnostics` object
 (`@book/types`) onto `Book.imageGenerationResult.resume` (no schema
 migration, the same pattern Phase 3E used for `generatedImageCount`/
-`failedImageCount`), surfaced as `resume` on
-`GET /:id/generation-diagnostics`'s response
-(`GenerationDiagnosticsDto.resume`, `null` for books generated before this
-existed). `GenerationResultCollector.collectResumeDiagnostics` owns the
+`failedImageCount`), surfaced on `GET /:id/generation-diagnostics`'s response as
+`publishedEdition.generationRecord.resume` (the published edition's source
+run; `null` for books generated before this existed). `GenerationResultCollector.collectResumeDiagnostics` owns the
 deterministic DTO assembly:
 
 ```ts
@@ -585,8 +584,10 @@ collector prevents the runtime count from crossing the configured maximum.
 
 Each logical provider invocation is recorded by
 `GenerationProviderTelemetry`; `GenerationResultCollector` folds its snapshot
-into `imageGenerationResult.providerUsage`, which generation diagnostics
-exposes: provider/model, operation and optional asset label, prompt contract
+into `imageGenerationResult.providerUsage`. Generation diagnostics does not
+read that embedded snapshot: it reports usage only from each run's durable
+ledger (`GenerationRun.providerOperations`, see "Composing the diagnostics
+view" below). Both carry: provider/model, operation and optional asset label, prompt contract
 version, SHA-256 prompt fingerprint, logical attempt number, duration,
 success/error/cancelled status, safe failure kind, optional actual text-token
 usage, HTTP attempts/retries, rate-limit hits/wait, Retry-After usage, timeout
@@ -772,11 +773,15 @@ it deliberately, not routinely.
 4. **Safe diagnostics to check** — either read the script's printed summary,
    or call `GET /api/books/:bookId/generation-diagnostics` directly (see
    "Reading diagnostics for a book" below):
-   - `generationMetadata.storyProvider`/`imageProvider` — confirm both say
-     `openai`, not `mock`, for a real QA run.
-   - `generationMetadata.generatedImageCount`/`failedImageCount` — confirm
-     `failedImageCount` is `0` (any failure here means the book can't
-     complete — see "Failure behavior" above).
+   - `latestAttempt.providerUsage` — `availability: 'recorded'`, and every
+     `usage.calls[].provider` says `openai`, not `mock`, for a real QA run.
+   - `publishedEdition.sourceGenerationRun.runId` equals `latestAttempt.runId`
+     (the QA run published) and `latestAttempt.isPublishedSource` is `true`.
+   - `publishedEdition.generationRecord.generatedImageCount`/`failedImageCount`
+     — confirm `failedImageCount` is `0` (any failure here means the book
+     can't complete — see "Failure behavior" above).
+   - The `characterPersonalization` flags below live under
+     `publishedEdition` and describe the published edition only.
    - `characterPersonalization.hasReferencePhoto` — should be `true` only
      when `SMOKE_CHILD_PHOTO_PATH` was set.
    - `characterPersonalization.characterProfileCreated` and
@@ -936,48 +941,72 @@ never had these fields, and `AgentService` never had a place to put them.
 ### Composing the diagnostics view
 
 `apps/api/src/books/generation-diagnostics.ts` exports
-`buildGenerationDiagnostics(book, agentLogs)`, which composes:
+`buildGenerationDiagnostics(snapshot, observations)`. Every field has exactly
+one source, so the published edition and the latest attempt never borrow
+each other's identity, timestamps or usage:
 
 ```ts
 interface GenerationDiagnosticsDto {
   bookId: string;
-  status: BookStatus;
-  failedStep?: AgentStep | null;
-  errorMessage?: string | null;
-  generationMetadata: GenerationMetadata; // storyProvider, imageProvider, storyModel,
-  // imageModel, requestedPages, generatedPages,
-  // generatedImageCount, failedImageCount,
-  // startedAt, completedAt, failedAt, durationMs,
-  // failedStep, errorMessage
-  recentLogs: AgentLogSummary[]; // up to 20 most recent AgentLog rows, newest first
-  previewPdfUrl?: string | null;
-  pdfStorage: PdfStorageDiagnostics; // driver, keyPresent, previewAvailable — see below
+  status: BookStatus; // alias of Book.status only (lifecycle)
+  publishedEdition: PublishedEditionDiagnostics | null; // published Book columns + source run
+  latestAttempt: LatestGenerationAttemptDiagnostics | null; // newest GenerationRun + its ledger
+  latestJob: GenerationJobSummary | null; // deprecated alias of latestAttempt's run
+  recentLogs: AgentLogSummary[]; // book-level: newest 20 AgentLog rows across all runs
+  pdfStorage: PdfStorageDiagnostics; // read-time observation, see below
+  queue: QueueDiagnostics; // read-time observation
 }
 ```
 
-- `storyProvider`/`imageProvider` come from the matching `story_plan`/
-  `image_gen` `AgentLog` row's `provider` column (`'unknown'` if no such row
-  exists yet, e.g. generation hasn't started).
-- `storyModel`/`imageModel` prefer `Book.aiModelVersions`, falling back to
-  the `AgentLog` row's `model` column.
-- `generatedPages` comes from `Book.bookPreview.pages.length`.
-  `requestedPages` comes from `Book.pageCount` (an existing, currently
-  unpopulated Phase 1A column — the draft-creation form doesn't collect a
-  page count today, so this is usually absent; see "Known limitations"
-  below).
-- `generatedImageCount`/`failedImageCount` come from
-  `Book.imageGenerationResult.generatedImageCount`/`failedImageCount` (set by
-  `ImageGenerationStage.execute` — see "Image generation provider
-  boundary" above); both are absent for books generated before this field
-  existed. `failedImageCount > 0` now means the book is `failed` (at
-  `pdf_render`), not `complete` — a page missing its illustration is never
-  rendered with a placeholder; check `recentLogs`' `image_gen` row (or
-  `Book.imageGenerationResult.lastImageError`) for the most recent failure's
-  safe error message, and the `pdf_render` row's `error` for which page(s)
-  were missing.
-- `startedAt` is derived (`Book.updatedAt - Book.generationTimeMs`) since
-  there's no dedicated start-timestamp column; `completedAt`/`failedAt` use
-  `Book.updatedAt` when `status` is terminal.
+| Field                                                    | Source                                                                                         | Describes                                  |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `publishedEdition.edition`                               | `publishedEdition(book)` (same id as `BookDto.publishedEdition`)                               | the edition readers are served             |
+| `publishedEdition.sourceGenerationRun`                   | the run `Book.publishedRunId` names, scoped to book and owner                                  | the full-book run behind the edition       |
+| `publishedEdition.revisedAfterGeneration`                | `Book.publishedPdfRunId != null`                                                               | page text/image revisions after that run   |
+| `publishedEdition.pageCount`, `characterPersonalization` | published Book columns (`bookPreview`, `characterProfile`, sheet key, `imageGenerationResult`) | the published edition                      |
+| `publishedEdition.generationRecord`                      | `aiModelVersions`, `qualityReport`, `imageGenerationResult` as the source run published them   | the source run's record; revisions skip it |
+| `publishedEdition.baseGenerationUsage`                   | the source run's durable ledger (`GenerationRun.providerOperations`)                           | base generation only, never cumulative     |
+| `latestAttempt.*`                                        | the newest `GenerationRun` for the book and owner, and its ledger                              | the attempt in progress or last finished   |
+
+- **No fallback between sources.** A run without a ledger reports
+  `providerUsage: { availability: 'unavailable', reason }`: `never_claimed`
+  only when persisted lifecycle invariants prove no worker claimed it (still
+  queued, or cancelled or expired while queued, with no claim-written column
+  such as `startedAt`, `leaseOwner`, `deliveryToken` or
+  `processingDeadlineAt` set and no claim fence bump); otherwise
+  `ledger_absent`. A missing `startedAt` alone does not mean the run never
+  started: a completed legacy run without `startedAt` is `ledger_absent`.
+  That is unknown, not zero. A ledger that exists but is empty is `recorded`
+  with no calls.
+  `Book.imageGenerationResult.providerUsage` is never substituted.
+- **Timestamps are persisted run columns** (`createdAt`, `startedAt`,
+  `completedAt`, `failedAt`, `cancelledAt`), copied as they are. Nothing is
+  derived from `Book.updatedAt` or `Book.generationTimeMs`.
+  `runWallClockDurationMs` is the terminal timestamp for the run's status
+  minus `startedAt` (the first claim, so it includes redelivery gaps). It is
+  null when either timestamp is missing.
+- **Revisions are not attempts.** A page text correction or image
+  regeneration changes `publishedEdition.edition` and sets
+  `revisedAfterGeneration`. It never creates or changes a `GenerationRun`, so
+  `sourceGenerationRun`, `baseGenerationUsage` and `latestAttempt` are
+  unchanged.
+- **Legacy or missing provenance stays unavailable.** An edition published
+  before run pointers has `sourceGenerationRun.reason: 'legacy_publication'`.
+  A pointer naming no run owned by this book and user has
+  `'run_record_missing'`. Neither has base usage. Models are read only from
+  `Book.aiModelVersions`. Provider names come only from a run's own ledger,
+  never from `recentLogs`.
+- **Safety**: no input snapshots or input hashes, child details, prompts,
+  lease or delivery identities, storage keys, credentials or raw provider
+  responses.
+
+`BookDiagnosticsService` reads the owned book, the newest owned run, the
+source run (reusing the newest one when it is the same row) and the bounded
+log window in **one REPEATABLE READ transaction**. A publication that commits
+mid-read therefore can't pair one attempt's run with another's edition
+(`test/integration/generation-diagnostics-provenance.integration.spec.ts`).
+Storage and queue state are read after that snapshot. They are read-time
+observations and are not atomic with PostgreSQL.
 
 #### PDF storage diagnostics (`pdfStorage`)
 
@@ -995,12 +1024,11 @@ interface PdfStorageDiagnostics {
 }
 ```
 
-- `BooksService.getGenerationDiagnostics` computes this alongside the
-  existing `AgentLog`/`GenerationJob` queries: `keyPresent` is a plain
-  `Book.previewPdfUrl != null` check (no I/O); `previewAvailable` only calls
-  `PdfStorage.previewPdfExists(bookId)` when `keyPresent` is true (skipping an
-  unnecessary disk/network round-trip for every book that hasn't reached the
-  PDF step yet).
+- `BookDiagnosticsService` computes this after the database snapshot:
+  `keyPresent` means the snapshot's Book row resolves to a published PDF
+  namespace (no I/O). `previewAvailable` asks the storage driver for that
+  exact namespace, and only when `keyPresent` is true. It is a read-time
+  observation, not part of the database snapshot.
 - **Never exposed**: the local filesystem path or the cloud object key —
   only the driver name and two booleans. Safe to show directly in a support
   tool or admin view.
@@ -1014,21 +1042,21 @@ interface PdfStorageDiagnostics {
 ### Reading diagnostics for a book
 
 - **Service method**: `BooksService.getGenerationDiagnostics(bookId, userId)`
-  — looks up the book with the same ownership check as every other
-  `BooksService` method (404s rather than leaking existence of another
-  user's book), fetches its 20 most recent `AgentLog` rows, and calls
-  `buildGenerationDiagnostics`.
+  → `BookDiagnosticsService`. It applies the same ownership predicate as every
+  other `BooksService` method (404 rather than revealing another user's book)
+  before reading anything else, and scopes every run lookup to that book and
+  owner.
 - **Route**: `GET /api/books/:id/generation-diagnostics`
-  (`BooksController.getGenerationDiagnostics`, same `DevAuthGuard` as every
+  (`BooksController.getGenerationDiagnostics`, same auth guard as every
   other books route).
 
-To inspect a failed generation: call the endpoint (or
-`BooksService.getGenerationDiagnostics` directly in a script/REPL) for the
-book's id. `failedStep` and `errorMessage` say what broke;
-`generationMetadata.storyProvider`/`imageProvider`/`storyModel`/`imageModel`
-say which provider/model was configured for the run; `recentLogs` gives the
-per-step timeline (status, provider, model, durationMs, error) to narrow
-down which step actually failed and how long prior steps took.
+To inspect a failed generation, call the endpoint for the book's id.
+`latestAttempt.error` (`failedStep`, `code`, `message`) and
+`latestAttempt.providerUsage` say what that attempt did.
+`publishedEdition` says what readers still get, and which run produced it.
+`recentLogs` is book-level history across runs: use it for a per-step
+timeline, but don't attribute a row to an attempt without checking its
+`traceId` and time against that attempt.
 
 ### Smoke test output
 
@@ -1036,13 +1064,15 @@ down which step actually failed and how long prior steps took.
 smoke test" above) builds and **always** prints a "Validation summary" right
 once the persisted generation run reaches a terminal state — whether the
 book reached `complete` or `failed` — via `formatDiagnosticsSummary`
-(`apps/api/scripts/smoke-real-generation-helpers.ts`): book id, status,
-story/character-profile/image provider + model, requested vs. generated page
-count, expected vs. generated vs. fallback image counts, duration, PDF
-preview url, whether the PDF exists in storage and has non-zero size, the
-character-sheet's safe storage-key identifier (never a filesystem path), the
-character-reference-usage flags, **the `GET /:id/generation-diagnostics` URL
-for the book**, and (only on failure) `failedStep` and `errorMessage`.
+(`apps/api/scripts/smoke-real-generation-helpers.ts`): book id, status; the
+latest generation attempt (run id, kind, status, run wall clock, provider
+usage from its own ledger); the published edition (edition id, source run,
+story/image model, published page count, generated vs. fallback image counts,
+edition-pinned `GET /api/books/:id/pdf/preview?edition=` path, character-reference-usage flags); the character-profile
+provider, expected image count, whether the PDF exists in storage and has
+non-zero size, the character-sheet's safe storage-key identifier (never a
+filesystem path), **the `GET /:id/generation-diagnostics` URL for the book**,
+and (only on failure) the attempt's failed step and error message.
 
 `formatDiagnosticsSummary` takes the shared `GenerationDiagnosticsDto` plus an
 optional `SmokeValidationExtras` object (script-local, not part of
@@ -1052,7 +1082,7 @@ doesn't have: `expectedImageCount`, `fallbackImageCount`,
 `pdfSizeBytes`. It's a pure function — unit tested directly in
 `smoke-real-generation.spec.ts` without booting Nest or making a network
 call — and only ever prints fields already proven safe by
-`GenerationDiagnosticsDto`/`GenerationMetadata`/`SmokeValidationExtras`. It
+`GenerationDiagnosticsDto`/`SmokeValidationExtras`. It
 never prints `OPENAI_API_KEY`, a raw prompt, or generated image bytes/base64
 — see "What's intentionally not stored (safety)" below.
 
@@ -1100,11 +1130,17 @@ book past the `created` draft status:
 - `apps/web/src/lib/api/books.ts` — `booksApi.getGenerationDiagnostics(id)`,
   typed against the same `GenerationDiagnosticsDto` exported from
   `@book/types` that the backend DTO already uses (no new frontend types —
-  `GenerationDiagnosticsDto`/`GenerationMetadata`/`AgentLogSummary` are
-  defined once, in `packages/types`, and shared by both sides).
-- **Panel contents**: story/image provider + model, generated (of requested)
-  page count, duration (formatted as `1m 5s` / `650ms` rather than raw
-  milliseconds), and a "PDF: ready" row once `previewPdfUrl` is set. Only
+  `GenerationDiagnosticsDto`/`PublishedEditionDiagnostics`/
+  `LatestGenerationAttemptDiagnostics`/`AgentLogSummary` are defined once,
+  in `packages/types`, and shared by both sides).
+- **Panel contents**: separate **Published edition** (edition id, source run,
+  its completion time and run wall clock, pages, models, base generation
+  usage, the read-time PDF storage observation, character personalization)
+  and **Latest generation attempt** (run id, status and kind, whether it is
+  the published source, persisted start/finish times, run wall clock, its own
+  provider usage, failure) sections, each with explicit "not recorded" and
+  "Unavailable (…)" states, plus a **Book-level recent logs** note. Durations
+  are formatted as `1m 5s` / `650ms` rather than raw milliseconds. Only
   fields already proven safe by `GenerationDiagnosticsDto` are rendered — see
   "What's intentionally not stored" above; the panel has no path to prompts,
   image bytes, or raw provider responses because the DTO never carries them.
@@ -3154,16 +3190,16 @@ re-verified here — see "Test coverage" below.
   never contains an API key, `b64_json`, or the word "base64" — the main
   script itself is never imported by a test, so `pnpm test` never boots Nest
   or calls a real API.
-- `apps/api/src/books/generation-diagnostics.spec.ts` (Phase 3E) —
-  `buildGenerationMetadata`: provider/model resolution (`AgentLog` row vs.
-  `Book.aiModelVersions`, `'unknown'` fallback), `generatedPages` from
-  `bookPreview.pages.length`, `durationMs`/`startedAt`/`completedAt` derived
-  from `Book.generationTimeMs`/`updatedAt`, `failedAt`/`failedStep`/
-  `errorMessage` on a failed book, everything omitted while a book is still
-  in progress, and no secrets/prompts/base64 in the serialized output.
-  `buildGenerationDiagnostics`: composes `bookId`/`status`/`previewPdfUrl`/
-  `recentLogs` correctly and never leaks a key, `b64_json`, or raw
-  `choices` response shape through `recentLogs`.
+- `apps/api/src/books/generation-diagnostics.spec.ts` —
+  `buildGenerationDiagnostics` provenance: published A stays readable with
+  A's source run and usage while failed B reports its own identity, failure,
+  persisted timestamps and ledger. Queued or cancelled B without a ledger is
+  `unavailable` and never takes A's usage. A confirmed empty ledger is
+  recorded zero usage. Successful C advances the publication. Text and image
+  revisions change the edition without changing run history. Legacy and
+  dangling pointers stay unavailable with no fabricated timestamps, costs or
+  providers. Nothing serializes input snapshots, child details, prompts or
+  lease identities.
 - `apps/api/src/books/books.service.spec.ts` (Phase 3E) —
   `getGenerationDiagnostics`: fetches the owned book plus its 20 most recent
   `AgentLog` rows and returns the composed diagnostics; 404s for a
@@ -3251,8 +3287,14 @@ jobId)` directly (as `GenerationQueueProcessor` would) calls
   recovery without a `GenerationJobService` mock.
 - `apps/api/src/books/generation-diagnostics.spec.ts` asserts that
   `buildGenerationDiagnostics` maps the latest authoritative `GenerationRun`
-  into the stable `latestJob` compatibility summary and returns
-  `latestJob: null` when no run exists.
+  into `latestAttempt` and its `latestJob` compatibility alias, and returns
+  `null` for both when no run exists.
+- `test/integration/generation-diagnostics-provenance.integration.spec.ts`
+  runs A → text revision → failed B → queued-then-cancelled D → published C
+  against real PostgreSQL, local storage and the mock pipeline. It also
+  commits a publication between the snapshot's book and run reads and checks
+  that no attempt is attributed to another's edition, and it checks owner
+  scoping and legacy rows.
 
 Not covered, deliberately: real HTTP requests through Nest's pipes/filters
 (no supertest/e2e harness exists in this package; see

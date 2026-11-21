@@ -1394,11 +1394,11 @@ healthcheck.
 ## Troubleshooting: a book stuck in `char_build`/`queued` {#troubleshooting-stuck-queued}
 
 Symptom: `GET /api/books/:id/generation-diagnostics` shows the book's status
-stuck at a non-terminal value (e.g. `char_build`), `latestJob.status` stuck at
-`queued` (never advancing to `running`), and
-`generationMetadata.storyProvider`/`imageProvider` both `unknown` (they're
-only ever populated once an `AgentLog` row exists for that book — i.e. once
-the worker actually starts running the pipeline). This means the API
+stuck at a non-terminal value (e.g. `char_build`), `latestAttempt.status` stuck
+at `queued` (never advancing to `running`), `latestAttempt.timestamps.startedAt`
+still `null`, and `latestAttempt.providerUsage` reporting
+`{ availability: 'unavailable', reason: 'never_claimed' }` (a run gets a start
+time and a ledger only once a worker claims it). This means the API
 successfully created an authoritative queued `GenerationRun`, but **no worker
 process ever picked it up**.
 

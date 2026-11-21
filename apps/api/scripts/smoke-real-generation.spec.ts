@@ -54,21 +54,67 @@ describe('formatDiagnosticsSummary', () => {
   function makeDiagnostics(
     overrides: Partial<GenerationDiagnosticsDto> = {},
   ): GenerationDiagnosticsDto {
+    const timestamps = {
+      createdAt: '2026-01-01T00:00:00.000Z',
+      startedAt: '2026-01-01T00:00:01.000Z',
+      completedAt: '2026-01-01T00:00:13.345Z',
+      failedAt: null,
+      cancelledAt: null,
+    };
+    const providerUsage = {
+      availability: 'recorded' as const,
+      usage: { maxPaidCalls: 17, plannedPaidCalls: 9, actualPaidCalls: 9, calls: [] },
+    };
     return {
       bookId: 'b-1',
       status: 'complete' as GenerationDiagnosticsDto['status'],
-      generationMetadata: {
-        storyProvider: 'openai',
-        imageProvider: 'openai',
-        storyModel: 'gpt-4o-mini',
-        imageModel: 'gpt-image-1',
-        generatedPages: 6,
-        generatedImageCount: 8,
-        failedImageCount: 0,
-        durationMs: 12_345,
+      publishedEdition: {
+        edition: 'run-1:1',
+        sourceGenerationRun: {
+          availability: 'recorded',
+          runId: 'run-1',
+          fencingVersion: 1,
+          kind: 'initial',
+          status: 'completed',
+          timestamps,
+          runWallClockDurationMs: 12_345,
+        },
+        revisedAfterGeneration: false,
+        pageCount: 6,
+        generationRecord: {
+          storyModel: 'gpt-4o-mini',
+          imageModel: 'gpt-image-1',
+          generatedImageCount: 8,
+          failedImageCount: 0,
+          resume: null,
+          imageFailures: [],
+        },
+        characterPersonalization: {
+          hasReferencePhoto: true,
+          characterProfileCreated: true,
+          characterSheetGenerated: true,
+          pagePromptsIncludeConsistencyData: true,
+          characterReferenceAvailable: true,
+          characterReferenceUsedForImages: true,
+          imageGenerationMode: 'character-reference-edit',
+        },
+        baseGenerationUsage: providerUsage,
       },
+      latestAttempt: {
+        runId: 'run-1',
+        kind: 'initial',
+        status: 'completed',
+        retryOfRunId: null,
+        deliveryAttempt: 1,
+        currentStep: 'pdf_render' as never,
+        timestamps,
+        runWallClockDurationMs: 12_345,
+        error: null,
+        isPublishedSource: true,
+        providerUsage,
+      },
+      latestJob: null,
       recentLogs: [],
-      previewPdfUrl: '/files/books/b-1/storybook.pdf',
       pdfStorage: { driver: 'local', keyPresent: true, previewAvailable: true },
       queue: {
         queueName: 'book-generation',
@@ -76,18 +122,6 @@ describe('formatDiagnosticsSummary', () => {
         counts: { waiting: 0, active: 0, completed: 1, failed: 0, delayed: 0 },
         stalledNoWorker: false,
       },
-      characterPersonalization: {
-        hasReferencePhoto: true,
-        characterProfileCreated: true,
-        characterSheetGenerated: true,
-        pagePromptsIncludeConsistencyData: true,
-        characterReferenceAvailable: true,
-        characterReferenceUsedForImages: true,
-        imageGenerationMode: 'character-reference-edit',
-      },
-      resume: null,
-      imageFailures: [],
-      providerUsage: null,
       ...overrides,
     };
   }
@@ -104,17 +138,21 @@ describe('formatDiagnosticsSummary', () => {
     };
   }
 
-  it('includes book id, status, providers, models, page count, duration, and PDF url', () => {
+  it('includes book id, status, run identities, models, page count, wall clock, and PDF url', () => {
     const summary = formatDiagnosticsSummary(makeDiagnostics());
 
     expect(summary).toContain('b-1');
     expect(summary).toContain('complete');
-    expect(summary).toContain('openai');
+    expect(summary).toContain('Run:              run-1 (initial, completed)');
+    expect(summary).toContain('Source run:       run-1 (initial, completed)');
+    expect(summary).toContain('Edition:          run-1:1');
+    expect(summary).toContain('Provider usage:   0 call(s), 9 paid');
     expect(summary).toContain('gpt-4o-mini');
     expect(summary).toContain('gpt-image-1');
-    expect(summary).toContain('6');
-    expect(summary).toContain('12345ms');
-    expect(summary).toContain('/files/books/b-1/storybook.pdf');
+    expect(summary).toContain('Published pages:    6');
+    expect(summary).toContain('Wall clock:       12345ms');
+    expect(summary).toContain('PDF preview:        /api/books/b-1/pdf/preview?edition=run-1%3A1');
+    expect(summary).not.toContain('/files/');
     expect(summary).toContain('Reference available: yes');
     expect(summary).toContain('Reference used:     yes');
     expect(summary).toContain('character-reference-edit');
@@ -128,25 +166,34 @@ describe('formatDiagnosticsSummary', () => {
     expect(summary).toContain('/api/books/b-1/generation-diagnostics');
   });
 
-  it('includes failedStep and errorMessage when the run failed', () => {
+  it('includes the latest attempt failure and reports an unpublished book without a fallback', () => {
     const summary = formatDiagnosticsSummary(
       makeDiagnostics({
         status: 'failed' as GenerationDiagnosticsDto['status'],
-        failedStep: 'image_gen' as GenerationDiagnosticsDto['failedStep'],
-        errorMessage: 'OpenAI image request failed with status 401',
+        publishedEdition: null,
+        latestAttempt: {
+          ...makeDiagnostics().latestAttempt!,
+          status: 'failed',
+          isPublishedSource: false,
+          error: {
+            code: 'PROVIDER_AUTHENTICATION',
+            message: 'OpenAI image request failed with status 401',
+            failedStep: 'image_gen' as never,
+          },
+          providerUsage: { availability: 'unavailable', reason: 'ledger_absent' },
+        },
       }),
     );
 
-    expect(summary).toContain('image_gen');
+    expect(summary).toContain('Failed step:        image_gen');
     expect(summary).toContain('OpenAI image request failed with status 401');
+    expect(summary).toContain('Provider usage:   unavailable (ledger_absent)');
+    expect(summary).toContain('Edition:          none');
+    expect(summary).toContain('Generated images:   n/a');
   });
 
   it('never includes an API key, raw prompt, or base64 image payload', () => {
-    const summary = formatDiagnosticsSummary(
-      makeDiagnostics({
-        errorMessage: 'request failed with status 401',
-      }),
-    );
+    const summary = formatDiagnosticsSummary(makeDiagnostics());
 
     expect(summary).not.toMatch(/sk-[A-Za-z0-9]/);
     expect(summary.toLowerCase()).not.toContain('b64_json');
