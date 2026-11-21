@@ -1,7 +1,8 @@
 /**
  * Phase F3 — CLI entry point for the migration target-identity guard, run by
- * `.github/workflows/migrate.yml` after Prisma Client generation and before
- * any `prisma migrate` command touches a database.
+ * the inactive migration workflow draft (`docs/inactive-workflows/migrate.example.yml`)
+ * after Prisma Client generation and before any `prisma migrate` command
+ * touches a database.
  *
  * Reads everything from process.env (never a CLI flag) so it matches exactly
  * what the workflow step's `env:` block provides:

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join } from 'node:path';
+import { createOwnedTempDir, removeOwnedTempDir } from '../common/test-utils/owned-temp-dir';
 
 const sendMock = vi.fn();
 
@@ -27,17 +27,22 @@ const validCloudConfig = {
 };
 
 const TEST_BOOK_ID = 'test-pdf-claim-cleanup-001';
-const TEST_DIR = resolve(process.cwd(), 'tmp', 'books', TEST_BOOK_ID);
+const TEMP_PREFIX = 'storyme-pdf-claim-cleanup-';
 
 describe('LocalPdfStorage.listClaimArtifacts / deleteClaimArtifacts', () => {
+  // Each test owns a private storage root; nothing here touches apps/api/tmp.
+  let root: string;
+
+  beforeEach(async () => {
+    root = await createOwnedTempDir(TEMP_PREFIX);
+  });
+
   afterEach(async () => {
-    if (existsSync(TEST_DIR)) {
-      await rm(TEST_DIR, { recursive: true });
-    }
+    await removeOwnedTempDir(root, TEMP_PREFIX);
   });
 
   it('lists a saved claim-scoped PDF with its physical key', async () => {
-    const storage = new LocalPdfStorage();
+    const storage = new LocalPdfStorage(root);
     const namespace = claimNamespace('run-1', 1);
     await storage.saveClaimPreviewPdf(TEST_BOOK_ID, namespace, Buffer.from('%PDF-claim'));
 
@@ -50,8 +55,9 @@ describe('LocalPdfStorage.listClaimArtifacts / deleteClaimArtifacts', () => {
   });
 
   it('never lists the legacy positional PDF ("books/<bookId>/storybook.pdf"), even though it shares the same "books/" root as claim PDFs', async () => {
-    const storage = new LocalPdfStorage();
+    const storage = new LocalPdfStorage(root);
     await storage.savePreviewPdf(TEST_BOOK_ID, Buffer.from('%PDF-legacy'));
+    expect(existsSync(join(root, 'books', TEST_BOOK_ID, 'storybook.pdf'))).toBe(true);
     const namespace = claimNamespace('run-1', 1);
     await storage.saveClaimPreviewPdf(TEST_BOOK_ID, namespace, Buffer.from('%PDF-claim'));
 
@@ -62,7 +68,7 @@ describe('LocalPdfStorage.listClaimArtifacts / deleteClaimArtifacts', () => {
   });
 
   it('deletes a listed claim PDF and leaves a sibling legacy PDF for the same book untouched', async () => {
-    const storage = new LocalPdfStorage();
+    const storage = new LocalPdfStorage(root);
     await storage.savePreviewPdf(TEST_BOOK_ID, Buffer.from('%PDF-legacy'));
     const namespace = claimNamespace('run-1', 1);
     await storage.saveClaimPreviewPdf(TEST_BOOK_ID, namespace, Buffer.from('%PDF-claim'));
@@ -76,7 +82,7 @@ describe('LocalPdfStorage.listClaimArtifacts / deleteClaimArtifacts', () => {
   });
 
   it('refuses to delete a key that does not match the claim artifact grammar', async () => {
-    const storage = new LocalPdfStorage();
+    const storage = new LocalPdfStorage(root);
     const outcomes = await storage.deleteClaimArtifacts([`books/${TEST_BOOK_ID}/storybook.pdf`]);
     expect(outcomes).toEqual([
       {
@@ -85,6 +91,38 @@ describe('LocalPdfStorage.listClaimArtifacts / deleteClaimArtifacts', () => {
         error: expect.stringContaining('grammar'),
       },
     ]);
+  });
+
+  it('keeps two storage roots isolated when they hold the same logical book identity', async () => {
+    const otherRoot = await createOwnedTempDir(TEMP_PREFIX);
+    try {
+      const storageA = new LocalPdfStorage(root);
+      const storageB = new LocalPdfStorage(otherRoot);
+      const run1 = claimNamespace('run-1', 1);
+      const run2 = claimNamespace('run-2', 1);
+      await storageA.saveClaimPreviewPdf(TEST_BOOK_ID, run1, Buffer.from('%PDF-a'));
+      await storageB.saveClaimPreviewPdf(TEST_BOOK_ID, run1, Buffer.from('%PDF-b'));
+      await storageB.saveClaimPreviewPdf(TEST_BOOK_ID, run2, Buffer.from('%PDF-b2'));
+      const run1Key = claimPreviewPdfKey(TEST_BOOK_ID, run1);
+      const run2Key = claimPreviewPdfKey(TEST_BOOK_ID, run2);
+
+      const listedA = await storageA.listClaimArtifacts({ pageSize: 100 });
+      expect(listedA.entries.map((e) => e.key)).toEqual([run1Key]);
+
+      // Deleting B's run-2 key through A finds nothing; deleting A's run-1 copy leaves B's.
+      expect(await storageA.deleteClaimArtifacts([run2Key, run1Key])).toEqual([
+        { key: run2Key, outcome: 'not_found' },
+        { key: run1Key, outcome: 'deleted' },
+      ]);
+      expect(await storageA.claimPreviewPdfExists(TEST_BOOK_ID, run1)).toBe(false);
+      expect(await storageB.claimPreviewPdfExists(TEST_BOOK_ID, run1)).toBe(true);
+      expect(await storageB.claimPreviewPdfExists(TEST_BOOK_ID, run2)).toBe(true);
+
+      const listedB = await storageB.listClaimArtifacts({ pageSize: 100 });
+      expect(listedB.entries.map((e) => e.key)).toEqual([run1Key, run2Key]);
+    } finally {
+      await removeOwnedTempDir(otherRoot, TEMP_PREFIX);
+    }
   });
 });
 

@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install Node.js 20+, pnpm 9+, and Docker Desktop/Engine with Compose. Ports `5440`, `6380`, `4100`, and `3100` must be free for the disposable stack. No OpenAI key is needed.
+Install Node.js 24 (see `.nvmrc`), pnpm 9.4.0, and Docker Desktop/Engine with Compose. Ports `5440`, `6380`, `4100`, and `3100` must be free for the disposable stack. No OpenAI key is needed.
 
 ## One-command disposable test
 

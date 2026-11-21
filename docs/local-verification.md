@@ -25,6 +25,19 @@ profile is rejected with exit status `2` before anything runs.
 The `offline` profile is the CI `Checks` job without `pnpm build`. Production builds are not
 part of `verify:local`. The Docker profiles do not rerun the offline checks.
 
+Run verification on the Node.js 24 baseline declared in `.nvmrc` (also used by CI and the API
+Docker image). The API image check is separate from `verify:local`:
+
+```bash
+docker build -f apps/api/Dockerfile -t storyme-api:local .
+pnpm smoke:api-image            # optional image argument; default storyme-api:local
+```
+
+It runs one network-less, read-only container and checks only the image: Node major version,
+non-root user, API/worker entrypoints, Prisma client construction plus query-engine load, a Sharp
+transform and the embedded PDF fonts. It does not contact a database or establish that a deployed
+application works.
+
 In the `browser` profile, Playwright's own configuration migrates the database, seeds the
 synthetic fixtures, starts the API and the web app, and removes the fixtures in its global
 teardown. `verify:local` runs the same scoped fixture cleanup again afterwards, so a cancelled

@@ -88,14 +88,14 @@ apps/web (Next.js, Vercel)  ──HTTPS, CORS──▶  apps/api (NestJS, Docker
 
 ## 2. Recommended provider path
 
-| Piece             | Recommendation                                                                                                 | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ----------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web               | **Vercel**                                                                                                     | Zero-config Next.js hosting, matches Phase 5D's audited path exactly (no Dockerfile needed).                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| API               | **Render, Fly.io, or Railway** (Docker service)                                                                | All three run an arbitrary Dockerfile as an always-on instance. Since Phase 3K, generation is a durable BullMQ/Redis queue rather than an in-process runner, so this pick is no longer forced by generation architecture — see [Known limitations](#known-limitations) for what still favors care before autoscaling (default `local` storage drivers, redundant recovery sweeps). Pick whichever the team already has an account on; nothing below is provider-specific beyond "runs a Docker image and lets you set env vars." |
-| Generation worker | **Same host as the API** (second Docker service, same image, `node dist/worker` start command)                 | Deployed separately from the API — see [§4a Deploy the generation worker](#4a-deploy-the-generation-worker). Must run as its own process/container in every deployed environment; `ENABLE_GENERATION_WORKER=true` is a local single-process dev convenience only, never set on either deployed service.                                                                                                                                                                                                                          |
-| Database          | **Neon or Supabase** (managed Postgres), or the API host's own managed Postgres add-on if using Render/Railway | Either works; schema/migrations are plain Postgres, no provider-specific features used.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Storage           | **Cloudflare R2**                                                                                              | Already the primary implementation target (`PDF_STORAGE_DRIVER=r2` / `IMAGE_STORAGE_DRIVER=r2`), S3-compatible, no egress fees. AWS S3 works identically via `PDF_STORAGE_DRIVER=s3`.                                                                                                                                                                                                                                                                                                                                            |
-| Redis             | **A small managed Redis** (Upstash, Redis Cloud, or the API host's own Redis add-on)                           | Required for the app to boot, pass `/api/health`, and schedule/run every generation job (BullMQ, Phase 3K) — see below. A free/smallest tier is enough; nothing performance-sensitive runs through it today.                                                                                                                                                                                                                                                                                                                     |
+| Piece             | Recommendation                                                                                                 | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web               | **Vercel**                                                                                                     | Zero-config Next.js hosting, matches Phase 5D's audited path exactly (no Dockerfile needed).                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| API               | **Render, Fly.io, or Railway** (Docker service)                                                                | All three run an arbitrary Dockerfile as an always-on instance. Since Phase 3K, generation is a durable BullMQ/Redis queue rather than an in-process runner, so this pick is no longer forced by generation architecture — see [Known limitations](#8-known-limitations) for what still favors care before autoscaling (default `local` storage drivers, redundant recovery sweeps). Pick whichever the team already has an account on; nothing below is provider-specific beyond "runs a Docker image and lets you set env vars." |
+| Generation worker | **Same host as the API** (second Docker service, same image, `node dist/worker` start command)                 | Deployed separately from the API — see [§4a Deploy the generation worker](#4a-deploy-the-generation-worker). Must run as its own process/container in every deployed environment; `ENABLE_GENERATION_WORKER=true` is a local single-process dev convenience only, never set on either deployed service.                                                                                                                                                                                                                            |
+| Database          | **Neon or Supabase** (managed Postgres), or the API host's own managed Postgres add-on if using Render/Railway | Either works; schema/migrations are plain Postgres, no provider-specific features used.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Storage           | **Cloudflare R2**                                                                                              | Already the primary implementation target (`PDF_STORAGE_DRIVER=r2` / `IMAGE_STORAGE_DRIVER=r2`), S3-compatible, no egress fees. AWS S3 works identically via `PDF_STORAGE_DRIVER=s3`.                                                                                                                                                                                                                                                                                                                                              |
+| Redis             | **A small managed Redis** (Upstash, Redis Cloud, or the API host's own Redis add-on)                           | Required for the app to boot, pass `/api/health`, and schedule/run every generation job (BullMQ, Phase 3K) — see below. A free/smallest tier is enough; nothing performance-sensitive runs through it today.                                                                                                                                                                                                                                                                                                                       |
 
 This is the same architecture already recommended in
 [deployment-readiness.md's Recommended deployment architecture](deployment-readiness.md#recommended-deployment-architecture);
@@ -146,6 +146,7 @@ ephemeral filesystem — see
 | `AUTH_MODE`                                                                                                                  | API          | No (defaults to `jwt`, recommended for this runbook) | `dev` \| `jwt`                                  | Must match the web app's `NEXT_PUBLIC_AUTH_MODE` exactly — a mismatch 401s every request. Only set to `dev` for a trusted-operator-only deployment (see the warning above).                                                                                                                                                                                                |
 | `PORT`                                                                                                                       | API          | No (has default `4000`)                              | `4000`                                          | Most hosts (Render/Fly/Railway) set this automatically; the API already reads and binds it on `0.0.0.0`.                                                                                                                                                                                                                                                                   |
 | `ALLOWED_ORIGINS`                                                                                                            | API          | **Yes**                                              | `https://storyme-demo.vercel.app`               | CORS allowlist, comma-separated for multiple origins (e.g. preview + production Vercel URLs). Must match the web app's deployed origin exactly.                                                                                                                                                                                                                            |
+| `REFRESH_COOKIE_SAME_SITE`                                                                                                   | API          | Only for cross-site deploys                          | `none`                                          | Defaults to `lax` in every environment, including production. Set `none` explicitly when the web and API origins are different sites (e.g. Vercel + Railway); `none` also forces `Secure`, so both origins need HTTPS.                                                                                                                                                     |
 | `EMAIL_PROVIDER`                                                                                                             | API          | No (defaults to `console`)                           | `console` \| `resend`                           | Set to `resend` to send real verification/reset email; leaving it unset logs the link server-side instead (`ConsoleEmailService`) — fine for an internal/trusted demo, not for real users.                                                                                                                                                                                 |
 | `RESEND_API_KEY`                                                                                                             | API          | **Yes, if `EMAIL_PROVIDER=resend`**                  | `re_...`                                        | Boot fails fast (env validation) if `EMAIL_PROVIDER=resend` is set without this.                                                                                                                                                                                                                                                                                           |
 | `EMAIL_FROM`                                                                                                                 | API          | **Yes, if `EMAIL_PROVIDER=resend`**                  | `StoryMe <noreply@storyme.app>`                 | Must be a verified sender/domain in the Resend dashboard, or sends will fail at request time even though boot succeeds.                                                                                                                                                                                                                                                    |
@@ -220,12 +221,14 @@ tell at a glance which tier a given var falls in.
 - [ ] `EMAIL_PROVIDER=resend` plus `RESEND_API_KEY` and `EMAIL_FROM` — real
       users need real verification/reset email, not a server-side log line.
 - [ ] `prisma migrate deploy` wired into an actual release pipeline instead
-      of being run by hand — the approval-protected
-      [`.github/workflows/migrate.yml` workflow](#phase-f3-migration-workflow)
-      now exists for this, but still requires a repository administrator to
-      configure the `staging`/`production` GitHub Environments (see
-      [§5a.2](#f3-required-environment-configuration)) before a real run can
-      succeed — see [§5 Migration and release order](#5-migration-and-release-order).
+      of being run by hand — an approval-protected
+      [migration workflow](#phase-f3-migration-workflow) was drafted but is
+      **inactive**: it is kept commented out at
+      [`docs/inactive-workflows/migrate.example.yml`](inactive-workflows/migrate.example.yml)
+      and GitHub Actions does not run it. Reactivating it and configuring the
+      `staging`/`production` GitHub Environments (see
+      [§5a.2](#f3-required-environment-configuration)) are both outstanding —
+      see [§5 Migration and release order](#5-migration-and-release-order).
 
   (The Redis-backed rate limiter this checklist previously asked for is
   already done — `RATE_LIMITER_TOKEN` resolves to `RedisRateLimiter`
@@ -534,19 +537,28 @@ intentionally, so that:
 
 Run `pnpm --filter @book/api prisma:migrate:deploy` from CI or a one-off
 release-step job with network access to the production database, and only
-start/restart the API container after it succeeds. **This is now available as
-a dedicated, approval-protected GitHub Actions workflow** — see
-[§5a below](#phase-f3-migration-workflow) — instead of running the command by
-hand from a local machine.
+start/restart the API container after it succeeds. An approval-protected
+GitHub Actions workflow for this was drafted but is **inactive** — see
+[§5a below](#phase-f3-migration-workflow); until it is deliberately
+reactivated, this command is run by hand as an explicit release step.
 
 ## 5a. Manual migration release workflow (Phase F3) {#phase-f3-migration-workflow}
+
+> **Current status: inactive.** The workflow described in this section is not
+> in `.github/workflows/` and GitHub Actions does not discover or run it. It is
+> preserved as a fully commented-out draft at
+> [`docs/inactive-workflows/migrate.example.yml`](inactive-workflows/migrate.example.yml)
+> (see [inactive-workflows/README.md](inactive-workflows/README.md)). The
+> procedure below applies only if an operator deliberately reactivates it;
+> until then, migrations are run by hand as described in
+> [§5](#5-migration-and-release-order).
 
 Phase F2 ([deployment-readiness.md](deployment-readiness.md#phase-f2-ci))
 proved migrations apply cleanly in CI against a throwaway database, but
 deliberately left the real staging/production release hook unwired — see
 that phase's "CI migration verification vs. a real release migration hook"
-section. Phase F3 closes that gap with
-**`.github/workflows/migrate.yml`** ("Database Migration (Manual)",
+section. Phase F3 drafted a closure for that gap with
+**`migrate.example.yml`** (formerly `.github/workflows/migrate.yml`; "Database Migration (Manual)",
 job `Apply Database Migrations`): a `workflow_dispatch`-only workflow that
 runs `pnpm --filter @book/api prisma:migrate:deploy` against a selected
 staging or production database, gated by GitHub Environment protection and an
@@ -931,10 +943,12 @@ code. None of these require a code change — they're deploy-time discipline.
   [smoke test checklist's Logs step](#6-smoke-test-checklist) above is the
   concrete check for this.
 - **Use HTTPS on both the API and web origins in production.** The refresh
-  cookie is `Secure` + `SameSite=None` only when `NODE_ENV=production`
-  (`apps/api/src/auth/refresh-cookie.ts`) — over plain HTTP in production
-  the browser would silently drop it, breaking session persistence, not
-  just leaking it. Every host recommended in [§2](#2-recommended-provider-path)
+  cookie is `Secure` whenever `NODE_ENV=production` or
+  `REFRESH_COOKIE_SAME_SITE=none` (`apps/api/src/auth/refresh-cookie.ts`) —
+  over plain HTTP in production the browser would silently drop it, breaking
+  session persistence, not just leaking it. `SameSite` itself comes from
+  `REFRESH_COOKIE_SAME_SITE` and defaults to `lax`; production does not
+  select `none` automatically. Every host recommended in [§2](#2-recommended-provider-path)
   (Vercel, Render/Fly/Railway) provides HTTPS by default; don't disable it
   or terminate TLS somewhere the cookie's `Secure` flag would be violated.
 - **Set `ALLOWED_ORIGINS` to the exact deployed web origin(s), nothing
@@ -1027,7 +1041,7 @@ up automatically once the Railway service is linked to this repo):
   `HEALTHCHECK` instruction — Railway uses its own HTTP check against this
   path to decide when a deploy is healthy).
 - **Node/pnpm versions**: pinned by the Dockerfile, not by Railway's
-  Nixpacks builder — `node:20-alpine` base image, `corepack prepare
+  Nixpacks builder — `node:24-alpine` base image (the release baseline also declared in `.nvmrc`), `corepack prepare
 pnpm@9.4.0`. No separate Railway Node/pnpm version setting is needed since
   `builder: DOCKERFILE` bypasses Nixpacks entirely.
 - **Managed Postgres / Redis**: add Railway's Postgres and Redis plugins to
@@ -1114,6 +1128,7 @@ grouped here by which platform's dashboard they get set in.
 | `JWT_REFRESH_SECRET`                                                                                                                 | `openssl rand -hex 32` output      |                                                                                                                                 |
 | `WEB_APP_URL`                                                                                                                        | `https://your-app.vercel.app`      | Used to build links in verification/reset email.                                                                                |
 | `ALLOWED_ORIGINS`                                                                                                                    | `https://your-app.vercel.app`      | CORS allowlist; comma-separate if adding a Vercel preview URL too.                                                              |
+| `REFRESH_COOKIE_SAME_SITE`                                                                                                           | `none`                             | Required here because Vercel and Railway origins are different sites; the default is `lax`. Forces `Secure`.                    |
 | `EMAIL_PROVIDER`                                                                                                                     | `resend`                           |                                                                                                                                 |
 | `RESEND_API_KEY`                                                                                                                     | `re_...`                           | Required once `EMAIL_PROVIDER=resend`.                                                                                          |
 | `EMAIL_FROM`                                                                                                                         | `StoryMe <noreply@yourdomain.com>` | Must be a verified sender/domain in Resend.                                                                                     |
@@ -1145,16 +1160,22 @@ grouped here by which platform's dashboard they get set in.
   origin** — CORS is `credentials: true` (`apps/api/src/main.ts`), so this
   must be the specific origin(s), never `*`. Comma-separate if you also need
   to allow a Vercel preview-deployment URL.
-- **Cookie behavior in production**: the refresh cookie is
-  `Secure; SameSite=None` only when `NODE_ENV=production`
-  (`apps/api/src/auth/refresh-cookie.ts`) — this is required for a
-  cross-origin cookie (Railway API origin ≠ Vercel web origin) to be sent by
-  the browser at all. Set `NODE_ENV=production` on the Railway service.
-- **`trust proxy` is already set** (`app.set('trust proxy', 1)` in
-  `apps/api/src/main.ts`, added in [Phase 6I](deployment-readiness.md#phase-6i))
-  — Railway puts exactly one reverse-proxy hop in front of the container,
-  so this is already correct for `req.ip`-based rate limiting without
-  further changes.
+- **Cookie behavior in production**: `REFRESH_COOKIE_SAME_SITE` defaults to
+  `lax` in every environment, including `NODE_ENV=production`; production
+  only forces `Secure` (`apps/api/src/auth/refresh-cookie.ts`). A Railway API
+  origin and a Vercel web origin are different sites, so this pairing must
+  set `REFRESH_COOKIE_SAME_SITE=none` explicitly on the Railway service (which
+  also forces `Secure`) and list the exact Vercel origin(s) in
+  `ALLOWED_ORIGINS`. Also set `NODE_ENV=production`. Whether the refresh
+  cookie is actually sent cross-site in a real deployment is an outstanding
+  verification step (see [§10.5](#105-post-deploy-smoke-test-vercel--railway)).
+- **`trust proxy` is a fixed one-hop setting** (`app.set('trust proxy', 1)`
+  in `apps/api/src/main.ts`, added in
+  [Phase 6I](deployment-readiness.md#phase-6i)). It is suitable only if
+  exactly one trusted reverse proxy sits in front of the container. Railway's
+  actual ingress hop count — and any CDN or additional proxy placed in front
+  of it — has not been verified for this project; confirm the topology
+  before relying on `req.ip`-based rate limiting.
 
 ### 10.5 Post-deploy smoke test (Vercel + Railway)
 

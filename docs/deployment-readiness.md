@@ -65,6 +65,16 @@ HTTP context (no e2e/supertest harness in this repo — see
 had no automated coverage to catch it; `AuthRateLimitGuard`'s existing unit
 tests construct `request.ip` directly and were unaffected by this fix.
 
+> **Current status of the proxy setting:** `app.set('trust proxy', 1)` is an
+> existing one-hop configuration, not a verified fit for any particular host.
+> It is correct only if exactly one trusted reverse proxy sits in front of the
+> API and appends the client address to `X-Forwarded-For`. With zero proxies
+> a client can spoof `req.ip`; with two or more (for example a CDN in front of
+> the platform edge) `req.ip` becomes an intermediate proxy and rate-limit
+> buckets collapse again. The actual ingress topology of a real deployment has
+> not been verified; confirm the hop count before relying on per-IP rate
+> limiting.
+
 Everything else audited (env var documentation, register/login/logout/
 refresh/getMe/verify/resend/forgot-password/reset-password flows, token
 hashing, no-enumeration responses, cookie/CORS config, error-response
@@ -439,7 +449,14 @@ procedure) lives in
 [private-demo-deploy.md §5a](private-demo-deploy.md#phase-f3-migration-workflow);
 this section covers what was built and how it was verified.
 
-**`.github/workflows/migrate.yml`** — `workflow_dispatch`-only (never push,
+> **Current status:** this workflow is not active. It is kept as a fully
+> commented-out draft at
+> [`docs/inactive-workflows/migrate.example.yml`](inactive-workflows/migrate.example.yml)
+> (see [inactive-workflows/README.md](inactive-workflows/README.md)); GitHub
+> Actions does not discover it. The description below records what the draft
+> contains.
+
+**`migrate.example.yml`** (formerly `.github/workflows/migrate.yml`) — `workflow_dispatch`-only (never push,
 pull_request, schedule, or a deployment event), job `Apply Database
 Migrations`, dynamically bound to a GitHub Environment named `staging` or
 `production` matching the operator's selection. This is what GitHub
@@ -505,7 +522,7 @@ environment, commit SHA, run ID, success/failure, and the API-before-worker
 next step, with no connection details. Target validation, the deploy step,
 and post-deploy verification never use `continue-on-error`; nothing retries a
 failed migration automatically; nothing attempts rollback SQL — see
-[private-demo-deploy.md §5a.6](private-demo-deploy.md#f3-incident-procedure-a-failed-migration-run)
+[private-demo-deploy.md §5a.6](private-demo-deploy.md#5a6-incident-procedure-a-failed-migration-run)
 for the incident procedure this implies.
 
 **Least privilege and concurrency**: top-level `permissions: contents:
@@ -573,7 +590,7 @@ CONSTRAINT` in a later migration, which takes only a brief lock rather than
   chain cleanly and that the post-deploy status text matches what the
   workflow's grep check expects. No staging/production database or external
   service was touched.
-- Both `.github/workflows/ci.yml` and `.github/workflows/migrate.yml` parsed
+- Both `.github/workflows/ci.yml` and the then-active `.github/workflows/migrate.yml` parsed
   with `js-yaml` and confirmed to contain no duplicate mapping keys.
 - `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `git diff --check`.
 - `actionlint` was not run — not already installed, and this phase does not
@@ -613,11 +630,12 @@ real transactional email provider are all done end-to-end.
   real signups. Boot fails fast if `resend` is set without both required
   vars (`env.schema.ts`).
 - ~~Wire `prisma migrate deploy` into an actual release pipeline~~ **Done
-  (Phase F3)** — `.github/workflows/migrate.yml` provides the
-  approval-protected staging/production migration workflow. Repository
-  administrators must still configure the GitHub Environments, secrets,
-  expected database identity, and required reviewers before its first real
-  use.
+  (Phase F3)** — an approval-protected staging/production migration workflow
+  was drafted, but it is currently inactive: it lives commented out at
+  [`docs/inactive-workflows/migrate.example.yml`](inactive-workflows/migrate.example.yml)
+  and GitHub Actions does not run it. Reactivating it, then configuring the
+  GitHub Environments, secrets, expected database identity, and required
+  reviewers, is outstanding before any real use.
 - ~~Move generation to a real queue + worker~~ **Done (Phase 3K)** — see
   [Known blockers](#known-blockers) item 5.
 - ~~Consider a Redis-backed rate limiter before running more than one API
@@ -674,7 +692,8 @@ _every_ run mode, not just Docker:
    `/app/{node_modules,packages/types,apps/api}` directory layout the
    builder stage used, instead of flattening it.
 3. **The Prisma query engine failed to load on Alpine
-   (`Error loading shared library libssl.so.1.1`).** `node:20-alpine`
+   (`Error loading shared library libssl.so.1.1`).** The Alpine base image
+   (then `node:20-alpine`; now `node:24-alpine`, which has the same property)
    ships OpenSSL 3.x with no `libssl.so.1.1` compat package available, and
    with no `openssl` binary present at all, `prisma generate` couldn't probe
    the actual version and silently defaulted to the wrong (1.1.x) engine
@@ -780,9 +799,13 @@ one when Docker is the recommended target.
   set, and `allowedHeaders` includes `Authorization` alongside
   `x-user-email`/`x-user-name`. **The only action needed at deploy time is
   setting `ALLOWED_ORIGINS` on the API to the web app's actual deployed
-  origin** — no code change. `SameSite=None; Secure` on the refresh cookie
-  (`refresh-cookie.ts`) requires HTTPS on both origins in production, which
-  Vercel/Render/Fly/Railway provide by default.
+  origin** — no code change. The refresh cookie's `SameSite` attribute comes
+  from `REFRESH_COOKIE_SAME_SITE`, which defaults to `lax` in every
+  environment; `NODE_ENV=production` forces `Secure` but does **not** switch
+  to `SameSite=None`. A cross-site deployment (API and web on different
+  sites) must set `REFRESH_COOKIE_SAME_SITE=none` explicitly
+  (`refresh-cookie.ts` then also forces `Secure`), which requires HTTPS on
+  both origins.
 - Confirmed no other hardcoded `localhost` URLs exist in request paths.
 
 ### Note: unused `next.config.mjs` image remote pattern

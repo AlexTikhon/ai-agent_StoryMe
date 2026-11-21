@@ -22,7 +22,7 @@ both predate the retirement and describe the repository as it was then.
 
 ## Run the demo
 
-Needs Node.js ≥ 20, pnpm 9, Docker running, and ports `5440`, `6380`, `4100`,
+Needs Node.js 24 (see `.nvmrc`), pnpm 9.4.0, Docker running, and ports `5440`, `6380`, `4100`,
 `3100` free.
 
 ```bash

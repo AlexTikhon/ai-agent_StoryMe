@@ -1,5 +1,5 @@
 # ── Stage 1: Install dependencies ─────────────────────────────────────────────
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 
 RUN corepack enable && corepack prepare pnpm@9.4.0 --activate
 
@@ -14,7 +14,7 @@ COPY apps/api/package.json ./apps/api/
 RUN pnpm install --frozen-lockfile
 
 # ── Stage 2: Build ────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 
 RUN corepack enable && corepack prepare pnpm@9.4.0 --activate
 
@@ -47,7 +47,7 @@ WORKDIR /app/apps/api
 RUN pnpm prisma:generate && pnpm build
 
 # ── Stage 3: Production runtime ───────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:24-alpine AS runtime
 
 # Security: run as non-root user
 RUN addgroup -g 1001 -S nodejs && adduser -S nestjs -u 1001

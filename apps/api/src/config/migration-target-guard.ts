@@ -1,6 +1,7 @@
 /**
  * Phase F3 — pre-Prisma target-identity guard for the manual migration
- * release workflow (.github/workflows/migrate.yml). Confirms a migration run
+ * release workflow draft (docs/inactive-workflows/migrate.example.yml, not
+ * active in GitHub Actions). Confirms a migration run
  * is pointed at the database operators actually intended before any Prisma
  * command runs, since a mistargeted `prisma migrate deploy` (wrong host,
  * wrong environment, wrong branch) can silently apply schema changes to the

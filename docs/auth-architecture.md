@@ -571,6 +571,11 @@ Docs to update when Phase 6B (implementation) lands:
 
 ## 10. Rollout / deployment notes
 
+- **Current behavior (supersedes the planning notes in this section and the
+  `SameSite=None` examples above):** the refresh cookie's `SameSite` comes
+  from `REFRESH_COOKIE_SAME_SITE`, default `lax` in every environment.
+  `NODE_ENV=production` forces `Secure` but never selects `none`; cross-site
+  deployments must set `REFRESH_COOKIE_SAME_SITE=none` explicitly.
 - Cross-origin refresh cookie requires `SameSite=None; Secure` — `Secure`
   means it will not work over plain HTTP, so local dev either needs HTTPS
   or a `SameSite=Lax`/no-`Secure` dev-only cookie config (mirroring the
@@ -672,7 +677,7 @@ deletedAt: null }` — a book that exists but belongs to someone else 404s
 origins (different ports) but the **same site** — `localhost` has no public
 suffix, so browsers treat it as one registrable domain regardless of port.
 This matters because `buildRefreshCookieOptions` (`refresh-cookie.ts`) sets
-`SameSite=Lax` (not `None`) outside production, and `SameSite=Lax` cookies
+`SameSite=Lax` (not `None`) by default, and `SameSite=Lax` cookies
 are normally withheld from cross-site `fetch`/XHR — but same-site
 cross-origin requests are unaffected by that restriction, so the
 `storyme_refresh` cookie round-trips correctly on `POST /api/auth/refresh`
@@ -682,10 +687,12 @@ the cookie/CORS code paths together (`refresh-cookie.ts`, `main.ts`'s
 `app.enableCors({ credentials: true, origin: allowedOrigins })`) rather than
 by a live capture; if a future environment renames the local hostname away
 from `localhost` (e.g. a custom `*.test` domain), re-verify this assumption.
-In production (`NODE_ENV=production`), the cookie switches to
-`Secure; SameSite=None`, which requires HTTPS on both origins and an exact
-(non-wildcard) `ALLOWED_ORIGINS` entry for the deployed web origin — already
-documented in `docs/private-demo-deploy.md`.
+In production (`NODE_ENV=production`), the cookie becomes `Secure` but keeps
+the configured `REFRESH_COOKIE_SAME_SITE` value, which defaults to `lax`;
+production does not switch to `SameSite=None` automatically. A cross-site
+deployment must set `REFRESH_COOKIE_SAME_SITE=none` explicitly, which requires
+HTTPS on both origins and an exact (non-wildcard) `ALLOWED_ORIGINS` entry for
+the deployed web origin — see `docs/private-demo-deploy.md`.
 
 ### 12.4 Manual verification checklist
 

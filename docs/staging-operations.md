@@ -21,15 +21,22 @@ isolated staging bucket with `PDF_STORAGE_DRIVER=s3` and
 Stripe billing disabled; this makes smoke tests deterministic and prevents
 accidental paid calls.
 
+> **Automation status:** the migration, backup and health-monitor workflows
+> referenced below are **inactive**. They are kept as fully commented-out
+> drafts in [`docs/inactive-workflows/`](inactive-workflows/README.md) and
+> GitHub Actions does not discover or run them. The only active workflow is
+> CI. Until a draft is deliberately reactivated, the corresponding step below
+> is either performed by hand or not performed at all.
+
 ## GitHub Environment
 
 The repository has a lowercase `staging` Environment restricted to `main`.
-The migration workflow reads:
+The (inactive) migration workflow draft reads:
 
 - Environment secret `DATABASE_URL`;
 - Environment variables `MIGRATION_DB_HOSTNAME` and `MIGRATION_DB_NAME`.
 
-Backup and monitoring workflows additionally read:
+The (inactive) backup and monitoring workflow drafts additionally read:
 
 - secrets `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY`;
 - variables `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION`, `BACKUP_S3_ENDPOINT`, and
@@ -37,11 +44,38 @@ Backup and monitoring workflows additionally read:
 
 Secret values must never be copied into repository files or workflow logs.
 
+## Cookie and proxy configuration
+
+The web (Vercel) and API (Railway) origins are different sites, so the API
+service must be configured explicitly:
+
+- `REFRESH_COOKIE_SAME_SITE=none` — the default is `lax` in every environment;
+  `NODE_ENV=production` forces `Secure` but does not select `none`.
+- `ALLOWED_ORIGINS` — the exact Vercel origin(s), never `*`.
+- `NODE_ENV=production`.
+
+`apps/api/src/main.ts` sets `app.set('trust proxy', 1)`, a fixed one-hop
+configuration. It is correct only if exactly one trusted reverse proxy fronts
+the API container.
+
+**Outstanding deployment verification** (not performed for the current
+release):
+
+- confirm Railway's actual ingress hop count, and that no CDN or extra proxy
+  sits in front of it, before relying on per-IP auth rate limiting;
+- confirm in a browser that the refresh cookie is set and sent cross-site on
+  `POST /api/auth/refresh` with the configuration above;
+- confirm the deployed images run on the Node 24 baseline (`node -v` in the
+  running API and worker containers).
+
 ## Release order
 
 1. Confirm CI on `main` is green.
-2. Run `Database Migration (Manual)` with target `staging` and confirmation
-   `APPLY_STAGING_MIGRATIONS`.
+2. Apply migrations to staging. The `Database Migration (Manual)` workflow
+   (target `staging`, confirmation `APPLY_STAGING_MIGRATIONS`) is inactive;
+   until it is reactivated, run
+   `pnpm --filter @book/api prisma:migrate:deploy` by hand against the
+   verified staging database.
 3. Deploy/redeploy API and wait for `/api/health` to return `{"status":"ok"}`.
 4. Deploy/redeploy worker and confirm its startup log includes
    `processor registered=true`.
@@ -55,8 +89,10 @@ Secret values must never be copied into repository files or workflow logs.
 
 ## Backup and restore
 
-`Staging Database Backup` runs every day at 01:17 UTC and can also be
-dispatched manually. It:
+`Staging Database Backup` is an inactive draft
+([`staging-backup.example.yml`](inactive-workflows/staging-backup.example.yml));
+no scheduled logical backup currently runs. If reactivated, it would run every
+day at 01:17 UTC and could also be dispatched manually. It would:
 
 1. creates a PostgreSQL 18 custom-format logical dump;
 2. validates the dump catalog;
@@ -72,10 +108,12 @@ Railway's restore warnings.
 
 ## Monitoring and alerting
 
-`Staging Health Monitor` probes `/api/health` every ten minutes. A failure
-opens (or updates) one `staging-alert` GitHub issue and fails the workflow,
-which also activates normal GitHub Actions notifications. Recovery closes the
-open alert issue automatically.
+`Staging Health Monitor` is an inactive draft
+([`staging-monitor.example.yml`](inactive-workflows/staging-monitor.example.yml));
+no GitHub-based health probe currently runs. If reactivated, it would probe
+`/api/health` every ten minutes; a failure would open (or update) one
+`staging-alert` GitHub issue and fail the workflow, and recovery would close
+the open alert issue automatically.
 
 In Railway, keep an Observability dashboard for API, worker, Postgres, and
 Redis. On plans that support monitors, alert on:

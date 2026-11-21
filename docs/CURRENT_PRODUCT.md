@@ -274,8 +274,13 @@ no destructive reset is needed.
 
 Only CI is enabled: lint, typecheck, build, unit tests, offline evaluation, and isolated PostgreSQL/
 Redis integration tests using synthetic data and mock providers. The integration runner refuses
-other targets than `127.0.0.1:5440/storyme_e2e` and Redis `127.0.0.1:6380/15`. Migration/deployment/
-backup workflows remain disabled. Repository owners must configure required branch checks
+other targets than `127.0.0.1:5440/storyme_e2e` and Redis `127.0.0.1:6380/15`. CI, the API Docker
+image and local verification share the Node.js 24 baseline from `.nvmrc`. The `API container image`
+job builds the API image without pushing it and runs `pnpm smoke:api-image`, a network-less,
+credential-free check of Node version, non-root user, entrypoints, Prisma client/engine load, a
+Sharp transform and the embedded PDF fonts; it does not test database connectivity or a deployment.
+Migration/backup/monitoring workflows are inactive drafts in
+[`docs/inactive-workflows/`](inactive-workflows/README.md). Repository owners must configure required branch checks
 `Checks` and `Isolated integration`; workflow files cannot enforce branch protection by themselves.
 
 ## Implemented and unimplemented
@@ -357,7 +362,7 @@ remain available in Git history (for example at commit `7b7d661`).
 
 ## Local run and validation
 
-Prerequisites: Node 20+, pnpm 9+, Docker, and Docker Compose.
+Prerequisites: Node.js 24 (see `.nvmrc`), pnpm 9.4.0, Docker, and Docker Compose.
 
 ```text
 pnpm install

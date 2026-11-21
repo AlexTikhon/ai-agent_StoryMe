@@ -55,7 +55,7 @@
 
 # env:
 #   PNPM_VERSION: 9.4.0
-#   NODE_VERSION: 20
+#   NODE_VERSION: 24
 
 # jobs:
 #   # Stable, single job/check name for audit history — the target environment

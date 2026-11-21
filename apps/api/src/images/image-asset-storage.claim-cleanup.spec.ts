@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join } from 'node:path';
+import { createOwnedTempDir, removeOwnedTempDir } from '../common/test-utils/owned-temp-dir';
 
 const sendMock = vi.fn();
 
@@ -29,21 +29,26 @@ const validCloudConfig = {
 };
 
 const TEST_BOOK_ID = 'test-image-claim-cleanup-001';
-const TEST_DIR = resolve(process.cwd(), 'tmp', 'images', 'books', TEST_BOOK_ID);
+const TEMP_PREFIX = 'storyme-image-claim-cleanup-';
 const VALID_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
 );
 
 describe('LocalImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () => {
+  // Each test owns a private storage root; nothing here touches apps/api/tmp.
+  let root: string;
+
+  beforeEach(async () => {
+    root = await createOwnedTempDir(TEMP_PREFIX);
+  });
+
   afterEach(async () => {
-    if (existsSync(TEST_DIR)) {
-      await rm(TEST_DIR, { recursive: true });
-    }
+    await removeOwnedTempDir(root, TEMP_PREFIX);
   });
 
   it('lists a saved claim-scoped image with its physical key, prefixed "images/"', async () => {
-    const storage = new LocalImageAssetStorage();
+    const storage = new LocalImageAssetStorage(root);
     const namespace = claimNamespace('run-1', 1);
     const key = claimImageAssetKey(TEST_BOOK_ID, namespace, 'cover');
     await storage.saveImageAsset(key, VALID_PNG, 'image/png');
@@ -58,22 +63,18 @@ describe('LocalImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
   });
 
   it('never lists legacy positional keys (no "runs/claims" segment)', async () => {
-    const storage = new LocalImageAssetStorage();
+    const storage = new LocalImageAssetStorage(root);
     // Legacy positional key: <bookId>/cover, not books/<bookId>/runs/.../claims/...
     await storage.saveImageAsset(`${TEST_BOOK_ID}-legacy/cover`, VALID_PNG, 'image/png');
+    expect(existsSync(join(root, 'images', `${TEST_BOOK_ID}-legacy`, 'cover.png'))).toBe(true);
 
     const page = await storage.listClaimArtifacts({ pageSize: 100 });
 
     expect(page.entries.filter((e) => e.key.includes(`${TEST_BOOK_ID}-legacy`))).toHaveLength(0);
-
-    await rm(resolve(process.cwd(), 'tmp', 'images', `${TEST_BOOK_ID}-legacy`), {
-      recursive: true,
-      force: true,
-    });
   });
 
   it('paginates deterministically with an opaque cursor', async () => {
-    const storage = new LocalImageAssetStorage();
+    const storage = new LocalImageAssetStorage(root);
     const namespace = claimNamespace('run-1', 1);
     await storage.saveImageAsset(
       claimImageAssetKey(TEST_BOOK_ID, namespace, 'cover'),
@@ -107,7 +108,7 @@ describe('LocalImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
   });
 
   it('deletes a listed key and reports "deleted"; a repeat delete reports "not_found"', async () => {
-    const storage = new LocalImageAssetStorage();
+    const storage = new LocalImageAssetStorage(root);
     const namespace = claimNamespace('run-1', 1);
     const key = claimImageAssetKey(TEST_BOOK_ID, namespace, 'cover');
     await storage.saveImageAsset(key, VALID_PNG, 'image/png');
@@ -122,7 +123,7 @@ describe('LocalImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
   });
 
   it('refuses to delete a key that does not match the claim artifact grammar, even if asked to', async () => {
-    const storage = new LocalImageAssetStorage();
+    const storage = new LocalImageAssetStorage(root);
     const outcomes = await storage.deleteClaimArtifacts([`images/${TEST_BOOK_ID}/cover.png`]);
     expect(outcomes).toEqual([
       {
@@ -131,6 +132,41 @@ describe('LocalImageAssetStorage.listClaimArtifacts / deleteClaimArtifacts', () 
         error: expect.stringContaining('grammar'),
       },
     ]);
+  });
+
+  it('keeps two storage roots isolated when they hold the same logical book identity', async () => {
+    const otherRoot = await createOwnedTempDir(TEMP_PREFIX);
+    try {
+      const storageA = new LocalImageAssetStorage(root);
+      const storageB = new LocalImageAssetStorage(otherRoot);
+      const namespace = claimNamespace('run-1', 1);
+      const coverKey = claimImageAssetKey(TEST_BOOK_ID, namespace, 'cover');
+      const rawCoverKey = `images/books/${TEST_BOOK_ID}/runs/run-1/claims/1/cover.png`;
+      const rawPageKey = `images/books/${TEST_BOOK_ID}/runs/run-1/claims/1/page-1.png`;
+      await storageA.saveImageAsset(coverKey, VALID_PNG, 'image/png');
+      await storageB.saveImageAsset(coverKey, VALID_PNG, 'image/png');
+      await storageB.saveImageAsset(
+        claimImageAssetKey(TEST_BOOK_ID, namespace, 'page', 1),
+        VALID_PNG,
+        'image/png',
+      );
+
+      const listedA = await storageA.listClaimArtifacts({ pageSize: 100 });
+      expect(listedA.entries.map((e) => e.key)).toEqual([rawCoverKey]);
+
+      // Deleting B's page key through A finds nothing; deleting A's cover leaves B's copy.
+      expect(await storageA.deleteClaimArtifacts([rawPageKey, rawCoverKey])).toEqual([
+        { key: rawPageKey, outcome: 'not_found' },
+        { key: rawCoverKey, outcome: 'deleted' },
+      ]);
+      expect(await storageA.getImageAsset(coverKey)).toBeUndefined();
+      expect(await storageB.getImageAsset(coverKey)).toEqual(VALID_PNG);
+
+      const listedB = await storageB.listClaimArtifacts({ pageSize: 100 });
+      expect(listedB.entries.map((e) => e.key)).toEqual([rawCoverKey, rawPageKey]);
+    } finally {
+      await removeOwnedTempDir(otherRoot, TEMP_PREFIX);
+    }
   });
 });
 

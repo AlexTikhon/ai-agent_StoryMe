@@ -36,9 +36,11 @@ async function bootstrap(): Promise<void> {
     },
   );
 
-  // Trust the first hop's X-Forwarded-For entry as the client IP. Every
-  // recommended deploy target (Render/Fly/Railway/Vercel) puts exactly one
-  // reverse proxy in front of this app — without this, req.ip resolves to
+  // Trust the first hop's X-Forwarded-For entry as the client IP. This is a
+  // fixed one-hop setting: it is correct only when exactly one trusted reverse
+  // proxy fronts this app, which must be confirmed against the actual ingress
+  // topology of each deployment (see docs/deployment-readiness.md, Phase 6I).
+  // Behind such a proxy without this setting, req.ip resolves to
   // the proxy's own address for every request, collapsing AuthRateLimitGuard's
   // per-IP key into one shared bucket for all clients (a real self-inflicted
   // lockout risk on routes like refresh/logout that have no email to key on).

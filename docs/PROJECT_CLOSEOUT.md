@@ -177,7 +177,7 @@ pnpm --filter @book/web test:e2e:production
 
 ## Return to the project
 
-1. **Prerequisites:** Node.js 20 or newer, pnpm 9.4.0, Docker running, then
+1. **Prerequisites:** Node.js 24 (see `.nvmrc`), pnpm 9.4.0, Docker running, then
    `pnpm install --frozen-lockfile` and the Playwright Chromium install above.
 2. **Safe environment:** `docker ps -a --filter label=com.docker.compose.project=storyme-integration`.
    If containers are listed and no demo or test session of yours is running, remove them with

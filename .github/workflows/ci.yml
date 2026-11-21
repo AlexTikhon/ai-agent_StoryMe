@@ -27,7 +27,7 @@ jobs:
           version: 9.4.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @book/api prisma:generate
@@ -51,7 +51,7 @@ jobs:
           version: 9.4.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @book/api prisma:generate
@@ -78,7 +78,7 @@ jobs:
           version: 9.4.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
       # NODE_ENV=production above makes pnpm skip devDependencies, which would
       # drop the workspace TypeScript and Playwright this job builds and runs
@@ -99,7 +99,7 @@ jobs:
           version: 9.4.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @book/api prisma:generate
@@ -123,3 +123,19 @@ jobs:
       - if: always()
         timeout-minutes: 5
         run: pnpm test:infra:down
+  api-image:
+    name: API container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Local build only: the image is never pushed and no registry or
+      # production credentials are used.
+      - run: docker build -f apps/api/Dockerfile -t storyme-api:ci .
+      # Network-less, read-only, credential-free container checks: Node major
+      # from .nvmrc, non-root user, entrypoints, Prisma client + engine load,
+      # a Sharp transform and the embedded PDF fonts. No database is contacted.
+      - run: node scripts/api-image-smoke.mjs storyme-api:ci

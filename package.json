@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@9.4.0",
   "engines": {
-    "node": ">=20.9.0",
+    "node": ">=24.0.0 <25",
     "pnpm": ">=9.0.0"
   },
   "scripts": {
@@ -24,6 +24,7 @@
     "demo:local": "node scripts/demo-local.mjs",
     "demo:capture": "node apps/web/scripts/demo-capture.mjs",
     "verify:local": "node scripts/verify-local.mjs",
+    "smoke:api-image": "node scripts/api-image-smoke.mjs",
     "local:home:up": "docker compose -f docker-compose.e2e.yml up -d --wait",
     "local:home:down": "docker compose -f docker-compose.e2e.yml down",
     "migrate:deploy": "pnpm --filter @book/api prisma:migrate:deploy",
