@@ -60,7 +60,15 @@ working, not real-model quality.
 pnpm verify:local --profile offline       # lint, typecheck, unit tests, offline story eval
 pnpm verify:local --profile integration   # API integration suite on disposable PostgreSQL/Redis
 pnpm verify:local --profile browser       # browser journeys + recovery journey
+pnpm smoke:release                        # production containers publish a complete book
 ```
+
+`pnpm smoke:release` builds the API image and runs the API and a separate worker
+from it with `NODE_ENV=production`, against disposable PostgreSQL, Redis and a
+local S3 emulator. It then checks one generated four-page book end to end, and
+CI runs it on the image it builds. It uses mock providers and local S3
+emulation, so it is not cloud or deployment evidence. See
+[release-smoke.md](docs/release-smoke.md).
 
 The Docker profiles use a fresh `storyme-verify-<random>` Compose project per run.
 They report `UNAVAILABLE`, and change nothing, if their ports or that project
@@ -112,8 +120,9 @@ Copy `.env.example` to `apps/api/.env` for manual runs
   `IMAGE_GENERATION_PROVIDER` default to `mock`. `openai` needs `OPENAI_API_KEY`
   and costs money per call.
 - **Storage.** `PDF_STORAGE_DRIVER` and `IMAGE_STORAGE_DRIVER` default to `local`
-  (`apps/api/tmp/`); `s3`/`r2` are exercised only by the manual
+  (`apps/api/tmp/`). Real S3/R2 buckets are exercised only by the manual
   `smoke:cloud-storage` script ([guide](apps/api/docs/cloud-storage-smoke-test.md)).
+  `pnpm smoke:release` runs the `s3` driver against a local S3 emulator.
   The PDF preview endpoint is always `GET /api/books/:id/pdf/preview`.
 - **Web build.** `pnpm --filter @book/web build` runs in production mode and
   requires `NEXT_PUBLIC_API_URL` ending in `/api`; it never falls back to

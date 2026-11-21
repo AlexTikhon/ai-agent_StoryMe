@@ -38,6 +38,11 @@ non-root user, API/worker entrypoints, Prisma client construction plus query-eng
 transform and the embedded PDF fonts. It does not contact a database or establish that a deployed
 application works.
 
+`pnpm smoke:release` runs that image check and then goes further, on disposable infrastructure.
+It runs the API and a separate worker from the same image with `NODE_ENV=production`, against
+PostgreSQL, Redis and a local S3 emulator. It then generates and retrieves one complete mock book.
+See [release-smoke.md](release-smoke.md).
+
 In the `browser` profile, Playwright's own configuration migrates the database, seeds the
 synthetic fixtures, starts the API and the web app, and removes the fixtures in its global
 teardown. `verify:local` runs the same scoped fixture cleanup again afterwards, so a cancelled

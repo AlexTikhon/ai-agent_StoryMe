@@ -139,3 +139,8 @@ jobs:
       # from .nvmrc, non-root user, entrypoints, Prisma client + engine load,
       # a Sharp transform and the embedded PDF fonts. No database is contacted.
       - run: node scripts/api-image-smoke.mjs storyme-api:ci
+      # Disposable release smoke on the image built above: API and separate
+      # worker containers, PostgreSQL/outbox, Redis/BullMQ and a local S3
+      # gateway in a fresh Compose project, mock providers only. Cleans up its
+      # own project on success, failure and cancellation. See docs/release-smoke.md.
+      - run: node scripts/release-smoke.mjs --image storyme-api:ci
