@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200">
+<title>Juno hugging her kite under the evening stars — back cover</title>
+<!-- StoryMe sample book: original hand-authored illustration for a fictional story. -->
+<defs><linearGradient id="night" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e2a5c"/><stop offset="1" stop-color="#4b5c9e"/></linearGradient></defs>
+<rect width="1200" height="1200" fill="url(#night)"/>
+<g fill="#fff6c9"><circle cx="90" cy="90" r="4"/><circle cx="220" cy="180" r="3"/><circle cx="380" cy="70" r="5"/><circle cx="520" cy="200" r="3"/><circle cx="660" cy="110" r="4"/><circle cx="760" cy="260" r="3"/><circle cx="1080" cy="120" r="4"/><circle cx="1120" cy="380" r="3"/><circle cx="120" cy="380" r="3"/><circle cx="300" cy="460" r="4"/><circle cx="880" cy="470" r="3"/><circle cx="1040" cy="560" r="4"/><circle cx="180" cy="640" r="3"/><circle cx="600" cy="520" r="3"/></g>
+<mask id="crescent"><rect width="1200" height="1200" fill="#fff"/><circle cx="1006" cy="636" r="70" fill="#000"/></mask>
+<circle cx="974" cy="658" r="76" fill="#fff3c4" mask="url(#crescent)"/>
+<path d="M0 940 Q400 820 760 900 T1200 880 V1200 H0 Z" fill="#2f5b45"/>
+<path d="M0 1010 Q500 900 900 980 Q1060 1010 1200 990 V1200 H0 Z" fill="#264c3a"/>
+<g transform="translate(600 1110) scale(1.45)">
+<ellipse cx="0" cy="2" rx="62" ry="10" fill="#000" opacity="0.12"/>
+<path d="M-24 -144 L-14 -112" stroke="#3a2a22" stroke-width="24" stroke-linecap="round" fill="none"/>
+<path d="M-24 -144 L-14 -112" stroke="#f6c343" stroke-width="15" stroke-linecap="round" fill="none"/>
+<circle cx="-14" cy="-112" r="11" fill="#8a5a3c" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M24 -144 L14 -108" stroke="#3a2a22" stroke-width="24" stroke-linecap="round" fill="none"/>
+<path d="M24 -144 L14 -108" stroke="#f6c343" stroke-width="15" stroke-linecap="round" fill="none"/>
+<circle cx="14" cy="-108" r="11" fill="#8a5a3c" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<g stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+<rect x="-28" y="-64" width="18" height="46" fill="#8a5a3c"/>
+<rect x="10" y="-64" width="18" height="46" fill="#8a5a3c"/>
+<rect x="-38" y="-24" width="32" height="24" rx="9" fill="#d6453d"/>
+<rect x="6" y="-24" width="32" height="24" rx="9" fill="#d6453d"/>
+<path d="M-30 -154 Q0 -164 30 -154 L54 -58 Q0 -44 -54 -58 Z" fill="#f6c343"/>
+<path d="M-17 -159 L0 -141 L17 -159" fill="#f6c343"/>
+<circle cx="-40" cy="-228" r="24" fill="#2a1b14"/>
+<circle cx="40" cy="-228" r="24" fill="#2a1b14"/>
+<circle cx="0" cy="-196" r="44" fill="#8a5a3c"/>
+<path d="M-44 -200 Q-46 -247 0 -245 Q46 -247 44 -200 Q34 -223 0 -223 Q-34 -223 -44 -200 Z" fill="#2a1b14"/>
+
+</g>
+<g fill="#c9851c"><circle cx="0" cy="-126" r="4.5"/><circle cx="0" cy="-104" r="4.5"/><circle cx="0" cy="-82" r="4.5"/></g>
+<ellipse cx="-15" cy="-194" rx="4.5" ry="6.5" fill="#2a1b14"/>
+<ellipse cx="15" cy="-194" rx="4.5" ry="6.5" fill="#2a1b14"/>
+<circle cx="-13" cy="-197" r="1.6" fill="#fff"/><circle cx="17" cy="-197" r="1.6" fill="#fff"/>
+<circle cx="-27" cy="-178" r="7" fill="#e58f7f" opacity="0.75"/>
+<circle cx="27" cy="-178" r="7" fill="#e58f7f" opacity="0.75"/>
+<path d="M-13 -175 Q0 -161 13 -175" fill="none" stroke="#3a2a22" stroke-width="4" stroke-linecap="round"/>
+<g transform="translate(0 -118) rotate(-8) scale(0.9)">
+<path d="M-90 0 q-10 30 10 60 t-10 60" fill="none" stroke="#3a2a22" stroke-width="3"/>
+<path d="M-103 31 L-77 49 L-77 31 L-103 49 Z" fill="#4a90d9" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M-106 92 L-70 116 L-70 92 L-106 116 Z" fill="#e2483d" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<g stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+<path d="M-58 0 L-94 -32 L-84 0 L-94 32 Z" fill="#f39a3d"/>
+<path d="M-66 0 Q-18 -52 48 0 Q-18 52 -66 0 Z" fill="#e2483d"/>
+<path d="M-28 -23 Q-18 0 -28 23 M-8 -28 Q2 0 -8 28" fill="none" stroke="#b8322b"/>
+<path d="M-6 -34 Q4 -56 22 -40" fill="#f39a3d"/>
+<circle cx="24" cy="-6" r="8.5" fill="#fff"/>
+</g>
+<circle cx="26" cy="-6" r="3.8" fill="#3a2a22"/>
+</g>
+</g>
+</svg>

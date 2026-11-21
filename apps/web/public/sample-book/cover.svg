@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200">
+<title>Juno and the Runaway Kite — cover illustration</title>
+<!-- StoryMe sample book: original hand-authored illustration for a fictional story. -->
+<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fd0f2"/><stop offset="1" stop-color="#e6f6fd"/></linearGradient></defs>
+<rect width="1200" height="1200" fill="url(#sky)"/>
+<circle cx="170" cy="170" r="120" fill="#fff4b8" opacity="0.7"/><circle cx="170" cy="170" r="82" fill="#ffd95a"/>
+<g transform="translate(560 150) scale(1.1)" fill="#fff"><circle cx="0" cy="0" r="34"/><circle cx="38" cy="-14" r="44"/><circle cx="82" cy="0" r="34"/><rect x="0" y="0" width="82" height="34"/></g><g transform="translate(980 520) scale(0.8)" fill="#fff"><circle cx="0" cy="0" r="34"/><circle cx="38" cy="-14" r="44"/><circle cx="82" cy="0" r="34"/><rect x="0" y="0" width="82" height="34"/></g><g transform="translate(80 460) scale(0.7)" fill="#fff"><circle cx="0" cy="0" r="34"/><circle cx="38" cy="-14" r="44"/><circle cx="82" cy="0" r="34"/><rect x="0" y="0" width="82" height="34"/></g>
+<path d="M0 760 Q300 640 640 720 T1200 680 V1200 H0 Z" fill="#8fd16f"/>
+<path d="M0 840 Q420 700 820 800 Q1020 850 1200 810 V1200 H0 Z" fill="#5fb84e"/>
+<g transform="translate(120 880)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#f7a8c4"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(260 840)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#ffffff"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(700 860)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#ffffff"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(900 900)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#f7a8c4"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(1080 860)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#ffffff"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(980 990)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#ffffff"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(160 1010)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#f7a8c4"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(560 960)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#ffffff"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(380 1060)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#ffffff"/><circle r="2.5" fill="#f6c343"/></g>
+<g transform="translate(760 1080)"><path d="M0 0 V14" stroke="#3f8f3a" stroke-width="3"/><circle r="7" fill="#f7a8c4"/><circle r="2.5" fill="#f6c343"/></g>
+<path d="M545 470 Q760 420 830 300" fill="none" stroke="#3a2a22" stroke-width="3"/>
+<g transform="translate(880 250) rotate(-12) scale(2.1)">
+<path d="M-90 0 q-30 40 -10 80 t-10 80 t-10 80" fill="none" stroke="#3a2a22" stroke-width="3"/>
+<path d="M-115 39 L-89 57 L-89 39 L-115 57 Z" fill="#4a90d9" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M-123 109 L-97 127 L-97 109 L-123 127 Z" fill="#f6c343" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M-131 181 L-105 199 L-105 181 L-131 199 Z" fill="#4a90d9" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+
+<g stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+<path d="M-58 0 L-94 -32 L-84 0 L-94 32 Z" fill="#f39a3d"/>
+<path d="M-66 0 Q-18 -52 48 0 Q-18 52 -66 0 Z" fill="#e2483d"/>
+<path d="M-28 -23 Q-18 0 -28 23 M-8 -28 Q2 0 -8 28" fill="none" stroke="#b8322b"/>
+<path d="M-6 -34 Q4 -56 22 -40" fill="#f39a3d"/>
+<circle cx="24" cy="-6" r="8.5" fill="#fff"/>
+</g>
+<circle cx="26" cy="-6" r="3.8" fill="#3a2a22"/>
+</g>
+<g transform="translate(470 800) scale(1.9)">
+<ellipse cx="0" cy="2" rx="62" ry="10" fill="#000" opacity="0.12"/>
+<path d="M-24 -144 L-78 -100" stroke="#3a2a22" stroke-width="24" stroke-linecap="round" fill="none"/>
+<path d="M-24 -144 L-78 -100" stroke="#f6c343" stroke-width="15" stroke-linecap="round" fill="none"/>
+<circle cx="-78" cy="-100" r="11" fill="#8a5a3c" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M24 -144 L40 -170" stroke="#3a2a22" stroke-width="24" stroke-linecap="round" fill="none"/>
+<path d="M24 -144 L40 -170" stroke="#f6c343" stroke-width="15" stroke-linecap="round" fill="none"/>
+<circle cx="40" cy="-170" r="11" fill="#8a5a3c" stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<g stroke="#3a2a22" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+<rect x="-28" y="-64" width="18" height="46" fill="#8a5a3c"/>
+<rect x="10" y="-64" width="18" height="46" fill="#8a5a3c"/>
+<rect x="-38" y="-24" width="32" height="24" rx="9" fill="#d6453d"/>
+<rect x="6" y="-24" width="32" height="24" rx="9" fill="#d6453d"/>
+<path d="M-30 -154 Q0 -164 30 -154 L54 -58 Q0 -44 -54 -58 Z" fill="#f6c343"/>
+<path d="M-17 -159 L0 -141 L17 -159" fill="#f6c343"/>
+<circle cx="-40" cy="-228" r="24" fill="#2a1b14"/>
+<circle cx="40" cy="-228" r="24" fill="#2a1b14"/>
+<circle cx="0" cy="-196" r="44" fill="#8a5a3c"/>
+<path d="M-44 -200 Q-46 -247 0 -245 Q46 -247 44 -200 Q34 -223 0 -223 Q-34 -223 -44 -200 Z" fill="#2a1b14"/>
+<path d="M46 -250 L66 -262 L64 -238 Z M46 -250 L30 -266 L26 -244 Z" fill="#e2483d"/><circle cx="46" cy="-250" r="6" fill="#e2483d"/>
+</g>
+<g fill="#c9851c"><circle cx="0" cy="-126" r="4.5"/><circle cx="0" cy="-104" r="4.5"/><circle cx="0" cy="-82" r="4.5"/></g>
+<ellipse cx="-15" cy="-194" rx="4.5" ry="6.5" fill="#2a1b14"/>
+<ellipse cx="15" cy="-194" rx="4.5" ry="6.5" fill="#2a1b14"/>
+<circle cx="-13" cy="-197" r="1.6" fill="#fff"/><circle cx="17" cy="-197" r="1.6" fill="#fff"/>
+<circle cx="-27" cy="-178" r="7" fill="#e58f7f" opacity="0.75"/>
+<circle cx="27" cy="-178" r="7" fill="#e58f7f" opacity="0.75"/>
+<path d="M-13 -175 Q0 -161 13 -175" fill="none" stroke="#3a2a22" stroke-width="4" stroke-linecap="round"/>
+
+</g>
+</svg>

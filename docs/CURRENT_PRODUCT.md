@@ -90,16 +90,17 @@ and ownership comes from the authenticated user rather than client-supplied user
 
 `/`, `/register`, `/login`, `/verify-email`, `/forgot-password`, `/reset-password`, `/dashboard`,
 `/dashboard/child-profiles`, `/dashboard/books/new`, `/dashboard/books/[id]`,
-`/dashboard/credits`, `/billing/success`, and `/billing/cancel`.
+`/dashboard/credits`, `/billing/success`, `/billing/cancel`, and the public `/sample-book`.
 
 The landing page leads with book creation: its primary **Create a book** link goes to
 `/dashboard/books/new`, through `/register?next=…` or `/login?next=…` when signed out, and an
 **Open my library** link goes to `/dashboard`. The links are server-rendered, so they work before
-hydration. The dashboard header links the library, **Create a book** and **Child profiles**. A
-post-authentication `next` destination is honoured only for `/dashboard` and the supported
-`/dashboard/books`, `/dashboard/child-profiles` and `/dashboard/credits` sections; anything else,
-including a stale link to a retired route, falls back to `/dashboard`
-([post-auth-destination.ts](../apps/web/src/lib/auth/post-auth-destination.ts)).
+hydration. Below them, an illustrated preview links to the public sample book
+([Public sample book](#public-sample-book)). The dashboard header links the library, **Create a
+book** and **Child profiles**. A post-authentication `next` destination is honoured only for
+`/dashboard` and the supported `/dashboard/books`, `/dashboard/child-profiles` and
+`/dashboard/credits` sections; anything else, including a stale link to a retired route, falls
+back to `/dashboard` ([post-auth-destination.ts](../apps/web/src/lib/auth/post-auth-destination.ts)).
 
 The completed-book detail screen has an authenticated in-browser reader for the published cover,
 every generated story page, and the back cover. It lazily fetches one owned published image at a
@@ -110,6 +111,46 @@ refreshes the reader from the atomically republished book. It can also request a
 quote, show the exact credit charge before confirmation, poll the durable revision, and refresh
 only after atomic publication. With developer diagnostics explicitly enabled,
 the book detail screen shows internal image asset keys and intermediate pipeline details.
+
+## Public sample book
+
+`/sample-book` lets a visitor read one complete illustrated book and download its PDF without
+signing in or running the API. It shows a cover, four story pages and a back cover of _Juno and
+the Runaway Kite_, a short English story for ages 4 to 7 with a fictional protagonist.
+
+- **Curated, not generated.** The story and its six cartoon SVG illustrations were written and
+  drawn by hand for this sample. They are not StoryMe pipeline output, and the page, the landing
+  preview and the PDF back cover all say so. No child photo or personal data is involved.
+- **One canonical fixture.** [sample-book.json](../apps/web/src/sample-book/sample-book.json)
+  holds the title, page text, illustration alternatives and asset paths. The page renders it
+  directly and the PDF generator reads the same file. Assets live in
+  [apps/web/public/sample-book/](../apps/web/public/sample-book/).
+- **Static and API-free.** The route is prerendered and needs no JavaScript: the story is one
+  sequential page with anchor navigation (contents plus previous/next links). It fetches no
+  books, diagnostics, estimates or protected assets, adds no API endpoint and does not use the
+  authenticated reader. The root AuthProvider still attempts its usual session restore; when the
+  API is unavailable that request fails without affecting the sample.
+- **Bundled PDF.** `apps/web/public/sample-book/juno-and-the-runaway-kite.pdf` (six square
+  8-inch pages) is built offline by the API package's production PDFKit renderer, with the SVGs
+  rasterized by sharp and Noto Sans embedded. Regenerate it after changing the fixture or an
+  illustration:
+
+  ```text
+  pnpm --filter @book/api render:sample-book
+  ```
+
+  The generator ([render-sample-book.ts](../apps/api/scripts/render-sample-book.ts)) needs no
+  database, Redis, credentials or provider calls, and is not part of the Next.js build. It fails
+  if an illustration is missing or any text would need shrinking to fit. It records a SHA-256
+  fingerprint of the fixture and SVGs in the PDF's Keywords entry, and
+  [sample-book-pdf.spec.ts](../apps/api/scripts/sample-book-pdf.spec.ts) fails when the bundled
+  PDF no longer matches them. Output is byte-identical for unchanged inputs.
+
+- **Tests.** Web unit tests cover the page and the landing preview.
+  [sample-book.production.spec.ts](../apps/web/e2e-production/sample-book.production.spec.ts)
+  checks the landing link, the full story, the illustrations, anchor navigation and the PDF
+  download at 320px, 390px and desktop widths, once with JavaScript disabled and once with
+  JavaScript on and every API request blocked.
 
 ## Providers and storage
 

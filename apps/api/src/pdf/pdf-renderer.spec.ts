@@ -654,3 +654,33 @@ describe('renderStorybookPdf page-number footer regression', () => {
     expect(countPdfPages(buf)).toBe(1);
   });
 });
+
+/** Reads a document-information string; PDFKit stores each value as an indirect object. */
+function readInfoString(raw: string, key: string): string | undefined {
+  const ref = new RegExp(`/${key} (\\d+) 0 R`).exec(raw);
+  if (!ref) return undefined;
+  return new RegExp(`\\n${ref[1]} 0 obj\\n\\((.*)\\)\\nendobj`).exec(raw)?.[1];
+}
+
+describe('renderStorybookPdf document information', () => {
+  it('keeps the default document information when no extra entries are given', async () => {
+    const raw = (await renderStorybookPdf(makeLayout([makeCoverEntry()]))).toString('latin1');
+
+    expect(readInfoString(raw, 'Title')).toBe('Test Book');
+    expect(readInfoString(raw, 'Creator')).toBe('StoryMe PDF Renderer');
+    expect(readInfoString(raw, 'Keywords')).toBeUndefined();
+    expect(readInfoString(raw, 'Subject')).toBeUndefined();
+  });
+
+  it('adds optional Subject and Keywords entries without replacing the defaults', async () => {
+    const buf = await renderStorybookPdf(makeLayout([makeCoverEntry()]), {
+      documentInfo: { Subject: 'A curated sample', Keywords: 'fixture-sha256:abc123' },
+    });
+    const raw = buf.toString('latin1');
+
+    expect(readInfoString(raw, 'Subject')).toBe('A curated sample');
+    expect(readInfoString(raw, 'Keywords')).toBe('fixture-sha256:abc123');
+    expect(readInfoString(raw, 'Title')).toBe('Test Book');
+    expect(countPdfPages(buf)).toBe(1);
+  });
+});

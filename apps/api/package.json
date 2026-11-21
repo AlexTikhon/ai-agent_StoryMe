@@ -26,6 +26,7 @@
     "prisma:migrate:status": "prisma migrate status",
     "prisma:studio": "prisma studio",
     "render:pdf": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/render-pdf.ts",
+    "render:sample-book": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/render-sample-book.ts",
     "smoke:cloud-storage": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/smoke-cloud-artifact-storage.ts",
     "smoke:pdf-storage": "pnpm smoke:cloud-storage",
     "smoke:real-generation": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/smoke-real-generation.ts",

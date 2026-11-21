@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import HomePage from './page';
 import { useAuth } from '@/lib/auth/auth-context';
+import { SAMPLE_BOOK } from '@/sample-book/sample-book';
 
 vi.mock('@/lib/auth/auth-context', () => ({
   useAuth: vi.fn(),
@@ -69,6 +70,20 @@ describe('HomePage', () => {
     expect(text).toMatch(/cannot catch everything/i);
     expect(text).toMatch(/rather than reproducing your child.s likeness/i);
   });
+
+  it.each(['anon', 'loading', 'authed'] as const)(
+    'links to the public sample book with an illustrated preview (%s)',
+    (status) => {
+      mockAuth(status);
+      render(<HomePage />);
+      expect(linkHref(/^read a sample book$/i)).toBe('/sample-book');
+      expect(screen.getByRole('heading', { level: 2, name: SAMPLE_BOOK.title })).toBeDefined();
+      const cover = screen.getByRole('img', { name: SAMPLE_BOOK.cover.illustration.alt });
+      expect(cover.getAttribute('src')).toBe('/sample-book/cover.svg');
+      // The preview is honest about its provenance.
+      expect(screen.getByText(/curated fictional sample/i)).toBeDefined();
+    },
+  );
 
   describe('when unauthenticated', () => {
     it.each(['anon', 'loading'] as const)(

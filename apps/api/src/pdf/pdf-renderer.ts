@@ -152,9 +152,16 @@ export type ImageBufferResolver = (
   entry: BookLayoutEntry,
 ) => Buffer | undefined;
 
+/** Optional extra PDF document-information entries (ASCII text recommended). */
+export interface PdfDocumentInfo {
+  Subject?: string;
+  Keywords?: string;
+}
+
 export interface RenderStorybookPdfOptions {
   resolveImageBuffer?: ImageBufferResolver;
   strict?: boolean;
+  documentInfo?: PdfDocumentInfo;
 }
 
 function renderImagePlaceholder(
@@ -346,6 +353,7 @@ export function renderStorybookPdf(
         Author: layout.metadata.childName,
         Creator: 'StoryMe PDF Renderer',
         CreationDate: new Date(0),
+        ...options?.documentInfo,
       },
     });
 
