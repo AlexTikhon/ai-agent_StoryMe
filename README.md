@@ -1,23 +1,24 @@
 # StoryMe
 
-StoryMe is a pnpm/Turborepo monorepo with two supported products:
+StoryMe creates personalized children's illustrated books. A parent enters a
+child's name and age (1–12), a theme, a language (English, Russian or Polish)
+and, optionally, a lesson and a reference photo. A durable queued pipeline
+(PostgreSQL, outbox, BullMQ/Redis worker) writes an age-appropriate story of
+4–12 pages with the child as the hero, illustrates every page in a cartoon
+storybook style, and publishes it to an authenticated in-browser reader and a
+downloadable PDF. Generation supports cancellation and retry, a completed book
+can have a page's text corrected or one page's illustration regenerated, and a
+published edition survives a failed regeneration. Books can be permanently
+deleted.
 
-- **Interactive illustrated stories.** A signed-in reader plays a branching
-  detective story in the browser: each choice is validated and applied by a
-  deterministic, versioned engine; progress is stored per account and can be
-  resumed after a reload; scenes are accompanied by local SVG artwork. One
-  scenario, "The Last Delivery", is published. A separate offline authoring
-  workflow can draft further scenarios with a model, validates them
-  mechanically, and stops at review artifacts: nothing is published without a
-  human decision recorded in source control. No language model runs during play.
-- **Personalized children's books.** Fill in a child's name, age, language and
-  a theme; a durable queued pipeline (PostgreSQL, outbox, BullMQ/Redis worker)
-  produces a short illustrated story and a downloadable PDF, with retry,
-  cancellation and a published edition that survives a failed regeneration.
+That is the whole product. A separate branching detective-story reader and its
+offline scenario-authoring tools were retired in November 2026; see
+[What was retired](docs/CURRENT_PRODUCT.md#retired-interactive-stories).
 
 Development is paused. **[docs/PAUSE_HANDOFF.md](docs/PAUSE_HANDOFF.md)** records
 the 2026-11-05 outbox hardening, architecture review, verification and restart steps.
-[PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md) preserves the earlier closeout evidence.
+[PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md) preserves the earlier closeout evidence;
+both predate the retirement and describe the repository as it was then.
 
 ## Run the demo
 
@@ -36,8 +37,6 @@ containers and synthetic data on Ctrl+C. `demo:capture` writes to the ignored
 
 - [Local demo](docs/local-demo.md): the one-command demo and the manual setup.
 - [Showcase capture](docs/demo-showcase.md): output, checks and a recording script.
-- [Interactive demo](docs/interactive-demo.md): the reader and the offline
-  authoring workflow (Windows PowerShell).
 - [Recovery demo](docs/recovery-demo.md): a browser journey through a provider
   failure, a retry and a cancellation.
 
@@ -47,7 +46,7 @@ working, not real-model quality.
 ## Verify
 
 ```bash
-pnpm verify:local --profile offline       # lint, typecheck, unit tests, offline evals
+pnpm verify:local --profile offline       # lint, typecheck, unit tests, offline story eval
 pnpm verify:local --profile integration   # API integration suite on disposable PostgreSQL/Redis
 pnpm verify:local --profile browser       # browser journeys + recovery journey
 ```
@@ -61,14 +60,11 @@ are not part of `verify:local`; the production browser smoke is
 [local-verification.md](docs/local-verification.md) and the exact commands in
 [PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md#reproduce).
 
-## Engineering case studies
+## Engineering case study
 
-Each claim links to the code and tests behind it:
-
-- [Book generation pipeline](docs/generation-case-study.md): scheduling and the
-  outbox, fencing, checkpoints and reuse, publication, provider budgets.
-- [Interactive stories](docs/interactive-case-study.md): the engine, lost-response
-  recovery, bounded authoring and the human approval boundary.
+[Book generation pipeline](docs/generation-case-study.md): scheduling and the
+outbox, fencing, checkpoints and reuse, publication, provider budgets. Each claim
+links to the code and tests behind it.
 
 ## Documentation
 
@@ -77,8 +73,6 @@ Each claim links to the code and tests behind it:
   [implemented/unimplemented boundary](docs/CURRENT_PRODUCT.md#implemented-and-unimplemented).
 - Implementation notes: [generation pipeline](apps/api/docs/local-generation-pipeline.md),
   [credits and billing](apps/api/docs/credits.md), [PDF rendering](apps/api/docs/pdf-rendering.md),
-  [interactive engine](apps/api/docs/interactive-engine.md),
-  [interactive authoring](apps/api/docs/interactive-authoring.md),
   [auth](docs/auth-architecture.md), [privacy and local data](docs/LOCAL_DATA_AND_PRIVACY.md).
 - Deployment notes, not verified by the closeout:
   [deployment-readiness.md](docs/deployment-readiness.md),
@@ -88,7 +82,8 @@ Each claim links to the code and tests behind it:
   [architecture](ARCHITECTURE.md), [backend](BACKEND_DESIGN.md) and
   [frontend](FRONTEND_DESIGN.md) designs, [UX specification](UX_SPEC.md),
   [design system](DESIGN_SYSTEM.md) and [roadmap](ROADMAP.md) are historical
-  references, not implementation contracts.
+  references, not implementation contracts. Where they propose other formats
+  (audio, video, games, print, branching stories), those ideas are out of scope.
 
 ## Environment
 
@@ -116,9 +111,11 @@ Copy `.env.example` to `apps/api/.env` for manual runs
 
 ## Current limitations
 
-- Every demonstration and verification used mock providers. Real-model story,
-  image and authoring quality, error rates and cost are unmeasured; no paid
-  experiment has been run.
+- Every demonstration and verification used mock providers. Real-model story
+  and image quality, error rates and cost are unmeasured; no paid experiment has
+  been run.
+- Automated checks are structural and heuristic. They do not establish
+  comprehensive content safety, photo likeness or visual consistency.
 - No deployment is verified. A local production build and smoke test is not
   deployment evidence.
 - Recovery from a real worker crash, Redis loss or database outage is not
@@ -126,7 +123,9 @@ Copy `.env.example` to `apps/api/.env` for manual runs
   tests only.
 - Generation diagnostics mix the published edition and the newest run
   ([details](docs/recovery-demo.md#published-diagnostics-vs-current-run-telemetry)).
-- One interactive scenario is published; the others are unapproved fixtures.
+- The Prisma schema still defines the retired `InteractiveSession`/`SessionEvent`
+  storage so existing rows and migration history are preserved; nothing uses it
+  ([details](docs/CURRENT_PRODUCT.md#retired-interactive-stories)).
 
 The full list is in [PROJECT_CLOSEOUT.md](docs/PROJECT_CLOSEOUT.md#known-limitations).
 

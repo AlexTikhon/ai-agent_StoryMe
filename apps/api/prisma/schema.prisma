@@ -981,10 +981,13 @@ model Notification {
 }
 
 // ═══════════════════════════════════════════
-// INTERACTIVE STORY ENGINE (v2, Phase 1)
+// RETIRED: INTERACTIVE STORY STORAGE
 // ═══════════════════════════════════════════
-// Independent from the book pipeline: no GenerationRun, outbox, queue or claim
-// is involved. See apps/api/docs/interactive-engine.md.
+// The branching-story product was retired in November 2026. These two models
+// are kept only so the existing tables, their rows and the migration history
+// stay intact (no destructive migration). No application code, script or test
+// reads or writes them; rows are still removed with their owner through the
+// User cascade. See docs/CURRENT_PRODUCT.md#retired-interactive-stories.
 
 // One playthrough of a versioned scenario. `scenarioId` + `scenarioVersion` pin
 // the definition for the life of the session. `state` is the validated

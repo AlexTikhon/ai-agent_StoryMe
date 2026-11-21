@@ -66,8 +66,6 @@ export const PROFILES = Object.freeze({
       pnpmStep('API script typecheck', ['--filter', '@book/api', 'typecheck:scripts']),
       pnpmStep('Tests', ['test']),
       pnpmStep('Story offline eval', ['eval:story:offline']),
-      pnpmStep('Interactive offline eval', ['eval:interactive:offline']),
-      pnpmStep('Authoring offline eval', ['eval:interactive:authoring:offline']),
     ],
     cleanup: [],
     outOfScope: [
@@ -113,7 +111,6 @@ export const PROFILES = Object.freeze({
           '@book/web',
           'test:e2e',
           'e2e/storyme.smoke.spec.ts',
-          'e2e/interactive.spec.ts',
         ]),
         startsServers: true,
       },
@@ -137,7 +134,7 @@ export const PROFILES = Object.freeze({
       },
     ],
     outOfScope: [
-      'Playwright specs other than storyme.smoke, interactive and storyme.recovery, and browsers other than Chromium',
+      'Playwright specs other than storyme.smoke and storyme.recovery, and browsers other than Chromium',
       'lint, typecheck, unit tests, offline evals: run --profile offline',
       'API integration suite: run --profile integration',
       NOT_IN_THIS_STEP,

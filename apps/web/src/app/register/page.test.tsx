@@ -130,24 +130,29 @@ describe('RegisterPage', () => {
 
   it('redirects to the validated ?next= destination after registering', async () => {
     registerMock.mockResolvedValueOnce(undefined);
-    searchWith('next=/dashboard/interactive');
+    searchWith('next=/dashboard/books/new');
     await fillAndSubmit();
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith('/dashboard/interactive');
+      expect(pushMock).toHaveBeenCalledWith('/dashboard/books/new');
     });
   });
 
-  it.each(['https://evil.example/dashboard', '//evil.example', '/login', '/dashboard/../login'])(
-    'falls back to /dashboard for the unsafe ?next=%s',
-    async (next) => {
-      registerMock.mockResolvedValueOnce(undefined);
-      searchWith(new URLSearchParams({ next }).toString());
-      await fillAndSubmit();
-      await waitFor(() => {
-        expect(pushMock).toHaveBeenCalledWith('/dashboard');
-      });
-    },
-  );
+  it.each([
+    'https://evil.example/dashboard',
+    '//evil.example',
+    '/login',
+    '/dashboard/../login',
+    // Stale destinations of the retired interactive reader.
+    '/dashboard/interactive',
+    '/dashboard/interactive/3f2b1c9a-0000-4000-8000-000000000000/transcript',
+  ])('falls back to /dashboard for the unsafe ?next=%s', async (next) => {
+    registerMock.mockResolvedValueOnce(undefined);
+    searchWith(new URLSearchParams({ next }).toString());
+    await fillAndSubmit();
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/dashboard');
+    });
+  });
 
   it('redirects an already-authenticated visitor to the validated ?next= path', () => {
     vi.mocked(useAuth).mockReturnValue({
@@ -159,16 +164,16 @@ describe('RegisterPage', () => {
       logout: vi.fn(),
       retrySession: vi.fn(),
     });
-    searchWith('next=/dashboard/interactive');
+    searchWith('next=/dashboard/books/new');
     render(<RegisterPage />);
-    expect(replaceMock).toHaveBeenCalledWith('/dashboard/interactive');
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard/books/new');
   });
 
   it('preserves a valid ?next= destination on the sign-in link', () => {
-    searchWith('next=/dashboard/interactive');
+    searchWith('next=/dashboard/books/new');
     render(<RegisterPage />);
     expect(screen.getByRole('link', { name: /sign in/i }).getAttribute('href')).toBe(
-      '/login?next=%2Fdashboard%2Finteractive',
+      '/login?next=%2Fdashboard%2Fbooks%2Fnew',
     );
   });
 

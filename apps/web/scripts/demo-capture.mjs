@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Captures reproducible synthetic showcase materials (EN/RU/PL books, their
-// downloaded PDFs, product screenshots, an interactive playthrough) from an
+// Captures reproducible synthetic showcase materials (the landing page, EN/RU/PL
+// books, their downloaded PDFs, product screenshots) from an
 // already running `pnpm demo:local`. It is only a browser client: it never
 // migrates, seeds, restarts, or tears down anything. See docs/demo-showcase.md.
 import { spawnSync } from 'node:child_process';
@@ -54,19 +54,16 @@ export const SHOWCASE_BOOKS = Object.freeze([
   },
 ]);
 
-/** The published scenario and the exact route the interactive E2E suite already plays. */
-export const INTERACTIVE_ROUTE = Object.freeze({
-  scenarioId: 'warsaw-last-delivery',
-  catalogueTitle: 'The Last Delivery',
-  openingScene: 'Praga courtyard',
-  beforeReload: [{ choice: 'Ask the caretaker where Tomasz is', scene: "The caretaker's broom" }],
-  afterReload: [
-    { choice: 'Climb to the fourth floor', scene: 'Flat 4' },
-    { choice: 'Use the single-use entry card on the lock', scene: 'Inside flat 4' },
-    { choice: 'Take the service stairs down to the cellar', scene: 'The cellar workshop' },
-    { choice: 'Carry the original ledger up and confront Ines', scene: 'The ledger exposed' },
-  ],
-  ending: 'The Ledger Exposed',
+/** The anonymous landing-page primary CTA: create a book, destination preserved through auth. */
+export const LANDING_CTA = Object.freeze({
+  name: 'Create a book',
+  href: '/register?next=%2Fdashboard%2Fbooks%2Fnew',
+});
+
+/** Web and API routes of the retired interactive product; each must answer 404. */
+export const RETIRED_ROUTES = Object.freeze({
+  web: ['/dashboard/interactive'],
+  api: ['/interactive/scenarios'],
 });
 
 export class CaptureFailure extends Error {
@@ -278,6 +275,27 @@ export async function captureShowcase({ dir, record, log = console.log }) {
       else await page.screenshot({ path, fullPage: options.fullPage ?? false });
     };
 
+    record.step('landing');
+    log('Capturing the landing page...');
+    await page.goto('/');
+    await page.getByRole('heading', { level: 1, name: 'StoryMe' }).waitFor();
+    const ctaHref = await page
+      .getByRole('link', { name: LANDING_CTA.name, exact: true })
+      .getAttribute('href');
+    record.validate({
+      name: 'landing-create-book-cta',
+      passed: ctaHref === LANDING_CTA.href,
+      detail: `"${LANDING_CTA.name}" -> ${ctaHref}`,
+    });
+    await failOnAlert(page.locator('main'), 'landing page');
+    const landing = record.landing({ cta: LANDING_CTA });
+    await shoot('landing-desktop', { fullPage: true });
+    landing.screenshots.push('screenshots/landing-desktop.png');
+    await page.setViewportSize(VIEWPORTS.mobile);
+    await shoot('landing-mobile', { fullPage: true });
+    landing.screenshots.push('screenshots/landing-mobile.png');
+    await page.setViewportSize(VIEWPORTS.desktop);
+
     record.step('sign-in');
     await page.goto('/login');
     await page.getByLabel('Email').fill(DEMO.loginEmail);
@@ -444,81 +462,23 @@ export async function captureShowcase({ dir, record, log = console.log }) {
       }
     }
 
-    record.step('interactive:start');
-    log('Playing the published interactive story...');
-    const creations = [];
-    page.on('request', (request) => {
-      if (request.method() === 'POST' && request.url() === apiPath('/interactive/sessions')) {
-        creations.push(request.url());
-      }
-    });
-    const catalogueResponse = page.waitForResponse(
-      (r) => r.url() === apiPath('/interactive/scenarios'),
-    );
-    await page.goto('/dashboard/interactive');
-    const catalogue = await (await catalogueResponse).json();
-    const entry = catalogue.scenarios.find((s) => s.scenarioId === INTERACTIVE_ROUTE.scenarioId);
-    if (!entry) throw new CaptureFailure('The published scenario is not in the catalogue.');
-    const created = page.waitForResponse(
-      (r) => r.url() === apiPath('/interactive/sessions') && r.request().method() === 'POST',
-    );
-    await page.getByRole('button', { name: `Start story: ${entry.title}` }).click();
-    const session = await (await created).json();
-    await page.waitForURL(new RegExp(`/dashboard/interactive/${session.sessionId}$`));
-    const interactive = record.interactive({
-      sessionId: session.sessionId,
-      scenarioId: session.scenarioId,
-      scenarioVersion: session.scenarioVersion,
-      title: entry.title,
-      route: [...INTERACTIVE_ROUTE.beforeReload, ...INTERACTIVE_ROUTE.afterReload].map(
-        (s) => s.choice,
-      ),
-    });
-    const scene = (title) => page.getByRole('heading', { name: title, exact: true });
-    const sceneArt = () => page.locator('article figure img').first();
-    await scene(INTERACTIVE_ROUTE.openingScene).waitFor();
-
-    for (const { choice, scene: next } of INTERACTIVE_ROUTE.beforeReload) {
-      await page.getByRole('button', { name: choice, exact: true }).click();
-      await scene(next).waitFor();
+    record.step('retired-routes');
+    for (const path of RETIRED_ROUTES.web) {
+      const status = (await page.request.get(path)).status();
+      record.validate({
+        name: `retired-web-route-unavailable:${path}`,
+        passed: status === 404,
+        detail: `GET ${path} -> ${status}`,
+      });
     }
-    await waitForDecoded(sceneArt());
-    await failOnAlert(page.locator('article'), 'interactive scene');
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await shoot('interactive-play-desktop', { fullPage: true });
-    interactive.screenshots.push('screenshots/interactive-play-desktop.png');
-
-    record.step('interactive:reload');
-    const sceneBeforeReload = INTERACTIVE_ROUTE.beforeReload.at(-1).scene;
-    await page.reload();
-    await scene(sceneBeforeReload).waitFor();
-    const resumed =
-      new URL(page.url()).pathname.endsWith(`/${session.sessionId}`) && creations.length === 1;
-    record.validate({
-      name: 'interactive-reload-resumes-session',
-      passed: resumed,
-      detail: `scene "${sceneBeforeReload}" after reload, ${creations.length} creation request(s)`,
-    });
-    if (!resumed) throw new CaptureFailure('Reload did not resume the same interactive session.');
-
-    record.step('interactive:ending');
-    for (const { choice, scene: next } of INTERACTIVE_ROUTE.afterReload) {
-      await page.getByRole('button', { name: choice, exact: true }).click();
-      await scene(next).waitFor();
+    for (const path of RETIRED_ROUTES.api) {
+      const status = (await page.request.get(apiPath(path), authorized)).status();
+      record.validate({
+        name: `retired-api-route-unavailable:${path}`,
+        passed: status === 404,
+        detail: `GET /api${path} -> ${status}`,
+      });
     }
-    const ending = page.getByRole('heading', { name: INTERACTIVE_ROUTE.ending, exact: true });
-    await ending.waitFor();
-    await waitForDecoded(sceneArt());
-    await failOnAlert(page.locator('article'), 'interactive ending');
-    interactive.ending = INTERACTIVE_ROUTE.ending;
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await shoot('interactive-ending-desktop', { fullPage: true });
-    interactive.screenshots.push('screenshots/interactive-ending-desktop.png');
-    record.validate({
-      name: 'interactive-ending-reached',
-      passed: creations.length === 1,
-      detail: `ending "${INTERACTIVE_ROUTE.ending}" in session ${session.sessionId}`,
-    });
 
     await context.close();
   } finally {
@@ -530,12 +490,12 @@ export async function captureShowcase({ dir, record, log = console.log }) {
 
 export function createRecorder(base) {
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ...base,
     status: 'incomplete',
     lastStep: null,
     books: [],
-    interactive: null,
+    landing: null,
     validations: [],
     artifacts: [],
   };
@@ -554,9 +514,9 @@ export function createRecorder(base) {
       manifest.books.push(book);
       return book;
     },
-    interactive(entry) {
-      manifest.interactive = { ...entry, screenshots: [] };
-      return manifest.interactive;
+    landing(entry) {
+      manifest.landing = { ...entry, screenshots: [] };
+      return manifest.landing;
     },
   };
 }
@@ -597,7 +557,6 @@ async function main() {
         pageCount: PAGE_COUNT,
       })),
       photos: 'none',
-      interactiveScenario: INTERACTIVE_ROUTE.scenarioId,
     },
   });
 

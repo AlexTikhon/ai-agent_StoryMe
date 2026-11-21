@@ -501,6 +501,111 @@ test('permanently deletes a synthetic published book and denies every captured a
   await expect(page.locator(`a[href="/dashboard/books/${bookId}"]`)).toHaveCount(0);
 });
 
+test.describe("children's-book entry journey", () => {
+  const retiredSessionId = '3f2b1c9a-0000-4000-8000-000000000000';
+
+  test('carries the landing-page "Create a book" CTA from before hydration through login to the wizard', async ({
+    browser,
+    page,
+  }) => {
+    // Before hydration: with JavaScript disabled the server-rendered CTA must
+    // already be a working link that carries the book-creation destination.
+    const noScript = await browser.newContext({ javaScriptEnabled: false });
+    try {
+      const anon = await noScript.newPage();
+      await anon.goto('/');
+      const cta = anon.getByRole('link', { name: 'Create a book', exact: true });
+      await expect(cta).toHaveAttribute('href', '/register?next=%2Fdashboard%2Fbooks%2Fnew');
+      await expect(anon.getByRole('link', { name: 'Open my library' })).toHaveAttribute(
+        'href',
+        '/dashboard',
+      );
+      await cta.click();
+      await expect(anon).toHaveURL(/\/register\?next=%2Fdashboard%2Fbooks%2Fnew$/);
+    } finally {
+      await noScript.close();
+    }
+
+    // After hydration: an existing account follows the same destination via sign-in.
+    await page.goto('/register?next=%2Fdashboard%2Fbooks%2Fnew');
+    await page.getByRole('link', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL(/\/login\?next=%2Fdashboard%2Fbooks%2Fnew$/);
+    await page.getByLabel('Email').fill(loginEmail);
+    await page.getByLabel('Password').fill(password);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL(/\/dashboard\/books\/new$/);
+    await expect(page.getByRole('heading', { name: 'New Book', level: 1 })).toBeVisible();
+    await expect(
+      page.getByRole('navigation', { name: 'Dashboard' }).locator('[aria-current="page"]'),
+    ).toHaveText(['Create a book']);
+
+    // Signed in, the landing page upgrades the CTA to the wizard itself.
+    await page.goto('/');
+    await expect(page.getByRole('link', { name: 'Create a book', exact: true })).toHaveAttribute(
+      'href',
+      '/dashboard/books/new',
+    );
+  });
+
+  test('resolves a stale retired post-auth destination to the library', async ({ page }) => {
+    await page.goto(`/login?next=${encodeURIComponent('/dashboard/interactive')}`);
+    // The stale destination is not carried onto the register link either.
+    await expect(page.getByRole('link', { name: /register/i })).toHaveAttribute(
+      'href',
+      '/register',
+    );
+    await page.getByLabel('Email').fill(loginEmail);
+    await page.getByLabel('Password').fill(password);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByRole('heading', { name: 'My Book Drafts' })).toBeVisible();
+  });
+
+  test('no longer serves the retired interactive web routes, artwork or API', async ({ page }) => {
+    const token = await login(page);
+
+    for (const path of [
+      '/dashboard/interactive',
+      `/dashboard/interactive/${retiredSessionId}`,
+      `/dashboard/interactive/${retiredSessionId}/transcript`,
+      '/interactive/warsaw-noir/v1/s-door.svg',
+    ]) {
+      const response = await page.request.get(path);
+      expect(response.status(), path).toBe(404);
+    }
+
+    const auth = { Authorization: `Bearer ${token}` };
+    const reads = [
+      '/interactive/scenarios',
+      '/interactive/sessions',
+      `/interactive/sessions/${retiredSessionId}`,
+      `/interactive/sessions/${retiredSessionId}/transcript`,
+    ];
+    for (const path of reads) {
+      const response = await page.request.get(`${apiBaseUrl}${path}`, { headers: auth });
+      expect(response.status(), `GET ${path}`).toBe(404);
+    }
+    const create = await page.request.post(`${apiBaseUrl}/interactive/sessions`, {
+      headers: auth,
+      data: { scenarioId: 'warsaw-last-delivery', idempotencyKey: retiredSessionId },
+    });
+    expect(create.status(), 'POST /interactive/sessions').toBe(404);
+    const choice = await page.request.post(
+      `${apiBaseUrl}/interactive/sessions/${retiredSessionId}/choices`,
+      { headers: auth, data: { choiceId: 'c', expectedRevision: 0, idempotencyKey: 'k' } },
+    );
+    expect(choice.status(), 'POST /interactive/sessions/:id/choices').toBe(404);
+    const removal = await page.request.delete(
+      `${apiBaseUrl}/interactive/sessions/${retiredSessionId}`,
+      { headers: auth },
+    );
+    expect(removal.status(), 'DELETE /interactive/sessions/:id').toBe(404);
+
+    // The supported book API on the same server is still served.
+    expect((await page.request.get(`${apiBaseUrl}/books`, { headers: auth })).status()).toBe(200);
+  });
+});
+
 test.describe('dashboard navigation', () => {
   const nav = (page: Page) => page.getByRole('navigation', { name: 'Dashboard' });
   const content = (page: Page) => page.locator('#dashboard-content');
@@ -510,7 +615,7 @@ test.describe('dashboard navigation', () => {
     await expect(nav(page).locator('[aria-current="page"]')).toHaveText([name]);
   }
 
-  test('moves between books, child profiles and interactive stories with the current section marked', async ({
+  test('moves between the library, book creation and child profiles with the current section marked', async ({
     page,
   }) => {
     await login(page);
@@ -521,17 +626,18 @@ test.describe('dashboard navigation', () => {
     await expect(page.getByRole('heading', { name: 'Child profiles', level: 1 })).toBeVisible();
     await expectCurrentSection(page, 'Child profiles');
 
-    await nav(page).getByRole('link', { name: 'Interactive story' }).click();
-    await expect(page).toHaveURL(/\/dashboard\/interactive$/);
-    await expect(page.getByRole('heading', { name: 'Choose a story' })).toBeVisible();
-    await expectCurrentSection(page, 'Interactive story');
+    await nav(page).getByRole('link', { name: 'Create a book' }).click();
+    await expect(page).toHaveURL(/\/dashboard\/books\/new$/);
+    await expect(page.getByRole('heading', { name: 'New Book', level: 1 })).toBeVisible();
+    await expectCurrentSection(page, 'Create a book');
+    await expect(nav(page).getByRole('link', { name: /interactive/i })).toHaveCount(0);
 
     await nav(page).getByRole('link', { name: 'Family library' }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
     await expect(page.getByRole('heading', { name: 'My Book Drafts' })).toBeVisible();
     await page.getByRole('link', { name: 'New Book' }).click();
     await expect(page).toHaveURL(/\/dashboard\/books\/new$/);
-    await expectCurrentSection(page, 'Family library');
+    await expectCurrentSection(page, 'Create a book');
 
     await page.goto('/dashboard/credits');
     await expect(nav(page)).toBeVisible();
@@ -571,6 +677,8 @@ test.describe('dashboard navigation', () => {
     await page.keyboard.press('Tab');
     await expect(nav(page).getByRole('link', { name: 'Family library' })).toBeFocused();
     await page.keyboard.press('Tab');
+    await expect(nav(page).getByRole('link', { name: 'Create a book' })).toBeFocused();
+    await page.keyboard.press('Tab');
     const profilesLink = nav(page).getByRole('link', { name: 'Child profiles' });
     await expect(profilesLink).toBeFocused();
     expect(await profilesLink.evaluate((link) => getComputedStyle(link).boxShadow !== 'none')).toBe(
@@ -595,7 +703,7 @@ test.describe('dashboard navigation', () => {
 
     for (const width of [320, 390, 1280]) {
       await page.setViewportSize({ width, height: 800 });
-      for (const path of ['/dashboard', '/dashboard/interactive']) {
+      for (const path of ['/dashboard', '/dashboard/books/new']) {
         await page.goto(path);
         const header = page.getByRole('banner');
         await expect(header.getByText(email)).toBeVisible();

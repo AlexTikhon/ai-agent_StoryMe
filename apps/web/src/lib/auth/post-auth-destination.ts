@@ -1,5 +1,6 @@
 export const DEFAULT_POST_AUTH_DESTINATION = '/dashboard';
-export const INTERACTIVE_CATALOGUE_PATH = '/dashboard/interactive';
+/** The personalized children's-book wizard: the product's primary entry point. */
+export const BOOK_CREATION_PATH = '/dashboard/books/new';
 
 const MAX_DESTINATION_LENGTH = 512;
 // Placeholder origin used only to normalise relative paths; never navigated to.
@@ -10,9 +11,29 @@ const PARSE_BASE = 'http://storyme.invalid';
 const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f\\]/;
 
 /**
+ * Dashboard sections that exist in this build. A destination must be the
+ * library itself or sit inside one of these, so a stale link to a retired or
+ * unknown section (for example the removed `/dashboard/interactive` reader)
+ * lands on the library instead of a 404.
+ */
+const SUPPORTED_DASHBOARD_SECTIONS = [
+  '/dashboard/books',
+  '/dashboard/child-profiles',
+  '/dashboard/credits',
+] as const;
+
+function isSupportedDashboardPath(pathname: string): boolean {
+  if (pathname === DEFAULT_POST_AUTH_DESTINATION) return true;
+  return SUPPORTED_DASHBOARD_SECTIONS.some(
+    (section) => pathname === section || pathname.startsWith(`${section}/`),
+  );
+}
+
+/**
  * Resolves a user-supplied post-authentication destination to a safe internal
- * dashboard path. Anything absent, external, protocol-relative, malformed or
- * that normalises outside /dashboard falls back to /dashboard.
+ * dashboard path. Anything absent, external, protocol-relative, malformed,
+ * outside /dashboard or outside a supported dashboard section falls back to
+ * /dashboard.
  */
 export function resolvePostAuthDestination(raw: string | null | undefined): string {
   if (!raw || raw.length > MAX_DESTINATION_LENGTH) return DEFAULT_POST_AUTH_DESTINATION;
@@ -27,10 +48,9 @@ export function resolvePostAuthDestination(raw: string | null | undefined): stri
     return DEFAULT_POST_AUTH_DESTINATION;
   }
 
-  const insideDashboard =
-    url.origin === PARSE_BASE &&
-    (url.pathname === '/dashboard' || url.pathname.startsWith('/dashboard/'));
-  if (!insideDashboard) return DEFAULT_POST_AUTH_DESTINATION;
+  if (url.origin !== PARSE_BASE || !isSupportedDashboardPath(url.pathname)) {
+    return DEFAULT_POST_AUTH_DESTINATION;
+  }
 
   const resolved = `${url.pathname}${url.search}`;
   return resolved.length > MAX_DESTINATION_LENGTH ? DEFAULT_POST_AUTH_DESTINATION : resolved;

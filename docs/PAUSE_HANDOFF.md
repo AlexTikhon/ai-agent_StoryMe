@@ -1,5 +1,10 @@
 # StoryMe pause handoff — 2026-11-05
 
+> **Product scope changed afterwards (November 2026):** StoryMe now creates only personalized
+> children's illustrated books. The interactive-story product mentioned below was retired; see
+> [CURRENT_PRODUCT.md](CURRENT_PRODUCT.md#retired-interactive-stories). This record is kept as
+> written and describes the repository at the time.
+
 Development is paused after four additional local commits on `main`, based on
 `5d1a7f5`. No push, deployment, paid provider run or scenario publication was
 performed. This remains a local mock-provider/private-pilot candidate.

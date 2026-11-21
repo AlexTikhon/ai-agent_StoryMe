@@ -7,9 +7,9 @@ executed runs are in [section 8](#8-evidence-and-limitations).
 
 A parent enters a child's name, age, language (`en`, `ru`, `pl`), theme and page count; a
 queued pipeline produces a character, story, illustrations, layout and PDF. The work calls
-paid providers, can take minutes, and can fail part-way. The
-[interactive stories](interactive-case-study.md) are the opposite: a deterministic engine
-applies each choice within one request, with no queue, worker or provider at runtime.
+paid providers, can take minutes, and can fail part-way. StoryMe creates only these
+personalized children's books; an earlier branching-story reader was retired in November 2026
+([details](CURRENT_PRODUCT.md#retired-interactive-stories)).
 
 The backend is one NestJS modular monolith with two entrypoints:
 [main.ts](../apps/api/src/main.ts) serves HTTP; [worker.ts](../apps/api/src/worker.ts) boots the
@@ -231,7 +231,7 @@ killed.
 
 1. **Hosted CI** on `f50c9c3` (PR #25, merged as `fd870ef`): the Checks and Isolated
    integration jobs passed, the latter with 27 files and 324 tests
-   ([interactive-verification.md §24](interactive-verification.md#24-follow-up-phase-1613-hosted-ci-result-for-the-script-test-repair-added-after-phase-1613)).
+   (`docs/interactive-verification.md` §24, retired; in Git history at `7b7d661`).
    No hosted result exists for closeout commits `1626e7a`..`8aac9f8`; their local results are in
    [PROJECT_CLOSEOUT.md](PROJECT_CLOSEOUT.md#verification).
 2. **Recovery journey**, 2026-10-27, change committed as `8c027a7`: one pass on a disposable

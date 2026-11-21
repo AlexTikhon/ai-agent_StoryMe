@@ -5,6 +5,13 @@
 **Version 1.0 | Product Design Document**
 **Prepared by: Product & UX Team | Date: June 2026**
 
+> **Scope (November 2026):** StoryMe exclusively creates personalized children's illustrated
+> books: a child protagonist aged 1–12, an age-appropriate story, cartoon-style illustrations, an
+> authenticated reader, and a downloadable PDF. General-purpose books, adult fiction, comics,
+> interactive/branching stories, and other product formats (audio, video, AR, games, print or
+> merchandise) are out of scope. This document preserves the original June 2026 design intent;
+> [docs/CURRENT_PRODUCT.md](docs/CURRENT_PRODUCT.md) describes what is implemented.
+
 ---
 
 # Table of Contents
@@ -504,21 +511,21 @@ Dashboard → Library tab
 
 ## Should Have (v1.1 — Post-Launch)
 
-| #   | Feature                   | Description                                             |
-| --- | ------------------------- | ------------------------------------------------------- |
-| S1  | Series Feature            | Link multiple books with same character                 |
-| S2  | Social Sharing            | Shareable links and social card exports                 |
-| S3  | Age-Adaptive Content      | Story complexity adjusts to child's age                 |
-| S4  | Theme Library Expansion   | 20+ themes across genres                                |
-| S5  | Multiple Language Support | English, Spanish, French, German, Portuguese at launch  |
-| S6  | Sibling Feature           | Two children as co-main characters                      |
-| S7  | Book Regeneration         | Regenerate specific pages or full book                  |
-| S8  | Page Editing              | Light text editing for individual pages post-generation |
-| S9  | Gift Purchase Flow        | Buy for someone else, email delivery                    |
-| S10 | Classroom Pack            | Create up to 30 books in batch mode                     |
-| S11 | Print-on-Demand           | Physical book delivered via partner printer             |
-| S12 | Retention Emails          | Personalized re-engagement sequences                    |
-| S13 | Birthday Reminders        | Prompt before child's birthday                          |
+| #   | Feature                   | Description                                              |
+| --- | ------------------------- | -------------------------------------------------------- |
+| S1  | Series Feature            | Link multiple books with same character                  |
+| S2  | Social Sharing            | Shareable links and social card exports                  |
+| S3  | Age-Adaptive Content      | Story complexity adjusts to child's age                  |
+| S4  | Theme Library Expansion   | 20+ themes across genres                                 |
+| S5  | Multiple Language Support | English, Spanish, French, German, Portuguese at launch   |
+| S6  | Sibling Feature           | Two children as co-main characters                       |
+| S7  | Book Regeneration         | Regenerate specific pages or full book                   |
+| S8  | Page Editing              | Light text editing for individual pages post-generation  |
+| S9  | Gift Purchase Flow        | Buy for someone else, email delivery                     |
+| S10 | Classroom Pack            | Create up to 30 books in batch mode                      |
+| S11 | ~~Print-on-Demand~~       | Withdrawn (Nov 2026): physical products are out of scope |
+| S12 | Retention Emails          | Personalized re-engagement sequences                     |
+| S13 | Birthday Reminders        | Prompt before child's birthday                           |
 
 ---
 
@@ -539,12 +546,10 @@ Dashboard → Library tab
 
 ## Future (Roadmap — see Section 20)
 
-- Audiobook generation
 - EPUB export
-- AR page experiences
-- Physical book printing with premium binding
-- Video story with voice narration
-- Interactive stories with branching paths
+
+Audiobook, AR, physical printing, video, and interactive/branching story formats were withdrawn
+from the roadmap in November 2026 (see the scope note at the top of this document).
 
 ---
 
@@ -2085,32 +2090,10 @@ Mandarin Chinese (Simplified), Traditional Chinese, Arabic, Hebrew, Hindi, Turki
 
 ## The Next 50+ Ideas
 
-### Audiobook & Media
-
-1. AI-generated audiobook narration — professional voice reads the full story
-2. Multi-voice narration — different voices for each character
-3. Background music score that matches the book's mood and setting
-4. Sound effects on each page (rustle of forest leaves, spaceship engine hum)
-5. Synchronized audio + text highlighting (karaoke-style for early readers)
-6. Parent narration recording — record yourself reading and attach to the book
-
-### Interactive & Dynamic
-
-7. Interactive story mode — children make choices at key moments (branching narrative)
-8. "What happens next?" feature — child dictates what the hero does next (voice input)
-9. Mini-games embedded between chapters (age-appropriate, story-themed)
-10. AR page activation — point phone at page to see illustration animate
-11. Hidden objects on each illustration page (seek-and-find layer)
-12. Puzzle pages — illustration broken into a simple jigsaw the child solves
-
-### Physical Products
-
-13. Premium hardcover book printing (sewn binding, thick pages)
-14. Softcover book printing (more affordable physical option)
-15. Giant poster printing — a single illustration page printed large
-16. Custom puzzle — illustration turned into a 50-piece jigsaw puzzle
-17. Personalized bookplate stickers (adhesive name labels for books)
-18. Custom bookmarks featuring the child's character
+> **Withdrawn (November 2026 scope decision):** ideas 1–18 — audiobook and media narration,
+> interactive/branching story modes, games, AR, and physical print or merchandise products — are
+> outside StoryMe's scope and are no longer planned. The remaining ideas keep their original
+> numbers and are unscheduled suggestions, not commitments.
 
 ### Social & Community
 
@@ -2145,7 +2128,7 @@ Mandarin Chinese (Simplified), Traditional Chinese, Arabic, Hebrew, Hindi, Turki
 38. iOS native app
 39. Android native app
 40. Apple Watch companion (reading reminders, reading streaks)
-41. Alexa / Google Home integration — "Alexa, read me [Name]'s book"
+41. ~~Alexa / Google Home read-aloud integration~~ — withdrawn (audio format, out of scope)
 42. Kindle/e-reader EPUB export
 43. iBooks Author integration
 44. Siri / Google Assistant shortcut — "Hey Siri, create a book for Lily"

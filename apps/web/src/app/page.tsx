@@ -1,3 +1,4 @@
+import { MAX_BOOK_PAGE_COUNT, MIN_BOOK_PAGE_COUNT } from '@book/types';
 import { getApiBase } from '@/lib/api/config';
 import { HomeAuthCta } from './home-auth-cta';
 
@@ -11,16 +12,16 @@ function getApiHealthStatus(): { url: string | null; error: string | null } {
 
 const HOW_IT_WORKS = [
   {
-    title: 'Choose a path',
-    body: 'At each scene you decide what happens next, and your choices lead to different endings.',
+    title: 'Personalize it',
+    body: "Add your child's name and age (1 to 12), choose a theme and a language (English, Russian or Polish), and optionally a lesson or a reference photo.",
   },
   {
-    title: 'Resume later',
-    body: 'Your progress is saved to your account, so you can leave and pick up at the scene where you stopped.',
+    title: 'Get an illustrated story',
+    body: `StoryMe writes a story of ${MIN_BOOK_PAGE_COUNT} to ${MAX_BOOK_PAGE_COUNT} pages pitched at your child's age, with a cartoon-style illustration on every page and your child as the hero.`,
   },
   {
-    title: 'Reread with illustrations',
-    body: 'Once you reach an ending, read the story you played again, page by page, alongside its illustrations.',
+    title: 'Read and download',
+    body: 'Read the finished book in your browser, correct the text of any page, and download it as a PDF to keep or print.',
   },
 ] as const;
 
@@ -56,11 +57,12 @@ export default function HomePage() {
         <h1 className="mb-4 font-display text-5xl font-bold text-text-primary">StoryMe</h1>
 
         <p className="mb-2 text-xl text-text-secondary">
-          Interactive illustrated stories you steer with your choices
+          Personalized illustrated storybooks starring your child
         </p>
 
         <p className="mb-10 text-base text-text-muted">
-          Pick a story, choose your path through it, and come back to it whenever you like.
+          Create a picture book made for one young reader, read it together on screen, and download
+          it as a PDF.
         </p>
 
         <HomeAuthCta />
@@ -80,9 +82,10 @@ export default function HomePage() {
         </ol>
 
         <p className="mt-8 text-sm text-text-muted">
-          Gameplay is deterministic: the same choices always lead to the same scenes. AI helps
-          authors draft scenarios; it does not run the story while you play, and the illustrations
-          are part of the story rather than generated on the fly.
+          Stories and illustrations are generated with AI and checked by automated rules before a
+          book is published. Those checks cannot catch everything, and a reference photo guides the
+          illustrations rather than reproducing your child&apos;s likeness, so please read each book
+          before sharing it.
         </p>
 
         {apiHealth && (

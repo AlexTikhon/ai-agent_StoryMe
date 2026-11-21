@@ -13,11 +13,8 @@ const OFFLINE_COMMANDS = [
   'pnpm --filter @book/api typecheck:scripts',
   'pnpm test',
   'pnpm eval:story:offline',
-  'pnpm eval:interactive:offline',
-  'pnpm eval:interactive:authoring:offline',
 ];
-const BROWSER_SUITE =
-  'pnpm --filter @book/web test:e2e e2e/storyme.smoke.spec.ts e2e/interactive.spec.ts';
+const BROWSER_SUITE = 'pnpm --filter @book/web test:e2e e2e/storyme.smoke.spec.ts';
 const RECOVERY_SUITE = 'pnpm --filter @book/web test:e2e:recovery';
 const LEAKED_SECRET = 'sk-live-should-not-leak';
 
@@ -246,6 +243,21 @@ test('browser runs the journeys, then the recovery journey, and cleans up what i
   assert.ok(!h.output().includes(LEAKED_SECRET));
 });
 
+test('no profile runs a retired interactive command or spec, and book checks remain', () => {
+  const commands = Object.values(PROFILES).flatMap((profile) =>
+    [...profile.steps, ...profile.cleanup].map((step) => describeCommand(step.command)),
+  );
+  assert.ok(commands.length > 0);
+  assert.deepEqual(
+    commands.filter((command) => /interactive|authoring|scenario/i.test(command)),
+    [],
+  );
+  assert.ok(commands.includes('pnpm eval:story:offline'));
+  assert.ok(commands.includes(BROWSER_SUITE));
+  assert.ok(commands.includes(RECOVERY_SUITE));
+  assert.ok(commands.includes(launcher('integration')));
+});
+
 // ─── Fail-fast and exit status ──────────────────────────────────────────────
 
 test('the first failure stops scheduling, keeps its exit status, and is summarized', async () => {
@@ -254,7 +266,7 @@ test('the first failure stops scheduling, keeps its exit status, and is summariz
   assert.deepEqual(h.commands(), [...PREPARE, 'pnpm lint']);
   const summary = h.summary();
   assert.deepEqual(row(summary, 'Lint'), { status: 'FAIL', reason: 'exit 3' });
-  assert.deepEqual(row(summary, 'Authoring offline eval'), {
+  assert.deepEqual(row(summary, 'Story offline eval'), {
     status: 'NOT RUN',
     reason: 'not scheduled: Lint did not pass',
   });

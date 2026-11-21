@@ -37,15 +37,6 @@
     "migrate:target-guard": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/migrate-target-guard.ts",
     "eval:story:mock": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts mock",
     "eval:story:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-offline.ts",
-    "eval:interactive:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-interactive-offline.ts",
-    "eval:interactive:authoring:offline": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-interactive-authoring-offline.ts",
-    "author:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/author-interactive-scenario.ts",
-    "playtest:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/playtest-interactive-scenario.ts",
-    "preflight:interactive": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/preflight-interactive-publication.ts",
-    "report:interactive:authoring": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/report-interactive-authoring.ts",
-    "review:interactive:routes": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/review-interactive-routes.ts",
-    "experiment:interactive:authoring": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/experiment-interactive-authoring.ts",
-    "inspect:interactive:experiment": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/inspect-interactive-experiment.ts",
     "eval:story:openai": "ts-node -r tsconfig-paths/register --project tsconfig.scripts.json scripts/eval-story-generation.ts openai"
   },
   "dependencies": {

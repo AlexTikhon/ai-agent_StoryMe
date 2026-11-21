@@ -10,7 +10,9 @@ import {
   createRunDirectory,
   describeArtifacts,
   inspectPdf,
+  LANDING_CTA,
   pdfProblems,
+  RETIRED_ROUTES,
   runId,
   sha256,
   SHOWCASE_BOOKS,
@@ -102,6 +104,28 @@ test('creates a fresh run directory and refuses to reuse one', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('records the landing page instead of the retired interactive playthrough', () => {
+  const record = createRecorder({ runId: 'x' });
+  assert.equal(record.manifest.schemaVersion, 2);
+  assert.equal('interactive' in record.manifest, false);
+  assert.equal(typeof record.interactive, 'undefined');
+  assert.equal(record.manifest.landing, null);
+
+  const landing = record.landing({ cta: LANDING_CTA });
+  landing.screenshots.push('screenshots/landing-desktop.png');
+  assert.deepEqual(record.manifest.landing, {
+    cta: { name: 'Create a book', href: '/register?next=%2Fdashboard%2Fbooks%2Fnew' },
+    screenshots: ['screenshots/landing-desktop.png'],
+  });
+});
+
+test('checks that the retired interactive routes are gone rather than playing them', () => {
+  assert.deepEqual(RETIRED_ROUTES, {
+    web: ['/dashboard/interactive'],
+    api: ['/interactive/scenarios'],
+  });
 });
 
 test('uses one synthetic, photo-free input in its own script per supported language', () => {

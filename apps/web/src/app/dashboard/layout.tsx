@@ -7,6 +7,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { authApi } from '@/lib/api/auth';
 import { creditsApi } from '@/lib/api/credits';
+import { BOOK_CREATION_PATH } from '@/lib/auth/post-auth-destination';
 import { CREDITS_UPDATED_EVENT } from '@/lib/credits-events';
 import { isHomeProductMode } from '@/lib/product-mode';
 
@@ -14,7 +15,7 @@ interface DashboardLayoutProps {
   children: ReactNode;
 }
 
-type DashboardSection = 'books' | 'child-profiles' | 'interactive';
+type DashboardSection = 'books' | 'create-book' | 'child-profiles';
 
 const CONTENT_ID = 'dashboard-content';
 
@@ -30,9 +31,9 @@ function isWithin(pathname: string, base: string): boolean {
 
 function currentSection(rawPathname: string | null): DashboardSection | null {
   const pathname = (rawPathname ?? '').replace(/(.)\/+$/, '$1');
+  if (pathname === BOOK_CREATION_PATH) return 'create-book';
   if (pathname === '/dashboard' || isWithin(pathname, '/dashboard/books')) return 'books';
   if (isWithin(pathname, '/dashboard/child-profiles')) return 'child-profiles';
-  if (isWithin(pathname, '/dashboard/interactive')) return 'interactive';
   return null;
 }
 
@@ -159,20 +160,20 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </li>
             <li>
               <Link
+                href={BOOK_CREATION_PATH}
+                aria-current={ariaCurrent('create-book')}
+                className={NAV_LINK}
+              >
+                Create a book
+              </Link>
+            </li>
+            <li>
+              <Link
                 href="/dashboard/child-profiles"
                 aria-current={ariaCurrent('child-profiles')}
                 className={NAV_LINK}
               >
                 Child profiles
-              </Link>
-            </li>
-            <li>
-              <Link
-                href="/dashboard/interactive"
-                aria-current={ariaCurrent('interactive')}
-                className={NAV_LINK}
-              >
-                Interactive story
               </Link>
             </li>
           </ul>

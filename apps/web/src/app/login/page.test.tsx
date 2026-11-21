@@ -128,12 +128,12 @@ describe('LoginPage', () => {
       retrySession: vi.fn(),
     });
     vi.mocked(useSearchParams).mockReturnValue(
-      new URLSearchParams('next=/dashboard/interactive') as unknown as ReturnType<
+      new URLSearchParams('next=/dashboard/books/new') as unknown as ReturnType<
         typeof useSearchParams
       >,
     );
     render(<LoginPage />);
-    expect(replaceMock).toHaveBeenCalledWith('/dashboard/interactive');
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard/books/new');
   });
 
   it('redirects an already-authenticated visitor with an unsafe ?next= to /dashboard', () => {
@@ -153,15 +153,35 @@ describe('LoginPage', () => {
     expect(replaceMock).toHaveBeenCalledWith('/dashboard');
   });
 
+  it.each(['/dashboard/interactive', '/dashboard/interactive/session-1/transcript'])(
+    'redirects an already-authenticated visitor with the stale retired ?next=%s to /dashboard',
+    (next) => {
+      vi.mocked(useAuth).mockReturnValue({
+        user: null,
+        status: 'authed',
+        authMode: 'jwt',
+        login: loginMock,
+        register: vi.fn(),
+        logout: vi.fn(),
+        retrySession: vi.fn(),
+      });
+      vi.mocked(useSearchParams).mockReturnValue(
+        new URLSearchParams({ next }) as unknown as ReturnType<typeof useSearchParams>,
+      );
+      render(<LoginPage />);
+      expect(replaceMock).toHaveBeenCalledWith('/dashboard');
+    },
+  );
+
   it('preserves a valid ?next= destination on the register link', () => {
     vi.mocked(useSearchParams).mockReturnValue(
-      new URLSearchParams('next=/dashboard/interactive') as unknown as ReturnType<
+      new URLSearchParams('next=/dashboard/books/new') as unknown as ReturnType<
         typeof useSearchParams
       >,
     );
     render(<LoginPage />);
     expect(screen.getByRole('link', { name: /register/i }).getAttribute('href')).toBe(
-      '/register?next=%2Fdashboard%2Finteractive',
+      '/register?next=%2Fdashboard%2Fbooks%2Fnew',
     );
   });
 

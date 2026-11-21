@@ -4,16 +4,13 @@ How to run StoryMe locally end-to-end: create a book, generate it, and
 download the PDF. Everything below uses the default **mock** generation
 mode — no OpenAI key required, no network calls, fully deterministic.
 
-Looking for the interactive illustrated stories? They run on the same setup (steps 1–7; no
-generation worker is needed). Their walkthrough is [interactive-demo.md](interactive-demo.md).
-
 To check the repository rather than try the app, use `pnpm verify:local`; see
 [local-verification.md](local-verification.md).
 
 ## One-command demo (`pnpm demo:local`)
 
-The quickest way to try everything (book generation, PDF, and the published interactive
-story) is one command that starts an isolated, throwaway environment and keeps it running
+The quickest way to try everything (book creation, generation, the reader and the PDF) is one
+command that starts an isolated, throwaway environment and keeps it running
 until you press Ctrl+C. It does not change your `.env` files, your main Compose database, or
 anything under `apps/api/tmp` that does not belong to its synthetic account.
 
@@ -64,16 +61,17 @@ The account is already email-verified. Its library also contains a few seeded fi
 
 ### Walk through
 
-1. **Book.** Click **+ New Book**, complete the wizard, then click **Generate Story**. Mock
-   generation reaches `complete` in a few seconds. Home Edition charges no credits.
-2. **PDF.** On the completed book, click **Open PDF**, then **Download PDF** (both use
+1. **Start.** On the landing page, **Create a book** leads through sign-in straight to the
+   book wizard (**Create a book** in the dashboard header and **+ New Book** in the library go
+   there too).
+2. **Book.** Complete the wizard, then click **Generate Story**. Mock generation reaches
+   `complete` in a few seconds. Home Edition charges no credits.
+3. **Read.** The completed book opens in the in-browser reader: cover, every page and the back
+   cover.
+4. **PDF.** Click **Open PDF**, then **Download PDF** (both use
    `GET /api/books/:id/pdf/preview`).
-3. **Interactive story.** Click **Interactive story** in the dashboard header, then
-   **Start story** on "The Last Delivery". Make a choice or two, then **reload the page**:
-   you are on the same scene, with the same items. The full route is in
-   [interactive-demo.md](interactive-demo.md#walk-through).
 
-Reloads and new tabs keep your progress for as long as the command runs.
+Books stay in your library for as long as the command runs.
 
 To save shareable EN/RU/PL books, PDFs, and screenshots from this running demo, run
 `pnpm demo:capture` in a second terminal; see [demo-showcase.md](demo-showcase.md). It also

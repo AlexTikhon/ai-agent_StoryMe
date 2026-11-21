@@ -86,7 +86,8 @@ generated-images/
 artifacts/
 private/
 
-# Local interactive-scenario authoring drafts (unreviewed model output; never committed)
+# Leftover local drafts from the retired scenario-authoring tool (unreviewed model
+# output; never committed). Kept so old checkouts cannot accidentally stage them.
 scenario-drafts/
 
 # Clean review archives are local deliverables, not repository source

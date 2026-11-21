@@ -343,7 +343,7 @@ describe('DashboardLayout', () => {
     expect(creditsApi.getBalance).not.toHaveBeenCalled();
   });
 
-  it.each(['home', 'demo'])('links to the interactive story in %s mode', (mode) => {
+  it.each(['home', 'demo'])('links to book creation and no retired product in %s mode', (mode) => {
     vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', mode);
     vi.mocked(useAuth).mockReturnValue({
       user: MOCK_USER,
@@ -361,11 +361,13 @@ describe('DashboardLayout', () => {
       </DashboardLayout>,
     );
 
-    expect(screen.getByRole('link', { name: 'Interactive story' })).toHaveProperty(
+    expect(screen.getByRole('link', { name: 'Create a book' })).toHaveProperty(
       'href',
-      expect.stringContaining('/dashboard/interactive'),
+      expect.stringContaining('/dashboard/books/new'),
     );
     expect(screen.getByRole('link', { name: 'Child profiles' })).toBeDefined();
+    expect(screen.queryByRole('link', { name: /interactive/i })).toBeNull();
+    expect(document.querySelector('a[href*="/dashboard/interactive"]')).toBeNull();
   });
 
   it('does not hide protected children when the balance fetch fails', async () => {
@@ -441,7 +443,7 @@ describe('DashboardLayout', () => {
     const BOOKS_LABEL = { home: 'Family library', demo: 'Books' } as const;
 
     it.each(['home', 'demo'] as const)(
-      'exposes a named navigation landmark with books, profiles and interactive links in %s mode',
+      'exposes a named navigation landmark with library, book-creation and profile links in %s mode',
       async (mode) => {
         vi.stubEnv('NEXT_PUBLIC_PRODUCT_MODE', mode);
         await renderAuthed();
@@ -450,8 +452,8 @@ describe('DashboardLayout', () => {
         const links = within(nav).getAllByRole('link');
         expect(links.map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
           [BOOKS_LABEL[mode], '/dashboard'],
+          ['Create a book', '/dashboard/books/new'],
           ['Child profiles', '/dashboard/child-profiles'],
-          ['Interactive story', '/dashboard/interactive'],
         ]);
       },
     );
@@ -471,17 +473,16 @@ describe('DashboardLayout', () => {
     it.each([
       ['/dashboard', 'Books'],
       ['/dashboard/', 'Books'],
-      ['/dashboard/books/new', 'Books'],
+      ['/dashboard/books/new', 'Create a book'],
+      ['/dashboard/books/new/', 'Create a book'],
       ['/dashboard/books/00000000-0000-4000-8000-000000000006', 'Books'],
       ['/dashboard/child-profiles', 'Child profiles'],
       ['/dashboard/child-profiles/edit', 'Child profiles'],
-      ['/dashboard/interactive', 'Interactive story'],
-      ['/dashboard/interactive/session-1', 'Interactive story'],
-      ['/dashboard/interactive/session-1/transcript', 'Interactive story'],
       ['/dashboard/credits', null],
       ['/dashboard/bookshelf', null],
       ['/dashboard/child-profiles-archive', null],
-      ['/dashboard/interactive-legacy', null],
+      ['/dashboard/interactive', null],
+      ['/dashboard/interactive/session-1', null],
       ['/dashboardx', null],
     ])('marks the current section for %s', async (pathname, expected) => {
       vi.mocked(usePathname).mockReturnValue(pathname);
@@ -528,7 +529,8 @@ describe('DashboardLayout', () => {
       const order = [
         screen.getByRole('link', { name: 'Skip to content' }),
         screen.getByRole('link', { name: 'Books' }),
-        screen.getByRole('link', { name: 'Interactive story' }),
+        screen.getByRole('link', { name: 'Create a book' }),
+        screen.getByRole('link', { name: 'Child profiles' }),
         screen.getByRole('link', { name: 'Buy credits' }),
         screen.getByRole('button', { name: /log out/i }),
         screen.getByRole('button', { name: 'First page control' }),

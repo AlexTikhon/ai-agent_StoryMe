@@ -19,6 +19,20 @@ describe('envSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('ignores leftover settings of the retired interactive product instead of exposing them', () => {
+    const result = envSchema.safeParse({
+      DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'a-secret-that-is-at-least-32-chars-long!!',
+      JWT_REFRESH_SECRET: 'refresh-secret-that-is-at-least-32-chars!!',
+      INTERACTIVE_MAX_SESSIONS_PER_USER: 'not-a-number',
+      INTERACTIVE_CREATE_RATE_LIMIT_MAX_ATTEMPTS: '200',
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Object.keys(result.data).filter((key) => key.startsWith('INTERACTIVE_'))).toEqual([]);
+  });
+
   it('rejects when DATABASE_URL is missing', () => {
     const result = envSchema.safeParse({});
     expect(result.success).toBe(false);

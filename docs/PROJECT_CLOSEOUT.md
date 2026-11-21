@@ -4,6 +4,12 @@
 > record is [PAUSE_HANDOFF.md](PAUSE_HANDOFF.md), dated 2026-11-05. The timeout
 > finding and shared Compose-project restriction below were addressed there;
 > results in this document describe the earlier candidate only.
+>
+> **Product scope changed afterwards (November 2026):** the interactive-story product and its
+> authoring tools referenced below were retired; see
+> [CURRENT_PRODUCT.md](CURRENT_PRODUCT.md#retired-interactive-stories). Their commands, specs
+> and documents no longer exist in the working tree. The results are left as recorded and
+> describe the repository at that time.
 
 Development of StoryMe is paused as of 2026-10-27. This is a local handoff record, not a
 release: nothing was deployed, tagged or published.
@@ -67,21 +73,21 @@ therefore underlying-suite passes, **not** passes of `verify:local --profile int
 Rows 11 and 12 are a local production build and smoke test. They are **not deployment
 evidence**. No hosted CI exists for the closeout commits: CI runs only on pull requests and on
 pushes to `main` and `develop`. The last hosted green run is `38396021924` on `f50c9c3`
-([§24](interactive-verification.md#24-follow-up-phase-1613-hosted-ci-result-for-the-script-test-repair-added-after-phase-1613)).
+(`docs/interactive-verification.md` §24, retired; in Git history at `7b7d661`).
 
 ## Open finding: import-test timeouts
 
 - **Trigger:** a fresh `pnpm test` (Turbo runs the API and web suites in parallel) on this
   Windows machine. Failed 2 of 2 forced runs; a cached replay from an earlier run passed.
 - **Tests:** "starts no work … when imported" in
-  [inspect-interactive-experiment.spec.ts](../apps/api/scripts/inspect-interactive-experiment.spec.ts),
-  [experiment-interactive-authoring.spec.ts](../apps/api/scripts/experiment-interactive-authoring.spec.ts)
-  and [report-interactive-authoring.spec.ts](../apps/api/scripts/report-interactive-authoring.spec.ts).
+  `apps/api/scripts/inspect-interactive-experiment.spec.ts`,
+  `apps/api/scripts/experiment-interactive-authoring.spec.ts`
+  and `apps/api/scripts/report-interactive-authoring.spec.ts`.
   Each one calls `vi.resetModules()` and dynamically imports a CLI module under vitest's
   default 5000 ms timeout.
 - **Evidence:** with the API suite running alone (row 4), the three tests took 2.1, 4.5 and
   4.7 s; under the parallel run they exceeded 5 s. The sibling test in
-  [review-interactive-routes.spec.ts](../apps/api/scripts/review-interactive-routes.spec.ts)
+  `apps/api/scripts/review-interactive-routes.spec.ts` (all four specs since retired)
   passes `30_000` and did not fail. The same spec passed 3 of 3 times on its own.
 - **Assessment:** a test-timing defect, not an application defect. The tests' assertions never
   failed. **Not fixed in this step.** The likely fix is the sibling's explicit timeout on the
@@ -151,7 +157,7 @@ pnpm --filter @book/web test:e2e:production
   find once the book row is gone. Observed in row 8; no files remained.
 - **Interactive.** One scenario is published, under a documented legacy exception; the others
   are unapproved fixtures. An approval record is an attestation, not a signature
-  ([limits](interactive-case-study.md#7-current-limits)).
+  (`docs/interactive-case-study.md` §7, retired; in Git history at `7b7d661`).
 - **Verification gaps.** The open finding above, and the Docker wrappers were unavailable here.
 
 ## Cleanup

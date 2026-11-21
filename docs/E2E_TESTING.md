@@ -20,10 +20,10 @@ invariants, fencing/redelivery, demo credit debit/refund/idempotency, and hard d
 
 ## CI
 
-The CI job **Interactive browser journey** (`interactive-browser` in `.github/workflows/ci.yml`) runs the complete interactive-story suite (catalogue creation, deterministic gameplay, ownership, retries, illustrations, completed-story rereading) on its own runner. Its local equivalent, with the disposable PostgreSQL/Redis already up (`pnpm test:infra:up`), is:
+The CI job **Book browser journeys** (`book-browser` in `.github/workflows/ci.yml`) runs the children's-book suite on its own runner: the landing-page **Create a book** entry before hydration and through login, stale retired destinations, the absence of the retired interactive routes, registration and sessions, child profiles, generation, cancellation, editing, published-edition retention, retry, regeneration, PDF download, permanent deletion and dashboard navigation. Its local equivalent, with the disposable PostgreSQL/Redis already up (`pnpm test:infra:up`), is:
 
 ```powershell
-pnpm --filter @book/web test:e2e e2e/interactive.spec.ts
+pnpm --filter @book/web test:e2e e2e/storyme.smoke.spec.ts
 ```
 
 It exercises the real API and database boundaries with mock providers (no credentials or external services) and development servers (`nest start`, `next dev`) launched by Playwright, which also migrates, seeds and cleans up fixtures. It is distinct from the **Production browser smoke** job, which only checks the built landing page against a production `next build`. On failure the job uploads `apps/web/playwright-report` and `apps/web/test-results` for 3 days; the job always runs `pnpm test:infra:down` last.

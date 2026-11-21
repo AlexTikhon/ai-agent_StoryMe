@@ -38,57 +38,57 @@ describe('HomePage', () => {
     expect(heading.textContent).toBe('StoryMe');
   });
 
-  it('leads with interactive illustrated stories', () => {
+  it("leads with personalized illustrated children's storybooks", () => {
     render(<HomePage />);
-    expect(screen.getByText(/interactive illustrated stories/i)).toBeDefined();
+    expect(
+      screen.getByText(/personalized illustrated storybooks starring your child/i),
+    ).toBeDefined();
   });
 
-  it('explains the actual experience: choose, resume, reread with illustrations', () => {
+  it('explains the actual journey: personalize, illustrated story, read and download', () => {
     render(<HomePage />);
-    expect(screen.getByRole('heading', { name: /choose a path/i })).toBeDefined();
-    expect(screen.getByRole('heading', { name: /resume later/i })).toBeDefined();
-    expect(screen.getByRole('heading', { name: /reread with illustrations/i })).toBeDefined();
+    expect(screen.getByRole('heading', { name: /personalize it/i })).toBeDefined();
+    expect(screen.getByRole('heading', { name: /get an illustrated story/i })).toBeDefined();
+    expect(screen.getByRole('heading', { name: /read and download/i })).toBeDefined();
   });
 
-  it('states that gameplay is deterministic and AI assists only scenario authoring', () => {
-    render(<HomePage />);
-    expect(screen.getByText(/gameplay is deterministic/i)).toBeDefined();
-    expect(screen.getByText(/ai helps authors draft scenarios/i)).toBeDefined();
-  });
-
-  it('does not promise live generation, endless stories or suitability for children', () => {
+  it('describes the supported input contract accurately', () => {
     const { container } = render(<HomePage />);
     const text = container.textContent ?? '';
-    expect(text).not.toMatch(/children|kids|child-friendly|family-friendly/i);
-    expect(text).not.toMatch(/endless|unlimited|library of stories|powered by ai/i);
+    expect(text).toMatch(/age \(1 to 12\)/i);
+    expect(text).toMatch(/English, Russian or Polish/);
+    expect(text).toMatch(/4 to 12 pages/);
+    expect(text).toMatch(/PDF/);
+  });
+
+  it('does not promise measured quality, guaranteed likeness, safety or the retired product', () => {
+    const { container } = render(<HomePage />);
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/guarantee|100%|perfect|always safe|completely safe|exact likeness/i);
+    expect(text).not.toMatch(/interactive|branching|detective|choose your path|scenario/i);
+    expect(text).toMatch(/cannot catch everything/i);
+    expect(text).toMatch(/rather than reproducing your child.s likeness/i);
   });
 
   describe('when unauthenticated', () => {
     it.each(['anon', 'loading'] as const)(
-      'sends the primary CTA to registration with the interactive destination (%s)',
+      'sends the primary CTA to registration with the book-creation destination (%s)',
       (status) => {
         mockAuth(status);
         render(<HomePage />);
-        expect(linkHref(/start your first story/i)).toBe(
-          '/register?next=%2Fdashboard%2Finteractive',
-        );
-        expect(linkHref(/^sign in$/i)).toBe('/login?next=%2Fdashboard%2Finteractive');
+        expect(linkHref(/^create a book$/i)).toBe('/register?next=%2Fdashboard%2Fbooks%2Fnew');
+        expect(linkHref(/^sign in$/i)).toBe('/login?next=%2Fdashboard%2Fbooks%2Fnew');
+        expect(linkHref(/open my library/i)).toBe('/dashboard');
       },
     );
-
-    it('keeps the book links as clearly labelled secondary links', () => {
-      render(<HomePage />);
-      expect(linkHref(/create a personalized book/i)).toBe('/register');
-      expect(linkHref(/view my books/i)).toBe('/dashboard');
-    });
   });
 
   describe('when authenticated', () => {
     beforeEach(() => mockAuth('authed'));
 
-    it('sends the primary CTA straight to the interactive catalogue', () => {
+    it('sends the primary CTA straight to the book wizard', () => {
       render(<HomePage />);
-      expect(linkHref(/open the story catalogue/i)).toBe('/dashboard/interactive');
+      expect(linkHref(/^create a book$/i)).toBe('/dashboard/books/new');
     });
 
     it('does not render a sign-in link', () => {
@@ -96,10 +96,9 @@ describe('HomePage', () => {
       expect(screen.queryByRole('link', { name: /sign in/i })).toBeNull();
     });
 
-    it('keeps the existing book navigation', () => {
+    it('keeps the library link', () => {
       render(<HomePage />);
-      expect(linkHref(/create a personalized book/i)).toBe('/dashboard');
-      expect(linkHref(/view my books/i)).toBe('/dashboard');
+      expect(linkHref(/open my library/i)).toBe('/dashboard');
     });
   });
 

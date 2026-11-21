@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { DynamicModule } from '@nestjs/common';
+import type { DynamicModule, ForwardReference, Type } from '@nestjs/common';
+import { MODULE_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { AppModule } from './app.module';
 import { EnvModule } from './config/env.module';
 import { BooksModule } from './books/books.module';
@@ -59,4 +60,53 @@ describe('AppModule.register', () => {
 
     expect(booksModule.providers).toContain(GenerationQueueProcessor);
   });
+
+  it.each([false, true])(
+    'registers no retired interactive controller and keeps the book controllers (worker: %s)',
+    (enableGenerationWorker) => {
+      const paths = collectControllerPaths(AppModule.register({ enableGenerationWorker }));
+
+      expect(paths.some((path) => /(^|\/)interactive(\/|$)/.test(path))).toBe(false);
+      expect(paths).toContain('books');
+      expect(paths).toContain('child-profiles');
+    },
+  );
 });
+
+type ModuleRef = Type<unknown> | DynamicModule | ForwardReference | Promise<DynamicModule>;
+
+/** Every controller route prefix reachable from a module, following static and dynamic imports. */
+function collectControllerPaths(root: DynamicModule): string[] {
+  const seen = new Set<unknown>();
+  const paths: string[] = [];
+
+  const visit = (ref: ModuleRef | undefined): void => {
+    if (!ref || ref instanceof Promise) return;
+    const resolved =
+      typeof ref === 'object' && 'forwardRef' in ref ? (ref.forwardRef() as ModuleRef) : ref;
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+
+    const isDynamic = typeof resolved === 'object' && 'module' in resolved;
+    const moduleClass = isDynamic ? (resolved as DynamicModule).module : resolved;
+    const controllers: Type<unknown>[] = [
+      ...((Reflect.getMetadata(MODULE_METADATA.CONTROLLERS, moduleClass) as Type<unknown>[]) ?? []),
+      ...(isDynamic ? ((resolved as DynamicModule).controllers ?? []) : []),
+    ];
+    for (const controller of controllers) {
+      const path = Reflect.getMetadata(PATH_METADATA, controller) as string | string[] | undefined;
+      for (const value of [path ?? ''].flat()) paths.push(value.replace(/^\/+/, ''));
+    }
+
+    const imports: ModuleRef[] = [
+      ...((Reflect.getMetadata(MODULE_METADATA.IMPORTS, moduleClass) as ModuleRef[]) ?? []),
+      ...(isDynamic
+        ? (((resolved as DynamicModule).imports as ModuleRef[] | undefined) ?? [])
+        : []),
+    ];
+    imports.forEach(visit);
+  };
+
+  visit(root);
+  return paths;
+}

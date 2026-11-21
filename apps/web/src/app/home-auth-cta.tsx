@@ -1,7 +1,11 @@
 'use client';
 
 import { useAuth } from '@/lib/auth/auth-context';
-import { INTERACTIVE_CATALOGUE_PATH, authPageHref } from '@/lib/auth/post-auth-destination';
+import {
+  BOOK_CREATION_PATH,
+  DEFAULT_POST_AUTH_DESTINATION,
+  authPageHref,
+} from '@/lib/auth/post-auth-destination';
 
 const primaryCls =
   'inline-flex h-12 items-center justify-center rounded-xl bg-violet-600 px-8 text-base font-semibold text-white shadow-brand transition-all hover:bg-violet-500 focus-visible:ring-2 focus-visible:ring-violet-600 focus-visible:ring-offset-2';
@@ -13,6 +17,7 @@ const textLinkCls =
 /**
  * Server-rendered as the anonymous variant (status starts as 'loading'), so the
  * links are usable before hydration; an authenticated session only upgrades them.
+ * Anonymous links carry the book-creation destination through registration/login.
  */
 export function HomeAuthCta() {
   const { status } = useAuth();
@@ -22,31 +27,34 @@ export function HomeAuthCta() {
     <>
       <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
         {authed ? (
-          <a href={INTERACTIVE_CATALOGUE_PATH} className={primaryCls}>
-            Open the story catalogue
-          </a>
+          <>
+            <a href={BOOK_CREATION_PATH} className={primaryCls}>
+              Create a book
+            </a>
+            <a href={DEFAULT_POST_AUTH_DESTINATION} className={secondaryCls}>
+              Open my library
+            </a>
+          </>
         ) : (
           <>
-            <a href={authPageHref('/register', INTERACTIVE_CATALOGUE_PATH)} className={primaryCls}>
-              Start your first story
+            <a href={authPageHref('/register', BOOK_CREATION_PATH)} className={primaryCls}>
+              Create a book
             </a>
-            <a href={authPageHref('/login', INTERACTIVE_CATALOGUE_PATH)} className={secondaryCls}>
+            <a href={authPageHref('/login', BOOK_CREATION_PATH)} className={secondaryCls}>
               Sign in
             </a>
           </>
         )}
       </div>
 
-      <p className="mt-8 text-sm text-text-muted">
-        Prefer a personalized storybook?{' '}
-        <a href={authed ? '/dashboard' : '/register'} className={textLinkCls}>
-          Create a personalized book
-        </a>
-        {' · '}
-        <a href="/dashboard" className={textLinkCls}>
-          View my books
-        </a>
-      </p>
+      {!authed && (
+        <p className="mt-8 text-sm text-text-muted">
+          Already made a book?{' '}
+          <a href={DEFAULT_POST_AUTH_DESTINATION} className={textLinkCls}>
+            Open my library
+          </a>
+        </p>
+      )}
     </>
   );
 }

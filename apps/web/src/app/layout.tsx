@@ -3,27 +3,29 @@ import type { ReactNode } from 'react';
 import { AuthProvider } from '@/lib/auth/auth-context';
 import '../styles/globals.css';
 
+const SITE_TITLE = "StoryMe — Personalized Illustrated Children's Books";
+const SITE_DESCRIPTION =
+  'Create an illustrated storybook starring your child (ages 1–12), read it in your browser and download it as a PDF.';
+
 export const metadata: Metadata = {
   title: {
-    default: "StoryMe — Personalized AI Children's Books",
+    default: SITE_TITLE,
     template: '%s | StoryMe',
   },
-  description:
-    "Create personalized, beautifully illustrated children's books starring your child — powered by AI.",
-  keywords: ["children's books", 'personalized', 'AI', 'kids', 'stories'],
+  description: SITE_DESCRIPTION,
+  keywords: ["children's books", 'personalized storybook', 'illustrated', 'picture book', 'PDF'],
   authors: [{ name: 'StoryMe' }],
   creator: 'StoryMe',
   metadataBase: new URL(process.env['NEXT_PUBLIC_APP_URL'] ?? 'http://localhost:3000'),
   openGraph: {
     type: 'website',
     siteName: 'StoryMe',
-    title: "StoryMe — Personalized AI Children's Books",
-    description:
-      "Create personalized, beautifully illustrated children's books starring your child.",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
   },
   twitter: {
     card: 'summary_large_image',
-    title: "StoryMe — Personalized AI Children's Books",
+    title: SITE_TITLE,
   },
 };
 

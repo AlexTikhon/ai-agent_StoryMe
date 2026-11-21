@@ -29,41 +29,46 @@ describe('HomeAuthCta', () => {
   describe.each(['anon', 'loading', 'error'] as const)('while %s', (status) => {
     beforeEach(() => setStatus(status));
 
-    it('sends the primary CTA to registration, preserving the interactive destination', () => {
+    it('sends the primary CTA to registration, preserving the book-creation destination', () => {
       render(<HomeAuthCta />);
-      expect(href(/start your first story/i)).toBe('/register?next=%2Fdashboard%2Finteractive');
+      expect(href(/^create a book$/i)).toBe('/register?next=%2Fdashboard%2Fbooks%2Fnew');
     });
 
     it('offers a sign-in path preserving the same destination', () => {
       render(<HomeAuthCta />);
-      expect(href(/^sign in$/i)).toBe('/login?next=%2Fdashboard%2Finteractive');
+      expect(href(/^sign in$/i)).toBe('/login?next=%2Fdashboard%2Fbooks%2Fnew');
     });
 
-    it('keeps the book links on their existing destinations', () => {
+    it('keeps a clear route to the existing library', () => {
       render(<HomeAuthCta />);
-      expect(href(/create a personalized book/i)).toBe('/register');
-      expect(href(/view my books/i)).toBe('/dashboard');
+      expect(href(/open my library/i)).toBe('/dashboard');
+    });
+
+    it('links nowhere near the retired interactive product', () => {
+      const { container } = render(<HomeAuthCta />);
+      const hrefs = [...container.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+      expect(hrefs.join(' ')).not.toMatch(/interactive/);
     });
   });
 
   describe('when authenticated', () => {
     beforeEach(() => setStatus('authed'));
 
-    it('sends the primary CTA straight to the interactive catalogue', () => {
+    it('sends the primary CTA straight to the book wizard', () => {
       render(<HomeAuthCta />);
-      expect(href(/open the story catalogue/i)).toBe('/dashboard/interactive');
+      expect(href(/^create a book$/i)).toBe('/dashboard/books/new');
+    });
+
+    it('offers the library as the secondary action', () => {
+      render(<HomeAuthCta />);
+      expect(href(/open my library/i)).toBe('/dashboard');
     });
 
     it('does not show sign-in or registration prompts', () => {
       render(<HomeAuthCta />);
       expect(screen.queryByRole('link', { name: /sign in/i })).toBeNull();
-      expect(screen.queryByRole('link', { name: /start your first story/i })).toBeNull();
-    });
-
-    it('keeps the book links on their existing destinations', () => {
-      render(<HomeAuthCta />);
-      expect(href(/create a personalized book/i)).toBe('/dashboard');
-      expect(href(/view my books/i)).toBe('/dashboard');
+      const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href') ?? '');
+      expect(hrefs.filter((h) => /^\/(register|login)/.test(h))).toEqual([]);
     });
   });
 });
